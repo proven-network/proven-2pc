@@ -1,14 +1,14 @@
 //! Lock manager that tracks lock ownership and detects conflicts
 
 use crate::error::Result;
-use crate::hlc::HlcTimestamp;
+use crate::transaction_id::TransactionId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-/// Transaction ID is now an HLC timestamp for total ordering
-pub type TxId = HlcTimestamp;
+/// Transaction ID type alias
+pub type TxId = TransactionId;
 
 /// Lock modes with compatibility matrix
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,8 +305,9 @@ mod tests {
     use crate::hlc::{HlcClock, NodeId};
     
     fn create_tx_id(seed: u8) -> TxId {
+        use crate::hlc::{HlcClock, NodeId};
         let clock = HlcClock::new(NodeId::from_seed(seed));
-        clock.now()
+        TransactionId::new(clock.now())
     }
     
     #[test]

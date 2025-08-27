@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::hlc::{HlcClock, HlcTimestamp, SharedHlcClock};
 use crate::lock::{LockKey, LockManager, LockMode, LockResult, TxId};
 use crate::storage::Storage;
+use crate::transaction_id::{TransactionId, TransactionContext};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -31,9 +32,11 @@ pub struct AccessLogEntry {
 
 /// A database transaction
 pub struct Transaction {
-    /// Unique transaction ID (HLC timestamp)
-    /// Earlier timestamps have higher priority in wound-wait
-    pub id: TxId,
+    /// Full transaction ID (global + sub-transaction sequence)
+    pub id: TransactionId,
+    
+    /// Transaction context for deterministic SQL execution
+    pub context: TransactionContext,
 
     /// Current state
     pub state: RwLock<TransactionState>,
@@ -53,12 +56,35 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn new(
-        id: TxId,
+        global_id: HlcTimestamp,
         lock_manager: Arc<LockManager>,
         storage: Arc<Storage>,
     ) -> Self {
+        let id = TransactionId::new(global_id);
+        let context = TransactionContext::new(global_id);
         Self {
             id,
+            context,
+            state: RwLock::new(TransactionState::Active),
+            locks_held: RwLock::new(Vec::new()),
+            lock_manager,
+            storage,
+            access_log: RwLock::new(Vec::new()),
+        }
+    }
+    
+    /// Create a sub-transaction
+    pub fn new_sub(
+        parent_id: TransactionId,
+        sub_seq: u32,
+        lock_manager: Arc<LockManager>,
+        storage: Arc<Storage>,
+    ) -> Self {
+        let id = parent_id.sub_transaction(sub_seq);
+        let context = TransactionContext::new(parent_id.global_id).sub_transaction(sub_seq);
+        Self {
+            id,
+            context,
             state: RwLock::new(TransactionState::Active),
             locks_held: RwLock::new(Vec::new()),
             lock_manager,
@@ -315,8 +341,11 @@ impl Drop for Transaction {
 
 /// Transaction manager that implements wound-wait policy
 pub struct TransactionManager {
-    /// All active transactions
-    transactions: Arc<RwLock<HashMap<TxId, Arc<Transaction>>>>,
+    /// All active transactions (keyed by full transaction ID)
+    transactions: Arc<RwLock<HashMap<TransactionId, Arc<Transaction>>>>,
+    
+    /// Sub-transaction sequence counters per global transaction
+    sub_sequences: Arc<RwLock<HashMap<HlcTimestamp, u32>>>,
 
     /// HLC clock for generating transaction IDs
     clock: SharedHlcClock,
@@ -336,6 +365,7 @@ impl TransactionManager {
         
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
+            sub_sequences: Arc::new(RwLock::new(HashMap::new())),
             clock,
             lock_manager,
             storage,
@@ -350,37 +380,64 @@ impl TransactionManager {
     ) -> Self {
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
+            sub_sequences: Arc::new(RwLock::new(HashMap::new())),
             clock,
             lock_manager,
             storage,
         }
     }
 
-    /// Begin a new transaction
+    /// Begin a new transaction (main transaction, not a sub-transaction)
     pub fn begin(&self) -> Result<Arc<Transaction>> {
-        let tx_id = self.clock.now();
+        let global_id = self.clock.now();
 
         let tx = Arc::new(Transaction::new(
-            tx_id,
+            global_id,
             self.lock_manager.clone(),
             self.storage.clone(),
         ));
 
-        self.transactions.write().unwrap().insert(tx_id, tx.clone());
+        self.transactions.write().unwrap().insert(tx.id, tx.clone());
+        // Initialize sub-sequence counter for this global transaction
+        self.sub_sequences.write().unwrap().insert(global_id, 0);
 
         Ok(tx)
     }
     
     /// Begin a new transaction with a specific timestamp (for testing)
-    pub fn begin_with_timestamp(&self, tx_id: HlcTimestamp) -> Result<Arc<Transaction>> {
+    pub fn begin_with_timestamp(&self, global_id: HlcTimestamp) -> Result<Arc<Transaction>> {
         let tx = Arc::new(Transaction::new(
-            tx_id,
+            global_id,
             self.lock_manager.clone(),
             self.storage.clone(),
         ));
 
-        self.transactions.write().unwrap().insert(tx_id, tx.clone());
+        self.transactions.write().unwrap().insert(tx.id, tx.clone());
+        self.sub_sequences.write().unwrap().insert(global_id, 0);
 
+        Ok(tx)
+    }
+    
+    /// Begin a sub-transaction under an existing global transaction
+    pub fn begin_sub(&self, global_id: HlcTimestamp) -> Result<Arc<Transaction>> {
+        // Increment and get the sub-sequence number
+        let mut sequences = self.sub_sequences.write().unwrap();
+        let sub_seq = sequences.entry(global_id)
+            .and_modify(|s| *s += 1)
+            .or_insert(1);
+        let sub_seq = *sub_seq;
+        drop(sequences);
+        
+        let parent_id = TransactionId::new(global_id);
+        let tx = Arc::new(Transaction::new_sub(
+            parent_id,
+            sub_seq,
+            self.lock_manager.clone(),
+            self.storage.clone(),
+        ));
+        
+        self.transactions.write().unwrap().insert(tx.id, tx.clone());
+        
         Ok(tx)
     }
 
@@ -438,7 +495,8 @@ impl TransactionManager {
                     // Get the holder transaction to check its timestamp
                     if let Some(holder_tx) = self.get(holder) {
                         // Wound-wait: if we're older (earlier timestamp), wound the holder
-                        if tx.id.is_older_than(&holder_tx.id) {
+                        // Note: sub-transactions inherit parent priority
+                        if tx.id.has_higher_priority_than(&holder_tx.id) {
                             // Wound the younger transaction
                             self.abort_transaction(holder)?;
                             // Retry acquiring the lock
@@ -485,7 +543,7 @@ mod tests {
         // Begin transaction
         let tx = tx_manager.begin().unwrap();
         assert_eq!(tx.state(), TransactionState::Active);
-        assert!(tx.id.physical > 0); // Should have a valid timestamp
+        assert!(tx.id.global_id.physical > 0); // Should have a valid timestamp
 
         // Insert data
         let id = tx
@@ -530,7 +588,7 @@ mod tests {
         let tx2 = tx_manager.begin().unwrap();
         
         // tx2 should be younger (later timestamp)
-        assert!(tx1.id.is_older_than(&tx2.id));
+        assert!(tx1.id.has_higher_priority_than(&tx2.id));
 
         // tx1 reads the balance
         let balance = tx1.read("accounts", 1).unwrap();

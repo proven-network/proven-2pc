@@ -31,7 +31,10 @@ pub enum Error {
 
     // Lock errors
     #[error("Lock conflict: held by transaction {holder} in mode {mode:?}")]
-    LockConflict { holder: crate::hlc::HlcTimestamp, mode: crate::lock::LockMode },
+    LockConflict {
+        holder: crate::transaction_id::TransactionId,
+        mode: crate::lock::LockMode,
+    },
 
     #[error("Operation would block")]
     WouldBlock,
@@ -44,13 +47,13 @@ pub enum Error {
 
     // Transaction errors
     #[error("Transaction not found: {0}")]
-    TransactionNotFound(crate::hlc::HlcTimestamp),
+    TransactionNotFound(crate::transaction_id::TransactionId),
 
     #[error("Transaction aborted: {0}")]
-    TransactionAborted(crate::hlc::HlcTimestamp),
+    TransactionAborted(crate::transaction_id::TransactionId),
 
     #[error("Transaction not active: {0}")]
-    TransactionNotActive(crate::hlc::HlcTimestamp),
+    TransactionNotActive(crate::transaction_id::TransactionId),
 
     // SQL errors
     #[error("SQL parse error: {0}")]
@@ -58,9 +61,6 @@ pub enum Error {
 
     #[error("Execution error: {0}")]
     ExecutionError(String),
-
-    #[error("Non-deterministic SQL functions used: {0:?}")]
-    NonDeterministicSQL(Vec<String>),
 
     // Constraint errors
     #[error("Primary key violation: {0}")]

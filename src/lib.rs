@@ -14,6 +14,7 @@ pub mod lock;
 pub mod sql;
 pub mod storage;
 pub mod transaction;
+pub mod transaction_id;
 pub mod types;
 
 pub use error::{Error, Result};

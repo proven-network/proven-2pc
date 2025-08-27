@@ -7,6 +7,7 @@ use proven_sql::{
     lock::{LockKey, LockManager, LockMode},
     storage::{Column, Schema, Storage},
     transaction::TransactionManager,
+    transaction_id::TransactionId,
     types::{DataType, Value},
 };
 use std::sync::Arc;
@@ -87,12 +88,12 @@ fn demo_locks() -> Result<()> {
 
     let lock_manager = LockManager::new();
 
-    // Create HLC timestamps for transactions
+    // Create transaction IDs
     let clock = HlcClock::new(NodeId::new(1));
-    let tx1 = clock.now();
-    let tx2 = clock.now();
-    let tx3 = clock.now();
-    let tx4 = clock.now();
+    let tx1 = TransactionId::new(clock.now());
+    let tx2 = TransactionId::new(clock.now());
+    let tx3 = TransactionId::new(clock.now());
+    let tx4 = TransactionId::new(clock.now());
 
     let key = LockKey::Row {
         table: "accounts".into(),
@@ -172,7 +173,7 @@ fn demo_transactions() -> Result<()> {
     // Start younger transaction
     let tx2 = tx_manager.begin()?;
     println!("  ✓ Transaction 2 started (ID: {})", tx2.id);
-    println!("  ✓ Tx2 is younger than Tx1: {}", tx1.id.is_older_than(&tx2.id));
+    println!("  ✓ Tx2 is younger than Tx1: {}", tx1.id.has_higher_priority_than(&tx2.id));
 
     // Tx2 tries to write same account - should be blocked (younger waits)
     match tx2.write("accounts", 1, vec![Value::Integer(1), Value::Integer(800)]) {
@@ -185,13 +186,13 @@ fn demo_transactions() -> Result<()> {
     // Create an artificially older transaction for demo
     // In real system, this would be a transaction that started much earlier
     let older_timestamp = HlcTimestamp::new(
-        tx1.id.physical - 1000000, // Much earlier physical time
+        tx1.id.global_id.physical - 1000000, // Much earlier physical time
         0,
         NodeId::new(3),
     );
     let tx3 = tx_manager.begin_with_timestamp(older_timestamp)?;
     println!("  ✓ Transaction 3 started (ID: {})", tx3.id);
-    println!("  ✓ Tx3 is older than Tx1: {}", tx3.id.is_older_than(&tx1.id));
+    println!("  ✓ Tx3 is older than Tx1: {}", tx3.id.has_higher_priority_than(&tx1.id));
     
     // Tx3 tries to write - should wound tx1 using the manager's method
     let key = LockKey::Row {

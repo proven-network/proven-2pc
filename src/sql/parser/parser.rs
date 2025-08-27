@@ -564,11 +564,13 @@ impl Parser<'_> {
     ///
     /// The precedence levels for the previous example are as follows:
     ///
-    ///     -----          Precedence 9: ^ right-associativity
-    /// ---------          Precedence 9: ^
-    ///             -----  Precedence 7: *
-    /// -----------------  Precedence 6: -
+    /// ```text
+    ///     ~~~~~          Precedence 9: ^ right-associativity
+    /// ~~~~~~~~~          Precedence 9: ^
+    ///             ~~~~~  Precedence 7: *
+    /// ~~~~~~~~~~~~~~~~~  Precedence 6: -
     /// 2 ^ 3 ^ 2 - 4 * 3
+    /// ```
     ///
     /// Let's walk through the recursive parsing of this expression:
     ///
