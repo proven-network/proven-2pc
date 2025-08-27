@@ -6,6 +6,7 @@
 //! - Expression evaluator (TODO)
 //! - Deterministic function validation
 
+pub mod executor;
 pub mod expression;
 pub mod functions;
 pub mod parser;

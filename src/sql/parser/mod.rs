@@ -14,4 +14,4 @@ pub use lexer::{Keyword, Lexer, Token};
 pub use parser::Parser;
 
 // Re-export commonly used AST types
-pub use ast::{Statement, Expression, Literal, Operator, Column, FromClause, JoinType, Direction};
+pub use ast::{Column, Direction, Expression, FromClause, JoinType, Literal, Operator, Statement};

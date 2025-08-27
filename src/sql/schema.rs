@@ -29,9 +29,11 @@ impl Table {
             return Err(Error::InvalidValue("Table name cannot be empty".into()));
         }
         if columns.is_empty() {
-            return Err(Error::InvalidValue("Table must have at least one column".into()));
+            return Err(Error::InvalidValue(
+                "Table must have at least one column".into(),
+            ));
         }
-        
+
         // Find the primary key column
         let primary_keys: Vec<_> = columns
             .iter()
@@ -39,32 +41,36 @@ impl Table {
             .filter(|(_, c)| c.primary_key)
             .map(|(i, _)| i)
             .collect();
-        
+
         if primary_keys.is_empty() {
             return Err(Error::InvalidValue("Table must have a primary key".into()));
         }
         if primary_keys.len() > 1 {
-            return Err(Error::InvalidValue("Table can only have one primary key".into()));
+            return Err(Error::InvalidValue(
+                "Table can only have one primary key".into(),
+            ));
         }
-        
+
         let primary_key = primary_keys[0];
-        
+
         // Validate primary key column
         let pk_column = &columns[primary_key];
         if pk_column.nullable {
             return Err(Error::InvalidValue("Primary key cannot be nullable".into()));
         }
         if pk_column.default.is_some() {
-            return Err(Error::InvalidValue("Primary key cannot have a default value".into()));
+            return Err(Error::InvalidValue(
+                "Primary key cannot have a default value".into(),
+            ));
         }
-        
+
         Ok(Table {
             name,
             primary_key,
             columns,
         })
     }
-    
+
     /// Validates a row against this table's schema.
     pub fn validate_row(&self, row: &Row) -> Result<()> {
         if row.len() != self.columns.len() {
@@ -75,22 +81,22 @@ impl Table {
                 self.columns.len()
             )));
         }
-        
+
         for (_i, (column, value)) in self.columns.iter().zip(row.iter()).enumerate() {
             // Check nullability
             if value.is_null() && !column.nullable {
                 return Err(Error::NullConstraintViolation(column.name.clone()));
             }
-            
+
             // Check data type
             if !value.is_null() {
                 value.check_type(&column.datatype)?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Returns the column with the given name, if it exists.
     pub fn get_column(&self, name: &str) -> Option<(usize, &Column)> {
         self.columns
@@ -98,7 +104,7 @@ impl Table {
             .enumerate()
             .find(|(_, c)| c.name == name)
     }
-    
+
     /// Returns true if the table has any indexed columns (besides primary key).
     pub fn has_indexes(&self) -> bool {
         self.columns.iter().any(|c| c.index && !c.primary_key)
@@ -140,7 +146,7 @@ impl Column {
             references: None,
         }
     }
-    
+
     /// Sets this column as the primary key.
     pub fn primary_key(mut self) -> Self {
         self.primary_key = true;
@@ -149,7 +155,7 @@ impl Column {
         self.index = false; // Primary key is inherently indexed
         self
     }
-    
+
     /// Sets whether this column is nullable.
     pub fn nullable(mut self, nullable: bool) -> Self {
         if self.primary_key && nullable {
@@ -159,13 +165,13 @@ impl Column {
         self.nullable = nullable;
         self
     }
-    
+
     /// Sets the default value for this column.
     pub fn default(mut self, value: Value) -> Self {
         self.default = Some(value);
         self
     }
-    
+
     /// Sets this column as unique.
     pub fn unique(mut self) -> Self {
         self.unique = true;
@@ -174,7 +180,7 @@ impl Column {
         }
         self
     }
-    
+
     /// Sets this column as indexed.
     pub fn indexed(mut self) -> Self {
         if !self.primary_key {
@@ -182,7 +188,7 @@ impl Column {
         }
         self
     }
-    
+
     /// Sets this column as a foreign key reference.
     pub fn references(mut self, table: String) -> Self {
         self.references = Some(table);
@@ -199,17 +205,17 @@ impl Display for Table {
         writeln!(f, "CREATE TABLE {} (", self.name)?;
         for (i, column) in self.columns.iter().enumerate() {
             write!(f, "  {} {}", column.name, column.datatype)?;
-            
+
             if column.primary_key {
                 write!(f, " PRIMARY KEY")?;
             } else if !column.nullable {
                 write!(f, " NOT NULL")?;
             }
-            
+
             if let Some(default) = &column.default {
                 write!(f, " DEFAULT {}", default)?;
             }
-            
+
             if !column.primary_key {
                 if column.unique {
                     write!(f, " UNIQUE")?;
@@ -221,7 +227,7 @@ impl Display for Table {
                     write!(f, " REFERENCES {}", table)?;
                 }
             }
-            
+
             if i < self.columns.len() - 1 {
                 writeln!(f, ",")?;
             }
@@ -265,7 +271,7 @@ impl Label {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_table_creation() {
         let columns = vec![
@@ -273,7 +279,7 @@ mod tests {
             Column::new("name".into(), DataType::String).nullable(false),
             Column::new("email".into(), DataType::String).unique(),
         ];
-        
+
         let table = Table::new("users".into(), columns).unwrap();
         assert_eq!(table.name, "users");
         assert_eq!(table.primary_key, 0);
@@ -283,19 +289,19 @@ mod tests {
         assert!(table.columns[2].unique);
         assert!(table.columns[2].index);
     }
-    
+
     #[test]
     fn test_table_validation_errors() {
         // No columns
         assert!(Table::new("empty".into(), vec![]).is_err());
-        
+
         // No primary key
         let columns = vec![
             Column::new("id".into(), DataType::Integer),
             Column::new("name".into(), DataType::String),
         ];
         assert!(Table::new("nopk".into(), columns).is_err());
-        
+
         // Multiple primary keys
         let columns = vec![
             Column::new("id1".into(), DataType::Integer).primary_key(),
@@ -303,7 +309,7 @@ mod tests {
         ];
         assert!(Table::new("multipk".into(), columns).is_err());
     }
-    
+
     #[test]
     fn test_row_validation() {
         let columns = vec![
@@ -312,7 +318,7 @@ mod tests {
             Column::new("age".into(), DataType::Integer).nullable(true),
         ];
         let table = Table::new("users".into(), columns).unwrap();
-        
+
         // Valid row
         let row = vec![
             Value::Integer(1),
@@ -320,19 +326,15 @@ mod tests {
             Value::Integer(30),
         ];
         assert!(table.validate_row(&row).is_ok());
-        
+
         // Wrong number of columns
         let row = vec![Value::Integer(1), Value::String("Bob".into())];
         assert!(table.validate_row(&row).is_err());
-        
+
         // Null in non-nullable column
-        let row = vec![
-            Value::Integer(2),
-            Value::Null,
-            Value::Integer(25),
-        ];
+        let row = vec![Value::Integer(2), Value::Null, Value::Integer(25)];
         assert!(table.validate_row(&row).is_err());
-        
+
         // Wrong type
         let row = vec![
             Value::String("not_an_int".into()),
