@@ -58,16 +58,18 @@ impl Table {
 
 ## Layer 2: Lock Manager (`lock.rs`)
 
-**Purpose:** Implement wound-wait deadlock prevention and track lock state.
+**Purpose:** Track lock ownership and detect conflicts (pure mechanism, no policy).
 
 ### Responsibilities
 - Track all locks held by transactions
-- Implement wound-wait algorithm
+- Detect conflicts based on lock compatibility
 - Maintain lock compatibility matrix
 - Provide lock visibility for debugging
+- **Does NOT implement deadlock prevention** (that's the transaction layer's job)
 
 ### Key Design Decisions
-- **Wound-wait algorithm** - Older transactions wound younger ones
+- **No policy decisions** - Only reports conflicts, doesn't decide what to do
+- **No priority tracking** - Lock manager doesn't know about transaction priorities
 - **No automatic release** - Caller manages lock lifetime
 - **Hierarchical locking** - Row, range, table, schema levels
 - **Full visibility** - Can query all locks for debugging
@@ -82,8 +84,13 @@ impl Table {
 
 ### Interface
 ```rust
+pub enum LockResult {
+    Granted,
+    Conflict { holder: TxId, mode: LockMode },  // Just facts, no policy
+}
+
 impl LockManager {
-    pub fn try_acquire(&self, tx_id: TxId, priority: Priority, 
+    pub fn try_acquire(&self, tx_id: TxId, 
                        key: LockKey, mode: LockMode) -> Result<LockResult>
     pub fn release(&self, tx_id: TxId, key: LockKey) -> Result<()>
     pub fn release_all(&self, tx_id: TxId) -> Result<()>
@@ -92,15 +99,20 @@ impl LockManager {
 
 ## Layer 3: Transaction Manager (`transaction.rs`)
 
-**Purpose:** Coordinate locks with data access and track transaction state.
+**Purpose:** Implement wound-wait policy and coordinate locks with data access.
 
 ### Responsibilities
+- **Implement wound-wait deadlock prevention**
+- Track transaction priorities
 - Enforce lock-before-access pattern
 - Track transaction state (active, committed, aborted)
 - Hold locks until commit/abort
 - Manage transaction isolation
+- Abort younger transactions when wounds occur
 
 ### Key Design Decisions
+- **Wound-wait policy** - Older transactions (lower priority) wound younger ones
+- **Priority-based decisions** - Transaction manager compares priorities on conflicts
 - **Eager locking** - Acquire locks before any data access
 - **Hold until commit** - No early lock release
 - **Single-threaded per transaction** - Operations execute sequentially
@@ -114,6 +126,13 @@ impl Transaction {
     pub fn scan(&self, table: &str) -> Result<Vec<(u64, Vec<Value>)>>
     pub fn commit(&self) -> Result<()>
     pub fn abort(&self) -> Result<()>
+}
+
+impl TransactionManager {
+    pub fn begin_with_priority(&self, priority: Option<u64>) -> Result<Arc<Transaction>>
+    pub fn acquire_lock_with_wound_wait(&self, tx: &Transaction, 
+                                        key: LockKey, mode: LockMode) -> Result<()>
+    pub fn abort_transaction(&self, tx_id: TxId) -> Result<()>
 }
 ```
 
@@ -219,10 +238,13 @@ impl SqlClient {
 5. Client A: "INSERT INTO users VALUES (...)"
    → Consensus orders as Op#5
    → Transaction 1 needs X lock on users
-   → Conflicts with Transaction 2's S lock
-   → Transaction 1 (priority 100) wounds Transaction 2
-   → Transaction 2 aborted
-   → Transaction 1 acquires X lock, performs insert
+   → Lock manager reports: Conflict with Transaction 2 (holder: 2, mode: Shared)
+   → Transaction manager checks priorities: T1(100) < T2(200)
+   → Transaction manager wounds Transaction 2 (older wounds younger)
+   → Transaction 2 aborted by transaction manager
+   → Transaction 1 retries lock acquisition
+   → Lock manager grants X lock to Transaction 1
+   → Transaction 1 performs insert
 
 6. Client A: "COMMIT"
    → Consensus orders as Op#6
@@ -240,12 +262,16 @@ impl SqlClient {
 3. **Sequential but lock-aware** - Operations execute one at a time, but locks determine conflicts
 4. **Streaming happens at edges** - Internal execution uses iterators, client API provides streams
 5. **Arc for efficiency, not versioning** - Cheap result copying, not MVCC
+6. **Clear separation of mechanism and policy**:
+   - Lock layer: Pure mechanism (tracks locks, detects conflicts)
+   - Transaction layer: Policy implementation (wound-wait, priority management)
+   - This separation makes the system easier to understand and modify
 
 ## Implementation Status
 
 - ✅ Layer 1: Storage Engine (basic implementation)
-- ✅ Layer 2: Lock Manager (wound-wait implemented)
-- ✅ Layer 3: Transaction Manager (basic implementation)
+- ✅ Layer 2: Lock Manager (conflict detection only, no policy)
+- ✅ Layer 3: Transaction Manager (wound-wait policy implemented)
 - 🚧 Layer 4: SQL Execution (placeholder)
 - ❌ Layer 5: Raft State Machine (needs rewrite)
 - ❌ Layer 6: Client API (not started)

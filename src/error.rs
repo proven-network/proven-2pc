@@ -30,8 +30,8 @@ pub enum Error {
     NullConstraintViolation(String),
 
     // Lock errors
-    #[error("Lock conflict on {key}: held by transaction {holder}")]
-    LockConflict { key: String, holder: u64 },
+    #[error("Lock conflict: held by transaction {holder} in mode {mode:?}")]
+    LockConflict { holder: u64, mode: crate::lock::LockMode },
 
     #[error("Operation would block")]
     WouldBlock,

@@ -1,4 +1,4 @@
-//! Lock manager with wound-wait deadlock prevention
+//! Lock manager that tracks lock ownership and detects conflicts
 
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
@@ -8,9 +8,6 @@ use std::sync::{Arc, RwLock};
 
 /// Transaction ID
 pub type TxId = u64;
-
-/// Transaction priority (lower value = higher priority)
-pub type Priority = u64;
 
 /// Lock modes with compatibility matrix
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,17 +67,8 @@ impl fmt::Display for LockKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockInfo {
     pub holder: TxId,
-    pub priority: Priority,
     pub mode: LockMode,
     pub acquired_at: u64,
-}
-
-/// A transaction waiting for a lock
-#[derive(Debug, Clone)]
-struct Waiter {
-    tx_id: TxId,
-    priority: Priority,
-    mode: LockMode,
 }
 
 /// Result of attempting to acquire a lock
@@ -88,31 +76,35 @@ struct Waiter {
 pub enum LockResult {
     /// Lock was granted
     Granted,
-    /// Should wound (abort) the victim transaction
-    ShouldWound(TxId),
-    /// Must wait for lock to be released
-    MustWait,
+    /// Lock conflicts with an existing lock
+    Conflict {
+        /// Transaction holding the conflicting lock
+        holder: TxId,
+        /// Mode of the conflicting lock
+        mode: LockMode,
+    },
 }
 
-/// Lock manager statistics
-#[derive(Debug, Default, Clone)]
-pub struct LockStatistics {
-    pub locks_granted: u64,
-    pub locks_waited: u64,
-    pub wounds_inflicted: u64,
-    pub escalations: u64,
+/// A transaction waiting for a lock
+#[derive(Debug, Clone)]
+struct Waiter {
+    tx_id: TxId,
+    mode: LockMode,
+    requested_at: u64,
 }
 
-/// Lock manager with wound-wait deadlock prevention
+/// Lock manager that tracks locks and detects conflicts
+/// 
+/// This manager does NOT implement any deadlock prevention policy.
+/// It simply tracks who holds what locks and reports conflicts.
+/// The transaction layer is responsible for implementing policies
+/// like wound-wait, wait-die, or timeout-based deadlock prevention.
 pub struct LockManager {
     /// All currently held locks
     locks: Arc<RwLock<HashMap<LockKey, Vec<LockInfo>>>>,
     
     /// Wait queue for blocked transactions
     wait_queue: Arc<RwLock<HashMap<LockKey, VecDeque<Waiter>>>>,
-    
-    /// Statistics for monitoring
-    stats: Arc<RwLock<LockStatistics>>,
     
     /// Lock escalation threshold
     escalation_threshold: usize,
@@ -127,38 +119,29 @@ impl LockManager {
         Self {
             locks: Arc::new(RwLock::new(HashMap::new())),
             wait_queue: Arc::new(RwLock::new(HashMap::new())),
-            stats: Arc::new(RwLock::new(LockStatistics::default())),
             escalation_threshold: threshold,
         }
     }
     
-    /// Try to acquire a lock with wound-wait deadlock prevention
+    /// Try to acquire a lock, returning conflict information if it fails
     pub fn try_acquire(
         &self,
         tx_id: TxId,
-        priority: Priority,
         key: LockKey,
         mode: LockMode,
     ) -> Result<LockResult> {
         let mut locks = self.locks.write().unwrap();
-        let mut stats = self.stats.write().unwrap();
         
         // Check for existing locks on this key
         if let Some(holders) = locks.get(&key) {
             // Check compatibility with all current holders
             for holder in holders {
-                if !self.is_compatible_internal(&holder, mode) {
-                    // Conflict detected - apply wound-wait
-                    if priority < holder.priority {
-                        // Higher priority transaction wounds lower priority holder
-                        stats.wounds_inflicted += 1;
-                        return Ok(LockResult::ShouldWound(holder.holder));
-                    } else {
-                        // Lower priority transaction must wait
-                        self.add_to_wait_queue(tx_id, priority, key.clone(), mode);
-                        stats.locks_waited += 1;
-                        return Ok(LockResult::MustWait);
-                    }
+                if holder.holder != tx_id && !holder.mode.is_compatible_with(mode) {
+                    // Conflict detected - just report it
+                    return Ok(LockResult::Conflict {
+                        holder: holder.holder,
+                        mode: holder.mode,
+                    });
                 }
             }
         }
@@ -166,18 +149,16 @@ impl LockManager {
         // Grant the lock
         let lock_info = LockInfo {
             holder: tx_id,
-            priority,
             mode,
             acquired_at: self.logical_timestamp(),
         };
         
         locks.entry(key).or_insert_with(Vec::new).push(lock_info);
-        stats.locks_granted += 1;
         
         Ok(LockResult::Granted)
     }
     
-    /// Release a lock
+    /// Release a specific lock
     pub fn release(&self, tx_id: TxId, key: LockKey) -> Result<()> {
         let mut locks = self.locks.write().unwrap();
         
@@ -188,7 +169,7 @@ impl LockManager {
             }
             
             // Wake up waiters if possible
-            self.wake_waiters(key);
+            self.process_wait_queue(&key);
         }
         
         Ok(())
@@ -197,23 +178,23 @@ impl LockManager {
     /// Release all locks held by a transaction
     pub fn release_all(&self, tx_id: TxId) -> Result<()> {
         let mut locks = self.locks.write().unwrap();
-        let mut keys_to_wake = Vec::new();
+        let mut keys_to_check = Vec::new();
         
         // Remove all locks held by this transaction
         locks.retain(|key, holders| {
             holders.retain(|lock| lock.holder != tx_id);
             if holders.is_empty() {
-                keys_to_wake.push(key.clone());
+                keys_to_check.push(key.clone());
                 false
             } else {
                 true
             }
         });
         
-        // Wake up waiters for released locks
-        drop(locks); // Release write lock before waking waiters
-        for key in keys_to_wake {
-            self.wake_waiters(key);
+        // Process wait queues for released locks
+        drop(locks); // Release write lock before processing queues
+        for key in keys_to_check {
+            self.process_wait_queue(&key);
         }
         
         Ok(())
@@ -235,7 +216,7 @@ impl LockManager {
         held
     }
     
-    /// Get all current locks (for visibility)
+    /// Get all current locks (for visibility/debugging)
     pub fn get_all_locks(&self) -> Vec<(LockKey, Vec<LockInfo>)> {
         let locks = self.locks.read().unwrap();
         locks.iter()
@@ -259,16 +240,42 @@ impl LockManager {
         }
     }
     
-    /// Get statistics
-    pub fn stats(&self) -> LockStatistics {
-        self.stats.read().unwrap().clone()
+    /// Add a transaction to the wait queue for a lock
+    pub fn add_to_wait_queue(&self, tx_id: TxId, key: LockKey, mode: LockMode) {
+        let mut wait_queue = self.wait_queue.write().unwrap();
+        let waiter = Waiter {
+            tx_id,
+            mode,
+            requested_at: self.logical_timestamp(),
+        };
+        
+        wait_queue.entry(key)
+            .or_insert_with(VecDeque::new)
+            .push_back(waiter);
+    }
+    
+    /// Remove a transaction from all wait queues
+    pub fn remove_from_wait_queues(&self, tx_id: TxId) {
+        let mut wait_queue = self.wait_queue.write().unwrap();
+        
+        wait_queue.retain(|_, waiters| {
+            waiters.retain(|w| w.tx_id != tx_id);
+            !waiters.is_empty()
+        });
+    }
+    
+    /// Get waiting transactions for a lock
+    pub fn get_waiters(&self, key: &LockKey) -> Vec<TxId> {
+        let wait_queue = self.wait_queue.read().unwrap();
+        
+        wait_queue.get(key)
+            .map(|waiters| waiters.iter().map(|w| w.tx_id).collect())
+            .unwrap_or_default()
     }
     
     /// Check lock escalation for a table
-    pub fn maybe_escalate(&self, _tx_id: TxId, table: &str, row_locks: Vec<u64>) -> Option<LockKey> {
+    pub fn check_escalation(&self, _tx_id: TxId, table: &str, row_locks: Vec<u64>) -> Option<LockKey> {
         if row_locks.len() > self.escalation_threshold {
-            let mut stats = self.stats.write().unwrap();
-            stats.escalations += 1;
             Some(LockKey::Table { table: table.to_string() })
         } else {
             None
@@ -277,57 +284,20 @@ impl LockManager {
     
     // Internal helper methods
     
-    fn is_compatible_internal(&self, existing: &LockInfo, requested: LockMode) -> bool {
-        existing.mode.is_compatible_with(requested)
-    }
-    
-    fn add_to_wait_queue(&self, tx_id: TxId, priority: Priority, key: LockKey, mode: LockMode) {
-        let mut wait_queue = self.wait_queue.write().unwrap();
-        let waiter = Waiter { tx_id, priority, mode };
-        
-        wait_queue.entry(key)
-            .or_insert_with(VecDeque::new)
-            .push_back(waiter);
-    }
-    
-    fn wake_waiters(&self, key: LockKey) {
-        let mut wait_queue = self.wait_queue.write().unwrap();
-        
-        if let Some(waiters) = wait_queue.get_mut(&key) {
-            // Try to grant locks to waiting transactions
-            // This is simplified - in production, we'd need to actually
-            // notify the waiting transactions
-            while !waiters.is_empty() {
-                let waiter = waiters.front().unwrap();
-                
-                // Check if we can grant the lock
-                if self.can_grant_to_waiter(&key, waiter.mode) {
-                    waiters.pop_front();
-                    // In a real system, we'd notify the transaction here
-                } else {
-                    break;
-                }
-            }
-            
-            if waiters.is_empty() {
-                wait_queue.remove(&key);
-            }
-        }
-    }
-    
-    fn can_grant_to_waiter(&self, key: &LockKey, mode: LockMode) -> bool {
-        let locks = self.locks.read().unwrap();
-        
-        if let Some(holders) = locks.get(key) {
-            holders.iter().all(|lock| self.is_compatible_internal(lock, mode))
-        } else {
-            true
+    fn process_wait_queue(&self, key: &LockKey) {
+        // In a real implementation, this would notify waiting transactions
+        // For now, we just track them
+        let wait_queue = self.wait_queue.read().unwrap();
+        if let Some(waiters) = wait_queue.get(key) {
+            // TODO: Notify waiters that the lock might be available
+            // This would be done through a callback or channel
+            let _ = waiters;
         }
     }
     
     fn logical_timestamp(&self) -> u64 {
         // In production, this would use a proper logical clock
-        // For now, we'll use a simple counter
+        // For now, we'll use a simple timestamp
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -360,17 +330,13 @@ mod tests {
         
         // First lock should succeed
         assert_eq!(
-            manager.try_acquire(1, 100, key.clone(), LockMode::Exclusive).unwrap(),
+            manager.try_acquire(1, key.clone(), LockMode::Exclusive).unwrap(),
             LockResult::Granted
         );
         
-        // Conflicting lock should trigger wound-wait
-        let result = manager.try_acquire(2, 50, key.clone(), LockMode::Exclusive).unwrap();
-        assert_eq!(result, LockResult::ShouldWound(1));
-        
-        // Lower priority should wait
-        let result = manager.try_acquire(3, 150, key.clone(), LockMode::Exclusive).unwrap();
-        assert_eq!(result, LockResult::MustWait);
+        // Conflicting lock should report conflict
+        let result = manager.try_acquire(2, key.clone(), LockMode::Exclusive).unwrap();
+        assert!(matches!(result, LockResult::Conflict { holder: 1, .. }));
     }
     
     #[test]
@@ -380,17 +346,17 @@ mod tests {
         
         // Multiple shared locks should succeed
         assert_eq!(
-            manager.try_acquire(1, 100, key.clone(), LockMode::Shared).unwrap(),
+            manager.try_acquire(1, key.clone(), LockMode::Shared).unwrap(),
             LockResult::Granted
         );
         assert_eq!(
-            manager.try_acquire(2, 200, key.clone(), LockMode::Shared).unwrap(),
+            manager.try_acquire(2, key.clone(), LockMode::Shared).unwrap(),
             LockResult::Granted
         );
         
         // Exclusive lock should conflict
-        let result = manager.try_acquire(3, 50, key.clone(), LockMode::Exclusive).unwrap();
-        assert_eq!(result, LockResult::ShouldWound(1));
+        let result = manager.try_acquire(3, key.clone(), LockMode::Exclusive).unwrap();
+        assert!(matches!(result, LockResult::Conflict { .. }));
     }
     
     #[test]
@@ -399,12 +365,12 @@ mod tests {
         let key = LockKey::Row { table: "users".into(), row_id: 1 };
         
         // Acquire and release a lock
-        manager.try_acquire(1, 100, key.clone(), LockMode::Exclusive).unwrap();
+        manager.try_acquire(1, key.clone(), LockMode::Exclusive).unwrap();
         manager.release(1, key.clone()).unwrap();
         
         // New lock should succeed
         assert_eq!(
-            manager.try_acquire(2, 200, key.clone(), LockMode::Exclusive).unwrap(),
+            manager.try_acquire(2, key.clone(), LockMode::Exclusive).unwrap(),
             LockResult::Granted
         );
     }

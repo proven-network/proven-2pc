@@ -1,7 +1,7 @@
 //! Transaction management with pessimistic concurrency control
 
 use crate::error::{Error, Result};
-use crate::lock::{LockKey, LockManager, LockMode, LockResult, Priority, TxId};
+use crate::lock::{LockKey, LockManager, LockMode, LockResult, TxId};
 use crate::storage::Storage;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
@@ -33,8 +33,8 @@ pub struct Transaction {
     /// Unique transaction ID
     pub id: TxId,
 
-    /// Priority for wound-wait
-    pub priority: Priority,
+    /// Priority for wound-wait (lower value = higher priority)
+    pub priority: u64,
 
     /// Current state
     pub state: RwLock<TransactionState>,
@@ -55,7 +55,7 @@ pub struct Transaction {
 impl Transaction {
     pub fn new(
         id: TxId,
-        priority: Priority,
+        priority: u64,
         lock_manager: Arc<LockManager>,
         storage: Arc<Storage>,
     ) -> Self {
@@ -80,29 +80,24 @@ impl Transaction {
         self.state() == TransactionState::Active
     }
 
-    /// Acquire a lock with wound-wait handling
+    /// Acquire a lock - returns error if blocked
+    /// The transaction manager will handle wound-wait logic
     pub fn acquire_lock(&self, key: LockKey, mode: LockMode) -> Result<()> {
         if !self.is_active() {
             return Err(Error::TransactionNotActive(self.id));
         }
 
-        loop {
-            match self
-                .lock_manager
-                .try_acquire(self.id, self.priority, key.clone(), mode)?
-            {
-                LockResult::Granted => {
-                    self.locks_held.write().unwrap().push(key.clone());
-                    return Ok(());
-                }
-                LockResult::ShouldWound(_victim) => {
-                    // In a real system, we'd signal the victim transaction to abort
-                    // For now, we'll just retry
-                    continue;
-                }
-                LockResult::MustWait => {
-                    return Err(Error::WouldBlock);
-                }
+        match self.lock_manager.try_acquire(self.id, key.clone(), mode)? {
+            LockResult::Granted => {
+                self.locks_held.write().unwrap().push(key.clone());
+                Ok(())
+            }
+            LockResult::Conflict { holder, mode: held_mode } => {
+                // Return conflict information for transaction manager to handle
+                Err(Error::LockConflict { 
+                    holder, 
+                    mode: held_mode 
+                })
             }
         }
     }
@@ -321,7 +316,7 @@ impl Drop for Transaction {
     }
 }
 
-/// Transaction manager
+/// Transaction manager that implements wound-wait policy
 pub struct TransactionManager {
     /// All active transactions
     transactions: Arc<RwLock<HashMap<TxId, Arc<Transaction>>>>,
@@ -348,12 +343,18 @@ impl TransactionManager {
 
     /// Begin a new transaction
     pub fn begin(&self) -> Result<Arc<Transaction>> {
+        self.begin_with_priority(None)
+    }
+    
+    /// Begin a new transaction with explicit priority
+    pub fn begin_with_priority(&self, priority: Option<u64>) -> Result<Arc<Transaction>> {
         let mut next_id = self.next_tx_id.write().unwrap();
         let tx_id = *next_id;
         *next_id += 1;
 
-        // Use transaction ID as priority (earlier transactions have higher priority)
-        let priority = tx_id;
+        // Use transaction ID as priority if not specified
+        // Lower value = higher priority (older transactions)
+        let priority = priority.unwrap_or(tx_id);
 
         let tx = Arc::new(Transaction::new(
             tx_id,
@@ -404,6 +405,41 @@ impl TransactionManager {
             tx.abort()?;
         }
         Ok(())
+    }
+    
+    /// Try to acquire a lock with wound-wait handling
+    /// Returns Ok(()) if lock acquired, Err(WouldBlock) if must wait
+    pub fn acquire_lock_with_wound_wait(
+        &self,
+        tx: &Transaction,
+        key: LockKey,
+        mode: LockMode,
+    ) -> Result<()> {
+        loop {
+            match tx.acquire_lock(key.clone(), mode) {
+                Ok(()) => return Ok(()),
+                Err(Error::LockConflict { holder, .. }) => {
+                    // Get the holder transaction to check its priority
+                    if let Some(holder_tx) = self.get(holder) {
+                        // Wound-wait: if we're older (lower priority value), wound the holder
+                        if tx.priority < holder_tx.priority {
+                            // Wound the younger transaction
+                            self.abort_transaction(holder)?;
+                            // Retry acquiring the lock
+                            continue;
+                        } else {
+                            // We're younger, must wait
+                            return Err(Error::WouldBlock);
+                        }
+                    } else {
+                        // Holder transaction not found, it may have completed
+                        // Retry acquiring the lock
+                        continue;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 
@@ -478,8 +514,8 @@ mod tests {
         let balance = tx1.read("accounts", 1).unwrap();
         assert_eq!(balance[1], Value::Integer(100));
 
-        // tx2 tries to write - should block
+        // tx2 tries to write - should get lock conflict
         let result = tx2.write("accounts", 1, vec![Value::Integer(1), Value::Integer(200)]);
-        assert!(matches!(result, Err(Error::WouldBlock)));
+        assert!(matches!(result, Err(Error::LockConflict { .. })));
     }
 }

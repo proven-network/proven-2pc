@@ -100,21 +100,20 @@ This document outlines the design and implementation of a distributed SQL engine
 
 ### Lock Manager
 
+The lock manager is responsible **only** for tracking locks and detecting conflicts. It does not implement any deadlock prevention policy.
+
 #### Data Structures
 
 ```rust
 pub struct LockManager {
     /// All currently held locks
-    locks: RwLock<HashMap<LockKey, LockInfo>>,
+    locks: RwLock<HashMap<LockKey, Vec<LockInfo>>>,
     
-    /// Transaction states for wound-wait
-    transactions: RwLock<HashMap<TxId, TransactionState>>,
+    /// Wait queue for blocked transactions (for future use)
+    wait_queue: RwLock<HashMap<LockKey, VecDeque<Waiter>>>,
     
-    /// Wait queue for blocked transactions
-    wait_queue: RwLock<HashMap<LockKey, Vec<Waiter>>>,
-    
-    /// Statistics for monitoring
-    stats: LockStatistics,
+    /// Lock escalation threshold
+    escalation_threshold: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -134,9 +133,8 @@ pub enum LockKey {
 
 pub struct LockInfo {
     pub holder: TxId,
-    pub priority: Priority,
     pub mode: LockMode,
-    pub acquired_at: LogicalTimestamp,
+    pub acquired_at: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -157,39 +155,51 @@ pub enum LockMode {
 | **IS** (Intent Shared)  | ✓ | ✗ | ✓  | ✓  |
 | **IX** (Intent Excl.)   | ✗ | ✗ | ✓  | ✓  |
 
-#### Wound-Wait Algorithm
+#### Lock Acquisition (Conflict Detection Only)
 
 ```rust
+pub enum LockResult {
+    /// Lock was granted
+    Granted,
+    /// Lock conflicts with an existing lock
+    Conflict {
+        holder: TxId,
+        mode: LockMode,
+    },
+}
+
 impl LockManager {
+    /// Try to acquire a lock, returning conflict information if it fails
     pub fn try_acquire(
         &self,
-        tx: TxId,
-        priority: Priority,
+        tx_id: TxId,
         key: LockKey,
         mode: LockMode,
     ) -> Result<LockResult> {
         let mut locks = self.locks.write();
         
-        // Check for conflicts
-        if let Some(holder) = locks.get(&key) {
-            if !self.is_compatible(holder.mode, mode) {
-                if priority < holder.priority {
-                    // Wound: Abort the holder
-                    return Ok(LockResult::ShouldWound(holder.holder));
-                } else {
-                    // Wait: Block the requester
-                    return Ok(LockResult::MustWait);
+        // Check for existing locks on this key
+        if let Some(holders) = locks.get(&key) {
+            // Check compatibility with all current holders
+            for holder in holders {
+                if holder.holder != tx_id && !holder.mode.is_compatible_with(mode) {
+                    // Conflict detected - just report it
+                    return Ok(LockResult::Conflict {
+                        holder: holder.holder,
+                        mode: holder.mode,
+                    });
                 }
             }
         }
         
-        // Grant lock
-        locks.insert(key, LockInfo {
-            holder: tx,
-            priority,
+        // Grant the lock
+        let lock_info = LockInfo {
+            holder: tx_id,
             mode,
-            acquired_at: self.clock.now(),
-        });
+            acquired_at: self.logical_timestamp(),
+        };
+        
+        locks.entry(key).or_insert_with(Vec::new).push(lock_info);
         
         Ok(LockResult::Granted)
     }
@@ -310,13 +320,15 @@ impl LockAnalyzer {
 
 ### Transaction Manager
 
+The transaction manager implements the wound-wait deadlock prevention policy and coordinates between locks and data access.
+
 ```rust
 pub struct Transaction {
     /// Unique transaction ID
     pub id: TxId,
     
-    /// Priority for wound-wait
-    pub priority: Priority,
+    /// Priority for wound-wait (lower value = higher priority)
+    pub priority: u64,
     
     /// Current state
     pub state: TransactionState,
@@ -367,30 +379,52 @@ impl Transaction {
         Ok(result)
     }
     
-    fn acquire_lock_with_wound_wait(&mut self, request: LockRequest) -> Result<()> {
+pub struct TransactionManager {
+    /// All active transactions
+    transactions: Arc<RwLock<HashMap<TxId, Arc<Transaction>>>>,
+    
+    /// Lock manager (for lock tracking only)
+    lock_manager: Arc<LockManager>,
+    
+    /// Storage
+    storage: Arc<Storage>,
+}
+
+impl TransactionManager {
+    /// Try to acquire a lock with wound-wait handling
+    pub fn acquire_lock_with_wound_wait(
+        &self,
+        tx: &Transaction,
+        key: LockKey,
+        mode: LockMode,
+    ) -> Result<()> {
         loop {
-            match self.lock_manager.try_acquire(
-                self.id,
-                self.priority,
-                request.key.clone(),
-                request.mode,
-            )? {
+            match tx.lock_manager.try_acquire(tx.id, key.clone(), mode)? {
                 LockResult::Granted => {
-                    self.locks_held.push(request.key);
                     return Ok(());
                 }
-                LockResult::ShouldWound(victim) => {
-                    // Request abort of victim transaction
-                    self.lock_manager.abort_transaction(victim)?;
-                    // Retry lock acquisition
-                    continue;
-                }
-                LockResult::MustWait => {
-                    return Err(Error::WouldBlock);
+                LockResult::Conflict { holder, .. } => {
+                    // Get the holder transaction to check its priority
+                    if let Some(holder_tx) = self.get(holder) {
+                        // Wound-wait: if we're older (lower priority value), wound the holder
+                        if tx.priority < holder_tx.priority {
+                            // Wound the younger transaction
+                            self.abort_transaction(holder)?;
+                            // Retry acquiring the lock
+                            continue;
+                        } else {
+                            // We're younger, must wait
+                            return Err(Error::WouldBlock);
+                        }
+                    } else {
+                        // Holder not found, retry
+                        continue;
+                    }
                 }
             }
         }
     }
+}
 }
 ```
 
@@ -406,14 +440,18 @@ Unlike ToyDB's MVCC, we use pessimistic locking:
 
 ### Wound-Wait Deadlock Prevention
 
+The wound-wait policy is implemented in the **transaction layer**, not the lock layer. This separation allows the lock manager to remain a pure mechanism for tracking locks.
+
 ```
 Transaction T1 (priority=100) holds lock on A, wants B
 Transaction T2 (priority=200) holds lock on B, wants A
 
-Wound-Wait Decision:
-- T1 has higher priority (100 < 200)
-- T1 "wounds" (aborts) T2
-- T1 acquires lock on B
+Wound-Wait Decision (made by TransactionManager):
+- Lock manager reports: Conflict with T2 holding B
+- Transaction manager checks: T1.priority (100) < T2.priority (200)
+- T1 has higher priority (older transaction)
+- Transaction manager wounds (aborts) T2
+- T1 retries and acquires lock on B
 - T2 must restart with same priority
 ```
 
