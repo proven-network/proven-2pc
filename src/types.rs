@@ -8,6 +8,9 @@ use std::cmp::Ordering;
 use std::fmt;
 use uuid::Uuid;
 
+/// A row of values in a table
+pub type Row = Vec<Value>;
+
 /// SQL data types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DataType {

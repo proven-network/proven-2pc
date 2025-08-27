@@ -7,6 +7,7 @@ edition = "2024"
 bincode = "2.0.1"
 bytes = { version = "1.7", features = ["serde"] }
 hex = "0.4"
+regex = "1.10"
 rust_decimal = { version = "1.32", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 thiserror = "2.0.16"
