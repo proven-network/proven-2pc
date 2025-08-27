@@ -1,477 +1,643 @@
-//! Query planner with lock analysis for PCC
+//! Query planner that converts AST to execution plan nodes
 //!
-//! The query planner analyzes SQL statements to:
-//! 1. Determine which tables and rows will be accessed
-//! 2. Identify required lock modes (shared vs exclusive)
-//! 3. Order lock acquisitions to prevent deadlocks
-//! 4. Generate an optimized execution plan
+//! This planner resolves columns during planning and builds an
+//! optimized execution plan tree.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::lock::LockMode;
+use crate::sql::expression::Expression;
 use crate::sql::parser::ast;
+use crate::sql::plan::{self, AggregateFunc, Direction, JoinType, Node, Plan};
 use crate::sql::schema::Table;
-use crate::transaction_id::TransactionContext;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
-/// A lock requirement for query execution
-#[derive(Debug, Clone, PartialEq)]
-pub struct LockRequirement {
-    /// Table name
-    pub table: String,
-    /// Lock mode needed
-    pub mode: LockMode,
-    /// Specific row keys if known (None = table scan)
-    pub keys: Option<Vec<Vec<u8>>>,
-    /// Whether this is a predicate lock (for range queries)
-    pub is_predicate: bool,
-}
-
-/// Execution plan for a query
-#[derive(Debug)]
-pub struct QueryPlan {
-    /// The parsed SQL statement
-    pub statement: ast::Statement,
-    /// Required locks in acquisition order
-    pub locks: Vec<LockRequirement>,
-    /// Estimated rows to be read
-    pub estimated_rows: Option<usize>,
-    /// Whether results can be streamed
-    pub streamable: bool,
-}
-
-/// Query planner analyzes statements and produces execution plans
-pub struct QueryPlanner {
-    /// Schema information
+/// Query planner
+pub struct Planner {
     schemas: HashMap<String, Table>,
 }
 
-impl QueryPlanner {
-    /// Create a new query planner
-    pub fn new() -> Self {
-        Self {
-            schemas: HashMap::new(),
-        }
+impl Planner {
+    /// Create a new planner
+    pub fn new(schemas: HashMap<String, Table>) -> Self {
+        Self { schemas }
     }
     
-    /// Register a table schema
-    pub fn register_table(&mut self, table: Table) {
-        self.schemas.insert(table.name.clone(), table);
-    }
-    
-    /// Analyze a statement and produce an execution plan
-    pub fn plan(&self, statement: ast::Statement, context: &TransactionContext) -> Result<QueryPlan> {
-        let locks = self.analyze_locks(&statement, context)?;
-        let streamable = self.is_streamable(&statement);
-        
-        Ok(QueryPlan {
-            statement,
-            locks,
-            estimated_rows: None, // TODO: Add statistics
-            streamable,
-        })
-    }
-    
-    /// Analyze which locks are needed for a statement
-    fn analyze_locks(&self, statement: &ast::Statement, context: &TransactionContext) -> Result<Vec<LockRequirement>> {
-        let mut locks = Vec::new();
-        
+    /// Plan a statement
+    pub fn plan(&self, statement: ast::Statement) -> Result<Plan> {
         match statement {
-            ast::Statement::Select { from, r#where, .. } => {
-                // SELECT needs shared locks
-                locks.extend(self.analyze_select_locks(from, r#where.as_ref(), context)?);
+            ast::Statement::Select { select, from, r#where, group_by, having, order_by, offset, limit } => {
+                self.plan_select(select, from, r#where, group_by, having, order_by, offset, limit)
             }
             
-            ast::Statement::Insert { table, .. } => {
-                // INSERT needs exclusive lock on the table
-                locks.push(LockRequirement {
-                    table: table.clone(),
-                    mode: LockMode::Exclusive,
-                    keys: None, // New row, no specific key yet
-                    is_predicate: false,
-                });
+            ast::Statement::Insert { table, columns, values } => {
+                self.plan_insert(table, columns, values)
             }
             
-            ast::Statement::Update { table, r#where, .. } => {
-                // UPDATE needs exclusive locks on affected rows
-                // First, shared locks to find rows
-                if let Some(where_clause) = r#where {
-                    let keys = self.analyze_where_clause(table, where_clause)?;
-                    locks.push(LockRequirement {
-                        table: table.clone(),
-                        mode: LockMode::Shared,
-                        keys: keys.clone(),
-                        is_predicate: keys.is_none(),
-                    });
-                }
-                
-                // Then exclusive locks to update
-                locks.push(LockRequirement {
-                    table: table.clone(),
-                    mode: LockMode::Exclusive,
-                    keys: None, // Will be determined during execution
-                    is_predicate: false,
-                });
+            ast::Statement::Update { table, set, r#where } => {
+                self.plan_update(table, set, r#where)
             }
             
             ast::Statement::Delete { table, r#where } => {
-                // DELETE needs exclusive locks on affected rows
-                if let Some(where_clause) = r#where {
-                    let keys = self.analyze_where_clause(table, where_clause)?;
-                    locks.push(LockRequirement {
-                        table: table.clone(),
-                        mode: LockMode::Exclusive,
-                        keys,
-                        is_predicate: false,
-                    });
-                } else {
-                    // DELETE without WHERE = truncate table
-                    locks.push(LockRequirement {
-                        table: table.clone(),
-                        mode: LockMode::Exclusive,
-                        keys: None,
-                        is_predicate: false,
-                    });
-                }
+                self.plan_delete(table, r#where)
             }
             
-            ast::Statement::CreateTable { name, .. } => {
-                // CREATE TABLE needs exclusive lock on schema
-                // For now, we'll use a special "schema" table lock
-                locks.push(LockRequirement {
-                    table: "__schema__".to_string(),
-                    mode: LockMode::Exclusive,
-                    keys: Some(vec![name.as_bytes().to_vec()]),
-                    is_predicate: false,
-                });
+            ast::Statement::CreateTable { name, columns } => {
+                self.plan_create_table(name, columns)
             }
             
-            ast::Statement::DropTable { name, .. } => {
-                // DROP TABLE needs exclusive locks on both schema and table
-                locks.push(LockRequirement {
-                    table: "__schema__".to_string(),
-                    mode: LockMode::Exclusive,
-                    keys: Some(vec![name.as_bytes().to_vec()]),
-                    is_predicate: false,
-                });
-                
-                locks.push(LockRequirement {
-                    table: name.clone(),
-                    mode: LockMode::Exclusive,
-                    keys: None,
-                    is_predicate: false,
-                });
+            ast::Statement::DropTable { name, if_exists } => {
+                Ok(Plan::DropTable { name, if_exists })
             }
             
-            ast::Statement::Begin { .. } | ast::Statement::Commit | ast::Statement::Rollback => {
-                // Transaction control statements don't need locks
+            ast::Statement::Begin { read_only } => {
+                Ok(Plan::Begin { read_only })
             }
+            
+            ast::Statement::Commit => Ok(Plan::Commit),
+            
+            ast::Statement::Rollback => Ok(Plan::Rollback),
             
             ast::Statement::Explain(_) => {
-                // EXPLAIN doesn't need locks as it doesn't execute
+                Err(Error::ExecutionError("EXPLAIN not yet implemented".into()))
             }
         }
-        
-        // Sort locks to prevent deadlocks
-        // Order: by table name, then by lock mode (shared before exclusive)
-        locks.sort_by(|a, b| {
-            match a.table.cmp(&b.table) {
-                std::cmp::Ordering::Equal => a.mode.cmp(&b.mode),
-                other => other,
-            }
-        });
-        
-        Ok(locks)
     }
     
-    /// Analyze SELECT statement locks
-    fn analyze_select_locks(
-        &self, 
-        from_clauses: &[ast::FromClause], 
-        where_clause: Option<&ast::Expression>,
-        _context: &TransactionContext
-    ) -> Result<Vec<LockRequirement>> {
-        let mut locks = Vec::new();
-        
-        // Analyze FROM clauses
-        for from in from_clauses {
-            locks.extend(self.analyze_from_clause(from, where_clause)?);
-        }
-        
-        Ok(locks)
-    }
-    
-    /// Analyze a FROM clause for locks
-    fn analyze_from_clause(
+    /// Plan a SELECT query
+    fn plan_select(
         &self,
-        from: &ast::FromClause,
-        where_clause: Option<&ast::Expression>,
-    ) -> Result<Vec<LockRequirement>> {
-        let mut locks = Vec::new();
+        select: Vec<(ast::Expression, Option<String>)>,
+        from: Vec<ast::FromClause>,
+        r#where: Option<ast::Expression>,
+        group_by: Vec<ast::Expression>,
+        having: Option<ast::Expression>,
+        order_by: Vec<(ast::Expression, ast::Direction)>,
+        offset: Option<ast::Expression>,
+        limit: Option<ast::Expression>,
+    ) -> Result<Plan> {
+        // Build context for column resolution
+        let mut context = PlanContext::new(&self.schemas);
         
-        match from {
-            ast::FromClause::Table { name, .. } => {
-                let keys = if let Some(where_clause) = where_clause {
-                    self.analyze_where_clause(name, where_clause)?
+        // Start with FROM clause
+        let mut node = self.plan_from(from, &mut context)?;
+        
+        // Apply WHERE filter
+        if let Some(where_expr) = r#where {
+            let predicate = context.resolve_expression(where_expr)?;
+            node = Node::Filter {
+                source: Box::new(node),
+                predicate,
+            };
+        }
+        
+        // Apply GROUP BY and aggregates
+        if !group_by.is_empty() || self.has_aggregates(&select) {
+            let group_exprs = group_by.into_iter()
+                .map(|e| context.resolve_expression(e))
+                .collect::<Result<Vec<_>>>()?;
+            
+            let aggregates = self.extract_aggregates(&select, &mut context)?;
+            
+            node = Node::Aggregate {
+                source: Box::new(node),
+                group_by: group_exprs,
+                aggregates,
+            };
+            
+            // Apply HAVING filter
+            if let Some(having_expr) = having {
+                let predicate = context.resolve_expression(having_expr)?;
+                node = Node::Filter {
+                    source: Box::new(node),
+                    predicate,
+                };
+            }
+        }
+        
+        // Apply ORDER BY first (before projection, like toydb)
+        if !order_by.is_empty() {
+            let order = order_by.into_iter()
+                .map(|(e, d)| {
+                    let expr = context.resolve_expression(e)?;
+                    let dir = match d {
+                        ast::Direction::Ascending => Direction::Ascending,
+                        ast::Direction::Descending => Direction::Descending,
+                    };
+                    Ok((expr, dir))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            
+            node = Node::Order {
+                source: Box::new(node),
+                order_by: order,
+            };
+        }
+        
+        // Apply projection after ORDER BY
+        let (expressions, aliases) = self.plan_projection(select, &mut context)?;
+        node = Node::Projection {
+            source: Box::new(node),
+            expressions,
+            aliases,
+        };
+        
+        // Apply OFFSET
+        if let Some(offset_expr) = offset {
+            let offset = self.eval_constant(offset_expr)?;
+            node = Node::Offset {
+                source: Box::new(node),
+                offset,
+            };
+        }
+        
+        // Apply LIMIT
+        if let Some(limit_expr) = limit {
+            let limit = self.eval_constant(limit_expr)?;
+            node = Node::Limit {
+                source: Box::new(node),
+                limit,
+            };
+        }
+        
+        Ok(Plan::Select(Box::new(node)))
+    }
+    
+    /// Plan FROM clause
+    fn plan_from(&self, from: Vec<ast::FromClause>, context: &mut PlanContext) -> Result<Node> {
+        if from.is_empty() {
+            return Ok(Node::Nothing);
+        }
+        
+        let mut node = None;
+        
+        for from_item in from {
+            match from_item {
+                ast::FromClause::Table { name, alias } => {
+                    // Register table in context
+                    context.add_table(name.clone(), alias.clone())?;
+                    
+                    let scan = Node::Scan {
+                        table: name,
+                        alias,
+                    };
+                    
+                    node = Some(if let Some(prev) = node {
+                        // Cross join with previous tables
+                        Node::NestedLoopJoin {
+                            left: Box::new(prev),
+                            right: Box::new(scan),
+                            predicate: Expression::Constant(crate::types::Value::Boolean(true)),
+                            join_type: JoinType::Inner,
+                        }
+                    } else {
+                        scan
+                    });
+                }
+                
+                ast::FromClause::Join { .. } => {
+                    return Err(Error::ExecutionError("Joins not yet fully implemented".into()));
+                }
+            }
+        }
+        
+        Ok(node.unwrap_or(Node::Nothing))
+    }
+    
+    /// Plan INSERT statement
+    fn plan_insert(
+        &self,
+        table: String,
+        columns: Option<Vec<String>>,
+        values: Vec<Vec<ast::Expression>>,
+    ) -> Result<Plan> {
+        let schema = self.schemas.get(&table)
+            .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+        
+        // Map column names to indices
+        let column_indices = if let Some(cols) = columns {
+            let mut indices = Vec::new();
+            for col_name in &cols {
+                let idx = schema.columns.iter()
+                    .position(|c| &c.name == col_name)
+                    .ok_or_else(|| Error::ColumnNotFound(col_name.clone()))?;
+                indices.push(idx);
+            }
+            Some(indices)
+        } else {
+            None
+        };
+        
+        // Build VALUES node with resolved expressions
+        let mut context = PlanContext::new(&self.schemas);
+        let rows = values.into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|e| context.resolve_expression(e))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        
+        Ok(Plan::Insert {
+            table,
+            columns: column_indices,
+            source: Box::new(Node::Values { rows }),
+        })
+    }
+    
+    /// Plan UPDATE statement
+    fn plan_update(
+        &self,
+        table: String,
+        set: BTreeMap<String, Option<ast::Expression>>,
+        r#where: Option<ast::Expression>,
+    ) -> Result<Plan> {
+        let mut context = PlanContext::new(&self.schemas);
+        context.add_table(table.clone(), None)?;
+        
+        // Build scan node
+        let mut node = Node::Scan {
+            table: table.clone(),
+            alias: None,
+        };
+        
+        // Apply WHERE filter
+        if let Some(where_expr) = r#where {
+            let predicate = context.resolve_expression(where_expr)?;
+            node = Node::Filter {
+                source: Box::new(node),
+                predicate,
+            };
+        }
+        
+        // Resolve assignments
+        let schema = self.schemas.get(&table)
+            .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+        
+        let assignments = set.into_iter()
+            .map(|(col, expr)| {
+                let column = schema.columns.iter()
+                    .position(|c| c.name == col)
+                    .ok_or_else(|| Error::ColumnNotFound(col))?;
+                
+                let value = if let Some(e) = expr {
+                    context.resolve_expression(e)?
                 } else {
-                    None
+                    Expression::Constant(crate::types::Value::Null)
                 };
                 
-                locks.push(LockRequirement {
-                    table: name.clone(),
-                    mode: LockMode::Shared,
-                    keys,
-                    is_predicate: false,
-                });
-            }
-            
-            ast::FromClause::Join { left, right, .. } => {
-                // Join needs locks on both tables
-                locks.extend(self.analyze_from_clause(left, where_clause)?);
-                locks.extend(self.analyze_from_clause(right, where_clause)?);
-            }
-        }
+                Ok((column, value))
+            })
+            .collect::<Result<Vec<_>>>()?;
         
-        Ok(locks)
+        Ok(Plan::Update {
+            table,
+            assignments,
+            source: Box::new(node),
+        })
     }
     
-    /// Analyze WHERE clause to determine which keys to lock
-    fn analyze_where_clause(&self, table: &str, where_expr: &ast::Expression) -> Result<Option<Vec<Vec<u8>>>> {
-        // Simple analysis for now - look for primary key equality
-        // TODO: Expand this to handle more complex predicates
+    /// Plan DELETE statement
+    fn plan_delete(&self, table: String, r#where: Option<ast::Expression>) -> Result<Plan> {
+        let mut context = PlanContext::new(&self.schemas);
+        context.add_table(table.clone(), None)?;
         
-        if let Some(schema) = self.schemas.get(table) {
-            if let Some(pk_column) = schema.columns.get(schema.primary_key) {
-                // Look for primary key equality: pk_col = value
-                if self.is_pk_equality(where_expr, &pk_column.name) {
-                    // For now, return None to indicate we found a PK predicate
-                    // but can't extract the actual key value at planning time
-                    // This will be determined during execution
-                    return Ok(None);
+        // Build scan node
+        let mut node = Node::Scan {
+            table: table.clone(),
+            alias: None,
+        };
+        
+        // Apply WHERE filter
+        if let Some(where_expr) = r#where {
+            let predicate = context.resolve_expression(where_expr)?;
+            node = Node::Filter {
+                source: Box::new(node),
+                predicate,
+            };
+        }
+        
+        Ok(Plan::Delete {
+            table,
+            source: Box::new(node),
+        })
+    }
+    
+    /// Plan CREATE TABLE
+    fn plan_create_table(&self, name: String, columns: Vec<ast::Column>) -> Result<Plan> {
+        // Convert AST columns to schema
+        let mut schema_columns = Vec::new();
+        let mut primary_key_idx = None;
+        
+        for (i, col) in columns.iter().enumerate() {
+            let mut schema_col = crate::sql::schema::Column::new(
+                col.name.clone(),
+                col.datatype.clone(),
+            );
+            
+            if col.primary_key {
+                if primary_key_idx.is_some() {
+                    return Err(Error::ExecutionError("Multiple primary keys not supported".into()));
+                }
+                primary_key_idx = Some(i);
+                schema_col = schema_col.primary_key();
+            }
+            
+            if let Some(nullable) = col.nullable {
+                schema_col = schema_col.nullable(nullable);
+            }
+            
+            if col.unique {
+                schema_col = schema_col.unique();
+            }
+            
+            schema_columns.push(schema_col);
+        }
+        
+        let table = Table::new(name.clone(), schema_columns)?;
+        
+        Ok(Plan::CreateTable {
+            name,
+            schema: table,
+        })
+    }
+    
+    /// Plan projection (SELECT expressions)
+    fn plan_projection(
+        &self,
+        select: Vec<(ast::Expression, Option<String>)>,
+        context: &mut PlanContext,
+    ) -> Result<(Vec<Expression>, Vec<Option<String>>)> {
+        let mut expressions = Vec::new();
+        let mut aliases = Vec::new();
+        
+        for (expr, alias) in select {
+            match expr {
+                ast::Expression::All => {
+                    // Expand * to all columns
+                    for table in &context.tables {
+                        if let Some(schema) = self.schemas.get(&table.name) {
+                            for (i, col) in schema.columns.iter().enumerate() {
+                                expressions.push(Expression::Column(table.start_column + i));
+                                // Use the actual column name as alias for SELECT *
+                                aliases.push(Some(col.name.clone()));
+                            }
+                        }
+                    }
+                }
+                ast::Expression::Column(ref table_ref, ref col_name) if alias.is_none() => {
+                    // No alias provided - use the column name
+                    expressions.push(context.resolve_expression(ast::Expression::Column(table_ref.clone(), col_name.clone()))?);
+                    aliases.push(Some(col_name.clone()));
+                }
+                _ => {
+                    expressions.push(context.resolve_expression(expr)?);
+                    aliases.push(alias);
                 }
             }
         }
         
-        // Can't determine specific keys - will need table scan
-        Ok(None)
+        Ok((expressions, aliases))
     }
     
-    /// Check if expression is a primary key equality
-    fn is_pk_equality(&self, expr: &ast::Expression, pk_name: &str) -> bool {
+    /// Check if SELECT has aggregate functions
+    fn has_aggregates(&self, select: &[(ast::Expression, Option<String>)]) -> bool {
+        select.iter().any(|(expr, _)| self.is_aggregate_expr(expr))
+    }
+    
+    /// Check if expression is an aggregate
+    fn is_aggregate_expr(&self, expr: &ast::Expression) -> bool {
         match expr {
-            ast::Expression::Operator(op) => match op {
-                ast::Operator::Equal(left, right) => {
-                    // Check if either side is the PK column
-                    let left_is_pk = matches!(left.as_ref(), 
-                        ast::Expression::Column(None, name) if name == pk_name);
-                    let right_is_pk = matches!(right.as_ref(),
-                        ast::Expression::Column(None, name) if name == pk_name);
-                        
-                    // Check if the other side is a constant
-                    let left_is_const = matches!(left.as_ref(), ast::Expression::Literal(_));
-                    let right_is_const = matches!(right.as_ref(), ast::Expression::Literal(_));
-                    
-                    (left_is_pk && right_is_const) || (right_is_pk && left_is_const)
-                }
-                
-                ast::Operator::And(left, right) => {
-                    // Check both sides of AND
-                    self.is_pk_equality(left, pk_name) || self.is_pk_equality(right, pk_name)
-                }
-                
-                _ => false,
-            },
-            _ => false,
-        }
-    }
-    
-    /// Check if a query can be streamed
-    fn is_streamable(&self, statement: &ast::Statement) -> bool {
-        match statement {
-            ast::Statement::Select { order_by, group_by, .. } => {
-                // Can stream if no ORDER BY or GROUP BY
-                order_by.is_empty() && group_by.is_empty()
+            ast::Expression::Function(name, _) => {
+                matches!(name.to_uppercase().as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX")
             }
             _ => false,
         }
     }
-}
-
-/// Lock analysis results for a specific query
-#[derive(Debug)]
-pub struct LockAnalysis {
-    /// Tables that will be read
-    pub read_tables: HashSet<String>,
-    /// Tables that will be written
-    pub write_tables: HashSet<String>,
-    /// Whether the query uses predicates that might cause phantoms
-    pub has_predicates: bool,
-    /// Suggested lock acquisition order
-    pub lock_order: Vec<String>,
-}
-
-impl LockAnalysis {
-    /// Create lock analysis from a query plan
-    pub fn from_plan(plan: &QueryPlan) -> Self {
-        let mut read_tables = HashSet::new();
-        let mut write_tables = HashSet::new();
-        let mut has_predicates = false;
+    
+    /// Extract aggregate functions
+    fn extract_aggregates(
+        &self,
+        select: &[(ast::Expression, Option<String>)],
+        context: &mut PlanContext,
+    ) -> Result<Vec<AggregateFunc>> {
+        let mut aggregates = Vec::new();
         
-        for lock in &plan.locks {
-            match lock.mode {
-                LockMode::Shared | LockMode::IntentShared => {
-                    read_tables.insert(lock.table.clone());
-                }
-                LockMode::Exclusive | LockMode::IntentExclusive => {
-                    write_tables.insert(lock.table.clone());
-                }
+        for (expr, _) in select {
+            if let ast::Expression::Function(name, args) = expr {
+                let func_name = name.to_uppercase();
+                
+                // Get the argument expression
+                let arg = if args.is_empty() {
+                    Expression::Constant(crate::types::Value::Integer(1)) // For COUNT(*)
+                } else {
+                    context.resolve_expression(args[0].clone())?
+                };
+                
+                let agg = match func_name.as_str() {
+                    "COUNT" => AggregateFunc::Count(arg),
+                    "SUM" => AggregateFunc::Sum(arg),
+                    "AVG" => AggregateFunc::Avg(arg),
+                    "MIN" => AggregateFunc::Min(arg),
+                    "MAX" => AggregateFunc::Max(arg),
+                    _ => continue,
+                };
+                
+                aggregates.push(agg);
+            }
+        }
+        
+        Ok(aggregates)
+    }
+    
+    /// Evaluate a constant expression
+    fn eval_constant(&self, expr: ast::Expression) -> Result<usize> {
+        match expr {
+            ast::Expression::Literal(ast::Literal::Integer(n)) if n >= 0 => {
+                Ok(n as usize)
+            }
+            _ => Err(Error::ExecutionError("Expected non-negative integer constant".into()))
+        }
+    }
+    
+}
+
+/// Context for resolving columns during planning
+struct PlanContext<'a> {
+    schemas: &'a HashMap<String, Table>,
+    tables: Vec<TableRef>,
+    current_column: usize,
+}
+
+struct TableRef {
+    name: String,
+    alias: Option<String>,
+    start_column: usize,
+}
+
+impl<'a> PlanContext<'a> {
+    fn new(schemas: &'a HashMap<String, Table>) -> Self {
+        Self {
+            schemas,
+            tables: Vec::new(),
+            current_column: 0,
+        }
+    }
+    
+    fn add_table(&mut self, name: String, alias: Option<String>) -> Result<()> {
+        let schema = self.schemas.get(&name)
+            .ok_or_else(|| Error::TableNotFound(name.clone()))?;
+        
+        let table_ref = TableRef {
+            name: name.clone(),
+            alias,
+            start_column: self.current_column,
+        };
+        
+        self.current_column += schema.columns.len();
+        self.tables.push(table_ref);
+        
+        Ok(())
+    }
+    
+    fn resolve_expression(&self, expr: ast::Expression) -> Result<Expression> {
+        match expr {
+            ast::Expression::Literal(lit) => {
+                let value = match lit {
+                    ast::Literal::Null => crate::types::Value::Null,
+                    ast::Literal::Boolean(b) => crate::types::Value::Boolean(b),
+                    ast::Literal::Integer(i) => crate::types::Value::Integer(i),
+                    ast::Literal::Float(f) => crate::types::Value::Decimal(
+                        rust_decimal::Decimal::from_f64_retain(f)
+                            .ok_or_else(|| Error::InvalidValue("Invalid decimal".into()))?
+                    ),
+                    ast::Literal::String(s) => crate::types::Value::String(s),
+                };
+                Ok(Expression::Constant(value))
             }
             
-            if lock.is_predicate {
-                has_predicates = true;
+            ast::Expression::Column(table_ref, column_name) => {
+                // Find the table
+                let table = if let Some(ref tref) = table_ref {
+                    self.tables.iter().find(|t| &t.name == tref || t.alias.as_ref() == Some(tref))
+                } else if self.tables.len() == 1 {
+                    // No table specified and only one table - use it
+                    self.tables.first()
+                } else {
+                    // Try to find column in any table
+                    for table in &self.tables {
+                        if let Some(schema) = self.schemas.get(&table.name) {
+                            if schema.columns.iter().any(|c| c.name == column_name) {
+                                return self.resolve_column_in_table(table, &column_name);
+                            }
+                        }
+                    }
+                    return Err(Error::ColumnNotFound(column_name));
+                }.ok_or_else(|| Error::TableNotFound(table_ref.unwrap_or_default()))?;
+                
+                self.resolve_column_in_table(table, &column_name)
+            }
+            
+            ast::Expression::Function(name, args) => {
+                let resolved_args = args.into_iter()
+                    .map(|a| self.resolve_expression(a))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Expression::Function(name, resolved_args))
+            }
+            
+            ast::Expression::Operator(op) => self.resolve_operator(op),
+            
+            ast::Expression::All => {
+                Err(Error::ExecutionError("* not valid in this context".into()))
             }
         }
-        
-        // Lock order is already sorted in the plan
-        let lock_order: Vec<String> = plan.locks
-            .iter()
-            .map(|l| l.table.clone())
-            .collect::<HashSet<_>>() // Deduplicate
-            .into_iter()
-            .collect();
-        
-        Self {
-            read_tables,
-            write_tables,
-            has_predicates,
-            lock_order,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sql::parser::Parser;
-    use crate::sql::schema::Column;
-    use crate::types::DataType;
-    
-    fn test_planner() -> QueryPlanner {
-        let mut planner = QueryPlanner::new();
-        
-        // Register a test table
-        let table = Table::new(
-            "users".to_string(),
-            vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("name".to_string(), DataType::String),
-                Column::new("email".to_string(), DataType::String),
-            ],
-        ).unwrap();
-        
-        planner.register_table(table);
-        planner
     }
     
-    fn test_context() -> TransactionContext {
-        use crate::hlc::{HlcTimestamp, NodeId};
-        use crate::transaction_id::TransactionId;
+    fn resolve_column_in_table(&self, table: &TableRef, column_name: &str) -> Result<Expression> {
+        let schema = self.schemas.get(&table.name)
+            .ok_or_else(|| Error::TableNotFound(table.name.clone()))?;
         
-        TransactionContext {
-            tx_id: TransactionId {
-                global_id: HlcTimestamp::new(1000, 0, NodeId::new(1)),
-                sub_seq: 0,
-            },
-            read_only: false,
-            isolation_level: crate::transaction_id::IsolationLevel::Serializable,
-        }
+        let col_index = schema.columns.iter()
+            .position(|c| c.name == column_name)
+            .ok_or_else(|| Error::ColumnNotFound(column_name.to_string()))?;
+        
+        Ok(Expression::Column(table.start_column + col_index))
     }
     
-    #[test]
-    fn test_select_locks() {
-        let planner = test_planner();
-        let ctx = test_context();
+    fn resolve_operator(&self, op: ast::Operator) -> Result<Expression> {
+        use ast::Operator::*;
         
-        // Simple SELECT
-        let stmt = Parser::parse("SELECT * FROM users").unwrap();
-        let plan = planner.plan(stmt, &ctx).unwrap();
-        
-        assert_eq!(plan.locks.len(), 1);
-        assert_eq!(plan.locks[0].table, "users");
-        assert_eq!(plan.locks[0].mode, LockMode::Shared);
-        assert!(plan.streamable);
-        
-        // SELECT with WHERE
-        let stmt = Parser::parse("SELECT * FROM users WHERE id = 1").unwrap();
-        let plan = planner.plan(stmt, &ctx).unwrap();
-        
-        assert_eq!(plan.locks.len(), 1);
-        assert_eq!(plan.locks[0].table, "users");
-        assert_eq!(plan.locks[0].mode, LockMode::Shared);
-    }
-    
-    #[test]
-    fn test_insert_locks() {
-        let planner = test_planner();
-        let ctx = test_context();
-        
-        let stmt = Parser::parse("INSERT INTO users (id, name) VALUES (1, 'Alice')").unwrap();
-        let plan = planner.plan(stmt, &ctx).unwrap();
-        
-        assert_eq!(plan.locks.len(), 1);
-        assert_eq!(plan.locks[0].table, "users");
-        assert_eq!(plan.locks[0].mode, LockMode::Exclusive);
-        assert!(!plan.streamable);
-    }
-    
-    #[test]
-    fn test_update_locks() {
-        let planner = test_planner();
-        let ctx = test_context();
-        
-        let stmt = Parser::parse("UPDATE users SET name = 'Bob' WHERE id = 1").unwrap();
-        let plan = planner.plan(stmt, &ctx).unwrap();
-        
-        // Should have both shared (for finding rows) and exclusive (for updating)
-        assert_eq!(plan.locks.len(), 2);
-        assert_eq!(plan.locks[0].mode, LockMode::Shared);
-        assert_eq!(plan.locks[1].mode, LockMode::Exclusive);
-    }
-    
-    #[test]
-    fn test_delete_locks() {
-        let planner = test_planner();
-        let ctx = test_context();
-        
-        let stmt = Parser::parse("DELETE FROM users WHERE id = 1").unwrap();
-        let plan = planner.plan(stmt, &ctx).unwrap();
-        
-        assert_eq!(plan.locks.len(), 1);
-        assert_eq!(plan.locks[0].table, "users");
-        assert_eq!(plan.locks[0].mode, LockMode::Exclusive);
-    }
-    
-    #[test]
-    fn test_lock_ordering() {
-        let mut planner = QueryPlanner::new();
-        
-        // Register multiple tables
-        for table_name in &["table_a", "table_b", "table_c"] {
-            let table = Table::new(
-                table_name.to_string(),
-                vec![Column::new("id".to_string(), DataType::Integer).primary_key()],
-            ).unwrap();
-            planner.register_table(table);
-        }
-        
-        let ctx = test_context();
-        
-        // Query that would touch multiple tables (if we supported joins properly)
-        let stmt = Parser::parse("SELECT * FROM table_b").unwrap();
-        let plan = planner.plan(stmt, &ctx).unwrap();
-        
-        // Verify locks are ordered by table name
-        for i in 1..plan.locks.len() {
-            assert!(plan.locks[i-1].table <= plan.locks[i].table);
-        }
+        Ok(match op {
+            And(l, r) => Expression::And(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Or(l, r) => Expression::Or(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Not(e) => Expression::Not(Box::new(self.resolve_expression(*e)?)),
+            Equal(l, r) => Expression::Equal(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            NotEqual(l, r) => Expression::NotEqual(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            GreaterThan(l, r) => Expression::GreaterThan(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            GreaterThanOrEqual(l, r) => Expression::GreaterThanOrEqual(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            LessThan(l, r) => Expression::LessThan(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            LessThanOrEqual(l, r) => Expression::LessThanOrEqual(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Is(e, lit) => {
+                let value = match lit {
+                    ast::Literal::Null => crate::types::Value::Null,
+                    _ => return Err(Error::ExecutionError("IS only supports NULL".into())),
+                };
+                Expression::Is(Box::new(self.resolve_expression(*e)?), value)
+            }
+            Add(l, r) => Expression::Add(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Subtract(l, r) => Expression::Subtract(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Multiply(l, r) => Expression::Multiply(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Divide(l, r) => Expression::Divide(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Remainder(l, r) => Expression::Remainder(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Exponentiate(l, r) => Expression::Exponentiate(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+            Factorial(e) => Expression::Factorial(Box::new(self.resolve_expression(*e)?)),
+            Identity(e) => Expression::Identity(Box::new(self.resolve_expression(*e)?)),
+            Negate(e) => Expression::Negate(Box::new(self.resolve_expression(*e)?)),
+            Like(l, r) => Expression::Like(
+                Box::new(self.resolve_expression(*l)?),
+                Box::new(self.resolve_expression(*r)?),
+            ),
+        })
     }
 }

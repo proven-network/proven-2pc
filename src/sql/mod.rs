@@ -10,6 +10,7 @@ pub mod executor;
 pub mod expression;
 pub mod functions;
 pub mod parser;
+pub mod plan;
 pub mod planner;
 pub mod schema;
 
