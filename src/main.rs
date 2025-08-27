@@ -3,6 +3,7 @@
 use proven_sql::{
     error::Result,
     hlc::{HlcClock, HlcTimestamp, NodeId},
+    sql,
     lock::{LockKey, LockManager, LockMode},
     storage::{Column, Schema, Storage},
     transaction::TransactionManager,
@@ -21,8 +22,11 @@ fn main() -> Result<()> {
 
     // Demo 3: Transactions with concurrency control
     demo_transactions()?;
+    
+    // Demo 4: SQL parser
+    demo_sql_parser()?;
 
-    println!("\n=== All demos completed successfully! ===");
+    println!("\n=== All demos completed successfully! ==="  );
     Ok(())
 }
 
@@ -204,5 +208,29 @@ fn demo_transactions() -> Result<()> {
     tx3.commit()?;
     println!("  ✓ Tx3 committed");
 
+    Ok(())
+}
+
+fn demo_sql_parser() -> Result<()> {
+    println!("\n--- Demo 4: SQL Parser ---");
+    
+    // Test various SQL statements
+    let statements = vec![
+        "SELECT * FROM users WHERE age > 25",
+        "INSERT INTO accounts (id, balance) VALUES (1, 1000), (2, 2000)",
+        "UPDATE users SET age = 31 WHERE id = 1",
+        "DELETE FROM users WHERE name = 'Bob'",
+        "CREATE TABLE products (id INT PRIMARY KEY, name VARCHAR NOT NULL, price INT)",
+        "BEGIN READ ONLY",
+        "COMMIT",
+    ];
+    
+    for stmt_str in statements {
+        match sql::parse_sql(stmt_str) {
+            Ok(_stmt) => println!("  ✓ Parsed: {}", stmt_str.split_whitespace().next().unwrap_or("")),
+            Err(e) => println!("  ✗ Failed to parse '{}': {:?}", stmt_str, e),
+        }
+    }
+    
     Ok(())
 }
