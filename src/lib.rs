@@ -5,10 +5,11 @@
 //! - Implements wound-wait deadlock prevention
 //! - Provides full lock visibility for distributed coordination
 //! - Ensures deterministic execution for Raft consensus
+//!
+//! See LAYERS.md for detailed architecture documentation.
 
 pub mod error;
 pub mod lock;
-pub mod raft;
 pub mod sql;
 pub mod storage;
 pub mod transaction;

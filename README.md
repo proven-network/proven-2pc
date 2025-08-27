@@ -14,6 +14,8 @@ This crate provides the foundational components for a distributed SQL engine tha
 
 ## Architecture
 
+See [LAYERS.md](LAYERS.md) for detailed architecture documentation.
+
 ### Core Components
 
 1. **Lock Manager** (`src/lock.rs`)
@@ -41,10 +43,10 @@ This crate provides the foundational components for a distributed SQL engine tha
    - Logical timestamps
    - Null handling
 
-5. **Raft Integration** (`src/raft.rs`)
-   - State machine interface
-   - Deterministic operation replay
-   - Snapshot/restore capabilities
+5. **Raft Integration** (TODO: `src/raft.rs`)
+   - Will apply consensus-ordered SQL operations
+   - Sequential execution with PCC isolation
+   - See LAYERS.md for planned architecture
 
 ## Key Design Decisions
 
@@ -128,8 +130,8 @@ This is a proof-of-concept implementation demonstrating the core data structures
 ✅ Single-version storage  
 ✅ Transaction management  
 ✅ Deterministic types  
-✅ Raft integration framework  
 ✅ Basic tests and demos  
+📝 Architecture documentation (LAYERS.md)  
 
 ## Next Steps
 
@@ -138,9 +140,9 @@ To build a production system, the following would be needed:
 1. **SQL Parser Integration**: Adapt toydb's parser for SQL parsing
 2. **Query Planning**: Add lock analysis phase before execution  
 3. **Query Execution**: Implement operators (scan, filter, join, aggregate)
-4. **Network Layer**: Add RPC for distributed coordination
-5. **Persistence**: Add write-ahead logging and snapshots
-6. **Optimization**: Add query optimization and execution improvements
+4. **Raft State Machine**: Implement correct consensus-ordered SQL application
+5. **Client API**: Add streaming result delivery
+6. **Optimization**: Consider Arc-wrapping for efficient result sharing
 
 ## Design Document
 

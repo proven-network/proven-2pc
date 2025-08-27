@@ -25,7 +25,7 @@ impl DataType {
     pub fn is_nullable(&self) -> bool {
         matches!(self, DataType::Nullable(_))
     }
-    
+
     pub fn base_type(&self) -> &DataType {
         match self {
             DataType::Nullable(inner) => inner.base_type(),
@@ -67,29 +67,29 @@ impl Value {
     pub fn new_uuid() -> Self {
         Value::Uuid(Uuid::new_v4())
     }
-    
+
     /// Create a UUID value from a string
     pub fn uuid_from_str(s: &str) -> Result<Self> {
         Uuid::parse_str(s)
             .map(Value::Uuid)
             .map_err(|e| Error::InvalidValue(format!("Invalid UUID: {}", e)))
     }
-    
+
     /// Create a UUID value from bytes
     pub fn uuid_from_bytes(bytes: [u8; 16]) -> Self {
         Value::Uuid(Uuid::from_bytes(bytes))
     }
-    
+
     /// Create a Blob value from a byte vector
     pub fn blob_from_vec(data: Vec<u8>) -> Self {
         Value::Blob(Bytes::from(data))
     }
-    
+
     /// Create a Blob value from a string
     pub fn blob_from_str(s: &str) -> Self {
         Value::Blob(Bytes::from(s.to_string()))
     }
-    
+
     /// Get bytes from a Blob value
     pub fn as_blob_bytes(&self) -> Option<&[u8]> {
         match self {
@@ -97,7 +97,7 @@ impl Value {
             _ => None,
         }
     }
-    
+
     /// Get UUID as string
     pub fn as_uuid_string(&self) -> Option<String> {
         match self {
@@ -105,7 +105,7 @@ impl Value {
             _ => None,
         }
     }
-    
+
     pub fn data_type(&self) -> DataType {
         match self {
             Value::Null => DataType::Nullable(Box::new(DataType::String)), // Default nullable type
@@ -118,11 +118,11 @@ impl Value {
             Value::Blob(_) => DataType::Blob,
         }
     }
-    
+
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
-    
+
     pub fn check_type(&self, expected: &DataType) -> Result<()> {
         match (self, expected) {
             (Value::Null, DataType::Nullable(_)) => Ok(()),
@@ -140,14 +140,14 @@ impl Value {
             }),
         }
     }
-    
+
     /// Compare two values for ordering
     pub fn compare(&self, other: &Value) -> Result<Ordering> {
         match (self, other) {
             (Value::Null, Value::Null) => Ok(Ordering::Equal),
             (Value::Null, _) => Ok(Ordering::Less),
             (_, Value::Null) => Ok(Ordering::Greater),
-            
+
             (Value::Boolean(a), Value::Boolean(b)) => Ok(a.cmp(b)),
             (Value::Integer(a), Value::Integer(b)) => Ok(a.cmp(b)),
             (Value::Decimal(a), Value::Decimal(b)) => Ok(a.cmp(b)),
@@ -155,7 +155,7 @@ impl Value {
             (Value::Timestamp(a), Value::Timestamp(b)) => Ok(a.cmp(b)),
             (Value::Uuid(a), Value::Uuid(b)) => Ok(a.cmp(b)),
             (Value::Blob(a), Value::Blob(b)) => Ok(a.cmp(b)),
-            
+
             // Allow comparison between integers and decimals
             (Value::Integer(i), Value::Decimal(d)) => {
                 let i_dec = Decimal::from(*i);
@@ -165,50 +165,42 @@ impl Value {
                 let i_dec = Decimal::from(*i);
                 Ok(d.cmp(&i_dec))
             }
-            
+
             _ => Err(Error::TypeMismatch {
                 expected: self.data_type().to_string(),
                 found: other.data_type().to_string(),
             }),
         }
     }
-    
+
     /// Add two values (deterministic)
     pub fn add(&self, other: &Value) -> Result<Value> {
         match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_add(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| Error::InvalidValue("Integer overflow".into()))
-            }
-            (Value::Decimal(a), Value::Decimal(b)) => {
-                Ok(Value::Decimal(a + b))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_add(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| Error::InvalidValue("Integer overflow".into())),
+            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a + b)),
             (Value::Integer(i), Value::Decimal(d)) | (Value::Decimal(d), Value::Integer(i)) => {
                 let i_dec = Decimal::from(*i);
                 Ok(Value::Decimal(i_dec + d))
             }
-            (Value::String(a), Value::String(b)) => {
-                Ok(Value::String(format!("{}{}", a, b)))
-            }
+            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
             _ => Err(Error::TypeMismatch {
                 expected: "numeric or string".into(),
                 found: format!("{:?} and {:?}", self, other),
             }),
         }
     }
-    
+
     /// Subtract two values (deterministic)
     pub fn subtract(&self, other: &Value) -> Result<Value> {
         match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_sub(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| Error::InvalidValue("Integer underflow".into()))
-            }
-            (Value::Decimal(a), Value::Decimal(b)) => {
-                Ok(Value::Decimal(a - b))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_sub(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| Error::InvalidValue("Integer underflow".into())),
+            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a - b)),
             (Value::Integer(i), Value::Decimal(d)) => {
                 let i_dec = Decimal::from(*i);
                 Ok(Value::Decimal(i_dec - d))
@@ -223,18 +215,15 @@ impl Value {
             }),
         }
     }
-    
+
     /// Multiply two values (deterministic)
     pub fn multiply(&self, other: &Value) -> Result<Value> {
         match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_mul(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| Error::InvalidValue("Integer overflow".into()))
-            }
-            (Value::Decimal(a), Value::Decimal(b)) => {
-                Ok(Value::Decimal(a * b))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_mul(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| Error::InvalidValue("Integer overflow".into())),
+            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a * b)),
             (Value::Integer(i), Value::Decimal(d)) | (Value::Decimal(d), Value::Integer(i)) => {
                 let i_dec = Decimal::from(*i);
                 Ok(Value::Decimal(i_dec * d))
@@ -245,7 +234,7 @@ impl Value {
             }),
         }
     }
-    
+
     /// Divide two values (deterministic)
     pub fn divide(&self, other: &Value) -> Result<Value> {
         match (self, other) {
@@ -253,14 +242,12 @@ impl Value {
             (_, Value::Decimal(d)) if d.is_zero() => {
                 Err(Error::InvalidValue("Division by zero".into()))
             }
-            
+
             (Value::Integer(a), Value::Integer(b)) => {
                 // Integer division truncates
                 Ok(Value::Integer(a / b))
             }
-            (Value::Decimal(a), Value::Decimal(b)) => {
-                Ok(Value::Decimal(a / b))
-            }
+            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a / b)),
             (Value::Integer(i), Value::Decimal(d)) => {
                 let i_dec = Decimal::from(*i);
                 Ok(Value::Decimal(i_dec / d))
@@ -275,7 +262,7 @@ impl Value {
             }),
         }
     }
-    
+
     /// Logical AND
     pub fn and(&self, other: &Value) -> Result<Value> {
         match (self, other) {
@@ -290,7 +277,7 @@ impl Value {
             }),
         }
     }
-    
+
     /// Logical OR
     pub fn or(&self, other: &Value) -> Result<Value> {
         match (self, other) {
@@ -305,7 +292,7 @@ impl Value {
             }),
         }
     }
-    
+
     /// Logical NOT
     pub fn not(&self) -> Result<Value> {
         match self {
@@ -349,14 +336,25 @@ impl Ord for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_value_comparison() {
-        assert_eq!(Value::Integer(1).compare(&Value::Integer(2)).unwrap(), Ordering::Less);
-        assert_eq!(Value::String("a".into()).compare(&Value::String("b".into())).unwrap(), Ordering::Less);
-        assert_eq!(Value::Null.compare(&Value::Integer(1)).unwrap(), Ordering::Less);
+        assert_eq!(
+            Value::Integer(1).compare(&Value::Integer(2)).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            Value::String("a".into())
+                .compare(&Value::String("b".into()))
+                .unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            Value::Null.compare(&Value::Integer(1)).unwrap(),
+            Ordering::Less
+        );
     }
-    
+
     #[test]
     fn test_value_arithmetic() {
         assert_eq!(
@@ -364,86 +362,92 @@ mod tests {
             Value::Integer(5)
         );
         assert_eq!(
-            Value::Decimal(Decimal::from(10)).multiply(&Value::Decimal(Decimal::from(2))).unwrap(),
+            Value::Decimal(Decimal::from(10))
+                .multiply(&Value::Decimal(Decimal::from(2)))
+                .unwrap(),
             Value::Decimal(Decimal::from(20))
         );
     }
-    
+
     #[test]
     fn test_type_checking() {
         assert!(Value::Integer(42).check_type(&DataType::Integer).is_ok());
         assert!(Value::Integer(42).check_type(&DataType::String).is_err());
-        assert!(Value::Null.check_type(&DataType::Nullable(Box::new(DataType::Integer))).is_ok());
+        assert!(
+            Value::Null
+                .check_type(&DataType::Nullable(Box::new(DataType::Integer)))
+                .is_ok()
+        );
     }
-    
+
     #[test]
     fn test_uuid_type() {
         // Test UUID creation and comparison
         let uuid1 = Value::new_uuid();
         let uuid2 = Value::new_uuid();
-        
+
         assert_eq!(uuid1.data_type(), DataType::Uuid);
         assert!(uuid1.check_type(&DataType::Uuid).is_ok());
         assert!(uuid1.check_type(&DataType::String).is_err());
-        
+
         // UUIDs should be different
         assert_ne!(uuid1, uuid2);
-        
+
         // Test UUID from string
         let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
         let uuid_val = Value::uuid_from_str(uuid_str).unwrap();
         assert_eq!(uuid_val.as_uuid_string().unwrap(), uuid_str);
-        
+
         // Test UUID from bytes
         let bytes = [0u8; 16];
         let uuid_from_bytes = Value::uuid_from_bytes(bytes);
         assert_eq!(uuid_from_bytes.data_type(), DataType::Uuid);
-        
+
         // Test ordering
         let uuid3 = Value::uuid_from_str("00000000-0000-0000-0000-000000000000").unwrap();
         let uuid4 = Value::uuid_from_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap();
         assert_eq!(uuid3.compare(&uuid4).unwrap(), Ordering::Less);
     }
-    
+
     #[test]
     fn test_blob_type() {
         // Test Blob creation
         let data = vec![1, 2, 3, 4, 5];
         let blob = Value::blob_from_vec(data.clone());
-        
+
         assert_eq!(blob.data_type(), DataType::Blob);
         assert!(blob.check_type(&DataType::Blob).is_ok());
         assert!(blob.check_type(&DataType::String).is_err());
-        
+
         // Test getting bytes back
         assert_eq!(blob.as_blob_bytes(), Some(data.as_slice()));
-        
+
         // Test Blob from string
         let text = "Hello, World!";
         let text_blob = Value::blob_from_str(text);
         assert_eq!(text_blob.as_blob_bytes(), Some(text.as_bytes()));
-        
+
         // Test ordering
         let blob1 = Value::blob_from_vec(vec![1, 2, 3]);
         let blob2 = Value::blob_from_vec(vec![1, 2, 4]);
         assert_eq!(blob1.compare(&blob2).unwrap(), Ordering::Less);
-        
+
         // Test Display format
         let blob_display = Value::blob_from_vec(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         assert_eq!(blob_display.to_string(), "x'deadbeef'");
     }
-    
+
     #[test]
     fn test_mixed_type_comparisons() {
         let uuid = Value::new_uuid();
         let blob = Value::blob_from_vec(vec![1, 2, 3]);
         let string = Value::String("test".to_string());
-        
+
         // Different types should not be comparable (except with Null)
         assert!(uuid.compare(&blob).is_err());
         assert!(uuid.compare(&string).is_err());
         assert!(blob.compare(&string).is_err());
-        
+
         // Null comparisons should work
         assert_eq!(Value::Null.compare(&uuid).unwrap(), Ordering::Less);
         assert_eq!(uuid.compare(&Value::Null).unwrap(), Ordering::Greater);

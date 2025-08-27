@@ -1,5 +1,5 @@
 //! SQL parsing and execution (placeholder for now)
-//! 
+//!
 //! This module will eventually contain:
 //! - SQL parser (adapted from toydb)
 //! - Query planner with lock analysis
