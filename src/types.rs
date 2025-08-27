@@ -1,10 +1,12 @@
 //! SQL types and values with deterministic operations
 
 use crate::error::{Error, Result};
+use bytes::Bytes;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fmt;
+use uuid::Uuid;
 
 /// SQL data types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +16,8 @@ pub enum DataType {
     Decimal(u32, u32), // precision, scale
     String,
     Timestamp,
+    Uuid,
+    Blob,
     Nullable(Box<DataType>),
 }
 
@@ -38,6 +42,8 @@ impl fmt::Display for DataType {
             DataType::Decimal(p, s) => write!(f, "DECIMAL({}, {})", p, s),
             DataType::String => write!(f, "VARCHAR"),
             DataType::Timestamp => write!(f, "TIMESTAMP"),
+            DataType::Uuid => write!(f, "UUID"),
+            DataType::Blob => write!(f, "BLOB"),
             DataType::Nullable(inner) => write!(f, "{} NULL", inner),
         }
     }
@@ -52,9 +58,54 @@ pub enum Value {
     Decimal(Decimal),
     String(String),
     Timestamp(u64), // Logical timestamp, not wall clock
+    Uuid(Uuid),
+    Blob(Bytes),
 }
 
 impl Value {
+    /// Create a new UUID value with a v4 random UUID
+    pub fn new_uuid() -> Self {
+        Value::Uuid(Uuid::new_v4())
+    }
+    
+    /// Create a UUID value from a string
+    pub fn uuid_from_str(s: &str) -> Result<Self> {
+        Uuid::parse_str(s)
+            .map(Value::Uuid)
+            .map_err(|e| Error::InvalidValue(format!("Invalid UUID: {}", e)))
+    }
+    
+    /// Create a UUID value from bytes
+    pub fn uuid_from_bytes(bytes: [u8; 16]) -> Self {
+        Value::Uuid(Uuid::from_bytes(bytes))
+    }
+    
+    /// Create a Blob value from a byte vector
+    pub fn blob_from_vec(data: Vec<u8>) -> Self {
+        Value::Blob(Bytes::from(data))
+    }
+    
+    /// Create a Blob value from a string
+    pub fn blob_from_str(s: &str) -> Self {
+        Value::Blob(Bytes::from(s.to_string()))
+    }
+    
+    /// Get bytes from a Blob value
+    pub fn as_blob_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Value::Blob(b) => Some(b.as_ref()),
+            _ => None,
+        }
+    }
+    
+    /// Get UUID as string
+    pub fn as_uuid_string(&self) -> Option<String> {
+        match self {
+            Value::Uuid(u) => Some(u.to_string()),
+            _ => None,
+        }
+    }
+    
     pub fn data_type(&self) -> DataType {
         match self {
             Value::Null => DataType::Nullable(Box::new(DataType::String)), // Default nullable type
@@ -63,6 +114,8 @@ impl Value {
             Value::Decimal(_) => DataType::Decimal(38, 10), // Default precision/scale
             Value::String(_) => DataType::String,
             Value::Timestamp(_) => DataType::Timestamp,
+            Value::Uuid(_) => DataType::Uuid,
+            Value::Blob(_) => DataType::Blob,
         }
     }
     
@@ -78,6 +131,8 @@ impl Value {
             (Value::Decimal(_), DataType::Decimal(_, _)) => Ok(()),
             (Value::String(_), DataType::String) => Ok(()),
             (Value::Timestamp(_), DataType::Timestamp) => Ok(()),
+            (Value::Uuid(_), DataType::Uuid) => Ok(()),
+            (Value::Blob(_), DataType::Blob) => Ok(()),
             (_, DataType::Nullable(inner)) => self.check_type(inner),
             _ => Err(Error::TypeMismatch {
                 expected: expected.to_string(),
@@ -98,6 +153,8 @@ impl Value {
             (Value::Decimal(a), Value::Decimal(b)) => Ok(a.cmp(b)),
             (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
             (Value::Timestamp(a), Value::Timestamp(b)) => Ok(a.cmp(b)),
+            (Value::Uuid(a), Value::Uuid(b)) => Ok(a.cmp(b)),
+            (Value::Blob(a), Value::Blob(b)) => Ok(a.cmp(b)),
             
             // Allow comparison between integers and decimals
             (Value::Integer(i), Value::Decimal(d)) => {
@@ -271,6 +328,8 @@ impl fmt::Display for Value {
             Value::Decimal(d) => write!(f, "{}", d),
             Value::String(s) => write!(f, "'{}'", s),
             Value::Timestamp(t) => write!(f, "{}", t),
+            Value::Uuid(u) => write!(f, "'{}'", u),
+            Value::Blob(b) => write!(f, "x'{}'", hex::encode(b)),
         }
     }
 }
@@ -315,5 +374,78 @@ mod tests {
         assert!(Value::Integer(42).check_type(&DataType::Integer).is_ok());
         assert!(Value::Integer(42).check_type(&DataType::String).is_err());
         assert!(Value::Null.check_type(&DataType::Nullable(Box::new(DataType::Integer))).is_ok());
+    }
+    
+    #[test]
+    fn test_uuid_type() {
+        // Test UUID creation and comparison
+        let uuid1 = Value::new_uuid();
+        let uuid2 = Value::new_uuid();
+        
+        assert_eq!(uuid1.data_type(), DataType::Uuid);
+        assert!(uuid1.check_type(&DataType::Uuid).is_ok());
+        assert!(uuid1.check_type(&DataType::String).is_err());
+        
+        // UUIDs should be different
+        assert_ne!(uuid1, uuid2);
+        
+        // Test UUID from string
+        let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
+        let uuid_val = Value::uuid_from_str(uuid_str).unwrap();
+        assert_eq!(uuid_val.as_uuid_string().unwrap(), uuid_str);
+        
+        // Test UUID from bytes
+        let bytes = [0u8; 16];
+        let uuid_from_bytes = Value::uuid_from_bytes(bytes);
+        assert_eq!(uuid_from_bytes.data_type(), DataType::Uuid);
+        
+        // Test ordering
+        let uuid3 = Value::uuid_from_str("00000000-0000-0000-0000-000000000000").unwrap();
+        let uuid4 = Value::uuid_from_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap();
+        assert_eq!(uuid3.compare(&uuid4).unwrap(), Ordering::Less);
+    }
+    
+    #[test]
+    fn test_blob_type() {
+        // Test Blob creation
+        let data = vec![1, 2, 3, 4, 5];
+        let blob = Value::blob_from_vec(data.clone());
+        
+        assert_eq!(blob.data_type(), DataType::Blob);
+        assert!(blob.check_type(&DataType::Blob).is_ok());
+        assert!(blob.check_type(&DataType::String).is_err());
+        
+        // Test getting bytes back
+        assert_eq!(blob.as_blob_bytes(), Some(data.as_slice()));
+        
+        // Test Blob from string
+        let text = "Hello, World!";
+        let text_blob = Value::blob_from_str(text);
+        assert_eq!(text_blob.as_blob_bytes(), Some(text.as_bytes()));
+        
+        // Test ordering
+        let blob1 = Value::blob_from_vec(vec![1, 2, 3]);
+        let blob2 = Value::blob_from_vec(vec![1, 2, 4]);
+        assert_eq!(blob1.compare(&blob2).unwrap(), Ordering::Less);
+        
+        // Test Display format
+        let blob_display = Value::blob_from_vec(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(blob_display.to_string(), "x'deadbeef'");
+    }
+    
+    #[test]
+    fn test_mixed_type_comparisons() {
+        let uuid = Value::new_uuid();
+        let blob = Value::blob_from_vec(vec![1, 2, 3]);
+        let string = Value::String("test".to_string());
+        
+        // Different types should not be comparable (except with Null)
+        assert!(uuid.compare(&blob).is_err());
+        assert!(uuid.compare(&string).is_err());
+        assert!(blob.compare(&string).is_err());
+        
+        // Null comparisons should work
+        assert_eq!(Value::Null.compare(&uuid).unwrap(), Ordering::Less);
+        assert_eq!(uuid.compare(&Value::Null).unwrap(), Ordering::Greater);
     }
 }
