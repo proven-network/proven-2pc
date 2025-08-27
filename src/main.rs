@@ -2,6 +2,7 @@
 
 use proven_sql::{
     error::Result,
+    hlc::{HlcClock, HlcTimestamp, NodeId},
     lock::{LockKey, LockManager, LockMode},
     storage::{Column, Schema, Storage},
     transaction::TransactionManager,
@@ -82,17 +83,24 @@ fn demo_locks() -> Result<()> {
 
     let lock_manager = LockManager::new();
 
+    // Create HLC timestamps for transactions
+    let clock = HlcClock::new(NodeId::new(1));
+    let tx1 = clock.now();
+    let tx2 = clock.now();
+    let tx3 = clock.now();
+    let tx4 = clock.now();
+
     let key = LockKey::Row {
         table: "accounts".into(),
         row_id: 100,
     };
 
     // Transaction 1 acquires exclusive lock
-    let result = lock_manager.try_acquire(1, key.clone(), LockMode::Exclusive)?;
+    let result = lock_manager.try_acquire(tx1, key.clone(), LockMode::Exclusive)?;
     println!("  ✓ Tx1 acquired exclusive lock: {:?}", result);
 
     // Transaction 2 tries to acquire - gets conflict info
-    let result = lock_manager.try_acquire(2, key.clone(), LockMode::Exclusive)?;
+    let result = lock_manager.try_acquire(tx2, key.clone(), LockMode::Exclusive)?;
     println!("  ✓ Tx2 conflict detected: {:?}", result);
 
     // Multiple shared locks are compatible
@@ -101,15 +109,15 @@ fn demo_locks() -> Result<()> {
         row_id: 200,
     };
 
-    lock_manager.try_acquire(3, shared_key.clone(), LockMode::Shared)?;
-    lock_manager.try_acquire(4, shared_key.clone(), LockMode::Shared)?;
+    lock_manager.try_acquire(tx3, shared_key.clone(), LockMode::Shared)?;
+    lock_manager.try_acquire(tx4, shared_key.clone(), LockMode::Shared)?;
     println!("  ✓ Multiple shared locks acquired successfully");
 
     Ok(())
 }
 
 fn demo_transactions() -> Result<()> {
-    println!("\n--- Demo 3: Transactions with Wound-Wait ---");
+    println!("\n--- Demo 3: Transactions with HLC-based Wound-Wait ---");
 
     let lock_manager = Arc::new(LockManager::new());
     let storage = Arc::new(Storage::new());
@@ -129,11 +137,19 @@ fn demo_transactions() -> Result<()> {
         Ok(())
     })?;
 
-    let tx_manager = TransactionManager::new(lock_manager, storage.clone());
+    // Use a single transaction manager with one clock
+    // In a real distributed system, each node would have its own clock
+    // but they'd share transaction state through consensus
+    let clock = Arc::new(HlcClock::new(NodeId::new(1)));
+    let tx_manager = TransactionManager::with_clock(
+        lock_manager.clone(),
+        storage.clone(),
+        clock,
+    );
 
-    // Start transaction with priority 100 (older)
-    let tx1 = tx_manager.begin_with_priority(Some(100))?;
-    println!("  ✓ Transaction 1 started (ID: {}, priority: {})", tx1.id, tx1.priority);
+    // Start first transaction
+    let tx1 = tx_manager.begin()?;
+    println!("  ✓ Transaction 1 started (ID: {})", tx1.id);
 
     // Directly update balance
     tx1.write(
@@ -146,9 +162,13 @@ fn demo_transactions() -> Result<()> {
     )?;
     println!("  ✓ Tx1 updated account 1 balance to 900");
 
-    // Start younger transaction (priority 200)
-    let tx2 = tx_manager.begin_with_priority(Some(200))?;
-    println!("  ✓ Transaction 2 started (ID: {}, priority: {})", tx2.id, tx2.priority);
+    // Sleep to ensure tx2 gets a later timestamp
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Start younger transaction
+    let tx2 = tx_manager.begin()?;
+    println!("  ✓ Transaction 2 started (ID: {})", tx2.id);
+    println!("  ✓ Tx2 is younger than Tx1: {}", tx1.id.is_older_than(&tx2.id));
 
     // Tx2 tries to write same account - should be blocked (younger waits)
     match tx2.write("accounts", 1, vec![Value::Integer(1), Value::Integer(800)]) {
@@ -158,9 +178,16 @@ fn demo_transactions() -> Result<()> {
         _ => println!("  ✗ Unexpected result"),
     }
 
-    // Start older transaction (priority 50)
-    let tx3 = tx_manager.begin_with_priority(Some(50))?;
-    println!("  ✓ Transaction 3 started (ID: {}, priority: {})", tx3.id, tx3.priority);
+    // Create an artificially older transaction for demo
+    // In real system, this would be a transaction that started much earlier
+    let older_timestamp = HlcTimestamp::new(
+        tx1.id.physical - 1000000, // Much earlier physical time
+        0,
+        NodeId::new(3),
+    );
+    let tx3 = tx_manager.begin_with_timestamp(older_timestamp)?;
+    println!("  ✓ Transaction 3 started (ID: {})", tx3.id);
+    println!("  ✓ Tx3 is older than Tx1: {}", tx3.id.is_older_than(&tx1.id));
     
     // Tx3 tries to write - should wound tx1 using the manager's method
     let key = LockKey::Row {

@@ -1,13 +1,14 @@
 //! Lock manager that tracks lock ownership and detects conflicts
 
 use crate::error::Result;
+use crate::hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-/// Transaction ID
-pub type TxId = u64;
+/// Transaction ID is now an HLC timestamp for total ordering
+pub type TxId = HlcTimestamp;
 
 /// Lock modes with compatibility matrix
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +69,6 @@ impl fmt::Display for LockKey {
 pub struct LockInfo {
     pub holder: TxId,
     pub mode: LockMode,
-    pub acquired_at: u64,
 }
 
 /// Result of attempting to acquire a lock
@@ -90,7 +90,6 @@ pub enum LockResult {
 struct Waiter {
     tx_id: TxId,
     mode: LockMode,
-    requested_at: u64,
 }
 
 /// Lock manager that tracks locks and detects conflicts
@@ -150,7 +149,6 @@ impl LockManager {
         let lock_info = LockInfo {
             holder: tx_id,
             mode,
-            acquired_at: self.logical_timestamp(),
         };
         
         locks.entry(key).or_insert_with(Vec::new).push(lock_info);
@@ -246,7 +244,6 @@ impl LockManager {
         let waiter = Waiter {
             tx_id,
             mode,
-            requested_at: self.logical_timestamp(),
         };
         
         wait_queue.entry(key)
@@ -274,7 +271,7 @@ impl LockManager {
     }
     
     /// Check lock escalation for a table
-    pub fn check_escalation(&self, _tx_id: TxId, table: &str, row_locks: Vec<u64>) -> Option<LockKey> {
+    pub fn check_escalation(&self, table: &str, row_locks: Vec<u64>) -> Option<LockKey> {
         if row_locks.len() > self.escalation_threshold {
             Some(LockKey::Table { table: table.to_string() })
         } else {
@@ -294,15 +291,6 @@ impl LockManager {
             let _ = waiters;
         }
     }
-    
-    fn logical_timestamp(&self) -> u64 {
-        // In production, this would use a proper logical clock
-        // For now, we'll use a simple timestamp
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
 }
 
 impl Default for LockManager {
@@ -314,6 +302,12 @@ impl Default for LockManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hlc::{HlcClock, NodeId};
+    
+    fn create_tx_id(seed: u8) -> TxId {
+        let clock = HlcClock::new(NodeId::from_seed(seed));
+        clock.now()
+    }
     
     #[test]
     fn test_lock_compatibility() {
@@ -328,15 +322,18 @@ mod tests {
         let manager = LockManager::new();
         let key = LockKey::Row { table: "users".into(), row_id: 1 };
         
+        let tx1 = create_tx_id(1);
+        let tx2 = create_tx_id(2);
+        
         // First lock should succeed
         assert_eq!(
-            manager.try_acquire(1, key.clone(), LockMode::Exclusive).unwrap(),
+            manager.try_acquire(tx1, key.clone(), LockMode::Exclusive).unwrap(),
             LockResult::Granted
         );
         
         // Conflicting lock should report conflict
-        let result = manager.try_acquire(2, key.clone(), LockMode::Exclusive).unwrap();
-        assert!(matches!(result, LockResult::Conflict { holder: 1, .. }));
+        let result = manager.try_acquire(tx2, key.clone(), LockMode::Exclusive).unwrap();
+        assert!(matches!(result, LockResult::Conflict { holder, .. } if holder == tx1));
     }
     
     #[test]
@@ -344,18 +341,22 @@ mod tests {
         let manager = LockManager::new();
         let key = LockKey::Row { table: "users".into(), row_id: 1 };
         
+        let tx1 = create_tx_id(1);
+        let tx2 = create_tx_id(2);
+        let tx3 = create_tx_id(3);
+        
         // Multiple shared locks should succeed
         assert_eq!(
-            manager.try_acquire(1, key.clone(), LockMode::Shared).unwrap(),
+            manager.try_acquire(tx1, key.clone(), LockMode::Shared).unwrap(),
             LockResult::Granted
         );
         assert_eq!(
-            manager.try_acquire(2, key.clone(), LockMode::Shared).unwrap(),
+            manager.try_acquire(tx2, key.clone(), LockMode::Shared).unwrap(),
             LockResult::Granted
         );
         
         // Exclusive lock should conflict
-        let result = manager.try_acquire(3, key.clone(), LockMode::Exclusive).unwrap();
+        let result = manager.try_acquire(tx3, key.clone(), LockMode::Exclusive).unwrap();
         assert!(matches!(result, LockResult::Conflict { .. }));
     }
     
@@ -364,13 +365,16 @@ mod tests {
         let manager = LockManager::new();
         let key = LockKey::Row { table: "users".into(), row_id: 1 };
         
+        let tx1 = create_tx_id(1);
+        let tx2 = create_tx_id(2);
+        
         // Acquire and release a lock
-        manager.try_acquire(1, key.clone(), LockMode::Exclusive).unwrap();
-        manager.release(1, key.clone()).unwrap();
+        manager.try_acquire(tx1, key.clone(), LockMode::Exclusive).unwrap();
+        manager.release(tx1, key.clone()).unwrap();
         
         // New lock should succeed
         assert_eq!(
-            manager.try_acquire(2, key.clone(), LockMode::Exclusive).unwrap(),
+            manager.try_acquire(tx2, key.clone(), LockMode::Exclusive).unwrap(),
             LockResult::Granted
         );
     }

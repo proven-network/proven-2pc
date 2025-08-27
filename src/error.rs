@@ -31,7 +31,7 @@ pub enum Error {
 
     // Lock errors
     #[error("Lock conflict: held by transaction {holder} in mode {mode:?}")]
-    LockConflict { holder: u64, mode: crate::lock::LockMode },
+    LockConflict { holder: crate::hlc::HlcTimestamp, mode: crate::lock::LockMode },
 
     #[error("Operation would block")]
     WouldBlock,
@@ -44,13 +44,13 @@ pub enum Error {
 
     // Transaction errors
     #[error("Transaction not found: {0}")]
-    TransactionNotFound(u64),
+    TransactionNotFound(crate::hlc::HlcTimestamp),
 
     #[error("Transaction aborted: {0}")]
-    TransactionAborted(u64),
+    TransactionAborted(crate::hlc::HlcTimestamp),
 
     #[error("Transaction not active: {0}")]
-    TransactionNotActive(u64),
+    TransactionNotActive(crate::hlc::HlcTimestamp),
 
     // SQL errors
     #[error("SQL parse error: {0}")]

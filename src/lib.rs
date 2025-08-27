@@ -9,6 +9,7 @@
 //! See LAYERS.md for detailed architecture documentation.
 
 pub mod error;
+pub mod hlc;
 pub mod lock;
 pub mod sql;
 pub mod storage;

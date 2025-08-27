@@ -1,6 +1,7 @@
 //! Transaction management with pessimistic concurrency control
 
 use crate::error::{Error, Result};
+use crate::hlc::{HlcClock, HlcTimestamp, SharedHlcClock};
 use crate::lock::{LockKey, LockManager, LockMode, LockResult, TxId};
 use crate::storage::Storage;
 use serde::{Deserialize, Serialize};
@@ -30,11 +31,9 @@ pub struct AccessLogEntry {
 
 /// A database transaction
 pub struct Transaction {
-    /// Unique transaction ID
+    /// Unique transaction ID (HLC timestamp)
+    /// Earlier timestamps have higher priority in wound-wait
     pub id: TxId,
-
-    /// Priority for wound-wait (lower value = higher priority)
-    pub priority: u64,
 
     /// Current state
     pub state: RwLock<TransactionState>,
@@ -55,13 +54,11 @@ pub struct Transaction {
 impl Transaction {
     pub fn new(
         id: TxId,
-        priority: u64,
         lock_manager: Arc<LockManager>,
         storage: Arc<Storage>,
     ) -> Self {
         Self {
             id,
-            priority,
             state: RwLock::new(TransactionState::Active),
             locks_held: RwLock::new(Vec::new()),
             lock_manager,
@@ -321,8 +318,8 @@ pub struct TransactionManager {
     /// All active transactions
     transactions: Arc<RwLock<HashMap<TxId, Arc<Transaction>>>>,
 
-    /// Next transaction ID
-    next_tx_id: Arc<RwLock<TxId>>,
+    /// HLC clock for generating transaction IDs
+    clock: SharedHlcClock,
 
     /// Lock manager
     lock_manager: Arc<LockManager>,
@@ -333,9 +330,27 @@ pub struct TransactionManager {
 
 impl TransactionManager {
     pub fn new(lock_manager: Arc<LockManager>, storage: Arc<Storage>) -> Self {
+        use crate::hlc::NodeId;
+        // In a real system, this would use the actual node ID
+        let clock = Arc::new(HlcClock::new(NodeId::new(1)));
+        
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
-            next_tx_id: Arc::new(RwLock::new(1)),
+            clock,
+            lock_manager,
+            storage,
+        }
+    }
+    
+    /// Create a new transaction manager with a specific clock
+    pub fn with_clock(
+        lock_manager: Arc<LockManager>,
+        storage: Arc<Storage>,
+        clock: SharedHlcClock,
+    ) -> Self {
+        Self {
+            transactions: Arc::new(RwLock::new(HashMap::new())),
+            clock,
             lock_manager,
             storage,
         }
@@ -343,22 +358,23 @@ impl TransactionManager {
 
     /// Begin a new transaction
     pub fn begin(&self) -> Result<Arc<Transaction>> {
-        self.begin_with_priority(None)
-    }
-    
-    /// Begin a new transaction with explicit priority
-    pub fn begin_with_priority(&self, priority: Option<u64>) -> Result<Arc<Transaction>> {
-        let mut next_id = self.next_tx_id.write().unwrap();
-        let tx_id = *next_id;
-        *next_id += 1;
-
-        // Use transaction ID as priority if not specified
-        // Lower value = higher priority (older transactions)
-        let priority = priority.unwrap_or(tx_id);
+        let tx_id = self.clock.now();
 
         let tx = Arc::new(Transaction::new(
             tx_id,
-            priority,
+            self.lock_manager.clone(),
+            self.storage.clone(),
+        ));
+
+        self.transactions.write().unwrap().insert(tx_id, tx.clone());
+
+        Ok(tx)
+    }
+    
+    /// Begin a new transaction with a specific timestamp (for testing)
+    pub fn begin_with_timestamp(&self, tx_id: HlcTimestamp) -> Result<Arc<Transaction>> {
+        let tx = Arc::new(Transaction::new(
+            tx_id,
             self.lock_manager.clone(),
             self.storage.clone(),
         ));
@@ -419,10 +435,10 @@ impl TransactionManager {
             match tx.acquire_lock(key.clone(), mode) {
                 Ok(()) => return Ok(()),
                 Err(Error::LockConflict { holder, .. }) => {
-                    // Get the holder transaction to check its priority
+                    // Get the holder transaction to check its timestamp
                     if let Some(holder_tx) = self.get(holder) {
-                        // Wound-wait: if we're older (lower priority value), wound the holder
-                        if tx.priority < holder_tx.priority {
+                        // Wound-wait: if we're older (earlier timestamp), wound the holder
+                        if tx.id.is_older_than(&holder_tx.id) {
                             // Wound the younger transaction
                             self.abort_transaction(holder)?;
                             // Retry acquiring the lock
@@ -469,6 +485,7 @@ mod tests {
         // Begin transaction
         let tx = tx_manager.begin().unwrap();
         assert_eq!(tx.state(), TransactionState::Active);
+        assert!(tx.id.physical > 0); // Should have a valid timestamp
 
         // Insert data
         let id = tx
@@ -508,7 +525,12 @@ mod tests {
 
         // Start two concurrent transactions
         let tx1 = tx_manager.begin().unwrap();
+        // Small delay to ensure tx2 gets a later timestamp
+        std::thread::sleep(std::time::Duration::from_millis(1));
         let tx2 = tx_manager.begin().unwrap();
+        
+        // tx2 should be younger (later timestamp)
+        assert!(tx1.id.is_older_than(&tx2.id));
 
         // tx1 reads the balance
         let balance = tx1.read("accounts", 1).unwrap();
