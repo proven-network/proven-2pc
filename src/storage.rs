@@ -130,12 +130,13 @@ impl Schema {
     }
 }
 
-/// An in-memory table
+/// An in-memory table with Arc-wrapped rows for efficient sharing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Table {
     pub name: String,
     pub schema: Schema,
-    pub rows: BTreeMap<u64, Row>,
+    /// Rows are Arc-wrapped for cheap cloning when returning results
+    pub rows: BTreeMap<u64, Arc<Row>>,
     pub next_id: u64,
     /// Secondary indexes (column_name -> value -> row_ids)
     pub indexes: HashMap<String, BTreeMap<Value, Vec<u64>>>,
@@ -159,7 +160,7 @@ impl Table {
         let id = self.next_id;
         self.next_id += 1;
 
-        let row = Row::new(id, values);
+        let row = Arc::new(Row::new(id, values));
 
         // Update indexes
         self.update_indexes_for_insert(id, &row)?;
@@ -168,77 +169,72 @@ impl Table {
         Ok(id)
     }
 
-    /// Get a row by ID
-    pub fn get(&self, id: u64) -> Option<&Row> {
-        self.rows.get(&id).filter(|r| !r.deleted)
+    /// Get a row by ID (returns Arc for cheap cloning)
+    pub fn get(&self, id: u64) -> Option<Arc<Row>> {
+        self.rows.get(&id).filter(|r| !r.deleted).cloned() // Cheap clone of Arc
     }
 
-    /// Update a row
+    /// Update a row (creates new Arc-wrapped row)
     pub fn update(&mut self, id: u64, values: Vec<Value>) -> Result<()> {
         self.schema.validate_row(&values)?;
 
-        // Get the old values for index update
-        let old_values = {
-            let row = self
-                .rows
-                .get(&id)
-                .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", id)))?;
+        // Get the old row for index update (clone to release borrow)
+        let old_row = self
+            .rows
+            .get(&id)
+            .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", id)))?
+            .clone(); // Clone the Arc to release the borrow
 
-            if row.deleted {
-                return Err(Error::InvalidValue(format!("Row {} is deleted", id)));
-            }
-
-            row.values.clone()
-        };
+        if old_row.deleted {
+            return Err(Error::InvalidValue(format!("Row {} is deleted", id)));
+        }
 
         // Update indexes
-        self.update_indexes_for_update(id, &old_values, &values)?;
+        self.update_indexes_for_update(id, &old_row.values, &values)?;
 
-        // Now update the row
-        let row = self.rows.get_mut(&id).unwrap();
-        row.values = values;
+        // Create new row (immutable pattern with Arc)
+        let new_row = Arc::new(Row::new(id, values));
+        self.rows.insert(id, new_row);
         Ok(())
     }
 
-    /// Delete a row (soft delete)
+    /// Delete a row (soft delete by creating new Arc-wrapped row)
     pub fn delete(&mut self, id: u64) -> Result<()> {
-        // Get the values for index update
-        let values_to_remove = {
-            let row = self
-                .rows
-                .get(&id)
-                .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", id)))?;
+        // Get the row for index update (clone to release borrow)
+        let old_row = self
+            .rows
+            .get(&id)
+            .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", id)))?
+            .clone(); // Clone the Arc to release the borrow
 
-            if row.deleted {
-                return Err(Error::InvalidValue(format!("Row {} already deleted", id)));
-            }
-
-            row.values.clone()
-        };
+        if old_row.deleted {
+            return Err(Error::InvalidValue(format!("Row {} already deleted", id)));
+        }
 
         // Update indexes
-        self.update_indexes_for_delete(id, &values_to_remove)?;
+        self.update_indexes_for_delete(id, &old_row.values)?;
 
-        // Now mark as deleted
-        let row = self.rows.get_mut(&id).unwrap();
-        row.deleted = true;
+        // Create new row marked as deleted (immutable pattern)
+        let mut deleted_row = Row::new(id, old_row.values.clone());
+        deleted_row.deleted = true;
+        self.rows.insert(id, Arc::new(deleted_row));
         Ok(())
     }
 
-    /// Scan all rows
-    pub fn scan(&self) -> impl Iterator<Item = (u64, &Row)> + '_ {
+    /// Scan all rows (returns Arc for efficient sharing)
+    pub fn scan(&self) -> impl Iterator<Item = (u64, Arc<Row>)> + '_ {
         self.rows
             .iter()
             .filter(|(_, row)| !row.deleted)
-            .map(|(&id, row)| (id, row))
+            .map(|(&id, row)| (id, row.clone())) // Cheap Arc clone
     }
 
-    /// Scan rows in a range
-    pub fn scan_range(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, &Row)> + '_ {
+    /// Scan rows in a range (returns Arc for efficient sharing)
+    pub fn scan_range(&self, start: u64, end: u64) -> impl Iterator<Item = (u64, Arc<Row>)> + '_ {
         self.rows
             .range(start..=end)
             .filter(|(_, row)| !row.deleted)
-            .map(|(&id, row)| (id, row))
+            .map(|(&id, row)| (id, row.clone())) // Cheap Arc clone
     }
 
     /// Create an index on a column
