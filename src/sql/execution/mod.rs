@@ -1,15 +1,15 @@
 //! Query execution module for SQL queries
 //!
-//! This module contains:
-//! - Query executor that runs execution plans
-//! - Aggregator for GROUP BY operations  
-//! - Join executors (hash join and nested loop)
+//! This module contains the MVCC-aware query executor that runs execution plans.
+//!
+//! Note: Our join and aggregation implementations are MVCC-aware and require
+//! transaction context for proper visibility checks and expression evaluation.
 
-pub mod aggregator;
-pub mod executor;
-pub mod join;
+mod aggregator;
+mod executor;
+mod join;
 
 // Re-export main types
-pub use aggregator::{Aggregate, Aggregator};
+pub use aggregator::Aggregator;
 pub use executor::{ExecutionResult, Executor};
 pub use join::{HashJoiner, NestedLoopJoiner};

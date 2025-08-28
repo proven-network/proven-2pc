@@ -8,8 +8,29 @@ use std::cmp::Ordering;
 use std::fmt;
 use uuid::Uuid;
 
-/// A row of values in a table
+/// A row of values in a table (simple type alias for most uses)
 pub type Row = Vec<Value>;
+
+/// A versioned row in storage with metadata
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StorageRow {
+    /// Primary key (deterministic ID)
+    pub id: u64,
+    /// Column values
+    pub values: Vec<Value>,
+    /// Soft delete flag
+    pub deleted: bool,
+}
+
+impl StorageRow {
+    pub fn new(id: u64, values: Vec<Value>) -> Self {
+        Self {
+            id,
+            values,
+            deleted: false,
+        }
+    }
+}
 
 /// SQL data types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,7 +81,7 @@ pub enum Value {
     Integer(i64),
     Decimal(Decimal),
     String(String),
-    Timestamp(u64), // Logical timestamp, not wall clock
+    Timestamp(u64),
     Uuid(Uuid),
     Blob(Bytes),
 }
@@ -301,6 +322,18 @@ impl Value {
         match self {
             Value::Boolean(b) => Ok(Value::Boolean(!b)),
             Value::Null => Ok(Value::Null),
+            _ => Err(Error::TypeMismatch {
+                expected: "boolean".into(),
+                found: self.data_type().to_string(),
+            }),
+        }
+    }
+
+    /// Convert value to boolean
+    pub fn to_bool(&self) -> Result<bool> {
+        match self {
+            Value::Boolean(b) => Ok(*b),
+            Value::Null => Ok(false), // NULL is treated as false
             _ => Err(Error::TypeMismatch {
                 expected: "boolean".into(),
                 found: self.data_type().to_string(),

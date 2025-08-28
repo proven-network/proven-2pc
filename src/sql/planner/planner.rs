@@ -59,8 +59,13 @@ impl Planner {
             ast::Statement::DropTable { name, if_exists } => {
                 Ok(Plan::DropTable { name, if_exists })
             }
-            
-            ast::Statement::CreateIndex { name, table, column, unique } => {
+
+            ast::Statement::CreateIndex {
+                name,
+                table,
+                column,
+                unique,
+            } => {
                 // Verify table exists
                 if !self.schemas.contains_key(&table) {
                     return Err(Error::TableNotFound(table));
@@ -70,9 +75,14 @@ impl Planner {
                 if !schema.columns.iter().any(|c| c.name == column) {
                     return Err(Error::ColumnNotFound(column));
                 }
-                Ok(Plan::CreateIndex { name, table, column, unique })
+                Ok(Plan::CreateIndex {
+                    name,
+                    table,
+                    column,
+                    unique,
+                })
             }
-            
+
             ast::Statement::DropIndex { name, if_exists } => {
                 Ok(Plan::DropIndex { name, if_exists })
             }
@@ -390,7 +400,7 @@ impl Planner {
             if col.unique {
                 schema_col = schema_col.unique();
             }
-            
+
             if col.index {
                 schema_col = schema_col.with_index(true);
             }
@@ -399,9 +409,10 @@ impl Planner {
         }
 
         let table = Table::new(name.clone(), schema_columns)?;
-        
+
         // Collect columns that need indexes (for future use)
-        let _indexed_columns: Vec<String> = columns.iter()
+        let _indexed_columns: Vec<String> = columns
+            .iter()
             .filter(|col| col.index)
             .map(|col| col.name.clone())
             .collect();

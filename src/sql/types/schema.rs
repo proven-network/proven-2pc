@@ -146,7 +146,7 @@ impl Column {
             references: None,
         }
     }
-    
+
     /// Set the index flag for this column.
     pub fn with_index(mut self, index: bool) -> Self {
         self.index = index;

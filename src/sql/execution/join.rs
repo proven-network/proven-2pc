@@ -1,185 +1,504 @@
-//! Join execution for SQL queries
+//! MVCC-aware join implementations
+//!
+//! This module provides join operations that work with MVCC transactions
+//! and visibility rules. Unlike toydb's pure iterator-based joins, these
+//! joins integrate with transaction contexts and respect MVCC isolation.
 
-use crate::error::Result;
-use crate::sql::types::value::{Row, Value};
+use crate::error::{Error, Result};
+use crate::sql::planner::plan::JoinType;
+use crate::sql::types::expression::Expression;
+use crate::sql::types::value::Value;
+use crate::transaction::MvccTransaction;
+use crate::transaction_id::TransactionContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Hash joiner for equijoin operations
-pub struct HashJoiner {
-    /// The column index in the left table  
-    left_column: usize,
-    /// The column index in the right table
-    right_column: usize,
-    /// Hash table built from the left side
-    hash_table: HashMap<Value, Vec<Arc<Row>>>,
-}
+/// Row type for join operations
+pub type Row = Arc<Vec<Value>>;
+/// Row iterator type for join operations  
+pub type Rows = Box<dyn Iterator<Item = Result<Row>>>;
 
-impl HashJoiner {
-    /// Create a new hash joiner
-    pub fn new(left_column: usize, right_column: usize) -> Self {
-        Self {
-            left_column,
-            right_column,
-            hash_table: HashMap::new(),
-        }
-    }
-
-    /// Build phase: add rows from the left side to the hash table
-    pub fn build(&mut self, row: Arc<Row>) -> Result<()> {
-        let key = row[self.left_column].clone();
-        self.hash_table
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(row);
-        Ok(())
-    }
-
-    /// Probe phase: find matching rows for a right-side row
-    pub fn probe(&self, right_row: &Row) -> Vec<Arc<Row>> {
-        let key = &right_row[self.right_column];
-        self.hash_table
-            .get(key)
-            .map(|rows| {
-                rows.iter()
-                    .map(|left_row| {
-                        let mut joined = (**left_row).clone();
-                        joined.extend_from_slice(right_row);
-                        Arc::new(joined)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Probe for outer join: returns joined rows or right row with NULLs
-    pub fn probe_outer(&self, right_row: &Row, left_columns: usize) -> Vec<Arc<Row>> {
-        let matches = self.probe(right_row);
-        if !matches.is_empty() {
-            matches
-        } else {
-            // No match - return right row with NULLs for left columns
-            let mut joined = vec![Value::Null; left_columns];
-            joined.extend_from_slice(right_row);
-            vec![Arc::new(joined)]
-        }
-    }
-}
-
-/// Nested loop joiner for general join predicates
+/// NestedLoopJoiner implements MVCC-aware nested loop joins.
+///
+/// For every row in the left source, iterate over the right source and join
+/// them. Rows are filtered on the join predicate, if given. This version
+/// respects MVCC transaction visibility and isolation rules.
 pub struct NestedLoopJoiner {
-    /// All rows from the left side
-    left_rows: Vec<Arc<Row>>,
+    /// The left row iterator
+    left_rows: Vec<Row>,
+    /// Current left row index
+    left_index: usize,
+    /// The right row iterator (cached for reuse)
+    right_rows: Vec<Row>,
+    /// Current right row index
+    right_index: usize,
+    /// The number of columns in the right source
+    right_columns: usize,
+    /// True if a right match has been seen for the current left row
+    right_matched: bool,
+    /// The join predicate
+    predicate: Expression,
+    /// The join type
+    join_type: JoinType,
+    /// Transaction context for expression evaluation
+    context: TransactionContext,
 }
 
 impl NestedLoopJoiner {
-    /// Create a new nested loop joiner
-    pub fn new() -> Self {
-        Self {
-            left_rows: Vec::new(),
+    /// Creates a new MVCC-aware nested loop joiner.
+    pub fn new(
+        left: Rows,
+        right: Rows,
+        right_columns: usize,
+        predicate: Expression,
+        join_type: JoinType,
+        context: TransactionContext,
+    ) -> Result<Self> {
+        // Collect all rows from both sources
+        let mut left_rows = Vec::new();
+        for row in left {
+            left_rows.push(row?);
+        }
+
+        let mut right_rows = Vec::new();
+        for row in right {
+            right_rows.push(row?);
+        }
+
+        Ok(Self {
+            left_rows,
+            left_index: 0,
+            right_rows,
+            right_index: 0,
+            right_columns,
+            right_matched: false,
+            predicate,
+            join_type,
+            context,
+        })
+    }
+
+    /// Get the next joined row, respecting MVCC visibility
+    pub fn next_row(&mut self) -> Result<Option<Row>> {
+        // While there is a valid left row, look for a right-hand match to return
+        while self.left_index < self.left_rows.len() {
+            let left = &self.left_rows[self.left_index];
+
+            // If there is a match in the remaining right rows, return it
+            while self.right_index < self.right_rows.len() {
+                let right = &self.right_rows[self.right_index];
+                self.right_index += 1;
+
+                // Create joined row
+                let mut row = left.to_vec();
+                row.extend(right.iter().cloned());
+                let joined_row = Arc::new(row);
+
+                // Check join predicate
+                match self.evaluate_predicate(&joined_row)? {
+                    Value::Boolean(true) => {
+                        self.right_matched = true;
+                        return Ok(Some(joined_row));
+                    }
+                    Value::Boolean(false) | Value::Null => continue,
+                    v => {
+                        return Err(Error::InvalidValue(format!(
+                            "join predicate returned {}, expected boolean",
+                            v
+                        )));
+                    }
+                }
+            }
+
+            // Handle outer joins when no right match found
+            if !self.right_matched && matches!(self.join_type, JoinType::Left | JoinType::Full) {
+                self.right_matched = true;
+                let mut row = left.to_vec();
+                row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+                return Ok(Some(Arc::new(row)));
+            }
+
+            // Move to next left row and reset right iteration
+            self.left_index += 1;
+            self.right_index = 0;
+            self.right_matched = false;
+        }
+
+        Ok(None)
+    }
+
+    /// Evaluate the join predicate for MVCC context
+    fn evaluate_predicate(&self, row: &Row) -> Result<Value> {
+        self.predicate.evaluate(Some(row), &self.context)
+    }
+}
+
+impl Iterator for NestedLoopJoiner {
+    type Item = Result<Row>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_row() {
+            Ok(Some(row)) => Some(Ok(row)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
         }
     }
+}
 
-    /// Add a row from the left side
-    pub fn add_left(&mut self, row: Arc<Row>) {
-        self.left_rows.push(row);
+/// HashJoiner implements MVCC-aware hash joins.
+///
+/// This builds a hash table of rows from the right source keyed on the join
+/// column value, then iterates over the left source and looks up matching
+/// rows in the hash table. Respects MVCC isolation and visibility.
+pub struct HashJoiner {
+    /// The left row iterator
+    left_rows: Vec<Row>,
+    /// Current left row index
+    left_index: usize,
+    /// The left column to join on
+    left_column: usize,
+    /// The right hash map to join on
+    right_hash: HashMap<Value, Vec<Row>>,
+    /// Current matches for the current left row
+    current_matches: Vec<Row>,
+    /// Current match index
+    match_index: usize,
+    /// The number of columns in the right source
+    right_columns: usize,
+    /// The join type
+    join_type: JoinType,
+    /// Transaction context for operations
+    context: TransactionContext,
+}
+
+impl HashJoiner {
+    /// Creates a new MVCC-aware hash joiner.
+    pub fn new(
+        left: Rows,
+        left_column: usize,
+        right: Rows,
+        right_column: usize,
+        right_columns: usize,
+        join_type: JoinType,
+        context: TransactionContext,
+    ) -> Result<Self> {
+        // Collect left rows
+        let mut left_rows = Vec::new();
+        for row in left {
+            left_rows.push(row?);
+        }
+
+        // Build hash table from right source
+        let mut right_hash: HashMap<Value, Vec<Row>> = HashMap::new();
+        for row in right {
+            let row = row?;
+            let key_value = row
+                .get(right_column)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Right column {} not found", right_column))
+                })?
+                .clone();
+
+            // Skip undefined values (they never match)
+            if matches!(key_value, Value::Null) {
+                continue;
+            }
+
+            right_hash.entry(key_value).or_default().push(row);
+        }
+
+        Ok(Self {
+            left_rows,
+            left_index: 0,
+            left_column,
+            right_hash,
+            current_matches: Vec::new(),
+            match_index: 0,
+            right_columns,
+            join_type,
+            context,
+        })
     }
 
-    /// Join a right row with all left rows using a predicate
-    pub fn join_with<F>(&self, right_row: &Row, predicate: F) -> Vec<Arc<Row>>
-    where
-        F: Fn(&Row, &Row) -> bool,
-    {
-        self.left_rows
-            .iter()
-            .filter(|left_row| predicate(left_row, right_row))
-            .map(|left_row| {
-                let mut joined = (**left_row).clone();
-                joined.extend_from_slice(right_row);
-                Arc::new(joined)
-            })
-            .collect()
-    }
+    /// Get the next joined row
+    pub fn next_row(&mut self) -> Result<Option<Row>> {
+        // First, return any pending matches from the current left row
+        if self.match_index < self.current_matches.len() {
+            let left = &self.left_rows[self.left_index - 1]; // Use previous left row
+            let right = &self.current_matches[self.match_index];
+            self.match_index += 1;
 
-    /// Join for outer join with a predicate
-    pub fn join_outer_with<F>(
-        &self,
-        right_row: &Row,
-        predicate: F,
-        left_columns: usize,
-    ) -> Vec<Arc<Row>>
-    where
-        F: Fn(&Row, &Row) -> bool,
-    {
-        let matches = self.join_with(right_row, predicate);
-        if !matches.is_empty() {
-            matches
-        } else {
-            // No match - return right row with NULLs for left columns
-            let mut joined = vec![Value::Null; left_columns];
-            joined.extend_from_slice(right_row);
-            vec![Arc::new(joined)]
+            let mut row = left.to_vec();
+            row.extend(right.iter().cloned());
+            return Ok(Some(Arc::new(row)));
+        }
+
+        // Move to the next left row
+        while self.left_index < self.left_rows.len() {
+            let left = &self.left_rows[self.left_index];
+
+            // Get the join key from left row
+            let join_key = left
+                .get(self.left_column)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Left column {} not found", self.left_column))
+                })?
+                .clone();
+
+            // Move to next left row immediately
+            self.left_index += 1;
+
+            // Find matching right rows
+            if let Some(matches) = self.right_hash.get(&join_key).cloned() {
+                // Found matches - set them up for iteration
+                self.current_matches = matches;
+                self.match_index = 0;
+
+                // Return first match
+                if !self.current_matches.is_empty() {
+                    let right = &self.current_matches[0];
+                    self.match_index = 1;
+
+                    let mut row = left.to_vec();
+                    row.extend(right.iter().cloned());
+                    return Ok(Some(Arc::new(row)));
+                }
+            }
+
+            // Handle outer joins when no match found
+            if matches!(self.join_type, JoinType::Left | JoinType::Full) {
+                self.current_matches.clear();
+                self.match_index = 0;
+
+                let mut row = left.to_vec();
+                row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+                return Ok(Some(Arc::new(row)));
+            }
+
+            // No match and not an outer join, continue to next left row
+            self.current_matches.clear();
+            self.match_index = 0;
+        }
+
+        Ok(None)
+    }
+}
+
+impl Iterator for HashJoiner {
+    type Item = Result<Row>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_row() {
+            Ok(Some(row)) => Some(Ok(row)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
         }
     }
+}
+
+/// Execute a nested loop join with MVCC awareness
+pub fn execute_nested_loop_join(
+    left: Rows,
+    right: Rows,
+    right_columns: usize,
+    predicate: Expression,
+    join_type: JoinType,
+    tx: &Arc<MvccTransaction>,
+) -> Result<Rows> {
+    let joiner = NestedLoopJoiner::new(
+        left,
+        right,
+        right_columns,
+        predicate,
+        join_type,
+        tx.context.clone(),
+    )?;
+
+    Ok(Box::new(joiner))
+}
+
+/// Execute a hash join with MVCC awareness
+pub fn execute_hash_join(
+    left: Rows,
+    left_column: usize,
+    right: Rows,
+    right_column: usize,
+    right_columns: usize,
+    join_type: JoinType,
+    tx: &Arc<MvccTransaction>,
+) -> Result<Rows> {
+    let joiner = HashJoiner::new(
+        left,
+        left_column,
+        right,
+        right_column,
+        right_columns,
+        join_type,
+        tx.context.clone(),
+    )?;
+
+    Ok(Box::new(joiner))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hlc::{HlcTimestamp, NodeId};
+    use crate::sql::types::expression::Expression;
+    use crate::sql::types::value::Value;
+    use crate::transaction_id::TransactionContext;
 
-    #[test]
-    fn test_hash_join() {
-        let mut joiner = HashJoiner::new(0, 0);
-
-        // Build phase - add left rows
-        joiner
-            .build(Arc::new(vec![
-                Value::Integer(1),
-                Value::String("Alice".into()),
-            ]))
-            .unwrap();
-        joiner
-            .build(Arc::new(vec![
-                Value::Integer(2),
-                Value::String("Bob".into()),
-            ]))
-            .unwrap();
-
-        // Probe phase - find matches
-        let right_row = vec![Value::Integer(1), Value::String("Engineer".into())];
-        let results = joiner.probe(&right_row);
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0][0], Value::Integer(1));
-        assert_eq!(results[0][1], Value::String("Alice".into()));
-        assert_eq!(results[0][2], Value::Integer(1));
-        assert_eq!(results[0][3], Value::String("Engineer".into()));
+    fn create_test_context() -> TransactionContext {
+        TransactionContext::new(HlcTimestamp::new(100, 0, NodeId::new(1)))
     }
 
     #[test]
-    fn test_nested_loop_join() {
-        let mut joiner = NestedLoopJoiner::new();
+    fn test_nested_loop_inner_join() {
+        let context = create_test_context();
 
-        // Add left rows
-        joiner.add_left(Arc::new(vec![
-            Value::Integer(1),
-            Value::String("Alice".into()),
-        ]));
-        joiner.add_left(Arc::new(vec![
-            Value::Integer(2),
-            Value::String("Bob".into()),
-        ]));
+        // Create test data: left table with id, name
+        let left_rows: Vec<Row> = vec![
+            Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]),
+            Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]),
+        ];
 
-        // Join with right row using predicate
-        let right_row = vec![Value::Integer(1), Value::String("Engineer".into())];
-        let results = joiner.join_with(&right_row, |left, right| {
-            left[0] == right[0] // Join on first column
-        });
+        // Right table with id, age
+        let right_rows: Vec<Row> = vec![
+            Arc::new(vec![Value::Integer(1), Value::Integer(25)]),
+            Arc::new(vec![Value::Integer(3), Value::Integer(30)]),
+        ];
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0][0], Value::Integer(1));
-        assert_eq!(results[0][1], Value::String("Alice".into()));
-        assert_eq!(results[0][2], Value::Integer(1));
-        assert_eq!(results[0][3], Value::String("Engineer".into()));
+        // Join predicate: left.id = right.id (columns 0 and 2)
+        let predicate = Expression::Equal(
+            Box::new(Expression::Column(0)), // left.id
+            Box::new(Expression::Column(2)), // right.id (after join)
+        );
+
+        let joiner = NestedLoopJoiner::new(
+            Box::new(left_rows.into_iter().map(Ok)),
+            Box::new(right_rows.into_iter().map(Ok)),
+            2, // right has 2 columns
+            predicate,
+            JoinType::Inner,
+            context,
+        )
+        .unwrap();
+
+        // Should get one match: (1, Alice, 1, 25)
+        let result: Vec<_> = joiner.collect::<Result<Vec<_>>>().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            Arc::new(vec![
+                Value::Integer(1),
+                Value::String("Alice".to_string()),
+                Value::Integer(1),
+                Value::Integer(25)
+            ])
+        );
+    }
+
+    #[test]
+    fn test_hash_join_inner() {
+        let context = create_test_context();
+
+        // Create test data: left table with id, name
+        let left_rows: Vec<Row> = vec![
+            Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]),
+            Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]),
+        ];
+
+        // Right table with id, age
+        let right_rows: Vec<Row> = vec![
+            Arc::new(vec![Value::Integer(1), Value::Integer(25)]),
+            Arc::new(vec![Value::Integer(2), Value::Integer(30)]),
+        ];
+
+        let joiner = HashJoiner::new(
+            Box::new(left_rows.into_iter().map(Ok)),
+            0, // left join column (id)
+            Box::new(right_rows.into_iter().map(Ok)),
+            0, // right join column (id)
+            2, // right has 2 columns
+            JoinType::Inner,
+            context,
+        )
+        .unwrap();
+
+        // Should get two matches
+        let result: Vec<_> = joiner.collect::<Result<Vec<_>>>().unwrap();
+        assert_eq!(result.len(), 2);
+
+        // First match: (1, Alice, 1, 25)
+        assert_eq!(
+            result[0],
+            Arc::new(vec![
+                Value::Integer(1),
+                Value::String("Alice".to_string()),
+                Value::Integer(1),
+                Value::Integer(25)
+            ])
+        );
+
+        // Second match: (2, Bob, 2, 30)
+        assert_eq!(
+            result[1],
+            Arc::new(vec![
+                Value::Integer(2),
+                Value::String("Bob".to_string()),
+                Value::Integer(2),
+                Value::Integer(30)
+            ])
+        );
+    }
+
+    #[test]
+    fn test_left_outer_join() {
+        let context = create_test_context();
+
+        // Create test data: left table with id, name
+        let left_rows: Vec<Row> = vec![
+            Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]),
+            Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]),
+        ];
+
+        // Right table with id, age (only one matching row)
+        let right_rows: Vec<Row> = vec![Arc::new(vec![Value::Integer(1), Value::Integer(25)])];
+
+        let joiner = HashJoiner::new(
+            Box::new(left_rows.into_iter().map(Ok)),
+            0, // left join column (id)
+            Box::new(right_rows.into_iter().map(Ok)),
+            0, // right join column (id)
+            2, // right has 2 columns
+            JoinType::Left,
+            context,
+        )
+        .unwrap();
+
+        let result: Vec<_> = joiner.collect::<Result<Vec<_>>>().unwrap();
+        assert_eq!(result.len(), 2);
+
+        // First match: (1, Alice, 1, 25)
+        assert_eq!(
+            result[0],
+            Arc::new(vec![
+                Value::Integer(1),
+                Value::String("Alice".to_string()),
+                Value::Integer(1),
+                Value::Integer(25)
+            ])
+        );
+
+        // Second row with NULLs: (2, Bob, NULL, NULL)
+        assert_eq!(
+            result[1],
+            Arc::new(vec![
+                Value::Integer(2),
+                Value::String("Bob".to_string()),
+                Value::Null,
+                Value::Null
+            ])
+        );
     }
 }

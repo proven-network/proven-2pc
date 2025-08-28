@@ -49,11 +49,9 @@ impl Optimizer {
             Node::Filter { source, predicate } => {
                 // Try to push filter down to scan and convert to index scan
                 if let Node::Scan { table, alias } = source.as_ref() {
-                    if let Some(index_scan) = self.try_convert_to_index_scan(
-                        table.clone(),
-                        alias.clone(),
-                        &predicate,
-                    ) {
+                    if let Some(index_scan) =
+                        self.try_convert_to_index_scan(table.clone(), alias.clone(), &predicate)
+                    {
                         return Ok(index_scan);
                     }
                 }
@@ -117,10 +115,10 @@ impl Optimizer {
                 join_type,
             },
             Node::IndexScan { .. } => node, // Already optimized
-            other => other, // Leaf nodes
+            other => other,                 // Leaf nodes
         })
     }
-    
+
     /// Try to convert a filter on a scan to an index scan
     fn try_convert_to_index_scan(
         &self,
@@ -170,7 +168,7 @@ impl Optimizer {
         }
         None
     }
-    
+
     /// Check if an expression is constant (doesn't depend on row data)
     fn is_constant_expr(expr: &Expression) -> bool {
         match expr {

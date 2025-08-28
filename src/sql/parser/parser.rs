@@ -195,8 +195,13 @@ impl Parser<'_> {
                 self.next()?; // consume INDEX
                 self.parse_create_index_inner(false)
             }
-            Some(token) => Err(Error::ParseError(format!("expected TABLE or INDEX after CREATE, found {}", token))),
-            None => Err(Error::ParseError("unexpected end of input after CREATE".into())),
+            Some(token) => Err(Error::ParseError(format!(
+                "expected TABLE or INDEX after CREATE, found {}",
+                token
+            ))),
+            None => Err(Error::ParseError(
+                "unexpected end of input after CREATE".into(),
+            )),
         }
     }
 
@@ -209,8 +214,13 @@ impl Parser<'_> {
                 self.next()?; // consume INDEX
                 self.parse_drop_index_inner()
             }
-            Some(token) => Err(Error::ParseError(format!("expected TABLE or INDEX after DROP, found {}", token))),
-            None => Err(Error::ParseError("unexpected end of input after DROP".into())),
+            Some(token) => Err(Error::ParseError(format!(
+                "expected TABLE or INDEX after DROP, found {}",
+                token
+            ))),
+            None => Err(Error::ParseError(
+                "unexpected end of input after DROP".into(),
+            )),
         }
     }
 

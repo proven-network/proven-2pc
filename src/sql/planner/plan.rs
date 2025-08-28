@@ -52,7 +52,7 @@ pub enum Plan {
     },
     Commit,
     Rollback,
-    
+
     /// CREATE INDEX
     CreateIndex {
         name: String,
@@ -60,7 +60,7 @@ pub enum Plan {
         column: String,
         unique: bool,
     },
-    
+
     /// DROP INDEX
     DropIndex {
         name: String,
@@ -76,7 +76,7 @@ pub enum Node {
         table: String,
         alias: Option<String>,
     },
-    
+
     /// Index scan - uses an index to lookup rows
     IndexScan {
         table: String,
@@ -149,7 +149,9 @@ impl Node {
     ) -> usize {
         match self {
             Node::Scan { table, .. } => schemas.get(table).map(|s| s.columns.len()).unwrap_or(0),
-            Node::IndexScan { table, .. } => schemas.get(table).map(|s| s.columns.len()).unwrap_or(0),
+            Node::IndexScan { table, .. } => {
+                schemas.get(table).map(|s| s.columns.len()).unwrap_or(0)
+            }
             Node::Projection { expressions, .. } => expressions.len(),
             Node::Filter { source, .. } => source.column_count(schemas),
             Node::Order { source, .. } => source.column_count(schemas),
