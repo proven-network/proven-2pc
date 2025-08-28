@@ -8,7 +8,7 @@ use crate::hlc::HlcTimestamp;
 use crate::sql::types::schema::Table;
 use crate::sql::types::value::{StorageRow as Row, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 /// A versioned value in storage
 #[derive(Debug, Clone)]
@@ -36,9 +36,9 @@ pub struct VersionedTable {
     /// Next row ID for inserts
     pub next_id: u64,
     /// Track committed transactions
-    pub committed_transactions: Arc<RwLock<HashSet<HlcTimestamp>>>,
+    pub committed_transactions: HashSet<HlcTimestamp>,
     /// Transaction start times for visibility checks
-    pub transaction_start_times: Arc<RwLock<HashMap<HlcTimestamp, HlcTimestamp>>>,
+    pub transaction_start_times: HashMap<HlcTimestamp, HlcTimestamp>,
 }
 
 impl VersionedTable {
@@ -48,32 +48,28 @@ impl VersionedTable {
             schema,
             versions: BTreeMap::new(),
             next_id: 1,
-            committed_transactions: Arc::new(RwLock::new(HashSet::new())),
-            transaction_start_times: Arc::new(RwLock::new(HashMap::new())),
+            committed_transactions: HashSet::new(),
+            transaction_start_times: HashMap::new(),
         }
     }
 
     /// Register a transaction's start time
-    pub fn register_transaction(&self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
-        self.transaction_start_times
-            .write()
-            .unwrap()
-            .insert(txn_id, start_time);
+    pub fn register_transaction(&mut self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
+        self.transaction_start_times.insert(txn_id, start_time);
     }
 
     /// Mark a transaction as committed
-    pub fn mark_committed(&self, txn_id: HlcTimestamp) {
+    pub fn mark_committed(&mut self, txn_id: HlcTimestamp) {
         // Mark all versions created by this transaction as committed
-        for versions in self.versions.values() {
-            for version in versions {
+        for versions in self.versions.values_mut() {
+            for version in versions.iter_mut() {
                 if version.created_by == txn_id {
-                    // Note: In real implementation, we'd make committed mutable
-                    // For now, we track in committed_transactions set
+                    version.committed = true;
                 }
             }
         }
 
-        self.committed_transactions.write().unwrap().insert(txn_id);
+        self.committed_transactions.insert(txn_id);
     }
 
     /// Remove all versions created by an aborted transaction
@@ -160,11 +156,7 @@ impl VersionedTable {
             let is_visible = if version.created_by == txn_id {
                 version.deleted_by.is_none()
             } else {
-                let is_committed = self
-                    .committed_transactions
-                    .read()
-                    .unwrap()
-                    .contains(&version.created_by);
+                let is_committed = self.committed_transactions.contains(&version.created_by);
                 is_committed && version.created_at <= txn_timestamp && version.deleted_by.is_none()
             };
 
@@ -222,11 +214,7 @@ impl VersionedTable {
             let is_visible = if version.created_by == txn_id {
                 version.deleted_by.is_none()
             } else {
-                let is_committed = self
-                    .committed_transactions
-                    .read()
-                    .unwrap()
-                    .contains(&version.created_by);
+                let is_committed = self.committed_transactions.contains(&version.created_by);
                 is_committed && version.created_at <= _txn_timestamp && version.deleted_by.is_none()
             };
 
@@ -275,7 +263,7 @@ impl VersionedTable {
     }
 
     /// Find the visible version in a list of versions
-    fn find_visible_version<'a>(
+    pub fn find_visible_version<'a>(
         &self,
         versions: &'a [VersionedValue],
         txn_id: HlcTimestamp,
@@ -301,13 +289,7 @@ impl VersionedTable {
         }
 
         // Must be committed
-        let is_committed = self
-            .committed_transactions
-            .read()
-            .unwrap()
-            .contains(&version.created_by);
-
-        if !is_committed {
+        if !self.committed_transactions.contains(&version.created_by) {
             return false;
         }
 
@@ -321,22 +303,11 @@ impl VersionedTable {
             // Deleted version is visible if:
             // 1. Deleter is not committed, OR
             // 2. Deleter started after this transaction
-            let deleter_committed = self
-                .committed_transactions
-                .read()
-                .unwrap()
-                .contains(&deleter_id);
-
-            if !deleter_committed {
+            if !self.committed_transactions.contains(&deleter_id) {
                 return true; // See undeleted version
             }
 
-            let deleter_start = self
-                .transaction_start_times
-                .read()
-                .unwrap()
-                .get(&deleter_id)
-                .copied();
+            let deleter_start = self.transaction_start_times.get(&deleter_id).copied();
 
             if let Some(deleter_time) = deleter_start {
                 return deleter_time > txn_timestamp; // Deletion happened after we started
@@ -349,7 +320,7 @@ impl VersionedTable {
     /// Commit all changes made by a transaction
     pub fn commit_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
         // Mark transaction as committed
-        self.committed_transactions.write().unwrap().insert(txn_id);
+        self.committed_transactions.insert(txn_id);
 
         // Update all versions to be committed
         for versions in self.versions.values_mut() {
@@ -368,10 +339,7 @@ impl VersionedTable {
         self.remove_transaction_versions(txn_id);
 
         // Clean up tracking
-        self.transaction_start_times
-            .write()
-            .unwrap()
-            .remove(&txn_id);
+        self.transaction_start_times.remove(&txn_id);
 
         Ok(())
     }
@@ -387,13 +355,7 @@ impl VersionedTable {
         // Find the oldest active transaction
         let oldest_txn = active_transactions
             .iter()
-            .filter_map(|txn_id| {
-                self.transaction_start_times
-                    .read()
-                    .unwrap()
-                    .get(txn_id)
-                    .copied()
-            })
+            .filter_map(|txn_id| self.transaction_start_times.get(txn_id).copied())
             .min();
 
         if let Some(oldest_timestamp) = oldest_txn {
@@ -435,45 +397,136 @@ impl VersionedTable {
     }
 }
 
+/// Iterator over MVCC rows that handles visibility checks
+pub struct MvccRowIterator<'a> {
+    table: &'a VersionedTable,
+    tx_id: HlcTimestamp,
+    tx_timestamp: HlcTimestamp,
+    position: std::collections::btree_map::Iter<'a, u64, Vec<VersionedValue>>,
+}
+
+impl<'a> MvccRowIterator<'a> {
+    fn new(table: &'a VersionedTable, tx_id: HlcTimestamp, tx_timestamp: HlcTimestamp) -> Self {
+        Self {
+            table,
+            tx_id,
+            tx_timestamp,
+            position: table.versions.iter(),
+        }
+    }
+}
+
+impl<'a> Iterator for MvccRowIterator<'a> {
+    type Item = Arc<Vec<Value>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((_, versions)) = self.position.next() {
+            if let Some(visible_version) =
+                self.table
+                    .find_visible_version(versions, self.tx_id, self.tx_timestamp)
+            {
+                return Some(Arc::new(visible_version.row.values.clone()));
+            }
+        }
+        None
+    }
+}
+
+/// Iterator that yields row IDs along with row data
+pub struct MvccRowWithIdIterator<'a> {
+    table: &'a VersionedTable,
+    tx_id: HlcTimestamp,
+    tx_timestamp: HlcTimestamp,
+    position: std::collections::btree_map::Iter<'a, u64, Vec<VersionedValue>>,
+}
+
+impl<'a> MvccRowWithIdIterator<'a> {
+    fn new(table: &'a VersionedTable, tx_id: HlcTimestamp, tx_timestamp: HlcTimestamp) -> Self {
+        Self {
+            table,
+            tx_id,
+            tx_timestamp,
+            position: table.versions.iter(),
+        }
+    }
+}
+
+impl<'a> Iterator for MvccRowWithIdIterator<'a> {
+    type Item = (u64, Arc<Vec<Value>>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((&row_id, versions)) = self.position.next() {
+            if let Some(visible_version) =
+                self.table
+                    .find_visible_version(versions, self.tx_id, self.tx_timestamp)
+            {
+                return Some((row_id, Arc::new(visible_version.row.values.clone())));
+            }
+        }
+        None
+    }
+}
+
+impl VersionedTable {
+    /// Create an iterator over visible rows for a transaction
+    pub fn iter<'a>(
+        &'a self,
+        tx_id: HlcTimestamp,
+        tx_timestamp: HlcTimestamp,
+    ) -> MvccRowIterator<'a> {
+        MvccRowIterator::new(self, tx_id, tx_timestamp)
+    }
+
+    /// Create an iterator that includes row IDs
+    pub fn iter_with_ids<'a>(
+        &'a self,
+        tx_id: HlcTimestamp,
+        tx_timestamp: HlcTimestamp,
+    ) -> MvccRowWithIdIterator<'a> {
+        MvccRowWithIdIterator::new(self, tx_id, tx_timestamp)
+    }
+}
+
 /// MVCC-enabled storage engine
+///
+/// Since operations are processed sequentially by the state machine,
+/// we don't need RwLock for the tables - only one operation executes at a time.
+/// However, we'll keep it for now until Phase 4 of the refactor.
 pub struct MvccStorage {
     /// Tables with versioned data
-    pub tables: RwLock<HashMap<String, VersionedTable>>,
+    pub tables: HashMap<String, VersionedTable>,
     /// Track all committed transactions globally
-    pub global_committed: Arc<RwLock<HashSet<HlcTimestamp>>>,
+    pub global_committed: HashSet<HlcTimestamp>,
     /// Track active transactions for GC
-    pub active_transactions: Arc<RwLock<HashSet<HlcTimestamp>>>,
+    pub active_transactions: HashSet<HlcTimestamp>,
 }
 
 impl MvccStorage {
     pub fn new() -> Self {
         Self {
-            tables: RwLock::new(HashMap::new()),
-            global_committed: Arc::new(RwLock::new(HashSet::new())),
-            active_transactions: Arc::new(RwLock::new(HashSet::new())),
+            tables: HashMap::new(),
+            global_committed: HashSet::new(),
+            active_transactions: HashSet::new(),
         }
     }
 
     /// Create a new table
-    pub fn create_table(&self, name: String, schema: Table) -> Result<()> {
-        let mut tables = self.tables.write().unwrap();
-
-        if tables.contains_key(&name) {
+    pub fn create_table(&mut self, name: String, schema: Table) -> Result<()> {
+        if self.tables.contains_key(&name) {
             return Err(Error::InvalidValue(format!(
                 "Table {} already exists",
                 name
             )));
         }
 
-        tables.insert(name.clone(), VersionedTable::new(name, schema));
+        self.tables
+            .insert(name.clone(), VersionedTable::new(name, schema));
         Ok(())
     }
 
     /// Drop a table
-    pub fn drop_table(&self, name: &str) -> Result<()> {
-        let mut tables = self.tables.write().unwrap();
-
-        if tables.remove(name).is_none() {
+    pub fn drop_table(&mut self, name: &str) -> Result<()> {
+        if self.tables.remove(name).is_none() {
             return Err(Error::TableNotFound(name.to_string()));
         }
 
@@ -481,60 +534,50 @@ impl MvccStorage {
     }
 
     /// Register a new transaction
-    pub fn register_transaction(&self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
-        self.active_transactions.write().unwrap().insert(txn_id);
+    pub fn register_transaction(&mut self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
+        self.active_transactions.insert(txn_id);
 
         // Register with all tables
-        let tables = self.tables.read().unwrap();
-        for table in tables.values() {
+        for table in self.tables.values_mut() {
             table.register_transaction(txn_id, start_time);
         }
     }
 
     /// Commit a transaction across all tables
-    pub fn commit_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn commit_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
         // Mark as committed globally
-        self.global_committed.write().unwrap().insert(txn_id);
+        self.global_committed.insert(txn_id);
 
         // Commit in all tables
-        let mut tables = self.tables.write().unwrap();
-        for table in tables.values_mut() {
+        for table in self.tables.values_mut() {
             table.commit_transaction(txn_id)?;
         }
 
         // Remove from active set
-        self.active_transactions.write().unwrap().remove(&txn_id);
+        self.active_transactions.remove(&txn_id);
 
         Ok(())
     }
 
     /// Abort a transaction across all tables
-    pub fn abort_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
         // Abort in all tables
-        let mut tables = self.tables.write().unwrap();
-        for table in tables.values_mut() {
+        for table in self.tables.values_mut() {
             table.abort_transaction(txn_id)?;
         }
 
         // Remove from active set
-        self.active_transactions.write().unwrap().remove(&txn_id);
+        self.active_transactions.remove(&txn_id);
 
         Ok(())
     }
 
     /// Run garbage collection across all tables
-    pub fn garbage_collect(&self) -> usize {
-        let active: Vec<HlcTimestamp> = self
-            .active_transactions
-            .read()
-            .unwrap()
-            .iter()
-            .copied()
-            .collect();
+    pub fn garbage_collect(&mut self) -> usize {
+        let active: Vec<HlcTimestamp> = self.active_transactions.iter().copied().collect();
 
         let mut total_removed = 0;
-        let mut tables = self.tables.write().unwrap();
-        for table in tables.values_mut() {
+        for table in self.tables.values_mut() {
             total_removed += table.garbage_collect(&active);
         }
 

@@ -9,15 +9,34 @@ use crate::hlc::HlcTimestamp;
 use crate::sql::execution::{ExecutionResult, Executor};
 use crate::sql::planner::planner::Planner;
 use crate::sql::types::schema::Table;
-use crate::storage::lock::LockManager;
+use crate::storage::lock::{LockKey, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
-use crate::storage::transaction::{
-    MvccTransaction as Transaction, MvccTransactionManager as TransactionManager,
-};
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::Arc; // Only for MockResponseChannel
+
+/// Transaction state
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransactionState {
+    /// Transaction is active and can execute operations
+    Active,
+    /// Transaction is preparing to commit (2PC)
+    Preparing,
+    /// Transaction has committed
+    Committed,
+    /// Transaction has been aborted
+    Aborted,
+}
+
+/// Access log entry for distributed coordination
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessLogEntry {
+    pub operation: String,
+    pub table: String,
+    pub keys: Vec<u64>,
+    pub lock_mode: LockMode,
+}
 
 /// SQL operation types that can be sent in messages
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
@@ -99,19 +118,26 @@ impl ResponseChannel for Arc<MockResponseChannel> {
     }
 }
 
+/// Transaction execution state
+pub struct TransactionContext {
+    pub id: crate::hlc::HlcTimestamp,
+    pub timestamp: crate::hlc::HlcTimestamp,
+    pub state: TransactionState,
+    pub locks_held: Vec<LockKey>,
+    pub access_log: Vec<AccessLogEntry>,
+    pub context: crate::context::TransactionContext,
+}
+
 /// SQL stream processor with transaction isolation
 pub struct SqlStreamProcessor {
-    /// MVCC storage (rebuilt from stream)
-    storage: Arc<MvccStorage>,
+    /// MVCC storage (owned directly)
+    pub storage: MvccStorage,
 
-    /// Lock manager for PCC
-    lock_manager: Arc<LockManager>,
+    /// Lock manager for PCC (owned directly)
+    pub lock_manager: LockManager,
 
-    /// Transaction manager
-    tx_manager: TransactionManager,
-
-    /// Active transactions (not yet committed/aborted)
-    active_transactions: HashMap<String, Arc<Transaction>>,
+    /// Active transaction contexts
+    active_transactions: HashMap<String, TransactionContext>,
 
     /// SQL planner
     planner: Planner,
@@ -131,14 +157,9 @@ pub struct SqlStreamProcessor {
 impl SqlStreamProcessor {
     /// Create a new processor with empty storage
     pub fn new(response_channel: Box<dyn ResponseChannel>) -> Self {
-        let storage = Arc::new(MvccStorage::new());
-        let lock_manager = Arc::new(LockManager::new());
-        let tx_manager = TransactionManager::new(lock_manager.clone(), storage.clone());
-
         Self {
-            storage,
-            lock_manager,
-            tx_manager,
+            storage: MvccStorage::new(),
+            lock_manager: LockManager::new(),
             active_transactions: HashMap::new(),
             planner: Planner::new(HashMap::new()),
             executor: Executor::new(HashMap::new()),
@@ -178,11 +199,13 @@ impl SqlStreamProcessor {
                 })?
                 .0;
 
-        // Get or create transaction
-        let tx = self.get_or_create_transaction(&txn_id)?;
+        // Ensure transaction exists
+        if !self.active_transactions.contains_key(&txn_id) {
+            self.create_transaction(&txn_id)?;
+        }
 
         // Execute the operation
-        let result = self.execute_operation(operation, &tx).await;
+        let result = self.execute_operation(operation, &txn_id).await;
 
         // Send response if coordinator_id is present
         if let Some(coordinator_id) = message.headers.get("coordinator_id") {
@@ -202,12 +225,8 @@ impl SqlStreamProcessor {
         Ok(())
     }
 
-    /// Get existing transaction or create new one
-    fn get_or_create_transaction(&mut self, txn_id: &str) -> Result<Arc<Transaction>> {
-        if let Some(tx) = self.active_transactions.get(txn_id) {
-            return Ok(tx.clone());
-        }
-
+    /// Create new transaction context
+    fn create_transaction(&mut self, txn_id: &str) -> Result<()> {
         // Parse the transaction ID to extract timestamp
         let parts: Vec<&str> = txn_id.split('_').collect();
         if parts.len() < 3 {
@@ -229,28 +248,34 @@ impl SqlStreamProcessor {
             crate::hlc::NodeId::new(1),
         );
 
-        // Create MVCC transaction
-        let tx = self.tx_manager.begin(hlc_timestamp);
-        self.active_transactions
-            .insert(txn_id.to_string(), tx.clone());
+        // Create new transaction context
+        let tx_ctx = TransactionContext {
+            id: hlc_timestamp,
+            timestamp: hlc_timestamp,
+            state: TransactionState::Active,
+            locks_held: Vec::new(),
+            access_log: Vec::new(),
+            context: crate::context::TransactionContext::new(hlc_timestamp),
+        };
 
-        Ok(tx)
+        self.active_transactions.insert(txn_id.to_string(), tx_ctx);
+        Ok(())
     }
 
     /// Execute a SQL operation
     async fn execute_operation(
         &mut self,
         operation: SqlOperation,
-        tx: &Arc<Transaction>,
+        txn_id: &str,
     ) -> Result<SqlResponse> {
         match operation {
             SqlOperation::Execute { sql } => {
-                let result = self.execute_sql(&sql, tx)?;
+                let result = self.execute_sql(&sql, txn_id)?;
                 Ok(convert_execution_result(result))
             }
 
             SqlOperation::Query { sql } => {
-                let result = self.execute_sql(&sql, tx)?;
+                let result = self.execute_sql(&sql, txn_id)?;
                 match result {
                     ExecutionResult::Select { columns, rows } => {
                         let rows = rows.into_iter().map(|row| row.as_ref().clone()).collect();
@@ -269,7 +294,7 @@ impl SqlStreamProcessor {
                     });
                 }
 
-                let result = self.execute_sql(&sql, tx)?;
+                let result = self.execute_sql(&sql, txn_id)?;
                 self.migration_version = version;
                 Ok(convert_execution_result(result))
             }
@@ -277,7 +302,7 @@ impl SqlStreamProcessor {
     }
 
     /// Execute SQL statement
-    fn execute_sql(&mut self, sql: &str, tx: &Arc<Transaction>) -> Result<ExecutionResult> {
+    fn execute_sql(&mut self, sql: &str, txn_id: &str) -> Result<ExecutionResult> {
         // Parse SQL
         let statement = crate::sql::parse_sql(sql)?;
 
@@ -314,14 +339,33 @@ impl SqlStreamProcessor {
             _ => {}
         }
 
-        // Execute with MVCC-aware executor
-        self.executor.execute(plan, tx, &tx.context)
+        // Execute with direct references to storage and lock manager
+        let tx_ctx = self
+            .active_transactions
+            .get_mut(txn_id)
+            .ok_or_else(|| Error::InvalidValue(format!("Transaction {} not found", txn_id)))?;
+        let ctx = tx_ctx.context.clone();
+        self.executor.execute(
+            plan,
+            &mut self.storage,
+            &mut self.lock_manager,
+            tx_ctx,
+            &ctx,
+        )
     }
 
     /// Commit a transaction
     async fn commit_transaction(&mut self, txn_id: &str) -> Result<()> {
-        if let Some(tx) = self.active_transactions.remove(txn_id) {
-            tx.commit()?;
+        if let Some(mut tx_ctx) = self.active_transactions.remove(txn_id) {
+            // Commit in storage
+            self.storage.commit_transaction(tx_ctx.id)?;
+
+            // Release all locks
+            for lock in tx_ctx.locks_held {
+                self.lock_manager.release(tx_ctx.id, lock)?;
+            }
+
+            tx_ctx.state = TransactionState::Committed;
         }
         // If transaction doesn't exist, it might have been auto-committed
         Ok(())
@@ -329,16 +373,24 @@ impl SqlStreamProcessor {
 
     /// Abort a transaction
     async fn abort_transaction(&mut self, txn_id: &str) -> Result<()> {
-        if let Some(tx) = self.active_transactions.remove(txn_id) {
-            tx.abort()?;
+        if let Some(mut tx_ctx) = self.active_transactions.remove(txn_id) {
+            // Abort in storage
+            self.storage.abort_transaction(tx_ctx.id)?;
+
+            // Release all locks
+            for lock in tx_ctx.locks_held {
+                self.lock_manager.release(tx_ctx.id, lock)?;
+            }
+
+            tx_ctx.state = TransactionState::Aborted;
         }
         // If transaction doesn't exist, ignore
         Ok(())
     }
 
     /// Run garbage collection
-    pub fn garbage_collect(&self) -> usize {
-        self.tx_manager.garbage_collect()
+    pub fn garbage_collect(&mut self) -> usize {
+        self.storage.garbage_collect()
     }
 }
 

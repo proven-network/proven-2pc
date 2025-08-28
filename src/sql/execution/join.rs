@@ -9,14 +9,14 @@ use crate::error::{Error, Result};
 use crate::sql::planner::plan::JoinType;
 use crate::sql::types::expression::Expression;
 use crate::sql::types::value::Value;
-use crate::storage::transaction::MvccTransaction;
+use crate::storage::MvccStorage;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Row type for join operations
 pub type Row = Arc<Vec<Value>>;
-/// Row iterator type for join operations  
-pub type Rows = Box<dyn Iterator<Item = Result<Row>>>;
+/// Row iterator type for join operations with lifetime parameter
+pub type Rows<'a> = Box<dyn Iterator<Item = Result<Row>> + 'a>;
 
 /// NestedLoopJoiner implements MVCC-aware nested loop joins.
 ///
@@ -47,8 +47,8 @@ pub struct NestedLoopJoiner {
 impl NestedLoopJoiner {
     /// Creates a new MVCC-aware nested loop joiner.
     pub fn new(
-        left: Rows,
-        right: Rows,
+        left: Rows<'_>,
+        right: Rows<'_>,
         right_columns: usize,
         predicate: Expression,
         join_type: JoinType,
@@ -174,9 +174,9 @@ pub struct HashJoiner {
 impl HashJoiner {
     /// Creates a new MVCC-aware hash joiner.
     pub fn new(
-        left: Rows,
+        left: Rows<'_>,
         left_column: usize,
-        right: Rows,
+        right: Rows<'_>,
         right_column: usize,
         right_columns: usize,
         join_type: JoinType,
@@ -297,36 +297,35 @@ impl Iterator for HashJoiner {
 }
 
 /// Execute a nested loop join with MVCC awareness
-pub fn execute_nested_loop_join(
-    left: Rows,
-    right: Rows,
+pub fn execute_nested_loop_join<'a>(
+    left: Rows<'a>,
+    right: Rows<'a>,
     right_columns: usize,
     predicate: Expression,
     join_type: JoinType,
-    tx: &Arc<MvccTransaction>,
-) -> Result<Rows> {
-    let joiner = NestedLoopJoiner::new(
-        left,
-        right,
-        right_columns,
-        predicate,
-        join_type,
-        tx.context.clone(),
-    )?;
+    _storage: &MvccStorage,
+) -> Result<Rows<'a>> {
+    // For now, create a dummy context - this should come from the transaction context
+    use crate::hlc::{HlcTimestamp, NodeId};
+    let context = TransactionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)));
+    let joiner = NestedLoopJoiner::new(left, right, right_columns, predicate, join_type, context)?;
 
     Ok(Box::new(joiner))
 }
 
 /// Execute a hash join with MVCC awareness
-pub fn execute_hash_join(
-    left: Rows,
+pub fn execute_hash_join<'a>(
+    left: Rows<'a>,
     left_column: usize,
-    right: Rows,
+    right: Rows<'a>,
     right_column: usize,
     right_columns: usize,
     join_type: JoinType,
-    tx: &Arc<MvccTransaction>,
-) -> Result<Rows> {
+    _storage: &MvccStorage,
+) -> Result<Rows<'a>> {
+    // For now, create a dummy context - this should come from the transaction context
+    use crate::hlc::{HlcTimestamp, NodeId};
+    let context = TransactionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)));
     let joiner = HashJoiner::new(
         left,
         left_column,
@@ -334,7 +333,7 @@ pub fn execute_hash_join(
         right_column,
         right_columns,
         join_type,
-        tx.context.clone(),
+        context,
     )?;
 
     Ok(Box::new(joiner))

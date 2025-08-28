@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::sql::planner::plan::AggregateFunc;
 use crate::sql::types::expression::Expression;
 use crate::sql::types::value::Value;
-use crate::storage::transaction::MvccTransaction;
+use crate::storage::MvccStorage;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -37,13 +37,13 @@ impl Aggregator {
         &mut self,
         row: &Arc<Vec<Value>>,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()> {
         // Evaluate the group key
         let key = self
             .group_by
             .iter()
-            .map(|expr| evaluate_expression(expr, Some(row), context, tx))
+            .map(|expr| evaluate_expression(expr, Some(row), context, storage))
             .collect::<Result<Vec<_>>>()?;
 
         // Get or create the bucket for this key
@@ -53,7 +53,7 @@ impl Aggregator {
             .or_insert_with(|| GroupAccumulator::new(self.aggregates.clone()));
 
         // Add row to the bucket
-        bucket.add_row(row, context, tx)?;
+        bucket.add_row(row, context, storage)?;
 
         Ok(())
     }
@@ -102,10 +102,10 @@ impl GroupAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()> {
         for (agg, acc) in self.aggregates.iter().zip(self.accumulators.iter_mut()) {
-            acc.add(row, agg, context, tx)?;
+            acc.add(row, agg, context, storage)?;
         }
         Ok(())
     }
@@ -126,7 +126,7 @@ trait Accumulator: Send {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()>;
 
     /// Finalize and return the aggregate result
@@ -144,10 +144,10 @@ impl Accumulator for CountAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()> {
         if let AggregateFunc::Count(expr) = agg {
-            let val = evaluate_expression(expr, Some(row), context, tx)?;
+            let val = evaluate_expression(expr, Some(row), context, storage)?;
             if val != Value::Null {
                 self.count += 1;
             }
@@ -171,10 +171,10 @@ impl Accumulator for SumAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()> {
         if let AggregateFunc::Sum(expr) = agg {
-            let val = evaluate_expression(expr, Some(row), context, tx)?;
+            let val = evaluate_expression(expr, Some(row), context, storage)?;
             if val != Value::Null {
                 self.sum = if self.sum == Value::Null {
                     val
@@ -203,10 +203,10 @@ impl Accumulator for AvgAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()> {
         if let AggregateFunc::Avg(expr) = agg {
-            let val = evaluate_expression(expr, Some(row), context, tx)?;
+            let val = evaluate_expression(expr, Some(row), context, storage)?;
             if val != Value::Null {
                 self.sum = if self.sum == Value::Null {
                     val
@@ -239,10 +239,10 @@ impl Accumulator for MinAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()> {
         if let AggregateFunc::Min(expr) = agg {
-            let val = evaluate_expression(expr, Some(row), context, tx)?;
+            let val = evaluate_expression(expr, Some(row), context, storage)?;
             if val != Value::Null {
                 if self.min == Value::Null || val.compare(&self.min)? == std::cmp::Ordering::Less {
                     self.min = val;
@@ -268,10 +268,10 @@ impl Accumulator for MaxAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
     ) -> Result<()> {
         if let AggregateFunc::Max(expr) = agg {
-            let val = evaluate_expression(expr, Some(row), context, tx)?;
+            let val = evaluate_expression(expr, Some(row), context, storage)?;
             if val != Value::Null {
                 if self.max == Value::Null || val.compare(&self.max)? == std::cmp::Ordering::Greater
                 {
@@ -308,7 +308,7 @@ pub(crate) fn evaluate_expression(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
     _context: &TransactionContext,
-    _tx: &Arc<MvccTransaction>,
+    _storage: &MvccStorage,
 ) -> Result<Value> {
     match expr {
         Expression::Constant(val) => Ok(val.clone()),
@@ -330,26 +330,26 @@ pub(crate) fn evaluate_expression(
 
         // Basic arithmetic operations
         Expression::Add(left, right) => {
-            let l = evaluate_expression(left, row, _context, _tx)?;
-            let r = evaluate_expression(right, row, _context, _tx)?;
+            let l = evaluate_expression(left, row, _context, _storage)?;
+            let r = evaluate_expression(right, row, _context, _storage)?;
             l.add(&r)
         }
 
         Expression::Subtract(left, right) => {
-            let l = evaluate_expression(left, row, _context, _tx)?;
-            let r = evaluate_expression(right, row, _context, _tx)?;
+            let l = evaluate_expression(left, row, _context, _storage)?;
+            let r = evaluate_expression(right, row, _context, _storage)?;
             l.subtract(&r)
         }
 
         Expression::Multiply(left, right) => {
-            let l = evaluate_expression(left, row, _context, _tx)?;
-            let r = evaluate_expression(right, row, _context, _tx)?;
+            let l = evaluate_expression(left, row, _context, _storage)?;
+            let r = evaluate_expression(right, row, _context, _storage)?;
             l.multiply(&r)
         }
 
         Expression::Divide(left, right) => {
-            let l = evaluate_expression(left, row, _context, _tx)?;
-            let r = evaluate_expression(right, row, _context, _tx)?;
+            let l = evaluate_expression(left, row, _context, _storage)?;
+            let r = evaluate_expression(right, row, _context, _storage)?;
             l.divide(&r)
         }
 
@@ -363,22 +363,19 @@ pub(crate) fn evaluate_expression(
 mod tests {
     use super::*;
     use crate::hlc::{HlcClock, NodeId};
-    use crate::storage::lock::LockManager;
     use crate::storage::mvcc::MvccStorage;
 
-    fn setup_test() -> (Arc<MvccTransaction>, TransactionContext) {
-        let storage = Arc::new(MvccStorage::new());
-        let lock_manager = Arc::new(LockManager::new());
+    fn setup_test() -> (MvccStorage, TransactionContext) {
+        let storage = MvccStorage::new();
         let clock = HlcClock::new(NodeId::new(1));
         let timestamp = clock.now();
-        let tx = Arc::new(MvccTransaction::new(timestamp, lock_manager, storage));
         let context = TransactionContext::new(timestamp);
-        (tx, context)
+        (storage, context)
     }
 
     #[test]
     fn test_count_aggregation() -> Result<()> {
-        let (tx, context) = setup_test();
+        let (storage, context) = setup_test();
 
         let mut aggregator = Aggregator::new(
             vec![],
@@ -388,9 +385,9 @@ mod tests {
         );
 
         // Add some rows
-        aggregator.add(&Arc::new(vec![Value::Integer(1)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(2)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(3)]), &context, &tx)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(1)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(2)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(3)]), &context, &storage)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);
@@ -401,14 +398,14 @@ mod tests {
 
     #[test]
     fn test_sum_aggregation() -> Result<()> {
-        let (tx, context) = setup_test();
+        let (storage, context) = setup_test();
 
         let mut aggregator =
             Aggregator::new(vec![], vec![AggregateFunc::Sum(Expression::Column(0))]);
 
-        aggregator.add(&Arc::new(vec![Value::Integer(10)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(20)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(30)]), &context, &tx)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(10)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(20)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(30)]), &context, &storage)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);
@@ -419,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_group_by_aggregation() -> Result<()> {
-        let (tx, context) = setup_test();
+        let (storage, context) = setup_test();
 
         // GROUP BY category (column 0), COUNT(*)
         let mut aggregator = Aggregator::new(
@@ -433,27 +430,27 @@ mod tests {
         aggregator.add(
             &Arc::new(vec![Value::String("A".into()), Value::Integer(10)]),
             &context,
-            &tx,
+            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::String("B".into()), Value::Integer(20)]),
             &context,
-            &tx,
+            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::String("A".into()), Value::Integer(30)]),
             &context,
-            &tx,
+            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::String("B".into()), Value::Integer(40)]),
             &context,
-            &tx,
+            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::String("A".into()), Value::Integer(50)]),
             &context,
-            &tx,
+            &storage,
         )?;
 
         let mut results = aggregator.finalize()?;
@@ -472,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_min_max_aggregation() -> Result<()> {
-        let (tx, context) = setup_test();
+        let (storage, context) = setup_test();
 
         let mut aggregator = Aggregator::new(
             vec![],
@@ -482,10 +479,10 @@ mod tests {
             ],
         );
 
-        aggregator.add(&Arc::new(vec![Value::Integer(5)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(2)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(8)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(1)]), &context, &tx)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(5)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(2)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(8)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(1)]), &context, &storage)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);
@@ -497,14 +494,14 @@ mod tests {
 
     #[test]
     fn test_avg_aggregation() -> Result<()> {
-        let (tx, context) = setup_test();
+        let (storage, context) = setup_test();
 
         let mut aggregator =
             Aggregator::new(vec![], vec![AggregateFunc::Avg(Expression::Column(0))]);
 
-        aggregator.add(&Arc::new(vec![Value::Integer(10)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(20)]), &context, &tx)?;
-        aggregator.add(&Arc::new(vec![Value::Integer(30)]), &context, &tx)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(10)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(20)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::Integer(30)]), &context, &storage)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);

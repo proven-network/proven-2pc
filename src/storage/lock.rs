@@ -5,7 +5,6 @@ use crate::hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::sync::{Arc, RwLock};
 
 /// Transaction ID type alias
 pub type TxId = HlcTimestamp;
@@ -102,10 +101,10 @@ struct Waiter {
 /// like wound-wait, wait-die, or timeout-based deadlock prevention.
 pub struct LockManager {
     /// All currently held locks
-    locks: Arc<RwLock<HashMap<LockKey, Vec<LockInfo>>>>,
+    locks: HashMap<LockKey, Vec<LockInfo>>,
 
     /// Wait queue for blocked transactions
-    wait_queue: Arc<RwLock<HashMap<LockKey, VecDeque<Waiter>>>>,
+    wait_queue: HashMap<LockKey, VecDeque<Waiter>>,
 
     /// Lock escalation threshold
     escalation_threshold: usize,
@@ -118,18 +117,16 @@ impl LockManager {
 
     pub fn with_escalation_threshold(threshold: usize) -> Self {
         Self {
-            locks: Arc::new(RwLock::new(HashMap::new())),
-            wait_queue: Arc::new(RwLock::new(HashMap::new())),
+            locks: HashMap::new(),
+            wait_queue: HashMap::new(),
             escalation_threshold: threshold,
         }
     }
 
     /// Try to acquire a lock, returning conflict information if it fails
-    pub fn try_acquire(&self, tx_id: TxId, key: LockKey, mode: LockMode) -> Result<LockResult> {
-        let mut locks = self.locks.write().unwrap();
-
+    pub fn try_acquire(&mut self, tx_id: TxId, key: LockKey, mode: LockMode) -> Result<LockResult> {
         // Check for existing locks on this key
-        if let Some(holders) = locks.get(&key) {
+        if let Some(holders) = self.locks.get(&key) {
             // Check compatibility with all current holders
             for holder in holders {
                 if holder.holder != tx_id && !holder.mode.is_compatible_with(mode) {
@@ -148,35 +145,35 @@ impl LockManager {
             mode,
         };
 
-        locks.entry(key).or_insert_with(Vec::new).push(lock_info);
+        self.locks
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push(lock_info);
 
         Ok(LockResult::Granted)
     }
 
     /// Release a specific lock
-    pub fn release(&self, tx_id: TxId, key: LockKey) -> Result<()> {
-        let mut locks = self.locks.write().unwrap();
-
-        if let Some(holders) = locks.get_mut(&key) {
+    pub fn release(&mut self, tx_id: TxId, key: LockKey) -> Result<()> {
+        if let Some(holders) = self.locks.get_mut(&key) {
             holders.retain(|lock| lock.holder != tx_id);
             if holders.is_empty() {
-                locks.remove(&key);
+                self.locks.remove(&key);
             }
-
-            // Wake up waiters if possible
-            self.process_wait_queue(&key);
         }
+
+        // Wake up waiters if possible
+        self.process_wait_queue(&key);
 
         Ok(())
     }
 
     /// Release all locks held by a transaction
-    pub fn release_all(&self, tx_id: TxId) -> Result<()> {
-        let mut locks = self.locks.write().unwrap();
+    pub fn release_all(&mut self, tx_id: TxId) -> Result<()> {
         let mut keys_to_check = Vec::new();
 
         // Remove all locks held by this transaction
-        locks.retain(|key, holders| {
+        self.locks.retain(|key, holders| {
             holders.retain(|lock| lock.holder != tx_id);
             if holders.is_empty() {
                 keys_to_check.push(key.clone());
@@ -187,7 +184,6 @@ impl LockManager {
         });
 
         // Process wait queues for released locks
-        drop(locks); // Release write lock before processing queues
         for key in keys_to_check {
             self.process_wait_queue(&key);
         }
@@ -197,10 +193,9 @@ impl LockManager {
 
     /// Get all locks held by a transaction
     pub fn get_locks_held(&self, tx_id: TxId) -> Vec<(LockKey, LockMode)> {
-        let locks = self.locks.read().unwrap();
         let mut held = Vec::new();
 
-        for (key, holders) in locks.iter() {
+        for (key, holders) in self.locks.iter() {
             for lock_info in holders {
                 if lock_info.holder == tx_id {
                     held.push((key.clone(), lock_info.mode));
@@ -213,15 +208,15 @@ impl LockManager {
 
     /// Get all current locks (for visibility/debugging)
     pub fn get_all_locks(&self) -> Vec<(LockKey, Vec<LockInfo>)> {
-        let locks = self.locks.read().unwrap();
-        locks.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.locks
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// Check if a transaction holds a specific lock
     pub fn holds_lock(&self, tx_id: TxId, key: &LockKey, mode: LockMode) -> bool {
-        let locks = self.locks.read().unwrap();
-
-        if let Some(holders) = locks.get(key) {
+        if let Some(holders) = self.locks.get(key) {
             holders.iter().any(|lock| {
                 lock.holder == tx_id
                     && (lock.mode == mode ||
@@ -234,21 +229,18 @@ impl LockManager {
     }
 
     /// Add a transaction to the wait queue for a lock
-    pub fn add_to_wait_queue(&self, tx_id: TxId, key: LockKey, mode: LockMode) {
-        let mut wait_queue = self.wait_queue.write().unwrap();
+    pub fn add_to_wait_queue(&mut self, tx_id: TxId, key: LockKey, mode: LockMode) {
         let waiter = Waiter { tx_id, mode };
 
-        wait_queue
+        self.wait_queue
             .entry(key)
             .or_insert_with(VecDeque::new)
             .push_back(waiter);
     }
 
     /// Remove a transaction from all wait queues
-    pub fn remove_from_wait_queues(&self, tx_id: TxId) {
-        let mut wait_queue = self.wait_queue.write().unwrap();
-
-        wait_queue.retain(|_, waiters| {
+    pub fn remove_from_wait_queues(&mut self, tx_id: TxId) {
+        self.wait_queue.retain(|_, waiters| {
             waiters.retain(|w| w.tx_id != tx_id);
             !waiters.is_empty()
         });
@@ -256,9 +248,7 @@ impl LockManager {
 
     /// Get waiting transactions for a lock
     pub fn get_waiters(&self, key: &LockKey) -> Vec<TxId> {
-        let wait_queue = self.wait_queue.read().unwrap();
-
-        wait_queue
+        self.wait_queue
             .get(key)
             .map(|waiters| waiters.iter().map(|w| w.tx_id).collect())
             .unwrap_or_default()
@@ -277,11 +267,10 @@ impl LockManager {
 
     // Internal helper methods
 
-    fn process_wait_queue(&self, key: &LockKey) {
+    fn process_wait_queue(&mut self, key: &LockKey) {
         // In a real implementation, this would notify waiting transactions
         // For now, we just track them
-        let wait_queue = self.wait_queue.read().unwrap();
-        if let Some(waiters) = wait_queue.get(key) {
+        if let Some(waiters) = self.wait_queue.get(key) {
             // TODO: Notify waiters that the lock might be available
             // This would be done through a callback or channel
             let _ = waiters;
@@ -315,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_basic_lock_acquisition() {
-        let manager = LockManager::new();
+        let mut manager = LockManager::new();
         let key = LockKey::Row {
             table: "users".into(),
             row_id: 1,
@@ -341,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_shared_locks() {
-        let manager = LockManager::new();
+        let mut manager = LockManager::new();
         let key = LockKey::Row {
             table: "users".into(),
             row_id: 1,
@@ -374,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_lock_release() {
-        let manager = LockManager::new();
+        let mut manager = LockManager::new();
         let key = LockKey::Row {
             table: "users".into(),
             row_id: 1,

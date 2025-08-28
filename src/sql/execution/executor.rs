@@ -6,11 +6,13 @@
 use super::{aggregator::Aggregator, join};
 use crate::context::TransactionContext;
 use crate::error::{Error, Result};
-use crate::sql::planner::plan::{Direction, Node, Plan};
+use crate::sql::planner::plan::{Node, Plan};
+use crate::sql::stream_processor::TransactionContext as TxContext;
 use crate::sql::types::expression::Expression;
 use crate::sql::types::schema::Table;
 use crate::sql::types::value::Value;
-use crate::storage::transaction::MvccTransaction;
+use crate::storage::lock::LockManager;
+use crate::storage::{MvccStorage, read_ops, write_ops};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -29,7 +31,12 @@ pub enum ExecutionResult {
 }
 
 /// Row iterator type for streaming execution
-pub type Rows = Box<dyn Iterator<Item = Result<Arc<Vec<Value>>>>>;
+/// NOTE: We use 'static lifetime here which requires collecting in some cases.
+/// Adding a lifetime parameter would enable true streaming but would require:
+/// 1. Solving the aliasing problem (can't borrow storage mutably while iterating)
+/// 2. Handling recursive calls (joins need two iterators from same storage)
+/// 3. Extensive API changes throughout the codebase
+pub type Rows<'a> = Box<dyn Iterator<Item = Result<Arc<Vec<Value>>>> + 'a>;
 
 /// Complete MVCC-aware SQL executor
 pub struct Executor {
@@ -48,33 +55,19 @@ impl Executor {
         self.schemas = schemas;
     }
 
-    /// Execute a query plan
+    /// Execute a query plan - dispatches to read or write execution
     pub fn execute(
         &self,
         plan: Plan,
-        tx: &Arc<MvccTransaction>,
+        storage: &mut MvccStorage,
+        lock_manager: &mut LockManager,
+        tx_ctx: &mut TxContext,
         context: &TransactionContext,
     ) -> Result<ExecutionResult> {
         match plan {
             Plan::Select(node) => {
-                // Execute the query and collect results
-                let rows = self.execute_node(*node, tx, context)?;
-                let mut collected = Vec::new();
-                for row in rows {
-                    collected.push(row?);
-                }
-
-                // Get column names (simplified - would extract from projection)
-                let columns = if let Some(table) = self.schemas.values().next() {
-                    table.columns.iter().map(|c| c.name.clone()).collect()
-                } else {
-                    vec![]
-                };
-
-                Ok(ExecutionResult::Select {
-                    columns,
-                    rows: collected,
-                })
+                // SELECT uses immutable storage reference
+                self.execute_select(*node, storage, lock_manager, tx_ctx, context)
             }
 
             Plan::Insert {
@@ -82,112 +75,37 @@ impl Executor {
                 columns,
                 source,
             } => {
-                let schema = self
-                    .schemas
-                    .get(&table)
-                    .ok_or_else(|| Error::TableNotFound(table.clone()))?;
-
-                // Execute source node to get rows to insert
-                let rows = self.execute_node(*source, tx, context)?;
-                let mut count = 0;
-
-                for row in rows {
-                    let row = row?;
-
-                    // Reorder columns if specified
-                    let final_row = if let Some(ref col_indices) = columns {
-                        let mut reordered = vec![Value::Null; schema.columns.len()];
-                        for (src_idx, &dest_idx) in col_indices.iter().enumerate() {
-                            if src_idx < row.len() {
-                                reordered[dest_idx] = row[src_idx].clone();
-                            }
-                        }
-                        reordered
-                    } else {
-                        row.to_vec()
-                    };
-
-                    // Insert using MVCC transaction
-                    tx.insert(&table, final_row)?;
-                    count += 1;
-                }
-
-                Ok(ExecutionResult::Modified(count))
+                // INSERT uses write execution with phased approach
+                self.execute_insert(
+                    table,
+                    columns,
+                    *source,
+                    storage,
+                    lock_manager,
+                    tx_ctx,
+                    context,
+                )
             }
-
             Plan::Update {
                 table,
                 assignments,
                 source,
             } => {
-                // UPDATE works by:
-                // 1. Source node identifies matching rows (WHERE clause)
-                // 2. We scan the table with IDs internally
-                // 3. Match rows and apply updates
-
-                // Get rows that match the WHERE clause
-                let matching_rows = self.execute_node(*source, tx, context)?;
-                let mut matching_set = std::collections::HashSet::new();
-                for row in matching_rows {
-                    let row = row?;
-                    // Store a representation of the row to match against
-                    matching_set.insert(format!("{:?}", row.as_ref()));
-                }
-
-                // Now scan with IDs (internal only) to perform updates
-                let rows_with_ids = tx.scan_with_ids(&table)?;
-                let mut count = 0;
-
-                for (row_id, current) in rows_with_ids {
-                    // Check if this row matches our WHERE clause
-                    if matching_set.contains(&format!("{:?}", &current)) {
-                        let mut updated = current.clone();
-
-                        // Apply assignments
-                        for (col_idx, expr) in &assignments {
-                            updated[*col_idx] = self.evaluate_expression(
-                                expr,
-                                Some(&Arc::new(current.clone())),
-                                context,
-                            )?;
-                        }
-
-                        // Update the row using internal row ID
-                        tx.update(&table, row_id, updated)?;
-                        count += 1;
-                    }
-                }
-
-                Ok(ExecutionResult::Modified(count))
+                // UPDATE uses write execution with phased approach
+                self.execute_update(
+                    table,
+                    assignments,
+                    *source,
+                    storage,
+                    lock_manager,
+                    tx_ctx,
+                    context,
+                )
             }
 
             Plan::Delete { table, source } => {
-                // DELETE works similarly to UPDATE:
-                // 1. Source node identifies matching rows (WHERE clause)
-                // 2. We scan the table with IDs internally
-                // 3. Delete matching rows
-
-                // Get rows that match the WHERE clause
-                let matching_rows = self.execute_node(*source, tx, context)?;
-                let mut matching_set = std::collections::HashSet::new();
-                for row in matching_rows {
-                    let row = row?;
-                    matching_set.insert(format!("{:?}", row.as_ref()));
-                }
-
-                // Now scan with IDs (internal only) to perform deletes
-                let rows_with_ids = tx.scan_with_ids(&table)?;
-                let mut count = 0;
-
-                for (row_id, current) in rows_with_ids {
-                    // Check if this row matches our WHERE clause
-                    if matching_set.contains(&format!("{:?}", &current)) {
-                        tx.delete(&table, row_id)?;
-                        count += 1;
-                    }
-                }
-
-                Ok(ExecutionResult::Modified(count))
+                // DELETE uses write execution with phased approach
+                self.execute_delete(table, *source, storage, lock_manager, tx_ctx, context)
             }
 
             Plan::CreateTable { name, schema: _ } => {
@@ -209,21 +127,187 @@ impl Executor {
         }
     }
 
-    /// Execute a plan node, returning a row iterator
-    fn execute_node(
+    /// Execute SELECT query using immutable storage reference
+    fn execute_select(
         &self,
         node: Node,
-        tx: &Arc<MvccTransaction>,
+        storage: &MvccStorage,
+        lock_manager: &mut LockManager,
+        tx_ctx: &mut TxContext,
         context: &TransactionContext,
-    ) -> Result<Rows> {
+    ) -> Result<ExecutionResult> {
+        // Execute using read-only node execution
+        let rows = self.execute_node_read(node, storage, lock_manager, tx_ctx, context)?;
+        let mut collected = Vec::new();
+        for row in rows {
+            collected.push(row?);
+        }
+
+        // Get column names (simplified - would extract from projection)
+        let columns = if let Some(table) = self.schemas.values().next() {
+            table.columns.iter().map(|c| c.name.clone()).collect()
+        } else {
+            vec![]
+        };
+
+        Ok(ExecutionResult::Select {
+            columns,
+            rows: collected,
+        })
+    }
+
+    /// Execute INSERT with phased read-then-write approach
+    fn execute_insert(
+        &self,
+        table: String,
+        columns: Option<Vec<usize>>,
+        source: Node,
+        storage: &mut MvccStorage,
+        lock_manager: &mut LockManager,
+        tx_ctx: &mut TxContext,
+        context: &TransactionContext,
+    ) -> Result<ExecutionResult> {
+        let schema = self
+            .schemas
+            .get(&table)
+            .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+
+        // Phase 1: Read all source rows (immutable borrow)
+        let rows_to_insert = {
+            // Use immutable reference for reading
+            let storage_ref = &*storage;
+            let rows =
+                self.execute_node_read(source, storage_ref, lock_manager, tx_ctx, context)?;
+            rows.collect::<Result<Vec<_>>>()?
+        }; // Immutable borrow ends here
+
+        // Phase 2: Write rows (mutable borrow)
+        let mut count = 0;
+        for row in rows_to_insert {
+            // Reorder columns if specified
+            let final_row = if let Some(ref col_indices) = columns {
+                let mut reordered = vec![Value::Null; schema.columns.len()];
+                for (src_idx, &dest_idx) in col_indices.iter().enumerate() {
+                    if src_idx < row.len() {
+                        reordered[dest_idx] = row[src_idx].clone();
+                    }
+                }
+                reordered
+            } else {
+                row.to_vec()
+            };
+
+            write_ops::insert(storage, lock_manager, tx_ctx, &table, final_row)?;
+            count += 1;
+        }
+
+        Ok(ExecutionResult::Modified(count))
+    }
+
+    /// Execute UPDATE with phased read-then-write approach
+    fn execute_update(
+        &self,
+        table: String,
+        assignments: Vec<(usize, Expression)>,
+        source: Node,
+        storage: &mut MvccStorage,
+        lock_manager: &mut LockManager,
+        tx_ctx: &mut TxContext,
+        context: &TransactionContext,
+    ) -> Result<ExecutionResult> {
+        // Phase 1: Read rows with IDs that match the WHERE clause
+        let rows_to_update = {
+            let iter = read_ops::scan_iter_with_ids(storage, lock_manager, tx_ctx, &table, true)?;
+            let mut to_update = Vec::new();
+
+            for (row_id, row) in iter {
+                let matches = match &source {
+                    Node::Filter { predicate, .. } => self
+                        .evaluate_expression(predicate, Some(&row), context)?
+                        .to_bool()
+                        .unwrap_or(false),
+                    Node::Scan { .. } => true,
+                    _ => true,
+                };
+
+                if matches {
+                    to_update.push((row_id, row));
+                }
+            }
+            to_update
+        }; // Immutable borrow ends here
+
+        // Phase 2: Apply updates (mutable borrow)
+        let mut count = 0;
+        for (row_id, current) in rows_to_update {
+            let mut updated = current.to_vec();
+            for &(col_idx, ref expr) in &assignments {
+                updated[col_idx] = self.evaluate_expression(expr, Some(&current), context)?;
+            }
+
+            write_ops::update(storage, lock_manager, tx_ctx, &table, row_id, updated)?;
+            count += 1;
+        }
+
+        Ok(ExecutionResult::Modified(count))
+    }
+
+    /// Execute DELETE with phased read-then-write approach
+    fn execute_delete(
+        &self,
+        table: String,
+        source: Node,
+        storage: &mut MvccStorage,
+        lock_manager: &mut LockManager,
+        tx_ctx: &mut TxContext,
+        context: &TransactionContext,
+    ) -> Result<ExecutionResult> {
+        // Phase 1: Read rows with IDs that match the WHERE clause
+        let rows_to_delete = {
+            let iter = read_ops::scan_iter_with_ids(storage, lock_manager, tx_ctx, &table, true)?;
+            let mut to_delete = Vec::new();
+
+            for (row_id, row) in iter {
+                let matches = match &source {
+                    Node::Filter { predicate, .. } => self
+                        .evaluate_expression(predicate, Some(&row), context)?
+                        .to_bool()
+                        .unwrap_or(false),
+                    Node::Scan { .. } => true,
+                    _ => true,
+                };
+
+                if matches {
+                    to_delete.push(row_id);
+                }
+            }
+            to_delete
+        }; // Immutable borrow ends here
+
+        // Phase 2: Delete rows (mutable borrow)
+        let mut count = 0;
+        for row_id in rows_to_delete {
+            write_ops::delete(storage, lock_manager, tx_ctx, &table, row_id)?;
+            count += 1;
+        }
+
+        Ok(ExecutionResult::Modified(count))
+    }
+
+    /// Execute a plan node for reading with immutable storage reference
+    fn execute_node_read<'a>(
+        &self,
+        node: Node,
+        storage: &'a MvccStorage,
+        lock_manager: &mut LockManager,
+        tx_ctx: &mut TxContext,
+        context: &TransactionContext,
+    ) -> Result<Rows<'a>> {
         match node {
             Node::Scan { table, .. } => {
-                // Get all rows from the table using MVCC transaction
-                // scan() now returns Vec<Vec<Value>> without row IDs
-                let rows = tx.scan(&table)?;
-
-                // Convert to iterator of Arc<Vec<Value>>
-                let iter = rows.into_iter().map(|values| Ok(Arc::new(values)));
+                // True streaming with immutable storage!
+                let iter =
+                    read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(|row| Ok(row));
 
                 Ok(Box::new(iter))
             }
@@ -235,7 +319,6 @@ impl Executor {
                 ..
             } => {
                 // For now, just do a filtered table scan
-                // Real implementation would use index from storage
                 let filter_value = self.evaluate_expression(&value, None, context)?;
                 let schema = self
                     .schemas
@@ -248,35 +331,52 @@ impl Executor {
                     .position(|c| c.name == index_column)
                     .ok_or_else(|| Error::ColumnNotFound(index_column))?;
 
-                let rows = tx.scan(&table)?;
-                let iter = rows.into_iter().filter_map(move |values| {
-                    if values.get(col_idx) == Some(&filter_value) {
-                        Some(Ok(Arc::new(values)))
-                    } else {
-                        None
-                    }
-                });
+                // True streaming with filtering!
+                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.filter_map(
+                    move |row| {
+                        if row.get(col_idx) == Some(&filter_value) {
+                            Some(Ok(row))
+                        } else {
+                            None
+                        }
+                    },
+                );
 
                 Ok(Box::new(iter))
             }
 
             Node::Filter { source, predicate } => {
-                let source_rows = self.execute_node(*source, tx, context)?;
+                let source_rows =
+                    self.execute_node_read(*source, storage, lock_manager, tx_ctx, context)?;
                 let executor = self.clone_for_closure();
-                let ctx = context.clone();
+                let context = context.clone();
 
-                let filtered = source_rows.filter(move |row_result| {
-                    match row_result {
-                        Ok(row) => executor
-                            .evaluate_expression(&predicate, Some(row), &ctx)
-                            .unwrap_or(Value::Null)
-                            .to_bool()
-                            .unwrap_or(false),
-                        Err(_) => true, // Pass through errors
+                let filtered = source_rows.filter_map(move |row| match row {
+                    Ok(row) => {
+                        match executor.evaluate_expression(&predicate, Some(&row), &context) {
+                            Ok(v) if v.to_bool().unwrap_or(false) => Some(Ok(row)),
+                            Ok(_) => None,
+                            Err(e) => Some(Err(e)),
+                        }
                     }
+                    Err(e) => Some(Err(e)),
                 });
 
                 Ok(Box::new(filtered))
+            }
+
+            Node::Values { rows } => {
+                // Values node contains literal rows - convert Expression to Value
+                // We need to evaluate all expressions immediately to avoid lifetime issues
+                let mut value_rows = Vec::new();
+                for row in rows {
+                    let mut value_row = Vec::new();
+                    for expr in row {
+                        value_row.push(self.evaluate_expression(&expr, None, context)?);
+                    }
+                    value_rows.push(Ok(Arc::new(value_row)));
+                }
+                Ok(Box::new(value_rows.into_iter()))
             }
 
             Node::Projection {
@@ -284,101 +384,57 @@ impl Executor {
                 expressions,
                 ..
             } => {
-                let source_rows = self.execute_node(*source, tx, context)?;
+                let source_rows =
+                    self.execute_node_read(*source, storage, lock_manager, tx_ctx, context)?;
                 let executor = self.clone_for_closure();
-                let ctx = context.clone();
-                let exprs = expressions.clone();
+                let context = context.clone();
 
-                let projected = source_rows.map(move |row_result| {
-                    row_result.and_then(|row| {
-                        let mut new_row = Vec::new();
-                        for expr in &exprs {
-                            new_row.push(executor.evaluate_expression(expr, Some(&row), &ctx)?);
+                let projected = source_rows.map(move |row| match row {
+                    Ok(row) => {
+                        let mut result = Vec::with_capacity(expressions.len());
+                        for expr in &expressions {
+                            result.push(executor.evaluate_expression(
+                                expr,
+                                Some(&row),
+                                &context,
+                            )?);
                         }
-                        Ok(Arc::new(new_row))
-                    })
+                        Ok(Arc::new(result))
+                    }
+                    Err(e) => Err(e),
                 });
 
                 Ok(Box::new(projected))
             }
 
-            Node::Order { source, order_by } => {
-                // Collect all rows for sorting
-                let rows = self.execute_node(*source, tx, context)?;
-                let mut collected: Vec<Arc<Vec<Value>>> = Vec::new();
-                for row in rows {
-                    collected.push(row?);
-                }
-
-                // Sort the rows
-                let executor = self.clone_for_closure();
-                let ctx = context.clone();
-                collected.sort_by(|a, b| {
-                    for (expr, direction) in &order_by {
-                        let a_val = executor
-                            .evaluate_expression(expr, Some(a), &ctx)
-                            .unwrap_or(Value::Null);
-                        let b_val = executor
-                            .evaluate_expression(expr, Some(b), &ctx)
-                            .unwrap_or(Value::Null);
-
-                        let cmp = a_val
-                            .partial_cmp(&b_val)
-                            .unwrap_or(std::cmp::Ordering::Equal);
-                        let ordered = match direction {
-                            Direction::Ascending => cmp,
-                            Direction::Descending => cmp.reverse(),
-                        };
-
-                        if ordered != std::cmp::Ordering::Equal {
-                            return ordered;
-                        }
-                    }
-                    std::cmp::Ordering::Equal
-                });
-
-                Ok(Box::new(collected.into_iter().map(Ok)))
-            }
-
+            // Limit and Offset are trivial with iterators
             Node::Limit { source, limit } => {
-                let rows = self.execute_node(*source, tx, context)?;
+                let rows =
+                    self.execute_node_read(*source, storage, lock_manager, tx_ctx, context)?;
                 Ok(Box::new(rows.take(limit)))
             }
 
             Node::Offset { source, offset } => {
-                let rows = self.execute_node(*source, tx, context)?;
+                let rows =
+                    self.execute_node_read(*source, storage, lock_manager, tx_ctx, context)?;
                 Ok(Box::new(rows.skip(offset)))
             }
 
-            Node::Values { rows } => {
-                // Generate literal rows for INSERT
-                let executor = self.clone_for_closure();
-                let ctx = context.clone();
-
-                let value_rows = rows.into_iter().map(move |row_exprs| {
-                    let mut row = Vec::new();
-                    for expr in row_exprs {
-                        row.push(executor.evaluate_expression(&expr, None, &ctx)?);
-                    }
-                    Ok(Arc::new(row))
-                });
-
-                Ok(Box::new(value_rows))
-            }
-
+            // Aggregation works with immutable storage
             Node::Aggregate {
                 source,
                 group_by,
                 aggregates,
             } => {
                 // Use the Aggregator module
-                let mut aggregator = Aggregator::new(group_by.clone(), aggregates.clone());
+                let mut aggregator = Aggregator::new(group_by, aggregates);
 
                 // Process all source rows
-                let rows = self.execute_node(*source, tx, context)?;
+                let rows =
+                    self.execute_node_read(*source, storage, lock_manager, tx_ctx, context)?;
                 for row in rows {
                     let row = row?;
-                    aggregator.add(&row, context, tx)?;
+                    aggregator.add(&row, context, storage)?;
                 }
 
                 // Get aggregated results
@@ -386,6 +442,7 @@ impl Executor {
                 Ok(Box::new(results.into_iter().map(Ok)))
             }
 
+            // Hash Join can work with immutable storage since both sides can be read
             Node::HashJoin {
                 left,
                 right,
@@ -396,8 +453,11 @@ impl Executor {
                 // Get column count from right node for outer join NULL padding
                 let right_columns = right.column_count(&self.schemas);
 
-                let left_rows = self.execute_node(*left, tx, context)?;
-                let right_rows = self.execute_node(*right, tx, context)?;
+                // Both can borrow storage immutably!
+                let left_rows =
+                    self.execute_node_read(*left, storage, lock_manager, tx_ctx, context)?;
+                let right_rows =
+                    self.execute_node_read(*right, storage, lock_manager, tx_ctx, context)?;
 
                 join::execute_hash_join(
                     left_rows,
@@ -406,10 +466,11 @@ impl Executor {
                     right_col,
                     right_columns,
                     join_type,
-                    tx,
+                    storage,
                 )
             }
 
+            // Nested Loop Join also works with immutable storage
             Node::NestedLoopJoin {
                 left,
                 right,
@@ -419,17 +480,57 @@ impl Executor {
                 // Get column count from right node for outer join NULL padding
                 let right_columns = right.column_count(&self.schemas);
 
-                let left_rows = self.execute_node(*left, tx, context)?;
-                let right_rows = self.execute_node(*right, tx, context)?;
+                let left_rows =
+                    self.execute_node_read(*left, storage, lock_manager, tx_ctx, context)?;
+                let right_rows =
+                    self.execute_node_read(*right, storage, lock_manager, tx_ctx, context)?;
 
+                // Use the standalone function for nested loop join
                 join::execute_nested_loop_join(
                     left_rows,
                     right_rows,
                     right_columns,
-                    predicate.clone(),
+                    predicate,
                     join_type,
-                    tx,
+                    storage,
                 )
+            }
+
+            // Order By requires full materialization to sort
+            Node::Order { source, order_by } => {
+                let rows =
+                    self.execute_node_read(*source, storage, lock_manager, tx_ctx, context)?;
+
+                // Must materialize to sort
+                let mut collected: Vec<_> = rows.collect::<Result<Vec<_>>>()?;
+
+                // Sort based on order_by expressions
+                let executor = self.clone_for_closure();
+                let ctx = context.clone();
+
+                collected.sort_by(|a, b| {
+                    for (expr, direction) in &order_by {
+                        let val_a = executor
+                            .evaluate_expression(expr, Some(a), &ctx)
+                            .unwrap_or(Value::Null);
+                        let val_b = executor
+                            .evaluate_expression(expr, Some(b), &ctx)
+                            .unwrap_or(Value::Null);
+
+                        let cmp = val_a
+                            .partial_cmp(&val_b)
+                            .unwrap_or(std::cmp::Ordering::Equal);
+                        if cmp != std::cmp::Ordering::Equal {
+                            return match direction {
+                                crate::sql::planner::plan::Direction::Ascending => cmp,
+                                crate::sql::planner::plan::Direction::Descending => cmp.reverse(),
+                            };
+                        }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+
+                Ok(Box::new(collected.into_iter().map(Ok)))
             }
 
             Node::Nothing => Ok(Box::new(std::iter::empty())),

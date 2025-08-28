@@ -61,13 +61,16 @@ mod tests {
         let tx = tx_manager.begin(clock.now());
         
         // Insert some test data
-        tx.insert("users", Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]))?;
-        tx.insert("users", Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]))?;
-        tx.commit()?;
+        {
+            let mut tx_guard = tx.lock().unwrap();
+            tx_guard.insert("users", vec![Value::Integer(1), Value::String("Alice".to_string())])?;
+            tx_guard.insert("users", vec![Value::Integer(2), Value::String("Bob".to_string())])?;
+            tx_guard.commit()?;
+        }
         
         // Start a new transaction for the query
         let query_tx = tx_manager.begin(clock.now());
-        let context = TransactionContext::new(query_tx.id);
+        let context = TransactionContext::new(query_tx.lock().unwrap().id);
         
         // Parse and plan a simple SELECT query
         let sql = "SELECT * FROM users";
@@ -133,14 +136,17 @@ mod tests {
         let tx = tx_manager.begin(clock.now());
         
         // Insert test data
-        tx.insert("products", Arc::new(vec![Value::Integer(1), Value::String("Widget".to_string()), Value::Integer(100)]))?;
-        tx.insert("products", Arc::new(vec![Value::Integer(2), Value::String("Gadget".to_string()), Value::Integer(200)]))?;
-        tx.insert("products", Arc::new(vec![Value::Integer(3), Value::String("Thing".to_string()), Value::Integer(50)]))?;
-        tx.commit()?;
+        {
+            let mut tx_guard = tx.lock().unwrap();
+            tx_guard.insert("products", vec![Value::Integer(1), Value::String("Widget".to_string()), Value::Integer(100)])?;
+            tx_guard.insert("products", vec![Value::Integer(2), Value::String("Gadget".to_string()), Value::Integer(200)])?;
+            tx_guard.insert("products", vec![Value::Integer(3), Value::String("Thing".to_string()), Value::Integer(50)])?;
+            tx_guard.commit()?;
+        }
         
         // Query with WHERE clause
         let query_tx = tx_manager.begin(clock.now());
-        let context = TransactionContext::new(query_tx.id);
+        let context = TransactionContext::new(query_tx.lock().unwrap().id);
         
         let sql = "SELECT name, price FROM products WHERE price > 75";
         let statement = Parser::parse(sql)?;
@@ -194,14 +200,17 @@ mod tests {
         let tx = tx_manager.begin(clock.now());
         
         // Insert test data
-        tx.insert("orders", Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]))?;
-        tx.insert("orders", Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]))?;
-        tx.insert("orders", Arc::new(vec![Value::Integer(3), Value::String("Alice".to_string())]))?;
-        tx.commit()?;
+        {
+            let mut tx_guard = tx.lock().unwrap();
+            tx_guard.insert("orders", vec![Value::Integer(1), Value::String("Alice".to_string())])?;
+            tx_guard.insert("orders", vec![Value::Integer(2), Value::String("Bob".to_string())])?;
+            tx_guard.insert("orders", vec![Value::Integer(3), Value::String("Alice".to_string())])?;
+            tx_guard.commit()?;
+        }
         
         // Test COUNT(*)
         let query_tx = tx_manager.begin(clock.now());
-        let context = TransactionContext::new(query_tx.id);
+        let context = TransactionContext::new(query_tx.lock().unwrap().id);
         
         let sql = "SELECT COUNT(*) FROM orders";
         let statement = Parser::parse(sql)?;

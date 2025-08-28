@@ -18,4 +18,3 @@ pub use error::{Error, Result};
 pub use sql::types::value::{DataType, Value};
 pub use storage::lock::LockManager;
 pub use storage::mvcc::MvccStorage;
-pub use storage::transaction::{MvccTransaction, MvccTransactionManager};

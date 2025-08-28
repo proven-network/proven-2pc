@@ -29,10 +29,7 @@ pub enum Plan {
     },
 
     /// DELETE statement
-    Delete {
-        table: String,
-        source: Box<Node>,
-    },
+    Delete { table: String, source: Box<Node> },
 
     /// CREATE TABLE
     CreateTable {
@@ -41,10 +38,7 @@ pub enum Plan {
     },
 
     /// DROP TABLE
-    DropTable {
-        name: String,
-        if_exists: bool,
-    },
+    DropTable { name: String, if_exists: bool },
 
     /// CREATE INDEX
     CreateIndex {
@@ -55,10 +49,7 @@ pub enum Plan {
     },
 
     /// DROP INDEX
-    DropIndex {
-        name: String,
-        if_exists: bool,
-    },
+    DropIndex { name: String, if_exists: bool },
 }
 
 /// Execution node in the plan tree
