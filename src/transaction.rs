@@ -266,8 +266,8 @@ impl MvccTransaction {
         Ok(row.values.clone())
     }
 
-    /// Scan all visible rows in a table
-    pub fn scan(&self, table: &str) -> Result<Vec<(u64, Vec<Value>)>> {
+    /// Scan all visible rows in a table (returns only values, no row IDs)
+    pub fn scan(&self, table: &str) -> Result<Vec<Vec<Value>>> {
         if !self.is_active() {
             return Err(Error::TransactionNotActive(self.id));
         }
@@ -286,7 +286,46 @@ impl MvccTransaction {
 
         let rows = table_ref.scan(self.id, self.timestamp);
 
-        // Convert to values
+        // Collect row IDs for logging but only return values
+        let mut row_ids = Vec::new();
+        let mut values_only = Vec::new();
+        for (id, row) in rows {
+            row_ids.push(id);
+            values_only.push(row.values.clone());
+        }
+
+        // Log access
+        self.access_log.write().unwrap().push(AccessLogEntry {
+            operation: "SCAN".to_string(),
+            table: table.to_string(),
+            keys: row_ids,
+            lock_mode: LockMode::Shared,
+        });
+
+        Ok(values_only)
+    }
+
+    /// Internal method to scan with row IDs (for UPDATE/DELETE operations)
+    pub(crate) fn scan_with_ids(&self, table: &str) -> Result<Vec<(u64, Vec<Value>)>> {
+        if !self.is_active() {
+            return Err(Error::TransactionNotActive(self.id));
+        }
+
+        // Acquire table-level shared lock (PCC)
+        let lock_key = LockKey::Table {
+            table: table.to_string(),
+        };
+        self.acquire_lock(lock_key, LockMode::Shared)?;
+
+        // Scan from MVCC storage
+        let tables = self.storage.tables.read().unwrap();
+        let table_ref = tables
+            .get(table)
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
+
+        let rows = table_ref.scan(self.id, self.timestamp);
+
+        // Convert to values with IDs
         let result: Vec<(u64, Vec<Value>)> = rows
             .into_iter()
             .map(|(id, row)| (id, row.values.clone()))

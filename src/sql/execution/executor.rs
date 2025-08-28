@@ -122,28 +122,37 @@ impl Executor {
                 assignments,
                 source,
             } => {
-                // Get rows to update
-                let rows = self.execute_node(*source, tx, context)?;
-                let mut count = 0;
-
-                for row in rows {
+                // UPDATE works by:
+                // 1. Source node identifies matching rows (WHERE clause)
+                // 2. We scan the table with IDs internally
+                // 3. Match rows and apply updates
+                
+                // Get rows that match the WHERE clause
+                let matching_rows = self.execute_node(*source, tx, context)?;
+                let mut matching_set = std::collections::HashSet::new();
+                for row in matching_rows {
                     let row = row?;
-
-                    // Assume first column is row ID (this is a simplification)
-                    if let Some(Value::Integer(id)) = row.first() {
-                        let row_id = *id as u64;
-
-                        // Read current row
-                        let mut current = tx.read(&table, row_id)?;
-
+                    // Store a representation of the row to match against
+                    matching_set.insert(format!("{:?}", row.as_ref()));
+                }
+                
+                // Now scan with IDs (internal only) to perform updates
+                let rows_with_ids = tx.scan_with_ids(&table)?;
+                let mut count = 0;
+                
+                for (row_id, current) in rows_with_ids {
+                    // Check if this row matches our WHERE clause
+                    if matching_set.contains(&format!("{:?}", &current)) {
+                        let mut updated = current.clone();
+                        
                         // Apply assignments
                         for (col_idx, expr) in &assignments {
-                            current[*col_idx] =
-                                self.evaluate_expression(expr, Some(&row), context)?;
+                            updated[*col_idx] =
+                                self.evaluate_expression(expr, Some(&Arc::new(current.clone())), context)?;
                         }
-
-                        // Update the row
-                        tx.update(&table, row_id, current)?;
+                        
+                        // Update the row using internal row ID
+                        tx.update(&table, row_id, updated)?;
                         count += 1;
                     }
                 }
@@ -152,15 +161,26 @@ impl Executor {
             }
 
             Plan::Delete { table, source } => {
-                let rows = self.execute_node(*source, tx, context)?;
-                let mut count = 0;
-
-                for row in rows {
+                // DELETE works similarly to UPDATE:
+                // 1. Source node identifies matching rows (WHERE clause)
+                // 2. We scan the table with IDs internally
+                // 3. Delete matching rows
+                
+                // Get rows that match the WHERE clause
+                let matching_rows = self.execute_node(*source, tx, context)?;
+                let mut matching_set = std::collections::HashSet::new();
+                for row in matching_rows {
                     let row = row?;
-
-                    // Assume first column is row ID
-                    if let Some(Value::Integer(id)) = row.first() {
-                        let row_id = *id as u64;
+                    matching_set.insert(format!("{:?}", row.as_ref()));
+                }
+                
+                // Now scan with IDs (internal only) to perform deletes
+                let rows_with_ids = tx.scan_with_ids(&table)?;
+                let mut count = 0;
+                
+                for (row_id, current) in rows_with_ids {
+                    // Check if this row matches our WHERE clause
+                    if matching_set.contains(&format!("{:?}", &current)) {
                         tx.delete(&table, row_id)?;
                         count += 1;
                     }
@@ -202,14 +222,12 @@ impl Executor {
         match node {
             Node::Scan { table, .. } => {
                 // Get all rows from the table using MVCC transaction
+                // scan() now returns Vec<Vec<Value>> without row IDs
                 let rows = tx.scan(&table)?;
 
                 // Convert to iterator of Arc<Vec<Value>>
-                let iter = rows.into_iter().map(|(row_id, values)| {
-                    // Include row_id as first column for UPDATE/DELETE
-                    let mut row_with_id = vec![Value::Integer(row_id as i64)];
-                    row_with_id.extend(values);
-                    Ok(Arc::new(row_with_id))
+                let iter = rows.into_iter().map(|values| {
+                    Ok(Arc::new(values))
                 });
 
                 Ok(Box::new(iter))
@@ -236,11 +254,9 @@ impl Executor {
                     .ok_or_else(|| Error::ColumnNotFound(index_column))?;
 
                 let rows = tx.scan(&table)?;
-                let iter = rows.into_iter().filter_map(move |(row_id, values)| {
+                let iter = rows.into_iter().filter_map(move |values| {
                     if values.get(col_idx) == Some(&filter_value) {
-                        let mut row_with_id = vec![Value::Integer(row_id as i64)];
-                        row_with_id.extend(values);
-                        Some(Ok(Arc::new(row_with_id)))
+                        Some(Ok(Arc::new(values)))
                     } else {
                         None
                     }
