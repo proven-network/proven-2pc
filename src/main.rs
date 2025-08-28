@@ -238,5 +238,35 @@ fn demo_sql_parser() -> Result<()> {
         }
     }
 
+    // Test index-related statements
+    println!("\n  Testing Index Support:");
+    let index_statements = vec![
+        "CREATE TABLE users2 (id INT PRIMARY KEY, email VARCHAR UNIQUE INDEX, name VARCHAR)",
+        "CREATE INDEX idx_name ON users2(name)",
+        "CREATE UNIQUE INDEX idx_email ON users2(email)",
+        "DROP INDEX idx_name",
+        "DROP INDEX IF EXISTS idx_email",
+    ];
+    
+    for stmt_str in index_statements {
+        match sql::parse_sql(stmt_str) {
+            Ok(_) => {
+                let stmt_type = if stmt_str.starts_with("CREATE TABLE") {
+                    "CREATE TABLE with INDEX"
+                } else if stmt_str.starts_with("CREATE INDEX") {
+                    "CREATE INDEX"
+                } else if stmt_str.starts_with("CREATE UNIQUE") {
+                    "CREATE UNIQUE INDEX"
+                } else if stmt_str.starts_with("DROP INDEX") {
+                    "DROP INDEX"
+                } else {
+                    "Other"
+                };
+                println!("  ✓ Parsed: {}", stmt_type);
+            }
+            Err(e) => println!("  ✗ Failed to parse '{}': {:?}", stmt_str, e),
+        }
+    }
+
     Ok(())
 }

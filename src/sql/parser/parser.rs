@@ -130,8 +130,8 @@ impl Parser<'_> {
             Token::Keyword(Keyword::Rollback) => self.parse_rollback(),
             Token::Keyword(Keyword::Explain) => self.parse_explain(),
 
-            Token::Keyword(Keyword::Create) => self.parse_create_table(),
-            Token::Keyword(Keyword::Drop) => self.parse_drop_table(),
+            Token::Keyword(Keyword::Create) => self.parse_create(),
+            Token::Keyword(Keyword::Drop) => self.parse_drop(),
 
             Token::Keyword(Keyword::Delete) => self.parse_delete(),
             Token::Keyword(Keyword::Insert) => self.parse_insert(),
@@ -181,9 +181,41 @@ impl Parser<'_> {
         Ok(ast::Statement::Explain(Box::new(self.parse_statement()?)))
     }
 
-    /// Parses a CREATE TABLE statement.
-    fn parse_create_table(&mut self) -> Result<ast::Statement> {
+    /// Parses a CREATE statement (TABLE or INDEX).
+    fn parse_create(&mut self) -> Result<ast::Statement> {
         self.expect(Keyword::Create.into())?;
+        match self.peek()? {
+            Some(Token::Keyword(Keyword::Table)) => self.parse_create_table_inner(),
+            Some(Token::Keyword(Keyword::Unique)) => {
+                self.next()?; // consume UNIQUE
+                self.expect(Keyword::Index.into())?;
+                self.parse_create_index_inner(true)
+            }
+            Some(Token::Keyword(Keyword::Index)) => {
+                self.next()?; // consume INDEX
+                self.parse_create_index_inner(false)
+            }
+            Some(token) => Err(Error::ParseError(format!("expected TABLE or INDEX after CREATE, found {}", token))),
+            None => Err(Error::ParseError("unexpected end of input after CREATE".into())),
+        }
+    }
+
+    /// Parses a DROP statement (TABLE or INDEX).
+    fn parse_drop(&mut self) -> Result<ast::Statement> {
+        self.expect(Keyword::Drop.into())?;
+        match self.peek()? {
+            Some(Token::Keyword(Keyword::Table)) => self.parse_drop_table_inner(),
+            Some(Token::Keyword(Keyword::Index)) => {
+                self.next()?; // consume INDEX
+                self.parse_drop_index_inner()
+            }
+            Some(token) => Err(Error::ParseError(format!("expected TABLE or INDEX after DROP, found {}", token))),
+            None => Err(Error::ParseError("unexpected end of input after DROP".into())),
+        }
+    }
+
+    /// Parses a CREATE TABLE statement (after CREATE).
+    fn parse_create_table_inner(&mut self) -> Result<ast::Statement> {
         self.expect(Keyword::Table.into())?;
         let name = self.next_ident()?;
         self.expect(Token::OpenParen)?;
@@ -270,9 +302,35 @@ impl Parser<'_> {
         Ok(column)
     }
 
-    /// Parses a DROP TABLE statement.
-    fn parse_drop_table(&mut self) -> Result<ast::Statement> {
-        self.expect(Token::Keyword(Keyword::Drop))?;
+    /// Parses a CREATE INDEX statement (after CREATE [UNIQUE] INDEX).
+    fn parse_create_index_inner(&mut self, unique: bool) -> Result<ast::Statement> {
+        let name = self.next_ident()?;
+        self.expect(Keyword::On.into())?;
+        let table = self.next_ident()?;
+        self.expect(Token::OpenParen)?;
+        let column = self.next_ident()?;
+        self.expect(Token::CloseParen)?;
+        Ok(ast::Statement::CreateIndex {
+            name,
+            table,
+            column,
+            unique,
+        })
+    }
+
+    /// Parses a DROP INDEX statement (after DROP INDEX).
+    fn parse_drop_index_inner(&mut self) -> Result<ast::Statement> {
+        let mut if_exists = false;
+        if self.next_is(Keyword::If.into()) {
+            self.expect(Token::Keyword(Keyword::Exists))?;
+            if_exists = true;
+        }
+        let name = self.next_ident()?;
+        Ok(ast::Statement::DropIndex { name, if_exists })
+    }
+
+    /// Parses a DROP TABLE statement (after DROP).
+    fn parse_drop_table_inner(&mut self) -> Result<ast::Statement> {
         self.expect(Token::Keyword(Keyword::Table))?;
         let mut if_exists = false;
         if self.next_is(Keyword::If.into()) {

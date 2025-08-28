@@ -152,6 +152,18 @@ impl Executor {
                 // TODO: Drop table data and schema
                 Ok(ExecutionResult::DDL(format!("Table '{}' dropped", name)))
             }
+            
+            Plan::CreateIndex { name, table, column, unique: _ } => {
+                // TODO: Create the index on the storage layer through transaction
+                // This would require access to the storage layer, which isn't available here
+                // In a real system, this would be handled by the storage layer
+                Ok(ExecutionResult::DDL(format!("Index '{}' created on {}.{}", name, table, column)))
+            }
+            
+            Plan::DropIndex { name, if_exists: _ } => {
+                // TODO: Drop index from storage
+                Ok(ExecutionResult::DDL(format!("Index '{}' dropped", name)))
+            }
 
             Plan::Begin { read_only } => Ok(ExecutionResult::Transaction(
                 if read_only {
@@ -178,6 +190,15 @@ impl Executor {
         match node {
             Node::Scan { table, .. } => {
                 // Scan the table
+                let rows = tx.scan(table, None, None)?;
+                let iter = rows.into_iter().map(|(_, row)| Ok(Arc::new(row)));
+                Ok(Box::new(iter))
+            }
+            
+            Node::IndexScan { table, index_column: _, value: _, .. } => {
+                // TODO: Implement index scan using transaction
+                // For now, fall back to regular scan
+                // In a real system, we'd use tx to access the storage layer's index
                 let rows = tx.scan(table, None, None)?;
                 let iter = rows.into_iter().map(|(_, row)| Ok(Arc::new(row)));
                 Ok(Box::new(iter))

@@ -146,6 +146,12 @@ impl Column {
             references: None,
         }
     }
+    
+    /// Set the index flag for this column.
+    pub fn with_index(mut self, index: bool) -> Self {
+        self.index = index;
+        self
+    }
 
     /// Sets this column as the primary key.
     pub fn primary_key(mut self) -> Self {
