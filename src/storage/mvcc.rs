@@ -21,8 +21,6 @@ pub struct VersionedValue {
     pub created_at: HlcTimestamp,
     /// Transaction that deleted this version (if any)
     pub deleted_by: Option<HlcTimestamp>,
-    /// Whether this version is committed
-    pub committed: bool,
 }
 
 /// Versioned table with MVCC support
@@ -56,20 +54,6 @@ impl VersionedTable {
     /// Register a transaction's start time
     pub fn register_transaction(&mut self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
         self.transaction_start_times.insert(txn_id, start_time);
-    }
-
-    /// Mark a transaction as committed
-    pub fn mark_committed(&mut self, txn_id: HlcTimestamp) {
-        // Mark all versions created by this transaction as committed
-        for versions in self.versions.values_mut() {
-            for version in versions.iter_mut() {
-                if version.created_by == txn_id {
-                    version.committed = true;
-                }
-            }
-        }
-
-        self.committed_transactions.insert(txn_id);
     }
 
     /// Remove all versions created by an aborted transaction
@@ -108,7 +92,6 @@ impl VersionedTable {
             created_by: txn_id,
             created_at: txn_timestamp,
             deleted_by: None,
-            committed: false, // Will be marked true on commit
         };
 
         self.versions.entry(row_id).or_default().push(version);
@@ -133,7 +116,10 @@ impl VersionedTable {
                 .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", row_id)))?;
 
             // If this transaction created the visible version, we can update in place
-            !(visible_version.created_by == txn_id && !visible_version.committed)
+            !(visible_version.created_by == txn_id
+                && !self
+                    .committed_transactions
+                    .contains(&visible_version.created_by))
         };
 
         let versions = self.versions.get_mut(&row_id).unwrap();
@@ -172,7 +158,6 @@ impl VersionedTable {
             created_by: txn_id,
             created_at: txn_timestamp,
             deleted_by: None,
-            committed: false,
         };
 
         self.versions.get_mut(&row_id).unwrap().push(new_version);
@@ -319,18 +304,9 @@ impl VersionedTable {
 
     /// Commit all changes made by a transaction
     pub fn commit_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
-        // Mark transaction as committed
+        // Just mark transaction as committed - O(1) operation
+        // The committed status is checked via committed_transactions set
         self.committed_transactions.insert(txn_id);
-
-        // Update all versions to be committed
-        for versions in self.versions.values_mut() {
-            for version in versions.iter_mut() {
-                if version.created_by == txn_id {
-                    version.committed = true;
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -371,7 +347,7 @@ impl VersionedTable {
                 for (i, version) in versions.iter().enumerate() {
                     if version.created_at >= oldest_timestamp {
                         keep_indices.insert(i);
-                    } else if version.committed {
+                    } else if self.committed_transactions.contains(&version.created_by) {
                         newest_committed_before = Some(i);
                     }
                 }
