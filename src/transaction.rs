@@ -448,40 +448,74 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Temporarily disabled - lock conflict in test setup
-    fn test_transaction_isolation() {
+    fn test_pcc_blocking_and_mvcc_abort() {
         let (lock_manager, storage) = setup_test_env();
 
-        // Transaction 1: Insert a row
-        let tx1 = MvccTransaction::new(
-            HlcTimestamp::new(100, 0, NodeId::new(1)),
+        // Create and commit initial data
+        let tx0 = MvccTransaction::new(
+            HlcTimestamp::new(50, 0, NodeId::new(1)),
             lock_manager.clone(),
             storage.clone(),
         );
-
-        let row_id = tx1
+        let row_id = tx0
             .insert(
                 "users",
                 vec![Value::Integer(1), Value::String("Alice".to_string())],
             )
             .unwrap();
+        tx0.commit().unwrap();
 
-        // Transaction 2: Should not see uncommitted data
+        // TX1 starts and updates the row (holds exclusive lock)
+        let tx1 = MvccTransaction::new(
+            HlcTimestamp::new(100, 0, NodeId::new(1)),
+            lock_manager.clone(),
+            storage.clone(),
+        );
+        tx1.update(
+            "users",
+            row_id,
+            vec![Value::Integer(1), Value::String("Alice_TX1".to_string())],
+        )
+        .unwrap();
+
+        // TX2 tries to read the same row - should get blocked by PCC
         let tx2 = MvccTransaction::new(
             HlcTimestamp::new(200, 0, NodeId::new(1)),
             lock_manager.clone(),
             storage.clone(),
         );
+        
+        // This should fail with a lock conflict (PCC blocking)
+        let result = tx2.read("users", row_id);
+        assert!(
+            matches!(result, Err(Error::LockConflict { .. })),
+            "TX2 should be blocked by TX1's exclusive lock"
+        );
 
-        // This will block on lock, but if it could proceed, it wouldn't see the row
-        // For testing, we check the MVCC layer directly
-        let tables = storage.tables.read().unwrap();
-        let table = tables.get("users").unwrap();
-        assert!(table.read(tx2.id, tx2.timestamp, row_id).is_none());
+        // Now TX1 aborts (MVCC enables this rollback)
+        tx1.abort().unwrap();
 
-        // After commit, tx2 can see it
-        tx1.commit().unwrap();
-        assert!(table.read(tx2.id, tx2.timestamp, row_id).is_some());
+        // TX2 can now read and should see the original value (TX1's changes rolled back)
+        let row_data = tx2.read("users", row_id).unwrap();
+        assert_eq!(
+            row_data[1],
+            Value::String("Alice".to_string()),
+            "After TX1 abort, TX2 should see original value"
+        );
+
+        // Start TX3 to verify abort was complete
+        let tx3 = MvccTransaction::new(
+            HlcTimestamp::new(300, 0, NodeId::new(1)),
+            lock_manager.clone(),
+            storage.clone(),
+        );
+        
+        let row_data = tx3.read("users", row_id).unwrap();
+        assert_eq!(
+            row_data[1],
+            Value::String("Alice".to_string()),
+            "TX3 should also see original value after TX1 abort"
+        );
     }
 
     #[test]
