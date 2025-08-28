@@ -7,8 +7,10 @@ edition = "2024"
 bincode = "2.0.1"
 bytes = { version = "1.7", features = ["serde"] }
 hex = "0.4"
+parking_lot = "0.12"
 regex = "1.10"
 rust_decimal = { version = "1.32", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 thiserror = "2.0.16"
+tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "macros", "time"] }
 uuid = { version = "1.10", features = ["serde", "v4"] }
