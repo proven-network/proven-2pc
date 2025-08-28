@@ -160,7 +160,10 @@ impl TryFrom<&str> for Keyword {
     fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
         // Only compare lowercase, which is enforced by the lexer. This avoids
         // allocating a string to change the case. Assert this.
-        debug_assert!(value.chars().all(|c| !c.is_uppercase()), "keyword must be lowercase");
+        debug_assert!(
+            value.chars().all(|c| !c.is_uppercase()),
+            "keyword must be lowercase"
+        );
         Ok(match value {
             "as" => Self::As,
             "asc" => Self::Asc,
@@ -323,7 +326,10 @@ impl Iterator for Lexer<'_> {
         match self.scan() {
             Ok(Some(token)) => Some(Ok(token)),
             // If there's any remaining chars, the lexer didn't recognize them.
-            Ok(None) => self.chars.peek().map(|c| Err(Error::ParseError(format!("unexpected character {c}")))),
+            Ok(None) => self
+                .chars
+                .peek()
+                .map(|c| Err(Error::ParseError(format!("unexpected character {c}")))),
             Err(err) => Some(Err(err)),
         }
     }
@@ -332,7 +338,9 @@ impl Iterator for Lexer<'_> {
 impl<'a> Lexer<'a> {
     /// Creates a new lexer for the given string.
     pub fn new(input: &'a str) -> Lexer<'a> {
-        Lexer { chars: input.chars().peekable() }
+        Lexer {
+            chars: input.chars().peekable(),
+        }
     }
 
     /// Returns the next character if it satisfies the predicate.
@@ -375,7 +383,10 @@ impl<'a> Lexer<'a> {
     /// lowercase, by SQL convention.
     fn scan_ident_or_keyword(&mut self) -> Option<Token> {
         // The first character must be alphabetic. The rest can be numeric.
-        let mut name = self.next_if(|c| c.is_alphabetic())?.to_lowercase().to_string();
+        let mut name = self
+            .next_if(|c| c.is_alphabetic())?
+            .to_lowercase()
+            .to_string();
         while let Some(c) = self.next_if(|c| c.is_alphanumeric() || c == '_') {
             name.extend(c.to_lowercase())
         }
@@ -398,7 +409,11 @@ impl<'a> Lexer<'a> {
                 Some('"') if self.next_is('"') => ident.push('"'),
                 Some('"') => break,
                 Some(c) => ident.push(c),
-                None => return Err(Error::ParseError("unexpected end of quoted identifier".into())),
+                None => {
+                    return Err(Error::ParseError(
+                        "unexpected end of quoted identifier".into(),
+                    ));
+                }
             }
         }
         Ok(Some(Token::Ident(ident)))

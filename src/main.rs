@@ -3,12 +3,12 @@
 use proven_sql::{
     error::Result,
     hlc::{HlcClock, HlcTimestamp, NodeId},
-    sql,
     lock::{LockKey, LockManager, LockMode},
+    sql,
+    sql::types::value::{DataType, Value},
     storage::{Column, Schema, Storage},
     transaction::TransactionManager,
     transaction_id::TransactionId,
-    types::{DataType, Value},
 };
 use std::sync::Arc;
 
@@ -23,11 +23,11 @@ fn main() -> Result<()> {
 
     // Demo 3: Transactions with concurrency control
     demo_transactions()?;
-    
+
     // Demo 4: SQL parser
     demo_sql_parser()?;
 
-    println!("\n=== All demos completed successfully! ==="  );
+    println!("\n=== All demos completed successfully! ===");
     Ok(())
 }
 
@@ -146,11 +146,7 @@ fn demo_transactions() -> Result<()> {
     // In a real distributed system, each node would have its own clock
     // but they'd share transaction state through consensus
     let clock = Arc::new(HlcClock::new(NodeId::new(1)));
-    let tx_manager = TransactionManager::with_clock(
-        lock_manager.clone(),
-        storage.clone(),
-        clock,
-    );
+    let tx_manager = TransactionManager::with_clock(lock_manager.clone(), storage.clone(), clock);
 
     // Start first transaction
     let tx1 = tx_manager.begin()?;
@@ -173,7 +169,10 @@ fn demo_transactions() -> Result<()> {
     // Start younger transaction
     let tx2 = tx_manager.begin()?;
     println!("  ✓ Transaction 2 started (ID: {})", tx2.id);
-    println!("  ✓ Tx2 is younger than Tx1: {}", tx1.id.has_higher_priority_than(&tx2.id));
+    println!(
+        "  ✓ Tx2 is younger than Tx1: {}",
+        tx1.id.has_higher_priority_than(&tx2.id)
+    );
 
     // Tx2 tries to write same account - should be blocked (younger waits)
     match tx2.write("accounts", 1, vec![Value::Integer(1), Value::Integer(800)]) {
@@ -192,14 +191,17 @@ fn demo_transactions() -> Result<()> {
     );
     let tx3 = tx_manager.begin_with_timestamp(older_timestamp)?;
     println!("  ✓ Transaction 3 started (ID: {})", tx3.id);
-    println!("  ✓ Tx3 is older than Tx1: {}", tx3.id.has_higher_priority_than(&tx1.id));
-    
+    println!(
+        "  ✓ Tx3 is older than Tx1: {}",
+        tx3.id.has_higher_priority_than(&tx1.id)
+    );
+
     // Tx3 tries to write - should wound tx1 using the manager's method
     let key = LockKey::Row {
         table: "accounts".to_string(),
         row_id: 1,
     };
-    
+
     match tx_manager.acquire_lock_with_wound_wait(&tx3, key, LockMode::Exclusive) {
         Ok(()) => println!("  ✓ Tx3 wounded Tx1 and acquired lock (older wounds younger)"),
         Err(e) => println!("  ✗ Error: {:?}", e),
@@ -214,7 +216,7 @@ fn demo_transactions() -> Result<()> {
 
 fn demo_sql_parser() -> Result<()> {
     println!("\n--- Demo 4: SQL Parser ---");
-    
+
     // Test various SQL statements
     let statements = vec![
         "SELECT * FROM users WHERE age > 25",
@@ -225,13 +227,16 @@ fn demo_sql_parser() -> Result<()> {
         "BEGIN READ ONLY",
         "COMMIT",
     ];
-    
+
     for stmt_str in statements {
         match sql::parse_sql(stmt_str) {
-            Ok(_stmt) => println!("  ✓ Parsed: {}", stmt_str.split_whitespace().next().unwrap_or("")),
+            Ok(_stmt) => println!(
+                "  ✓ Parsed: {}",
+                stmt_str.split_whitespace().next().unwrap_or("")
+            ),
             Err(e) => println!("  ✗ Failed to parse '{}': {:?}", stmt_str, e),
         }
     }
-    
+
     Ok(())
 }

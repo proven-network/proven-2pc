@@ -4,11 +4,11 @@
 //! efficient streaming execution.
 
 use crate::error::{Error, Result};
-use crate::sql::plan::{self, Node, Plan, Rows};
-use crate::sql::schema::Table;
+use crate::sql::planner::plan::{self, Node, Plan, Rows};
+use crate::sql::types::schema::Table;
+use crate::sql::types::value::{Row, Value};
 use crate::transaction::Transaction;
 use crate::transaction_id::TransactionContext;
-use crate::types::{Row, Value};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -139,7 +139,7 @@ impl Executor {
                 Ok(ExecutionResult::Modified(count))
             }
 
-            Plan::CreateTable { name, schema } => {
+            Plan::CreateTable { name, schema: _ } => {
                 // TODO: Persist schema
                 Ok(ExecutionResult::DDL(format!("Table '{}' created", name)))
             }
@@ -286,25 +286,141 @@ impl Executor {
                 Ok(Box::new(values_iter))
             }
 
-            Node::Aggregate { .. } => {
-                // TODO: Implement aggregation
-                Err(Error::ExecutionError(
-                    "Aggregation not yet implemented".into(),
-                ))
+            Node::Aggregate {
+                source,
+                group_by,
+                aggregates,
+            } => {
+                use super::aggregator::{Aggregate, Aggregator};
+
+                let source_rows = self.execute_node(source, tx, context)?;
+
+                // Convert plan aggregates to aggregator aggregates
+                let agg_funcs = aggregates
+                    .iter()
+                    .map(|f| match f {
+                        plan::AggregateFunc::Count(e) => Aggregate::Count(e.clone()),
+                        plan::AggregateFunc::Sum(e) => Aggregate::Sum(e.clone()),
+                        plan::AggregateFunc::Avg(e) => Aggregate::Avg(e.clone()),
+                        plan::AggregateFunc::Min(e) => Aggregate::Min(e.clone()),
+                        plan::AggregateFunc::Max(e) => Aggregate::Max(e.clone()),
+                    })
+                    .collect();
+
+                // Create aggregator and add all rows
+                let mut aggregator = Aggregator::new(group_by.clone(), agg_funcs);
+                for row_result in source_rows {
+                    aggregator.add(row_result?, context)?;
+                }
+
+                // Finalize and return results
+                let result_rows = aggregator.finalize()?;
+                Ok(Box::new(result_rows.into_iter().map(Ok)))
             }
 
-            Node::HashJoin { .. } => {
-                // TODO: Implement hash join
-                Err(Error::ExecutionError(
-                    "Hash join not yet implemented".into(),
-                ))
+            Node::HashJoin {
+                left,
+                right,
+                left_col,
+                right_col,
+                join_type,
+            } => {
+                use super::join::HashJoiner;
+
+                let left_rows = self.execute_node(left, tx, context)?;
+                let right_rows = self.execute_node(right, tx, context)?;
+
+                // Build phase: hash the left side
+                let mut joiner = HashJoiner::new(*left_col, *right_col);
+                let mut _left_count = 0;
+                for row_result in left_rows {
+                    joiner.build(row_result?)?;
+                    _left_count += 1;
+                }
+
+                // Probe phase: join with right side
+                let mut results = Vec::new();
+                for row_result in right_rows {
+                    let right_row = row_result?;
+                    let joined = match join_type {
+                        plan::JoinType::Inner => joiner.probe(&right_row),
+                        plan::JoinType::Left => {
+                            joiner.probe_outer(&right_row, left.column_count(&self.schemas))
+                        }
+                        _ => {
+                            return Err(Error::ExecutionError(
+                                "Only INNER and LEFT joins supported for hash join".into(),
+                            ));
+                        }
+                    };
+                    results.extend(joined);
+                }
+
+                Ok(Box::new(results.into_iter().map(Ok)))
             }
 
-            Node::NestedLoopJoin { .. } => {
-                // TODO: Implement nested loop join
-                Err(Error::ExecutionError(
-                    "Nested loop join not yet implemented".into(),
-                ))
+            Node::NestedLoopJoin {
+                left,
+                right,
+                predicate,
+                join_type,
+            } => {
+                use super::join::NestedLoopJoiner;
+
+                let left_rows = self.execute_node(left, tx, context)?;
+                let right_rows = self.execute_node(right, tx, context)?;
+
+                // Collect all left rows
+                let mut joiner = NestedLoopJoiner::new();
+                for row_result in left_rows {
+                    joiner.add_left(row_result?);
+                }
+
+                // Join with each right row
+                let mut results = Vec::new();
+                let ctx = context.clone();
+                let pred = predicate.clone();
+                for row_result in right_rows {
+                    let right_row = row_result?;
+
+                    // Evaluate predicate for each left-right pair
+                    let joined = match join_type {
+                        plan::JoinType::Inner => {
+                            let pred = pred.clone();
+                            joiner.join_with(&right_row, |left_row, right_row| {
+                                let mut combined = left_row.clone();
+                                combined.extend_from_slice(right_row);
+                                match pred.evaluate(Some(&combined), &ctx) {
+                                    Ok(Value::Boolean(true)) => true,
+                                    _ => false,
+                                }
+                            })
+                        }
+                        plan::JoinType::Left => {
+                            let pred = pred.clone();
+                            joiner.join_outer_with(
+                                &right_row,
+                                |left_row, right_row| {
+                                    let mut combined = left_row.clone();
+                                    combined.extend_from_slice(right_row);
+                                    match pred.evaluate(Some(&combined), &ctx) {
+                                        Ok(Value::Boolean(true)) => true,
+                                        _ => false,
+                                    }
+                                },
+                                left.column_count(&self.schemas),
+                            )
+                        }
+                        _ => {
+                            return Err(Error::ExecutionError(
+                                "Only INNER and LEFT joins supported for nested loop join".into(),
+                            ));
+                        }
+                    };
+                    results.extend(joined);
+                }
+
+                Ok(Box::new(results.into_iter().map(Ok)))
             }
 
             Node::Nothing => Ok(Box::new(std::iter::empty())),
@@ -358,16 +474,16 @@ pub enum ExecutionResult {
 
 #[cfg(test)]
 mod tests {
+    use super::{ExecutionResult, Executor};
     use crate::error::Result;
     use crate::hlc::{HlcTimestamp, NodeId};
     use crate::lock::LockManager;
-    use crate::sql::executor::{ExecutionResult, Executor};
     use crate::sql::parser::Parser;
     use crate::sql::planner::Planner;
-    use crate::sql::schema::{Column, Table};
+    use crate::sql::types::schema::{Column, Table};
+    use crate::sql::types::value::{DataType, Value};
     use crate::storage::{Column as StorageColumn, Schema as StorageSchema, Storage};
     use crate::transaction::Transaction;
-    use crate::types::{DataType, Value};
     use std::collections::HashMap;
     use std::sync::Arc;
 

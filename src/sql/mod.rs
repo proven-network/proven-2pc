@@ -6,13 +6,11 @@
 //! - Expression evaluator (TODO)
 //! - Deterministic function validation
 
-pub mod executor;
-pub mod expression;
+pub mod execution;
 pub mod functions;
 pub mod parser;
-pub mod plan;
 pub mod planner;
-pub mod schema;
+pub mod types;
 
 use crate::error::Result;
 use parser::Parser;
@@ -23,6 +21,5 @@ pub fn parse_sql(sql: &str) -> Result<Statement> {
 }
 
 // Re-export key types
-pub use expression::Expression;
 pub use parser::{Literal, Statement};
-pub use schema::{Column, Label, Table};
+pub use types::{Column, Expression, Label, Table};

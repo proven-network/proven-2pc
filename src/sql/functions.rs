@@ -4,8 +4,8 @@
 //! the same output given the same inputs and transaction context.
 
 use crate::error::{Error, Result};
+use crate::sql::types::value::Value;
 use crate::transaction_id::TransactionContext;
-use crate::types::Value;
 
 /// Evaluate a SQL function call
 pub fn evaluate_function(

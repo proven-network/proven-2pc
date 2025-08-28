@@ -1,7 +1,7 @@
 //! Single-version in-memory storage engine
 
 use crate::error::{Error, Result};
-use crate::types::{DataType, Value};
+use crate::sql::types::value::{DataType, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};

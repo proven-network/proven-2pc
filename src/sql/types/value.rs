@@ -53,7 +53,7 @@ impl fmt::Display for DataType {
 }
 
 /// SQL values with deterministic operations
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Value {
     Null,
     Boolean(bool),

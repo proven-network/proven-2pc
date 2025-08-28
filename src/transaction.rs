@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use crate::hlc::{HlcClock, HlcTimestamp, SharedHlcClock};
 use crate::lock::{LockKey, LockManager, LockMode, LockResult, TxId};
 use crate::storage::Storage;
-use crate::transaction_id::{TransactionId, TransactionContext};
+use crate::transaction_id::{TransactionContext, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -34,7 +34,7 @@ pub struct AccessLogEntry {
 pub struct Transaction {
     /// Full transaction ID (global + sub-transaction sequence)
     pub id: TransactionId,
-    
+
     /// Transaction context for deterministic SQL execution
     pub context: TransactionContext,
 
@@ -72,7 +72,7 @@ impl Transaction {
             access_log: RwLock::new(Vec::new()),
         }
     }
-    
+
     /// Create a sub-transaction
     pub fn new_sub(
         parent_id: TransactionId,
@@ -115,18 +115,21 @@ impl Transaction {
                 self.locks_held.write().unwrap().push(key.clone());
                 Ok(())
             }
-            LockResult::Conflict { holder, mode: held_mode } => {
+            LockResult::Conflict {
+                holder,
+                mode: held_mode,
+            } => {
                 // Return conflict information for transaction manager to handle
-                Err(Error::LockConflict { 
-                    holder, 
-                    mode: held_mode 
+                Err(Error::LockConflict {
+                    holder,
+                    mode: held_mode,
                 })
             }
         }
     }
 
     /// Read a row from a table
-    pub fn read(&self, table: &str, row_id: u64) -> Result<Vec<crate::types::Value>> {
+    pub fn read(&self, table: &str, row_id: u64) -> Result<Vec<crate::sql::types::value::Value>> {
         if !self.is_active() {
             return Err(Error::TransactionNotActive(self.id));
         }
@@ -156,7 +159,12 @@ impl Transaction {
     }
 
     /// Write a row to a table
-    pub fn write(&self, table: &str, row_id: u64, values: Vec<crate::types::Value>) -> Result<()> {
+    pub fn write(
+        &self,
+        table: &str,
+        row_id: u64,
+        values: Vec<crate::sql::types::value::Value>,
+    ) -> Result<()> {
         if !self.is_active() {
             return Err(Error::TransactionNotActive(self.id));
         }
@@ -182,7 +190,7 @@ impl Transaction {
     }
 
     /// Insert a new row
-    pub fn insert(&self, table: &str, values: Vec<crate::types::Value>) -> Result<u64> {
+    pub fn insert(&self, table: &str, values: Vec<crate::sql::types::value::Value>) -> Result<u64> {
         if !self.is_active() {
             return Err(Error::TransactionNotActive(self.id));
         }
@@ -245,7 +253,7 @@ impl Transaction {
         table: &str,
         start: Option<u64>,
         end: Option<u64>,
-    ) -> Result<Vec<(u64, Vec<crate::types::Value>)>> {
+    ) -> Result<Vec<(u64, Vec<crate::sql::types::value::Value>)>> {
         if !self.is_active() {
             return Err(Error::TransactionNotActive(self.id));
         }
@@ -343,7 +351,7 @@ impl Drop for Transaction {
 pub struct TransactionManager {
     /// All active transactions (keyed by full transaction ID)
     transactions: Arc<RwLock<HashMap<TransactionId, Arc<Transaction>>>>,
-    
+
     /// Sub-transaction sequence counters per global transaction
     sub_sequences: Arc<RwLock<HashMap<HlcTimestamp, u32>>>,
 
@@ -362,7 +370,7 @@ impl TransactionManager {
         use crate::hlc::NodeId;
         // In a real system, this would use the actual node ID
         let clock = Arc::new(HlcClock::new(NodeId::new(1)));
-        
+
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
             sub_sequences: Arc::new(RwLock::new(HashMap::new())),
@@ -371,7 +379,7 @@ impl TransactionManager {
             storage,
         }
     }
-    
+
     /// Create a new transaction manager with a specific clock
     pub fn with_clock(
         lock_manager: Arc<LockManager>,
@@ -403,7 +411,7 @@ impl TransactionManager {
 
         Ok(tx)
     }
-    
+
     /// Begin a new transaction with a specific timestamp (for testing)
     pub fn begin_with_timestamp(&self, global_id: HlcTimestamp) -> Result<Arc<Transaction>> {
         let tx = Arc::new(Transaction::new(
@@ -417,17 +425,18 @@ impl TransactionManager {
 
         Ok(tx)
     }
-    
+
     /// Begin a sub-transaction under an existing global transaction
     pub fn begin_sub(&self, global_id: HlcTimestamp) -> Result<Arc<Transaction>> {
         // Increment and get the sub-sequence number
         let mut sequences = self.sub_sequences.write().unwrap();
-        let sub_seq = sequences.entry(global_id)
+        let sub_seq = sequences
+            .entry(global_id)
             .and_modify(|s| *s += 1)
             .or_insert(1);
         let sub_seq = *sub_seq;
         drop(sequences);
-        
+
         let parent_id = TransactionId::new(global_id);
         let tx = Arc::new(Transaction::new_sub(
             parent_id,
@@ -435,9 +444,9 @@ impl TransactionManager {
             self.lock_manager.clone(),
             self.storage.clone(),
         ));
-        
+
         self.transactions.write().unwrap().insert(tx.id, tx.clone());
-        
+
         Ok(tx)
     }
 
@@ -479,7 +488,7 @@ impl TransactionManager {
         }
         Ok(())
     }
-    
+
     /// Try to acquire a lock with wound-wait handling
     /// Returns Ok(()) if lock acquired, Err(WouldBlock) if must wait
     pub fn acquire_lock_with_wound_wait(
@@ -522,8 +531,8 @@ use std::collections::HashMap;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql::types::value::{DataType, Value};
     use crate::storage::{Column, Schema};
-    use crate::types::{DataType, Value};
 
     #[test]
     fn test_transaction_lifecycle() {
@@ -586,7 +595,7 @@ mod tests {
         // Small delay to ensure tx2 gets a later timestamp
         std::thread::sleep(std::time::Duration::from_millis(1));
         let tx2 = tx_manager.begin().unwrap();
-        
+
         // tx2 should be younger (later timestamp)
         assert!(tx1.id.has_higher_priority_than(&tx2.id));
 

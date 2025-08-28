@@ -14,7 +14,7 @@ pub struct TransactionId {
     /// Global distributed transaction ID from coordinator
     /// This HLC timestamp provides total ordering across the distributed system
     pub global_id: HlcTimestamp,
-    
+
     /// Sub-transaction sequence number
     /// Incremented for each BEGIN or SAVEPOINT within the global transaction
     /// 0 = main transaction, 1+ = sub-transactions
@@ -29,7 +29,7 @@ impl TransactionId {
             sub_seq: 0,
         }
     }
-    
+
     /// Create a sub-transaction ID
     pub fn sub_transaction(&self, seq: u32) -> Self {
         Self {
@@ -37,12 +37,12 @@ impl TransactionId {
             sub_seq: seq,
         }
     }
-    
+
     /// Check if this is a sub-transaction
     pub fn is_sub_transaction(&self) -> bool {
         self.sub_seq > 0
     }
-    
+
     /// Get the parent transaction ID (strips sub_seq)
     pub fn parent(&self) -> Self {
         Self {
@@ -50,7 +50,7 @@ impl TransactionId {
             sub_seq: 0,
         }
     }
-    
+
     /// Compare priority for wound-wait (older = higher priority)
     /// Uses only the global_id since sub-transactions inherit parent priority
     pub fn has_higher_priority_than(&self, other: &Self) -> bool {
@@ -73,10 +73,10 @@ impl fmt::Display for TransactionId {
 pub struct TransactionContext {
     /// Full transaction ID
     pub tx_id: TransactionId,
-    
+
     /// Read-only transaction flag
     pub read_only: bool,
-    
+
     /// Isolation level (future enhancement)
     pub isolation_level: IsolationLevel,
 }
@@ -90,7 +90,7 @@ impl TransactionContext {
             isolation_level: IsolationLevel::Serializable,
         }
     }
-    
+
     /// Create a read-only transaction context
     pub fn read_only(global_id: HlcTimestamp) -> Self {
         Self {
@@ -99,7 +99,7 @@ impl TransactionContext {
             isolation_level: IsolationLevel::Serializable,
         }
     }
-    
+
     /// Create a sub-transaction context
     pub fn sub_transaction(&self, seq: u32) -> Self {
         Self {
@@ -108,33 +108,33 @@ impl TransactionContext {
             isolation_level: self.isolation_level,
         }
     }
-    
+
     /// Get the timestamp for deterministic SQL functions
     pub fn timestamp(&self) -> &HlcTimestamp {
         &self.tx_id.global_id
     }
-    
+
     /// Generate a deterministic UUID based on transaction ID and a sequence
     pub fn deterministic_uuid(&self, sequence: u64) -> uuid::Uuid {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
-        
+        use std::hash::{Hash, Hasher};
+
         let mut hasher = DefaultHasher::new();
         self.tx_id.hash(&mut hasher);
         sequence.hash(&mut hasher);
-        
+
         let hash = hasher.finish();
         let bytes = hash.to_be_bytes();
-        
+
         // Create a v4-like UUID but deterministically
         let mut uuid_bytes = [0u8; 16];
         uuid_bytes[..8].copy_from_slice(&bytes);
         uuid_bytes[8..].copy_from_slice(&bytes); // Repeat for full 16 bytes
-        
+
         // Set version (4) and variant bits
         uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
-        
+
         uuid::Uuid::from_bytes(uuid_bytes)
     }
 }

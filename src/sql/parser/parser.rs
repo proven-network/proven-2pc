@@ -3,7 +3,7 @@ use std::ops::Add;
 
 use super::{Keyword, Lexer, Token, ast};
 use crate::error::{Error, Result};
-use crate::types::DataType;
+use crate::sql::types::value::DataType;
 
 /// The SQL parser takes tokens from the lexer and parses the SQL syntax into an
 /// Abstract Syntax Tree (AST).
@@ -44,19 +44,27 @@ impl Parser<'_> {
 
     /// Creates a new parser for the given raw SQL string.
     fn new(input: &str) -> Parser<'_> {
-        Parser { lexer: Lexer::new(input).peekable() }
+        Parser {
+            lexer: Lexer::new(input).peekable(),
+        }
     }
 
     /// Fetches the next lexer token, or errors if none is found.
     fn next(&mut self) -> Result<Token> {
-        self.lexer.next().transpose()?.ok_or_else(|| Error::ParseError("unexpected end of input".into()))
+        self.lexer
+            .next()
+            .transpose()?
+            .ok_or_else(|| Error::ParseError("unexpected end of input".into()))
     }
 
     /// Returns the next identifier, or errors if not found.
     fn next_ident(&mut self) -> Result<String> {
         match self.next()? {
             Token::Ident(ident) => Ok(ident),
-            token => Err(Error::ParseError(format!("expected identifier, got {}", token))),
+            token => Err(Error::ParseError(format!(
+                "expected identifier, got {}",
+                token
+            ))),
         }
     }
 
@@ -89,7 +97,10 @@ impl Parser<'_> {
     fn expect(&mut self, expect: Token) -> Result<()> {
         let token = self.next()?;
         if token != expect {
-            return Err(Error::ParseError(format!("expected token {}, found {}", expect, token)));
+            return Err(Error::ParseError(format!(
+                "expected token {}, found {}",
+                expect, token
+            )));
         }
         Ok(())
     }
@@ -102,7 +113,10 @@ impl Parser<'_> {
 
     /// Peeks the next lexer token if any, but transposes it for convenience.
     fn peek(&mut self) -> Result<Option<&Token>> {
-        self.lexer.peek().map(|r| r.as_ref().map_err(|err| err.clone())).transpose()
+        self.lexer
+            .peek()
+            .map(|r| r.as_ref().map_err(|err| err.clone()))
+            .transpose()
     }
 
     /// Parses a SQL statement.
@@ -202,7 +216,12 @@ impl Parser<'_> {
                 // TODO: Parse precision and scale from DECIMAL(p,s)
                 DataType::Decimal(38, 10)
             }
-            token => return Err(Error::ParseError(format!("unexpected token {}, expected data type", token))),
+            token => {
+                return Err(Error::ParseError(format!(
+                    "unexpected token {}, expected data type",
+                    token
+                )));
+            }
         };
         let mut column = ast::Column {
             name,
@@ -222,14 +241,20 @@ impl Parser<'_> {
                 }
                 Keyword::Null => {
                     if column.nullable.is_some() {
-                        return Err(Error::ParseError(format!("nullability already set for column {}", column.name)));
+                        return Err(Error::ParseError(format!(
+                            "nullability already set for column {}",
+                            column.name
+                        )));
                     }
                     column.nullable = Some(true)
                 }
                 Keyword::Not => {
                     self.expect(Keyword::Null.into())?;
                     if column.nullable.is_some() {
-                        return Err(Error::ParseError(format!("nullability already set for column {}", column.name)));
+                        return Err(Error::ParseError(format!(
+                            "nullability already set for column {}",
+                            column.name
+                        )));
                     }
                     column.nullable = Some(false)
                 }
@@ -237,7 +262,9 @@ impl Parser<'_> {
                 Keyword::Unique => column.unique = true,
                 Keyword::Index => column.index = true,
                 Keyword::References => column.references = Some(self.next_ident()?),
-                keyword => return Err(Error::ParseError(format!("unexpected keyword {}", keyword))),
+                keyword => {
+                    return Err(Error::ParseError(format!("unexpected keyword {}", keyword)));
+                }
             }
         }
         Ok(column)
@@ -261,7 +288,10 @@ impl Parser<'_> {
         self.expect(Keyword::Delete.into())?;
         self.expect(Keyword::From.into())?;
         let table = self.next_ident()?;
-        Ok(ast::Statement::Delete { table, r#where: self.parse_where_clause()? })
+        Ok(ast::Statement::Delete {
+            table,
+            r#where: self.parse_where_clause()?,
+        })
     }
 
     /// Parses an INSERT statement.
@@ -301,7 +331,11 @@ impl Parser<'_> {
             }
         }
 
-        Ok(ast::Statement::Insert { table, columns, values })
+        Ok(ast::Statement::Insert {
+            table,
+            columns,
+            values,
+        })
     }
 
     /// Parses an UPDATE statement.
@@ -317,14 +351,21 @@ impl Parser<'_> {
                 .then(|| self.parse_expression())
                 .transpose()?;
             if set.contains_key(&column) {
-                return Err(Error::ParseError(format!("column {} set multiple times", column)));
+                return Err(Error::ParseError(format!(
+                    "column {} set multiple times",
+                    column
+                )));
             }
             set.insert(column, expr);
             if !self.next_is(Token::Comma) {
                 break;
             }
         }
-        Ok(ast::Statement::Update { table, set, r#where: self.parse_where_clause()? })
+        Ok(ast::Statement::Update {
+            table,
+            set,
+            r#where: self.parse_where_clause()?,
+        })
     }
 
     /// Parses a SELECT statement.
@@ -380,7 +421,12 @@ impl Parser<'_> {
                     self.expect(Keyword::On.into())?;
                     predicate = Some(self.parse_expression()?)
                 }
-                from_item = ast::FromClause::Join { left, right, r#type, predicate };
+                from_item = ast::FromClause::Join {
+                    left,
+                    right,
+                    r#type,
+                    predicate,
+                };
             }
             from.push(from_item);
             if !self.next_is(Token::Comma) {
@@ -657,10 +703,16 @@ impl Parser<'_> {
             Token::Asterisk => ast::Expression::All,
 
             // Literal value.
-            Token::Number(n) if n.chars().all(|c| c.is_ascii_digit()) => {
-                ast::Literal::Integer(n.parse().map_err(|e| Error::ParseError(format!("invalid integer: {}", e)))?).into()
-            }
-            Token::Number(n) => ast::Literal::Float(n.parse().map_err(|e| Error::ParseError(format!("invalid float: {}", e)))?).into(),
+            Token::Number(n) if n.chars().all(|c| c.is_ascii_digit()) => ast::Literal::Integer(
+                n.parse()
+                    .map_err(|e| Error::ParseError(format!("invalid integer: {}", e)))?,
+            )
+            .into(),
+            Token::Number(n) => ast::Literal::Float(
+                n.parse()
+                    .map_err(|e| Error::ParseError(format!("invalid float: {}", e)))?,
+            )
+            .into(),
             Token::String(s) => ast::Literal::String(s).into(),
             Token::Keyword(Keyword::True) => ast::Literal::Boolean(true).into(),
             Token::Keyword(Keyword::False) => ast::Literal::Boolean(false).into(),
@@ -693,7 +745,12 @@ impl Parser<'_> {
                 expr
             }
 
-            token => return Err(Error::ParseError(format!("expected expression atom, found {}", token))),
+            token => {
+                return Err(Error::ParseError(format!(
+                    "expected expression atom, found {}",
+                    token
+                )));
+            }
         })
     }
 

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::convert::From;
 use std::hash::{Hash, Hasher};
 
-use crate::types::DataType;
+use crate::sql::types::value::DataType;
 
 /// SQL statements represented as an Abstract Syntax Tree (AST).
 /// The statement is the root node of this tree, describing the syntactic
@@ -212,17 +212,17 @@ impl Hash for Literal {
 /// expression, which incurs a heap allocation.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Operator {
-    And(Box<Expression>, Box<Expression>),       // a AND b
-    Not(Box<Expression>),                        // NOT a
-    Or(Box<Expression>, Box<Expression>),        // a OR b
+    And(Box<Expression>, Box<Expression>), // a AND b
+    Not(Box<Expression>),                  // NOT a
+    Or(Box<Expression>, Box<Expression>),  // a OR b
 
-    Equal(Box<Expression>, Box<Expression>),              // a = b
-    GreaterThan(Box<Expression>, Box<Expression>),        // a > b
+    Equal(Box<Expression>, Box<Expression>),       // a = b
+    GreaterThan(Box<Expression>, Box<Expression>), // a > b
     GreaterThanOrEqual(Box<Expression>, Box<Expression>), // a >= b
-    Is(Box<Expression>, Literal),                         // IS NULL or IS NAN
-    LessThan(Box<Expression>, Box<Expression>),           // a < b
-    LessThanOrEqual(Box<Expression>, Box<Expression>),    // a <= b
-    NotEqual(Box<Expression>, Box<Expression>),           // a != b
+    Is(Box<Expression>, Literal),                  // IS NULL or IS NAN
+    LessThan(Box<Expression>, Box<Expression>),    // a < b
+    LessThanOrEqual(Box<Expression>, Box<Expression>), // a <= b
+    NotEqual(Box<Expression>, Box<Expression>),    // a != b
 
     Add(Box<Expression>, Box<Expression>),          // a + b
     Divide(Box<Expression>, Box<Expression>),       // a / b
@@ -234,7 +234,7 @@ pub enum Operator {
     Remainder(Box<Expression>, Box<Expression>),    // a % b
     Subtract(Box<Expression>, Box<Expression>),     // a - b
 
-    Like(Box<Expression>, Box<Expression>),         // a LIKE b
+    Like(Box<Expression>, Box<Expression>), // a LIKE b
 }
 
 impl From<Literal> for Expression {

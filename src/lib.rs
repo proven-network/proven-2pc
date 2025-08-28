@@ -15,10 +15,8 @@ pub mod sql;
 pub mod storage;
 pub mod transaction;
 pub mod transaction_id;
-pub mod types;
-
 pub use error::{Error, Result};
 pub use lock::LockManager;
+pub use sql::types::value::{DataType, Value};
 pub use storage::Storage;
 pub use transaction::{Transaction, TransactionManager};
-pub use types::{DataType, Value};

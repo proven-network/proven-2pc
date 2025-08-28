@@ -3,8 +3,8 @@
 //! Adapted from toydb for proven-sql's PCC architecture.
 //! Tables are immutable after creation - no ALTER TABLE support.
 
+use super::value::{DataType, Row, Value};
 use crate::error::{Error, Result};
-use crate::types::{DataType, Row, Value};
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 

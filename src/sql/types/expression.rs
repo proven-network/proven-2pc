@@ -5,9 +5,9 @@
 //! - Added TransactionContext for deterministic function evaluation
 //! - Integrated with our Value types (including UUID, Timestamp, Blob)
 
+use super::value::{Row, Value};
 use crate::error::{Error, Result};
 use crate::transaction_id::TransactionContext;
-use crate::types::{Row, Value};
 use regex::Regex;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
@@ -450,10 +450,10 @@ impl Display for Expression {
 
 #[cfg(test)]
 mod tests {
+    use super::super::value::{Row, Value};
+    use super::Expression;
     use crate::hlc::{HlcTimestamp, NodeId};
-    use crate::sql::expression::Expression;
     use crate::transaction_id::{IsolationLevel, TransactionContext, TransactionId};
-    use crate::types::{Row, Value};
     use rust_decimal::Decimal;
     use std::str::FromStr;
 

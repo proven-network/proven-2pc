@@ -4,8 +4,8 @@
 //! from its children and processes the rows.
 
 use crate::error::Result;
-use crate::sql::expression::Expression;
-use crate::types::{Row, Value};
+use crate::sql::types::expression::Expression;
+use crate::sql::types::value::Row;
 use std::sync::Arc;
 
 /// Execution plan - the root of the plan tree
@@ -13,41 +13,43 @@ use std::sync::Arc;
 pub enum Plan {
     /// SELECT query
     Select(Box<Node>),
-    
+
     /// INSERT statement
     Insert {
         table: String,
-        columns: Option<Vec<usize>>,  // Column indices in table schema
+        columns: Option<Vec<usize>>, // Column indices in table schema
         source: Box<Node>,
     },
-    
+
     /// UPDATE statement  
     Update {
         table: String,
-        assignments: Vec<(usize, Expression)>,  // (column_index, value_expr)
+        assignments: Vec<(usize, Expression)>, // (column_index, value_expr)
         source: Box<Node>,
     },
-    
+
     /// DELETE statement
     Delete {
         table: String,
         source: Box<Node>,
     },
-    
+
     /// CREATE TABLE
     CreateTable {
         name: String,
-        schema: crate::sql::schema::Table,
+        schema: crate::sql::types::schema::Table,
     },
-    
+
     /// DROP TABLE
     DropTable {
         name: String,
         if_exists: bool,
     },
-    
+
     /// Transaction control
-    Begin { read_only: bool },
+    Begin {
+        read_only: bool,
+    },
     Commit,
     Rollback,
 }
@@ -60,45 +62,39 @@ pub enum Node {
         table: String,
         alias: Option<String>,
     },
-    
+
     /// Filter rows (WHERE clause)
     Filter {
         source: Box<Node>,
         predicate: Expression,
     },
-    
+
     /// Project columns (SELECT clause)
     Projection {
         source: Box<Node>,
         expressions: Vec<Expression>,
         aliases: Vec<Option<String>>,
     },
-    
+
     /// Sort rows (ORDER BY)
     Order {
         source: Box<Node>,
         order_by: Vec<(Expression, Direction)>,
     },
-    
+
     /// Limit rows
-    Limit {
-        source: Box<Node>,
-        limit: usize,
-    },
-    
+    Limit { source: Box<Node>, limit: usize },
+
     /// Skip rows (OFFSET)
-    Offset {
-        source: Box<Node>,
-        offset: usize,
-    },
-    
+    Offset { source: Box<Node>, offset: usize },
+
     /// Aggregate functions with GROUP BY
     Aggregate {
         source: Box<Node>,
         group_by: Vec<Expression>,
         aggregates: Vec<AggregateFunc>,
     },
-    
+
     /// Hash join
     HashJoin {
         left: Box<Node>,
@@ -107,7 +103,7 @@ pub enum Node {
         right_col: usize,
         join_type: JoinType,
     },
-    
+
     /// Nested loop join
     NestedLoopJoin {
         left: Box<Node>,
@@ -115,29 +111,32 @@ pub enum Node {
         predicate: Expression,
         join_type: JoinType,
     },
-    
+
     /// Values (for INSERT)
-    Values {
-        rows: Vec<Vec<Expression>>,
-    },
-    
+    Values { rows: Vec<Vec<Expression>> },
+
     /// Empty result
     Nothing,
 }
 
 impl Node {
     /// Get the column count this node produces
-    pub fn column_count(&self, schemas: &std::collections::HashMap<String, crate::sql::schema::Table>) -> usize {
+    pub fn column_count(
+        &self,
+        schemas: &std::collections::HashMap<String, crate::sql::types::schema::Table>,
+    ) -> usize {
         match self {
-            Node::Scan { table, .. } => {
-                schemas.get(table).map(|s| s.columns.len()).unwrap_or(0)
-            }
+            Node::Scan { table, .. } => schemas.get(table).map(|s| s.columns.len()).unwrap_or(0),
             Node::Projection { expressions, .. } => expressions.len(),
             Node::Filter { source, .. } => source.column_count(schemas),
             Node::Order { source, .. } => source.column_count(schemas),
             Node::Limit { source, .. } => source.column_count(schemas),
             Node::Offset { source, .. } => source.column_count(schemas),
-            Node::Aggregate { group_by, aggregates, .. } => group_by.len() + aggregates.len(),
+            Node::Aggregate {
+                group_by,
+                aggregates,
+                ..
+            } => group_by.len() + aggregates.len(),
             Node::HashJoin { left, right, .. } => {
                 left.column_count(schemas) + right.column_count(schemas)
             }
