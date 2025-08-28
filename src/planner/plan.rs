@@ -5,6 +5,7 @@
 
 use crate::error::Result;
 use crate::types::expression::Expression;
+pub use crate::types::query::{Direction, JoinType};
 use crate::types::value::Row;
 use std::sync::Arc;
 
@@ -156,22 +157,6 @@ impl Node {
             Node::Nothing => 0,
         }
     }
-}
-
-/// Sort direction
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Ascending,
-    Descending,
-}
-
-/// Join type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinType {
-    Inner,
-    Left,
-    Right,
-    Full,
 }
 
 /// Aggregate function

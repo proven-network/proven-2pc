@@ -10,6 +10,7 @@ use std::convert::From;
 use std::hash::{Hash, Hasher};
 
 use crate::types::value::DataType;
+pub use crate::types::{Direction, JoinType};
 
 /// SQL statements represented as an Abstract Syntax Tree (AST).
 /// The statement is the root node of this tree, describing the syntactic
@@ -130,32 +131,15 @@ pub struct Column {
     pub references: Option<String>,
 }
 
-/// JOIN types.
-#[derive(Debug, Clone, PartialEq)]
-pub enum JoinType {
-    Cross,
-    Inner,
-    Left,
-    Right,
-}
-
 impl JoinType {
     /// If true, the join is an outer join, where rows with no join matches are
     /// emitted with a NULL match.
     pub fn is_outer(&self) -> bool {
         match self {
-            Self::Left | Self::Right => true,
+            Self::Left | Self::Right | Self::Full => true,
             Self::Cross | Self::Inner => false,
         }
     }
-}
-
-/// ORDER BY direction.
-#[derive(Debug, Clone, Default)]
-pub enum Direction {
-    #[default]
-    Ascending,
-    Descending,
 }
 
 /// SQL expressions, e.g. `a + 7 > b`. Can be nested.

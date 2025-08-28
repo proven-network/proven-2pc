@@ -16,7 +16,9 @@ pub use lexer::{Keyword, Lexer, Token};
 pub use parser::Parser;
 
 // Re-export commonly used AST types
-pub use ast::{Column, Direction, Expression, FromClause, JoinType, Literal, Operator, Statement};
+pub use ast::{Column, Expression, FromClause, Literal, Operator, Statement};
+// Re-export query types from types module
+pub use crate::types::{Direction, JoinType};
 
 /// Parse a SQL statement string into an AST
 pub fn parse_sql(sql: &str) -> Result<Statement> {
