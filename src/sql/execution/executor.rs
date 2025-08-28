@@ -26,8 +26,6 @@ pub enum ExecutionResult {
     Modified(usize),
     /// DDL operation result
     DDL(String),
-    /// Transaction control result
-    Transaction(String),
 }
 
 /// Row iterator type for streaming execution
@@ -208,10 +206,6 @@ impl Executor {
             Plan::DropIndex { name, .. } => {
                 Ok(ExecutionResult::DDL(format!("Index '{}' dropped", name)))
             }
-
-            Plan::Begin { .. } => Ok(ExecutionResult::Transaction("BEGIN".to_string())),
-            Plan::Commit => Ok(ExecutionResult::Transaction("COMMIT".to_string())),
-            Plan::Rollback => Ok(ExecutionResult::Transaction("ROLLBACK".to_string())),
         }
     }
 

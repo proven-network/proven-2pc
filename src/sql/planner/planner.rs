@@ -87,12 +87,6 @@ impl Planner {
                 Ok(Plan::DropIndex { name, if_exists })
             }
 
-            ast::Statement::Begin { read_only } => Ok(Plan::Begin { read_only }),
-
-            ast::Statement::Commit => Ok(Plan::Commit),
-
-            ast::Statement::Rollback => Ok(Plan::Rollback),
-
             ast::Statement::Explain(_) => {
                 Err(Error::ExecutionError("EXPLAIN not yet implemented".into()))
             }

@@ -4,7 +4,7 @@
 //! - PCC handles lock acquisition and deadlock prevention
 //! - MVCC handles versioning and visibility
 
-use crate::context::{TransactionContext, TransactionId};
+use crate::context::TransactionContext;
 use crate::error::{Error, Result};
 use crate::hlc::HlcTimestamp;
 use crate::sql::types::value::Value;
@@ -37,8 +37,8 @@ pub struct AccessLogEntry {
 
 /// A database transaction with MVCC support
 pub struct MvccTransaction {
-    /// Full transaction ID
-    pub id: TransactionId,
+    /// Transaction ID (HLC timestamp)
+    pub id: HlcTimestamp,
 
     /// Transaction context for deterministic SQL execution
     pub context: TransactionContext,
@@ -69,14 +69,13 @@ impl MvccTransaction {
         lock_manager: Arc<LockManager>,
         storage: Arc<MvccStorage>,
     ) -> Self {
-        let id = TransactionId::new(global_id);
         let context = TransactionContext::new(global_id);
 
         // Register with MVCC storage
-        storage.register_transaction(id, global_id);
+        storage.register_transaction(global_id, global_id);
 
         Self {
-            id,
+            id: global_id,
             context,
             timestamp: global_id,
             state: RwLock::new(TransactionState::Active),

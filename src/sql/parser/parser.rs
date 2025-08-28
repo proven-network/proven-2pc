@@ -125,9 +125,6 @@ impl Parser<'_> {
             return Err(Error::ParseError("unexpected end of input".into()));
         };
         match token {
-            Token::Keyword(Keyword::Begin) => self.parse_begin(),
-            Token::Keyword(Keyword::Commit) => self.parse_commit(),
-            Token::Keyword(Keyword::Rollback) => self.parse_rollback(),
             Token::Keyword(Keyword::Explain) => self.parse_explain(),
 
             Token::Keyword(Keyword::Create) => self.parse_create(),
@@ -140,36 +137,6 @@ impl Parser<'_> {
 
             token => Err(Error::ParseError(format!("unexpected token {}", token))),
         }
-    }
-
-    /// Parses a BEGIN statement.
-    fn parse_begin(&mut self) -> Result<ast::Statement> {
-        self.expect(Keyword::Begin.into())?;
-        self.skip(Keyword::Transaction.into());
-
-        let mut read_only = false;
-        if self.next_is(Keyword::Read.into()) {
-            match self.next()? {
-                Token::Keyword(Keyword::Only) => read_only = true,
-                Token::Keyword(Keyword::Write) => {}
-                token => return Err(Error::ParseError(format!("unexpected token {}", token))),
-            }
-        }
-
-        // PCC doesn't support AS OF (point-in-time reads)
-        Ok(ast::Statement::Begin { read_only })
-    }
-
-    /// Parses a COMMIT statement.
-    fn parse_commit(&mut self) -> Result<ast::Statement> {
-        self.expect(Keyword::Commit.into())?;
-        Ok(ast::Statement::Commit)
-    }
-
-    /// Parses a ROLLBACK statement.
-    fn parse_rollback(&mut self) -> Result<ast::Statement> {
-        self.expect(Keyword::Rollback.into())?;
-        Ok(ast::Statement::Rollback)
     }
 
     /// Parses an EXPLAIN statement.

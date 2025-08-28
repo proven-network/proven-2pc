@@ -46,13 +46,6 @@ pub enum Plan {
         if_exists: bool,
     },
 
-    /// Transaction control
-    Begin {
-        read_only: bool,
-    },
-    Commit,
-    Rollback,
-
     /// CREATE INDEX
     CreateIndex {
         name: String,

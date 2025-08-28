@@ -452,17 +452,14 @@ impl Display for Expression {
 mod tests {
     use super::super::value::{Row, Value};
     use super::Expression;
-    use crate::context::{TransactionContext, TransactionId};
+    use crate::context::TransactionContext;
     use crate::hlc::{HlcTimestamp, NodeId};
     use rust_decimal::Decimal;
     use std::str::FromStr;
 
     fn test_context() -> TransactionContext {
         TransactionContext {
-            tx_id: TransactionId {
-                global_id: HlcTimestamp::new(1000, 0, NodeId::new(1)),
-                sub_seq: 1,
-            },
+            tx_id: HlcTimestamp::new(1000, 0, NodeId::new(1)),
             read_only: false,
         }
     }

@@ -3,7 +3,6 @@
 //! Provides transaction isolation through versioning while working
 //! with PCC for conflict prevention.
 
-use crate::context::TransactionId;
 use crate::error::{Error, Result};
 use crate::hlc::HlcTimestamp;
 use crate::sql::types::schema::Table;
@@ -17,11 +16,11 @@ pub struct VersionedValue {
     /// The actual row data
     pub row: Arc<Row>,
     /// Transaction that created this version
-    pub created_by: TransactionId,
+    pub created_by: HlcTimestamp,
     /// HLC timestamp when created
     pub created_at: HlcTimestamp,
     /// Transaction that deleted this version (if any)
-    pub deleted_by: Option<TransactionId>,
+    pub deleted_by: Option<HlcTimestamp>,
     /// Whether this version is committed
     pub committed: bool,
 }
@@ -37,9 +36,9 @@ pub struct VersionedTable {
     /// Next row ID for inserts
     pub next_id: u64,
     /// Track committed transactions
-    pub committed_transactions: Arc<RwLock<HashSet<TransactionId>>>,
+    pub committed_transactions: Arc<RwLock<HashSet<HlcTimestamp>>>,
     /// Transaction start times for visibility checks
-    pub transaction_start_times: Arc<RwLock<HashMap<TransactionId, HlcTimestamp>>>,
+    pub transaction_start_times: Arc<RwLock<HashMap<HlcTimestamp, HlcTimestamp>>>,
 }
 
 impl VersionedTable {
@@ -55,7 +54,7 @@ impl VersionedTable {
     }
 
     /// Register a transaction's start time
-    pub fn register_transaction(&self, txn_id: TransactionId, start_time: HlcTimestamp) {
+    pub fn register_transaction(&self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
         self.transaction_start_times
             .write()
             .unwrap()
@@ -63,7 +62,7 @@ impl VersionedTable {
     }
 
     /// Mark a transaction as committed
-    pub fn mark_committed(&self, txn_id: TransactionId) {
+    pub fn mark_committed(&self, txn_id: HlcTimestamp) {
         // Mark all versions created by this transaction as committed
         for versions in self.versions.values() {
             for version in versions {
@@ -78,7 +77,7 @@ impl VersionedTable {
     }
 
     /// Remove all versions created by an aborted transaction
-    pub fn remove_transaction_versions(&mut self, txn_id: TransactionId) {
+    pub fn remove_transaction_versions(&mut self, txn_id: HlcTimestamp) {
         for versions in self.versions.values_mut() {
             // Remove versions created by this transaction
             versions.retain(|v| v.created_by != txn_id);
@@ -98,7 +97,7 @@ impl VersionedTable {
     /// Insert a new row (creates a new version)
     pub fn insert(
         &mut self,
-        txn_id: TransactionId,
+        txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
         values: Vec<Value>,
     ) -> Result<u64> {
@@ -123,7 +122,7 @@ impl VersionedTable {
     /// Update a row (marks old version as deleted, creates new version)
     pub fn update(
         &mut self,
-        txn_id: TransactionId,
+        txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
         row_id: u64,
         values: Vec<Value>,
@@ -191,7 +190,7 @@ impl VersionedTable {
     /// Delete a row (marks version as deleted)
     pub fn delete(
         &mut self,
-        txn_id: TransactionId,
+        txn_id: HlcTimestamp,
         _txn_timestamp: HlcTimestamp,
         row_id: u64,
     ) -> Result<()> {
@@ -243,7 +242,7 @@ impl VersionedTable {
     /// Read a specific row
     pub fn read(
         &self,
-        txn_id: TransactionId,
+        txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
         row_id: u64,
     ) -> Option<Arc<Row>> {
@@ -252,7 +251,7 @@ impl VersionedTable {
     }
 
     /// Scan all visible rows for a transaction
-    pub fn scan(&self, txn_id: TransactionId, txn_timestamp: HlcTimestamp) -> Vec<(u64, Arc<Row>)> {
+    pub fn scan(&self, txn_id: HlcTimestamp, txn_timestamp: HlcTimestamp) -> Vec<(u64, Arc<Row>)> {
         let mut result = Vec::new();
 
         for (&row_id, versions) in &self.versions {
@@ -267,7 +266,7 @@ impl VersionedTable {
     /// Get the visible version of a row for a transaction
     fn get_visible_version(
         &self,
-        txn_id: TransactionId,
+        txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
         row_id: u64,
     ) -> Option<&VersionedValue> {
@@ -279,7 +278,7 @@ impl VersionedTable {
     fn find_visible_version<'a>(
         &self,
         versions: &'a [VersionedValue],
-        txn_id: TransactionId,
+        txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
     ) -> Option<&'a VersionedValue> {
         // Search backwards (newest first) for visible version
@@ -293,7 +292,7 @@ impl VersionedTable {
     fn is_version_visible_to(
         &self,
         version: &VersionedValue,
-        txn_id: TransactionId,
+        txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
     ) -> bool {
         // Transaction sees its own writes
@@ -348,7 +347,7 @@ impl VersionedTable {
     }
 
     /// Commit all changes made by a transaction
-    pub fn commit_transaction(&mut self, txn_id: TransactionId) -> Result<()> {
+    pub fn commit_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
         // Mark transaction as committed
         self.committed_transactions.write().unwrap().insert(txn_id);
 
@@ -365,7 +364,7 @@ impl VersionedTable {
     }
 
     /// Abort a transaction, removing all its changes
-    pub fn abort_transaction(&mut self, txn_id: TransactionId) -> Result<()> {
+    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
         self.remove_transaction_versions(txn_id);
 
         // Clean up tracking
@@ -378,7 +377,7 @@ impl VersionedTable {
     }
 
     /// Garbage collection: remove old committed versions that no active transaction can see
-    pub fn garbage_collect(&mut self, active_transactions: &[TransactionId]) -> usize {
+    pub fn garbage_collect(&mut self, active_transactions: &[HlcTimestamp]) -> usize {
         if active_transactions.is_empty() {
             return 0; // No GC when no active transactions
         }
@@ -441,9 +440,9 @@ pub struct MvccStorage {
     /// Tables with versioned data
     pub tables: RwLock<HashMap<String, VersionedTable>>,
     /// Track all committed transactions globally
-    pub global_committed: Arc<RwLock<HashSet<TransactionId>>>,
+    pub global_committed: Arc<RwLock<HashSet<HlcTimestamp>>>,
     /// Track active transactions for GC
-    pub active_transactions: Arc<RwLock<HashSet<TransactionId>>>,
+    pub active_transactions: Arc<RwLock<HashSet<HlcTimestamp>>>,
 }
 
 impl MvccStorage {
@@ -482,7 +481,7 @@ impl MvccStorage {
     }
 
     /// Register a new transaction
-    pub fn register_transaction(&self, txn_id: TransactionId, start_time: HlcTimestamp) {
+    pub fn register_transaction(&self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
         self.active_transactions.write().unwrap().insert(txn_id);
 
         // Register with all tables
@@ -493,7 +492,7 @@ impl MvccStorage {
     }
 
     /// Commit a transaction across all tables
-    pub fn commit_transaction(&self, txn_id: TransactionId) -> Result<()> {
+    pub fn commit_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
         // Mark as committed globally
         self.global_committed.write().unwrap().insert(txn_id);
 
@@ -510,7 +509,7 @@ impl MvccStorage {
     }
 
     /// Abort a transaction across all tables
-    pub fn abort_transaction(&self, txn_id: TransactionId) -> Result<()> {
+    pub fn abort_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
         // Abort in all tables
         let mut tables = self.tables.write().unwrap();
         for table in tables.values_mut() {
@@ -525,7 +524,7 @@ impl MvccStorage {
 
     /// Run garbage collection across all tables
     pub fn garbage_collect(&self) -> usize {
-        let active: Vec<TransactionId> = self
+        let active: Vec<HlcTimestamp> = self
             .active_transactions
             .read()
             .unwrap()
@@ -561,8 +560,8 @@ mod tests {
         .unwrap()
     }
 
-    fn create_txn_id(timestamp: u64) -> TransactionId {
-        TransactionId::new(HlcTimestamp::new(timestamp, 0, NodeId::new(1)))
+    fn create_txn_id(timestamp: u64) -> HlcTimestamp {
+        HlcTimestamp::new(timestamp, 0, NodeId::new(1))
     }
 
     #[test]

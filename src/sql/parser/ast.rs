@@ -17,15 +17,6 @@ use crate::sql::types::value::DataType;
 /// passed to the planner which validates it and builds an execution plan.
 #[derive(Debug, Clone)]
 pub enum Statement {
-    /// BEGIN: begins a new transaction.
-    Begin {
-        /// READ ONLY: if true, begin a read-only transaction.
-        read_only: bool,
-    },
-    /// COMMIT: commits a transaction.
-    Commit,
-    /// ROLLBACK: rolls back a transaction.
-    Rollback,
     /// EXPLAIN: explains a SQL statement's execution plan.
     Explain(Box<Statement>),
     /// CREATE TABLE: creates a new table.

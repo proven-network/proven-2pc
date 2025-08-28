@@ -1,78 +1,15 @@
-//! Transaction context and identification for SQL execution
+//! Transaction context for SQL execution
 //!
-//! Provides TransactionId for unique identification and TransactionContext
-//! for carrying transaction state through SQL operations. Uses HLC timestamps
-//! for global ordering and supports sub-transactions.
+//! Provides TransactionContext for carrying transaction state through SQL operations.
+//! Uses HLC timestamps as transaction IDs for global ordering.
 
 use crate::hlc::HlcTimestamp;
-use serde::{Deserialize, Serialize};
-use std::fmt;
-
-/// Complete transaction identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TransactionId {
-    /// Global distributed transaction ID from coordinator
-    /// This HLC timestamp provides total ordering across the distributed system
-    pub global_id: HlcTimestamp,
-
-    /// Sub-transaction sequence number
-    /// Incremented for each BEGIN or SAVEPOINT within the global transaction
-    /// 0 = main transaction, 1+ = sub-transactions
-    pub sub_seq: u32,
-}
-
-impl TransactionId {
-    /// Create a new main transaction ID
-    pub fn new(global_id: HlcTimestamp) -> Self {
-        Self {
-            global_id,
-            sub_seq: 0,
-        }
-    }
-
-    /// Create a sub-transaction ID
-    pub fn sub_transaction(&self, seq: u32) -> Self {
-        Self {
-            global_id: self.global_id,
-            sub_seq: seq,
-        }
-    }
-
-    /// Check if this is a sub-transaction
-    pub fn is_sub_transaction(&self) -> bool {
-        self.sub_seq > 0
-    }
-
-    /// Get the parent transaction ID (strips sub_seq)
-    pub fn parent(&self) -> Self {
-        Self {
-            global_id: self.global_id,
-            sub_seq: 0,
-        }
-    }
-
-    /// Compare priority for wound-wait (older = higher priority)
-    /// Uses only the global_id since sub-transactions inherit parent priority
-    pub fn has_higher_priority_than(&self, other: &Self) -> bool {
-        self.global_id.is_older_than(&other.global_id)
-    }
-}
-
-impl fmt::Display for TransactionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.sub_seq == 0 {
-            write!(f, "{}", self.global_id)
-        } else {
-            write!(f, "{}.{}", self.global_id, self.sub_seq)
-        }
-    }
-}
 
 /// Transaction context carried through SQL execution
 #[derive(Debug, Clone)]
 pub struct TransactionContext {
-    /// Full transaction ID
-    pub tx_id: TransactionId,
+    /// Transaction ID (HLC timestamp provides total ordering across the distributed system)
+    pub tx_id: HlcTimestamp,
 
     /// Read-only transaction flag
     pub read_only: bool,
@@ -80,32 +17,24 @@ pub struct TransactionContext {
 
 impl TransactionContext {
     /// Create a new transaction context
-    pub fn new(global_id: HlcTimestamp) -> Self {
+    pub fn new(tx_id: HlcTimestamp) -> Self {
         Self {
-            tx_id: TransactionId::new(global_id),
+            tx_id,
             read_only: false,
         }
     }
 
     /// Create a read-only transaction context
-    pub fn read_only(global_id: HlcTimestamp) -> Self {
+    pub fn read_only(tx_id: HlcTimestamp) -> Self {
         Self {
-            tx_id: TransactionId::new(global_id),
+            tx_id,
             read_only: true,
-        }
-    }
-
-    /// Create a sub-transaction context
-    pub fn sub_transaction(&self, seq: u32) -> Self {
-        Self {
-            tx_id: self.tx_id.sub_transaction(seq),
-            read_only: self.read_only,
         }
     }
 
     /// Get the timestamp for deterministic SQL functions
     pub fn timestamp(&self) -> &HlcTimestamp {
-        &self.tx_id.global_id
+        &self.tx_id
     }
 
     /// Generate a deterministic UUID based on transaction ID and a sequence

@@ -359,11 +359,6 @@ fn convert_execution_result(result: ExecutionResult) -> SqlResponse {
             rows_affected: None,
             message: Some(msg),
         },
-        ExecutionResult::Transaction(msg) => SqlResponse::ExecuteResult {
-            result_type: "transaction".to_string(),
-            rows_affected: None,
-            message: Some(msg),
-        },
     }
 }
 
