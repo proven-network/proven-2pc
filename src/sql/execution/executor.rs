@@ -4,13 +4,13 @@
 //! using MVCC transactions for proper isolation and rollback support.
 
 use super::{aggregator::Aggregator, join};
+use crate::context::TransactionContext;
 use crate::error::{Error, Result};
 use crate::sql::planner::plan::{Direction, Node, Plan};
 use crate::sql::types::expression::Expression;
 use crate::sql::types::schema::Table;
 use crate::sql::types::value::Value;
-use crate::transaction::MvccTransaction;
-use crate::transaction_id::TransactionContext;
+use crate::storage::transaction::MvccTransaction;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -126,7 +126,7 @@ impl Executor {
                 // 1. Source node identifies matching rows (WHERE clause)
                 // 2. We scan the table with IDs internally
                 // 3. Match rows and apply updates
-                
+
                 // Get rows that match the WHERE clause
                 let matching_rows = self.execute_node(*source, tx, context)?;
                 let mut matching_set = std::collections::HashSet::new();
@@ -135,22 +135,25 @@ impl Executor {
                     // Store a representation of the row to match against
                     matching_set.insert(format!("{:?}", row.as_ref()));
                 }
-                
+
                 // Now scan with IDs (internal only) to perform updates
                 let rows_with_ids = tx.scan_with_ids(&table)?;
                 let mut count = 0;
-                
+
                 for (row_id, current) in rows_with_ids {
                     // Check if this row matches our WHERE clause
                     if matching_set.contains(&format!("{:?}", &current)) {
                         let mut updated = current.clone();
-                        
+
                         // Apply assignments
                         for (col_idx, expr) in &assignments {
-                            updated[*col_idx] =
-                                self.evaluate_expression(expr, Some(&Arc::new(current.clone())), context)?;
+                            updated[*col_idx] = self.evaluate_expression(
+                                expr,
+                                Some(&Arc::new(current.clone())),
+                                context,
+                            )?;
                         }
-                        
+
                         // Update the row using internal row ID
                         tx.update(&table, row_id, updated)?;
                         count += 1;
@@ -165,7 +168,7 @@ impl Executor {
                 // 1. Source node identifies matching rows (WHERE clause)
                 // 2. We scan the table with IDs internally
                 // 3. Delete matching rows
-                
+
                 // Get rows that match the WHERE clause
                 let matching_rows = self.execute_node(*source, tx, context)?;
                 let mut matching_set = std::collections::HashSet::new();
@@ -173,11 +176,11 @@ impl Executor {
                     let row = row?;
                     matching_set.insert(format!("{:?}", row.as_ref()));
                 }
-                
+
                 // Now scan with IDs (internal only) to perform deletes
                 let rows_with_ids = tx.scan_with_ids(&table)?;
                 let mut count = 0;
-                
+
                 for (row_id, current) in rows_with_ids {
                     // Check if this row matches our WHERE clause
                     if matching_set.contains(&format!("{:?}", &current)) {
@@ -226,9 +229,7 @@ impl Executor {
                 let rows = tx.scan(&table)?;
 
                 // Convert to iterator of Arc<Vec<Value>>
-                let iter = rows.into_iter().map(|values| {
-                    Ok(Arc::new(values))
-                });
+                let iter = rows.into_iter().map(|values| Ok(Arc::new(values)));
 
                 Ok(Box::new(iter))
             }

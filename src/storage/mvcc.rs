@@ -3,11 +3,11 @@
 //! Provides transaction isolation through versioning while working
 //! with PCC for conflict prevention.
 
+use crate::context::TransactionId;
 use crate::error::{Error, Result};
 use crate::hlc::HlcTimestamp;
 use crate::sql::types::schema::Table;
 use crate::sql::types::value::{StorageRow as Row, Value};
-use crate::transaction_id::TransactionId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 

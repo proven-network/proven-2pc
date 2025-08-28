@@ -32,8 +32,8 @@ pub enum Error {
     // Lock errors
     #[error("Lock conflict: held by transaction {holder} in mode {mode:?}")]
     LockConflict {
-        holder: crate::transaction_id::TransactionId,
-        mode: crate::lock::LockMode,
+        holder: crate::context::TransactionId,
+        mode: crate::storage::lock::LockMode,
     },
 
     #[error("Operation would block")]
@@ -47,13 +47,13 @@ pub enum Error {
 
     // Transaction errors
     #[error("Transaction not found: {0}")]
-    TransactionNotFound(crate::transaction_id::TransactionId),
+    TransactionNotFound(crate::context::TransactionId),
 
     #[error("Transaction aborted: {0}")]
-    TransactionAborted(crate::transaction_id::TransactionId),
+    TransactionAborted(crate::context::TransactionId),
 
     #[error("Transaction not active: {0}")]
-    TransactionNotActive(crate::transaction_id::TransactionId),
+    TransactionNotActive(crate::context::TransactionId),
 
     // SQL errors
     #[error("SQL parse error: {0}")]

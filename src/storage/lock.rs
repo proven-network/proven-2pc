@@ -1,7 +1,7 @@
 //! Lock manager that tracks lock ownership and detects conflicts
 
+use crate::context::TransactionId;
 use crate::error::Result;
-use crate::transaction_id::TransactionId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;

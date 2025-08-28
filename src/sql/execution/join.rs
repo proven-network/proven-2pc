@@ -4,12 +4,12 @@
 //! and visibility rules. Unlike toydb's pure iterator-based joins, these
 //! joins integrate with transaction contexts and respect MVCC isolation.
 
+use crate::context::TransactionContext;
 use crate::error::{Error, Result};
 use crate::sql::planner::plan::JoinType;
 use crate::sql::types::expression::Expression;
 use crate::sql::types::value::Value;
-use crate::transaction::MvccTransaction;
-use crate::transaction_id::TransactionContext;
+use crate::storage::transaction::MvccTransaction;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -343,10 +343,10 @@ pub fn execute_hash_join(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::TransactionContext;
     use crate::hlc::{HlcTimestamp, NodeId};
     use crate::sql::types::expression::Expression;
     use crate::sql::types::value::Value;
-    use crate::transaction_id::TransactionContext;
 
     fn create_test_context() -> TransactionContext {
         TransactionContext::new(HlcTimestamp::new(100, 0, NodeId::new(1)))

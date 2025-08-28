@@ -1,8 +1,8 @@
-//! Transaction ID structure for distributed and sub-transactions
+//! Transaction context and identification for SQL execution
 //!
-//! Every SQL operation in the system is associated with a transaction ID that consists of:
-//! 1. A global distributed transaction ID (HLC timestamp from the coordinator)
-//! 2. A sub-transaction sequence number for local sub-transactions (BEGIN, SAVEPOINT)
+//! Provides TransactionId for unique identification and TransactionContext
+//! for carrying transaction state through SQL operations. Uses HLC timestamps
+//! for global ordering and supports sub-transactions.
 
 use crate::hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
@@ -76,9 +76,6 @@ pub struct TransactionContext {
 
     /// Read-only transaction flag
     pub read_only: bool,
-
-    /// Isolation level (future enhancement)
-    pub isolation_level: IsolationLevel,
 }
 
 impl TransactionContext {
@@ -87,7 +84,6 @@ impl TransactionContext {
         Self {
             tx_id: TransactionId::new(global_id),
             read_only: false,
-            isolation_level: IsolationLevel::Serializable,
         }
     }
 
@@ -96,7 +92,6 @@ impl TransactionContext {
         Self {
             tx_id: TransactionId::new(global_id),
             read_only: true,
-            isolation_level: IsolationLevel::Serializable,
         }
     }
 
@@ -105,7 +100,6 @@ impl TransactionContext {
         Self {
             tx_id: self.tx_id.sub_transaction(seq),
             read_only: self.read_only,
-            isolation_level: self.isolation_level,
         }
     }
 
@@ -137,15 +131,4 @@ impl TransactionContext {
 
         uuid::Uuid::from_bytes(uuid_bytes)
     }
-}
-
-/// Transaction isolation levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum IsolationLevel {
-    /// Full serializability (default)
-    Serializable,
-    /// Repeatable read (future)
-    RepeatableRead,
-    /// Read committed (future)
-    ReadCommitted,
 }

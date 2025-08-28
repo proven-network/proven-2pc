@@ -6,8 +6,8 @@
 //! - Integrated with our Value types (including UUID, Timestamp, Blob)
 
 use super::value::{Row, Value};
+use crate::context::TransactionContext;
 use crate::error::{Error, Result};
-use crate::transaction_id::TransactionContext;
 use regex::Regex;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
@@ -274,7 +274,7 @@ impl Expression {
             Function(name, args) => {
                 let arg_values: Result<Vec<_>> =
                     args.iter().map(|arg| arg.evaluate(row, context)).collect();
-                crate::sql::functions::evaluate_function(name, &arg_values?, context)?
+                crate::sql::types::functions::evaluate_function(name, &arg_values?, context)?
             }
         })
     }
@@ -452,8 +452,8 @@ impl Display for Expression {
 mod tests {
     use super::super::value::{Row, Value};
     use super::Expression;
+    use crate::context::{TransactionContext, TransactionId};
     use crate::hlc::{HlcTimestamp, NodeId};
-    use crate::transaction_id::{IsolationLevel, TransactionContext, TransactionId};
     use rust_decimal::Decimal;
     use std::str::FromStr;
 
@@ -464,7 +464,6 @@ mod tests {
                 sub_seq: 1,
             },
             read_only: false,
-            isolation_level: IsolationLevel::Serializable,
         }
     }
 

@@ -3,12 +3,12 @@
 //! This module handles aggregation operations with proper MVCC transaction context,
 //! ensuring all expression evaluation respects transaction visibility rules.
 
+use crate::context::TransactionContext;
 use crate::error::{Error, Result};
 use crate::sql::planner::plan::AggregateFunc;
 use crate::sql::types::expression::Expression;
 use crate::sql::types::value::Value;
-use crate::transaction::MvccTransaction;
-use crate::transaction_id::TransactionContext;
+use crate::storage::transaction::MvccTransaction;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -62,7 +62,7 @@ impl Aggregator {
     pub fn finalize(self) -> Result<Vec<Arc<Vec<Value>>>> {
         if self.buckets.is_empty() && !self.aggregates.is_empty() {
             // No groups but we have aggregates - return single row with aggregate results
-            let mut accumulator = GroupAccumulator::new(self.aggregates.clone());
+            let accumulator = GroupAccumulator::new(self.aggregates.clone());
             let result = accumulator.finalize()?;
             Ok(vec![Arc::new(result)])
         } else {
@@ -363,7 +363,7 @@ pub(crate) fn evaluate_expression(
 mod tests {
     use super::*;
     use crate::hlc::{HlcClock, NodeId};
-    use crate::lock::LockManager;
+    use crate::storage::lock::LockManager;
     use crate::storage::mvcc::MvccStorage;
 
     fn setup_test() -> (Arc<MvccTransaction>, TransactionContext) {

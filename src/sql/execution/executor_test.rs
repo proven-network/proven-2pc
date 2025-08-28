@@ -4,15 +4,15 @@
 mod tests {
     use crate::error::Result;
     use crate::hlc::{HlcClock, HlcTimestamp, NodeId};
-    use crate::lock::LockManager;
+    use crate::storage::lock::LockManager;
     use crate::storage::mvcc::MvccStorage;
     use crate::sql::execution::{Executor, ExecutionResult};
     use crate::sql::parser::Parser;
     use crate::sql::planner::planner::Planner;
     use crate::sql::types::schema::{Column as SchemaColumn, Table};
     use crate::sql::types::value::{DataType, Value};
-    use crate::transaction::MvccTransactionManager;
-    use crate::transaction_id::TransactionContext;
+    use crate::storage::transaction::MvccTransactionManager;
+    use crate::context::TransactionContext;
     use std::collections::HashMap;
     use std::sync::Arc;
 

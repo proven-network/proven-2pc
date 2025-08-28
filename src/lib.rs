@@ -8,16 +8,14 @@
 //!
 //! See LAYERS.md for detailed architecture documentation.
 
+pub mod context;
 pub mod error;
 pub mod hlc;
-pub mod lock;
 pub mod sql;
 pub mod storage;
-pub mod transaction;
-pub mod transaction_id;
 
 pub use error::{Error, Result};
-pub use lock::LockManager;
 pub use sql::types::value::{DataType, Value};
+pub use storage::lock::LockManager;
 pub use storage::mvcc::MvccStorage;
-pub use transaction::{MvccTransaction, MvccTransactionManager};
+pub use storage::transaction::{MvccTransaction, MvccTransactionManager};

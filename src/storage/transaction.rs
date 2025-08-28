@@ -4,12 +4,12 @@
 //! - PCC handles lock acquisition and deadlock prevention
 //! - MVCC handles versioning and visibility
 
+use crate::context::{TransactionContext, TransactionId};
 use crate::error::{Error, Result};
 use crate::hlc::HlcTimestamp;
-use crate::lock::{LockKey, LockManager, LockMode, LockResult};
 use crate::sql::types::value::Value;
+use crate::storage::lock::{LockKey, LockManager, LockMode, LockResult};
 use crate::storage::mvcc::MvccStorage;
-use crate::transaction_id::{TransactionContext, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
@@ -484,7 +484,7 @@ mod tests {
             lock_manager.clone(),
             storage.clone(),
         );
-        
+
         // This should fail with a lock conflict (PCC blocking)
         let result = tx2.read("users", row_id);
         assert!(
@@ -509,7 +509,7 @@ mod tests {
             lock_manager.clone(),
             storage.clone(),
         );
-        
+
         let row_data = tx3.read("users", row_id).unwrap();
         assert_eq!(
             row_data[1],

@@ -6,12 +6,12 @@
 
 use crate::error::{Error, Result};
 use crate::hlc::HlcTimestamp;
-use crate::lock::LockManager;
 use crate::sql::execution::{ExecutionResult, Executor};
 use crate::sql::planner::planner::Planner;
 use crate::sql::types::schema::Table;
+use crate::storage::lock::LockManager;
 use crate::storage::mvcc::MvccStorage;
-use crate::transaction::{
+use crate::storage::transaction::{
     MvccTransaction as Transaction, MvccTransactionManager as TransactionManager,
 };
 use bincode::{Decode, Encode};

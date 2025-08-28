@@ -7,7 +7,6 @@
 //! - Deterministic function validation
 
 pub mod execution;
-pub mod functions;
 pub mod parser;
 pub mod planner;
 pub mod stream_processor;
