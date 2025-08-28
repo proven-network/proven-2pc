@@ -10,11 +10,15 @@
 
 pub mod context;
 pub mod error;
+pub mod execution;
 pub mod hlc;
-pub mod sql;
+pub mod parser;
+pub mod planner;
 pub mod storage;
+pub mod stream_processor;
+pub mod types;
 
 pub use error::{Error, Result};
-pub use sql::types::value::{DataType, Value};
 pub use storage::lock::LockManager;
 pub use storage::mvcc::MvccStorage;
+pub use types::value::{DataType, Value};

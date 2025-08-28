@@ -2,9 +2,9 @@
 
 use super::plan::{Node, Plan};
 use crate::error::Result;
-use crate::sql::types::expression::Expression;
-use crate::sql::types::schema::Table;
-use crate::sql::types::value::Value;
+use crate::types::expression::Expression;
+use crate::types::schema::Table;
+use crate::types::value::Value;
 use std::collections::HashMap;
 
 /// Query optimizer that applies transformation rules to execution plans
@@ -238,7 +238,7 @@ impl Optimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sql::types::value::DataType;
+    use crate::types::value::DataType;
 
     fn test_schemas() -> HashMap<String, Table> {
         let mut schemas = HashMap::new();
@@ -247,10 +247,10 @@ mod tests {
             Table::new(
                 "users".to_string(),
                 vec![
-                    crate::sql::types::schema::Column::new("id".to_string(), DataType::Integer)
+                    crate::types::schema::Column::new("id".to_string(), DataType::Integer)
                         .primary_key(),
-                    crate::sql::types::schema::Column::new("name".to_string(), DataType::String),
-                    crate::sql::types::schema::Column::new("age".to_string(), DataType::Integer),
+                    crate::types::schema::Column::new("name".to_string(), DataType::String),
+                    crate::types::schema::Column::new("age".to_string(), DataType::Integer),
                 ],
             )
             .unwrap(),

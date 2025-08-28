@@ -4,8 +4,8 @@
 //! from its children and processes the rows.
 
 use crate::error::Result;
-use crate::sql::types::expression::Expression;
-use crate::sql::types::value::Row;
+use crate::types::expression::Expression;
+use crate::types::value::Row;
 use std::sync::Arc;
 
 /// Execution plan - the root of the plan tree
@@ -34,7 +34,7 @@ pub enum Plan {
     /// CREATE TABLE
     CreateTable {
         name: String,
-        schema: crate::sql::types::schema::Table,
+        schema: crate::types::schema::Table,
     },
 
     /// DROP TABLE
@@ -129,7 +129,7 @@ impl Node {
     /// Get the column count this node produces
     pub fn column_count(
         &self,
-        schemas: &std::collections::HashMap<String, crate::sql::types::schema::Table>,
+        schemas: &std::collections::HashMap<String, crate::types::schema::Table>,
     ) -> usize {
         match self {
             Node::Scan { table, .. } => schemas.get(table).map(|s| s.columns.len()).unwrap_or(0),

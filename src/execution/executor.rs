@@ -6,13 +6,13 @@
 use super::{aggregator::Aggregator, join};
 use crate::context::TransactionContext;
 use crate::error::{Error, Result};
-use crate::sql::planner::plan::{Node, Plan};
-use crate::sql::stream_processor::TransactionContext as TxContext;
-use crate::sql::types::expression::Expression;
-use crate::sql::types::schema::Table;
-use crate::sql::types::value::Value;
+use crate::planner::plan::{Node, Plan};
 use crate::storage::lock::LockManager;
 use crate::storage::{MvccStorage, read_ops, write_ops};
+use crate::stream_processor::TransactionContext as TxContext;
+use crate::types::expression::Expression;
+use crate::types::schema::Table;
+use crate::types::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -522,8 +522,8 @@ impl Executor {
                             .unwrap_or(std::cmp::Ordering::Equal);
                         if cmp != std::cmp::Ordering::Equal {
                             return match direction {
-                                crate::sql::planner::plan::Direction::Ascending => cmp,
-                                crate::sql::planner::plan::Direction::Descending => cmp.reverse(),
+                                crate::planner::plan::Direction::Ascending => cmp,
+                                crate::planner::plan::Direction::Descending => cmp.reverse(),
                             };
                         }
                     }

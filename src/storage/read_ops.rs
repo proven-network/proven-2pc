@@ -4,10 +4,10 @@
 //! to storage, enabling true zero-copy streaming iterators.
 
 use crate::error::{Error, Result};
-use crate::sql::stream_processor::{AccessLogEntry, TransactionContext, TransactionState};
-use crate::sql::types::value::Value;
 use crate::storage::lock::{LockKey, LockManager, LockMode, LockResult};
 use crate::storage::mvcc::{MvccRowIterator, MvccRowWithIdIterator, MvccStorage};
+use crate::stream_processor::{AccessLogEntry, TransactionContext, TransactionState};
+use crate::types::value::Value;
 use std::sync::Arc;
 
 /// Scan a table returning a true streaming iterator
@@ -167,7 +167,7 @@ pub fn table_exists(storage: &MvccStorage, table: &str) -> bool {
 pub fn get_table_schema<'a>(
     storage: &'a MvccStorage,
     table: &str,
-) -> Result<&'a crate::sql::types::schema::Table> {
+) -> Result<&'a crate::types::schema::Table> {
     storage
         .tables
         .get(table)

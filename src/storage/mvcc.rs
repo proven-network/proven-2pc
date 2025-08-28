@@ -5,8 +5,8 @@
 
 use crate::error::{Error, Result};
 use crate::hlc::HlcTimestamp;
-use crate::sql::types::schema::Table;
-use crate::sql::types::value::{StorageRow as Row, Value};
+use crate::types::schema::Table;
+use crate::types::value::{StorageRow as Row, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -589,8 +589,8 @@ impl MvccStorage {
 mod tests {
     use super::*;
     use crate::hlc::{HlcTimestamp, NodeId};
-    use crate::sql::types::schema::Column;
-    use crate::sql::types::value::DataType;
+    use crate::types::schema::Column;
+    use crate::types::value::DataType;
 
     fn create_test_schema() -> Table {
         Table::new(

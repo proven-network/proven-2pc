@@ -10,8 +10,15 @@ pub mod ast;
 mod lexer;
 mod parser;
 
+use crate::error::Result;
+
 pub use lexer::{Keyword, Lexer, Token};
 pub use parser::Parser;
 
 // Re-export commonly used AST types
 pub use ast::{Column, Direction, Expression, FromClause, JoinType, Literal, Operator, Statement};
+
+/// Parse a SQL statement string into an AST
+pub fn parse_sql(sql: &str) -> Result<Statement> {
+    Parser::parse(sql)
+}

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::convert::From;
 use std::hash::{Hash, Hasher};
 
-use crate::sql::types::value::DataType;
+use crate::types::value::DataType;
 
 /// SQL statements represented as an Abstract Syntax Tree (AST).
 /// The statement is the root node of this tree, describing the syntactic

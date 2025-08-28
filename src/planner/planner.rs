@@ -6,9 +6,9 @@
 use super::optimizer::Optimizer;
 use super::plan::{AggregateFunc, Direction, JoinType, Node, Plan};
 use crate::error::{Error, Result};
-use crate::sql::parser::ast;
-use crate::sql::types::expression::Expression;
-use crate::sql::types::schema::Table;
+use crate::parser::ast;
+use crate::types::expression::Expression;
+use crate::types::schema::Table;
 use std::collections::{BTreeMap, HashMap};
 
 /// Query planner
@@ -217,9 +217,9 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(prev),
                             right: Box::new(scan),
-                            predicate: Expression::Constant(
-                                crate::sql::types::value::Value::Boolean(true),
-                            ),
+                            predicate: Expression::Constant(crate::types::value::Value::Boolean(
+                                true,
+                            )),
                             join_type: JoinType::Inner,
                         }
                     } else {
@@ -327,7 +327,7 @@ impl Planner {
                 let value = if let Some(e) = expr {
                     context.resolve_expression(e)?
                 } else {
-                    Expression::Constant(crate::sql::types::value::Value::Null)
+                    Expression::Constant(crate::types::value::Value::Null)
                 };
 
                 Ok((column, value))
@@ -375,7 +375,7 @@ impl Planner {
 
         for (i, col) in columns.iter().enumerate() {
             let mut schema_col =
-                crate::sql::types::schema::Column::new(col.name.clone(), col.datatype.clone());
+                crate::types::schema::Column::new(col.name.clone(), col.datatype.clone());
 
             if col.primary_key {
                 if primary_key_idx.is_some() {
@@ -491,7 +491,7 @@ impl Planner {
 
                 // Get the argument expression
                 let arg = if args.is_empty() {
-                    Expression::Constant(crate::sql::types::value::Value::Integer(1)) // For COUNT(*)
+                    Expression::Constant(crate::types::value::Value::Integer(1)) // For COUNT(*)
                 } else {
                     context.resolve_expression(args[0].clone())?
                 };
@@ -567,14 +567,14 @@ impl<'a> PlanContext<'a> {
         match expr {
             ast::Expression::Literal(lit) => {
                 let value = match lit {
-                    ast::Literal::Null => crate::sql::types::value::Value::Null,
-                    ast::Literal::Boolean(b) => crate::sql::types::value::Value::Boolean(b),
-                    ast::Literal::Integer(i) => crate::sql::types::value::Value::Integer(i),
-                    ast::Literal::Float(f) => crate::sql::types::value::Value::Decimal(
+                    ast::Literal::Null => crate::types::value::Value::Null,
+                    ast::Literal::Boolean(b) => crate::types::value::Value::Boolean(b),
+                    ast::Literal::Integer(i) => crate::types::value::Value::Integer(i),
+                    ast::Literal::Float(f) => crate::types::value::Value::Decimal(
                         rust_decimal::Decimal::from_f64_retain(f)
                             .ok_or_else(|| Error::InvalidValue("Invalid decimal".into()))?,
                     ),
-                    ast::Literal::String(s) => crate::sql::types::value::Value::String(s),
+                    ast::Literal::String(s) => crate::types::value::Value::String(s),
                 };
                 Ok(Expression::Constant(value))
             }
@@ -674,7 +674,7 @@ impl<'a> PlanContext<'a> {
             ),
             Is(e, lit) => {
                 let value = match lit {
-                    ast::Literal::Null => crate::sql::types::value::Value::Null,
+                    ast::Literal::Null => crate::types::value::Value::Null,
                     _ => return Err(Error::ExecutionError("IS only supports NULL".into())),
                 };
                 Expression::Is(Box::new(self.resolve_expression(*e)?), value)

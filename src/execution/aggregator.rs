@@ -5,10 +5,10 @@
 
 use crate::context::TransactionContext;
 use crate::error::{Error, Result};
-use crate::sql::planner::plan::AggregateFunc;
-use crate::sql::types::expression::Expression;
-use crate::sql::types::value::Value;
+use crate::planner::plan::AggregateFunc;
 use crate::storage::MvccStorage;
+use crate::types::expression::Expression;
+use crate::types::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 

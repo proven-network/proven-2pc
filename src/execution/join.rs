@@ -6,10 +6,10 @@
 
 use crate::context::TransactionContext;
 use crate::error::{Error, Result};
-use crate::sql::planner::plan::JoinType;
-use crate::sql::types::expression::Expression;
-use crate::sql::types::value::Value;
+use crate::planner::plan::JoinType;
 use crate::storage::MvccStorage;
+use crate::types::expression::Expression;
+use crate::types::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -344,8 +344,8 @@ mod tests {
     use super::*;
     use crate::context::TransactionContext;
     use crate::hlc::{HlcTimestamp, NodeId};
-    use crate::sql::types::expression::Expression;
-    use crate::sql::types::value::Value;
+    use crate::types::expression::Expression;
+    use crate::types::value::Value;
 
     fn create_test_context() -> TransactionContext {
         TransactionContext::new(HlcTimestamp::new(100, 0, NodeId::new(1)))

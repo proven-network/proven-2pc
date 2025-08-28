@@ -274,7 +274,7 @@ impl Expression {
             Function(name, args) => {
                 let arg_values: Result<Vec<_>> =
                     args.iter().map(|arg| arg.evaluate(row, context)).collect();
-                crate::sql::types::functions::evaluate_function(name, &arg_values?, context)?
+                crate::types::functions::evaluate_function(name, &arg_values?, context)?
             }
         })
     }

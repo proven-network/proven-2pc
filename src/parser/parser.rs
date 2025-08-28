@@ -3,7 +3,7 @@ use std::ops::Add;
 
 use super::{Keyword, Lexer, Token, ast};
 use crate::error::{Error, Result};
-use crate::sql::types::value::DataType;
+use crate::types::value::DataType;
 
 /// The SQL parser takes tokens from the lexer and parses the SQL syntax into an
 /// Abstract Syntax Tree (AST).

@@ -5,7 +5,7 @@
 
 use crate::context::TransactionContext;
 use crate::error::{Error, Result};
-use crate::sql::types::value::Value;
+use crate::types::value::Value;
 
 /// Evaluate a SQL function call
 pub fn evaluate_function(

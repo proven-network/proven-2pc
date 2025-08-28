@@ -4,10 +4,10 @@
 //! to storage and lock manager. These operations modify data.
 
 use crate::error::{Error, Result};
-use crate::sql::stream_processor::{AccessLogEntry, TransactionContext, TransactionState};
-use crate::sql::types::value::Value;
 use crate::storage::lock::{LockKey, LockManager, LockMode, LockResult};
 use crate::storage::mvcc::MvccStorage;
+use crate::stream_processor::{AccessLogEntry, TransactionContext, TransactionState};
+use crate::types::value::Value;
 
 /// Insert a row into storage with proper locking
 pub fn insert(
@@ -156,7 +156,7 @@ pub fn create_table(
     lock_manager: &mut LockManager,
     tx_ctx: &mut TransactionContext,
     name: String,
-    schema: crate::sql::types::schema::Table,
+    schema: crate::types::schema::Table,
 ) -> Result<()> {
     // Check transaction is active
     if tx_ctx.state != TransactionState::Active {

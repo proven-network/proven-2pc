@@ -5,12 +5,12 @@
 //! conflict prevention.
 
 use crate::error::{Error, Result};
+use crate::execution::{ExecutionResult, Executor};
 use crate::hlc::HlcTimestamp;
-use crate::sql::execution::{ExecutionResult, Executor};
-use crate::sql::planner::planner::Planner;
-use crate::sql::types::schema::Table;
+use crate::planner::planner::Planner;
 use crate::storage::lock::{LockKey, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
+use crate::types::schema::Table;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -57,7 +57,7 @@ pub enum SqlResponse {
     /// Query results
     QueryResult {
         columns: Vec<String>,
-        rows: Vec<Vec<crate::sql::types::value::Value>>,
+        rows: Vec<Vec<crate::types::value::Value>>,
     },
 
     /// Execution result
@@ -304,14 +304,14 @@ impl SqlStreamProcessor {
     /// Execute SQL statement
     fn execute_sql(&mut self, sql: &str, txn_id: &str) -> Result<ExecutionResult> {
         // Parse SQL
-        let statement = crate::sql::parse_sql(sql)?;
+        let statement = crate::parser::parse_sql(sql)?;
 
         // Plan the query
         let plan = self.planner.plan(statement.clone())?;
 
         // Check if this is DDL that affects schemas
         match &plan {
-            crate::sql::planner::plan::Plan::CreateTable { name, schema } => {
+            crate::planner::plan::Plan::CreateTable { name, schema } => {
                 // Update our schema tracking
                 self.schemas.insert(name.clone(), schema.clone());
 
@@ -325,7 +325,7 @@ impl SqlStreamProcessor {
                 return Ok(ExecutionResult::DDL(format!("Table '{}' created", name)));
             }
 
-            crate::sql::planner::plan::Plan::DropTable { name, .. } => {
+            crate::planner::plan::Plan::DropTable { name, .. } => {
                 self.schemas.remove(name);
                 self.storage.drop_table(name)?;
 
@@ -616,12 +616,12 @@ mod tests {
             // Check id is 1 and name is 'Alice'
             assert_eq!(
                 rows[0][0],
-                crate::sql::types::value::Value::Integer(1),
+                crate::types::value::Value::Integer(1),
                 "ID should be 1"
             );
             assert_eq!(
                 rows[0][1],
-                crate::sql::types::value::Value::String("Alice".to_string()),
+                crate::types::value::Value::String("Alice".to_string()),
                 "Name should be 'Alice'"
             );
         } else {
