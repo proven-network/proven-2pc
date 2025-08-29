@@ -136,19 +136,15 @@ impl Executor {
         tx_ctx: &mut TxContext,
         context: &TransactionContext,
     ) -> Result<ExecutionResult> {
+        // Get column names from the node tree
+        let columns = node.get_column_names(&self.schemas);
+        
         // Execute using read-only node execution
         let rows = self.execute_node_read(node, storage, lock_manager, tx_ctx, context)?;
         let mut collected = Vec::new();
         for row in rows {
             collected.push(row?);
         }
-
-        // Get column names (simplified - would extract from projection)
-        let columns = if let Some(table) = self.schemas.values().next() {
-            table.columns.iter().map(|c| c.name.clone()).collect()
-        } else {
-            vec![]
-        };
 
         Ok(ExecutionResult::Select {
             columns,

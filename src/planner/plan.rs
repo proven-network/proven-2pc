@@ -157,6 +157,88 @@ impl Node {
             Node::Nothing => 0,
         }
     }
+
+    /// Get the column names this node produces
+    pub fn get_column_names(
+        &self,
+        schemas: &std::collections::HashMap<String, crate::types::schema::Table>,
+    ) -> Vec<String> {
+        match self {
+            // Projection node has the aliases we want
+            Node::Projection { aliases, expressions, source } => {
+                let mut names = Vec::new();
+                for (i, alias) in aliases.iter().enumerate() {
+                    if let Some(name) = alias {
+                        names.push(name.clone());
+                    } else {
+                        // No alias provided, generate a default name
+                        names.push(format!("column_{}", i));
+                    }
+                }
+                // If we have fewer aliases than expressions, fill in defaults
+                for i in names.len()..expressions.len() {
+                    names.push(format!("column_{}", i));
+                }
+                names
+            }
+            
+            // For nodes that pass through their source columns, recurse
+            Node::Filter { source, .. } |
+            Node::Order { source, .. } |
+            Node::Limit { source, .. } |
+            Node::Offset { source, .. } => {
+                source.get_column_names(schemas)
+            }
+            
+            // Scan nodes get column names from table schema
+            Node::Scan { table, .. } | Node::IndexScan { table, .. } => {
+                if let Some(schema) = schemas.get(table) {
+                    schema.columns.iter().map(|c| c.name.clone()).collect()
+                } else {
+                    // Fallback if table not found
+                    let count = self.column_count(schemas);
+                    (0..count).map(|i| format!("column_{}", i)).collect()
+                }
+            }
+            
+            // Aggregate nodes need special handling
+            Node::Aggregate { group_by, aggregates, .. } => {
+                let mut names = Vec::new();
+                // First the GROUP BY columns (would need more context to get their names)
+                for i in 0..group_by.len() {
+                    names.push(format!("group_{}", i));
+                }
+                // Then the aggregate columns
+                for (i, agg) in aggregates.iter().enumerate() {
+                    let name = match agg {
+                        AggregateFunc::Count(_) => format!("COUNT_{}", i),
+                        AggregateFunc::Sum(_) => format!("SUM_{}", i),
+                        AggregateFunc::Avg(_) => format!("AVG_{}", i),
+                        AggregateFunc::Min(_) => format!("MIN_{}", i),
+                        AggregateFunc::Max(_) => format!("MAX_{}", i),
+                    };
+                    names.push(name);
+                }
+                names
+            }
+            
+            // Join nodes concatenate columns from both sides
+            Node::HashJoin { left, right, .. } |
+            Node::NestedLoopJoin { left, right, .. } => {
+                let mut names = left.get_column_names(schemas);
+                names.extend(right.get_column_names(schemas));
+                names
+            }
+            
+            // Values and Nothing nodes
+            Node::Values { rows } => {
+                let count = rows.first().map(|r| r.len()).unwrap_or(0);
+                (0..count).map(|i| format!("column_{}", i)).collect()
+            }
+            
+            Node::Nothing => vec![],
+        }
+    }
 }
 
 /// Aggregate function
