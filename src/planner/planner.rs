@@ -121,7 +121,10 @@ impl Planner {
         }
 
         // Apply GROUP BY and aggregates
-        if !group_by.is_empty() || self.has_aggregates(&select) {
+        let has_aggregates = self.has_aggregates(&select);
+        let group_by_count = group_by.len();
+        
+        if !group_by.is_empty() || has_aggregates {
             let group_exprs = group_by
                 .into_iter()
                 .map(|e| context.resolve_expression(e))
@@ -166,7 +169,38 @@ impl Planner {
         }
 
         // Apply projection after ORDER BY
-        let (expressions, aliases) = self.plan_projection(select, &mut context)?;
+        // Special handling when we have aggregates - the projection needs to work with aggregate results
+        let (expressions, aliases) = if has_aggregates {
+            let mut expressions = Vec::new();
+            let mut aliases = Vec::new();
+            let mut col_idx = group_by_count; // Start after GROUP BY columns
+            
+            for (expr, alias) in select {
+                if self.is_aggregate_expr(&expr) {
+                    // For aggregate functions, project the corresponding aggregate result column
+                    expressions.push(Expression::Column(col_idx));
+                    col_idx += 1;
+                    
+                    // Generate alias for aggregate function
+                    let func_alias = alias.or_else(|| {
+                        if let ast::Expression::Function(name, _) = &expr {
+                            Some(name.to_uppercase())
+                        } else {
+                            None
+                        }
+                    });
+                    aliases.push(func_alias);
+                } else {
+                    // For GROUP BY expressions, project from the beginning columns
+                    expressions.push(context.resolve_expression(expr)?);
+                    aliases.push(alias);
+                }
+            }
+            (expressions, aliases)
+        } else {
+            self.plan_projection(select, &mut context)?
+        };
+        
         node = Node::Projection {
             source: Box::new(node),
             expressions,
@@ -492,6 +526,9 @@ impl Planner {
                 // Get the argument expression
                 let arg = if args.is_empty() {
                     Expression::Constant(crate::types::value::Value::Integer(1)) // For COUNT(*)
+                } else if args.len() == 1 && matches!(args[0], ast::Expression::All) {
+                    // Handle COUNT(*) - the * is parsed as Expression::All
+                    Expression::Constant(crate::types::value::Value::Integer(1))
                 } else {
                     context.resolve_expression(args[0].clone())?
                 };
