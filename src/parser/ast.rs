@@ -34,14 +34,14 @@ pub enum Statement {
         /// IF EXISTS: if true, don't error if the table doesn't exist.
         if_exists: bool,
     },
-    /// CREATE INDEX: creates an index on a table column.
+    /// CREATE INDEX: creates an index on one or more table columns.
     CreateIndex {
         /// The index name.
         name: String,
         /// The table to index.
         table: String,
-        /// The column to index.
-        column: String,
+        /// The columns to index (supports composite indexes).
+        columns: Vec<String>,
         /// UNIQUE: if true, create a unique index.
         unique: bool,
     },

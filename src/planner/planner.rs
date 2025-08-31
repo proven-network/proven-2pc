@@ -11,17 +11,60 @@ use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use std::collections::{BTreeMap, HashMap};
 
+/// Index metadata for planning
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub name: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
 /// Query planner
 pub struct Planner {
     schemas: HashMap<String, Table>,
     optimizer: Optimizer,
+    /// Available indexes: table_name -> list of indexes
+    indexes: HashMap<String, Vec<IndexInfo>>,
 }
 
 impl Planner {
     /// Create a new planner
     pub fn new(schemas: HashMap<String, Table>) -> Self {
         let optimizer = Optimizer::new(schemas.clone());
-        Self { schemas, optimizer }
+
+        // Initialize indexes from schema columns
+        let mut indexes = HashMap::new();
+        for (table_name, schema) in &schemas {
+            let mut table_indexes = Vec::new();
+            for column in &schema.columns {
+                if column.primary_key || column.unique || column.index {
+                    table_indexes.push(IndexInfo {
+                        name: column.name.clone(),
+                        table: table_name.clone(),
+                        columns: vec![column.name.clone()],
+                        unique: column.primary_key || column.unique,
+                    });
+                }
+            }
+            if !table_indexes.is_empty() {
+                indexes.insert(table_name.clone(), table_indexes);
+            }
+        }
+
+        Self {
+            schemas,
+            optimizer,
+            indexes,
+        }
+    }
+
+    /// Add a composite index to the planner's metadata
+    pub fn add_index(&mut self, index: IndexInfo) {
+        self.indexes
+            .entry(index.table.clone())
+            .or_insert_with(Vec::new)
+            .push(index);
     }
 
     /// Plan a statement
@@ -63,22 +106,24 @@ impl Planner {
             ast::Statement::CreateIndex {
                 name,
                 table,
-                column,
+                columns,
                 unique,
             } => {
                 // Verify table exists
                 if !self.schemas.contains_key(&table) {
                     return Err(Error::TableNotFound(table));
                 }
-                // Verify column exists
+                // Verify all columns exist
                 let schema = &self.schemas[&table];
-                if !schema.columns.iter().any(|c| c.name == column) {
-                    return Err(Error::ColumnNotFound(column));
+                for column in &columns {
+                    if !schema.columns.iter().any(|c| &c.name == column) {
+                        return Err(Error::ColumnNotFound(column.clone()));
+                    }
                 }
                 Ok(Plan::CreateIndex {
                     name,
                     table,
-                    column,
+                    columns,
                     unique,
                 })
             }
@@ -583,6 +628,48 @@ impl Planner {
         })
     }
 
+    /// Extract equality conditions from a WHERE expression (handles AND chains)
+    fn extract_equality_conditions(
+        &self,
+        expr: &ast::Expression,
+        table_name: &str,
+        alias: &Option<String>,
+    ) -> Vec<(String, ast::Expression)> {
+        let mut conditions = Vec::new();
+
+        match expr {
+            // Handle AND expressions recursively
+            ast::Expression::Operator(ast::Operator::And(left, right)) => {
+                conditions.extend(self.extract_equality_conditions(left, table_name, alias));
+                conditions.extend(self.extract_equality_conditions(right, table_name, alias));
+            }
+            // Handle equality conditions
+            ast::Expression::Operator(ast::Operator::Equal(left, right)) => {
+                // Check if left is a column from our table
+                if let ast::Expression::Column(ref table_ref, ref column_name) = **left {
+                    if table_ref.is_none()
+                        || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
+                        || table_ref == alias
+                    {
+                        conditions.push((column_name.clone(), (**right).clone()));
+                    }
+                }
+                // Also check if right is a column (value = column)
+                else if let ast::Expression::Column(ref table_ref, ref column_name) = **right {
+                    if table_ref.is_none()
+                        || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
+                        || table_ref == alias
+                    {
+                        conditions.push((column_name.clone(), (**left).clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        conditions
+    }
+
     /// Try to create an IndexScan or IndexRangeScan node if WHERE clause matches an indexed column
     fn try_create_index_scan(
         &self,
@@ -597,7 +684,43 @@ impl Planner {
             return Some(range_scan);
         }
 
-        // Check for simple equality: column = value
+        // Extract all equality conditions from the WHERE clause
+        let conditions = self.extract_equality_conditions(where_expr, table_name, alias);
+
+        // Try to find a matching index (composite or single)
+        if let Some(table_indexes) = self.indexes.get(table_name) {
+            // Look for exact match or prefix match
+            for index in table_indexes {
+                // Check if we have values for all or a prefix of the index columns
+                let mut matched_values = Vec::new();
+
+                for index_col in &index.columns {
+                    if let Some((_, expr)) = conditions.iter().find(|(col, _)| col == index_col) {
+                        // Try to resolve the expression
+                        if let Ok(value) = context.resolve_expression(expr.clone()) {
+                            matched_values.push(value);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        // No condition for this column, can only use as prefix
+                        break;
+                    }
+                }
+
+                // If we matched at least one column, use this index
+                if !matched_values.is_empty() {
+                    return Some(Node::IndexScan {
+                        table: table_name.to_string(),
+                        alias: alias.clone(),
+                        index_name: index.name.clone(),
+                        values: matched_values,
+                    });
+                }
+            }
+        }
+
+        // Fall back to checking for simple single-column equality
         if let ast::Expression::Operator(ast::Operator::Equal(left, right)) = where_expr {
             // Check if left side is a column
             if let ast::Expression::Column(ref table_ref, ref column_name) = **left {
@@ -611,12 +734,15 @@ impl Planner {
                         if let Some((_col_idx, column)) = schema.get_column(column_name) {
                             // Check if column is indexed (primary key, unique, or has index)
                             if column.primary_key || column.unique || column.index {
-                                // Create IndexScan node
+                                // Create IndexScan node using the column name as index name
+                                // (for single-column indexes, the index name is the column name)
                                 return Some(Node::IndexScan {
                                     table: table_name.to_string(),
                                     alias: alias.clone(),
-                                    index_column: column_name.to_string(),
-                                    value: context.resolve_expression((**right).clone()).ok()?,
+                                    index_name: column_name.to_string(),
+                                    values: vec![
+                                        context.resolve_expression((**right).clone()).ok()?,
+                                    ],
                                 });
                             }
                         }
@@ -635,8 +761,10 @@ impl Planner {
                                 return Some(Node::IndexScan {
                                     table: table_name.to_string(),
                                     alias: alias.clone(),
-                                    index_column: column_name.to_string(),
-                                    value: context.resolve_expression((**left).clone()).ok()?,
+                                    index_name: column_name.to_string(),
+                                    values: vec![
+                                        context.resolve_expression((**left).clone()).ok()?,
+                                    ],
                                 });
                             }
                         }
@@ -682,8 +810,8 @@ impl Planner {
                                                     Node::IndexRangeScan {
                                                         table: table_name.to_string(),
                                                         alias: alias.clone(),
-                                                        index_column: column_name.to_string(),
-                                                        start: Some(value),
+                                                        index_name: column_name.to_string(),
+                                                        start: Some(vec![value]),
                                                         start_inclusive: false,
                                                         end: None,
                                                         end_inclusive: false,
@@ -693,8 +821,8 @@ impl Planner {
                                                     Node::IndexRangeScan {
                                                         table: table_name.to_string(),
                                                         alias: alias.clone(),
-                                                        index_column: column_name.to_string(),
-                                                        start: Some(value),
+                                                        index_name: column_name.to_string(),
+                                                        start: Some(vec![value]),
                                                         start_inclusive: true,
                                                         end: None,
                                                         end_inclusive: false,
@@ -704,10 +832,10 @@ impl Planner {
                                                     Node::IndexRangeScan {
                                                         table: table_name.to_string(),
                                                         alias: alias.clone(),
-                                                        index_column: column_name.to_string(),
+                                                        index_name: column_name.to_string(),
                                                         start: None,
                                                         start_inclusive: false,
-                                                        end: Some(value),
+                                                        end: Some(vec![value]),
                                                         end_inclusive: false,
                                                     }
                                                 }
@@ -715,10 +843,10 @@ impl Planner {
                                                     Node::IndexRangeScan {
                                                         table: table_name.to_string(),
                                                         alias: alias.clone(),
-                                                        index_column: column_name.to_string(),
+                                                        index_name: column_name.to_string(),
                                                         start: None,
                                                         start_inclusive: false,
-                                                        end: Some(value),
+                                                        end: Some(vec![value]),
                                                         end_inclusive: true,
                                                     }
                                                 }

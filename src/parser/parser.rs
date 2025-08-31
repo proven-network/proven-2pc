@@ -285,12 +285,18 @@ impl Parser<'_> {
         self.expect(Keyword::On.into())?;
         let table = self.next_ident()?;
         self.expect(Token::OpenParen)?;
-        let column = self.next_ident()?;
+
+        // Parse one or more columns for composite index support
+        let mut columns = vec![self.next_ident()?];
+        while self.next_is(Token::Comma) {
+            columns.push(self.next_ident()?);
+        }
+
         self.expect(Token::CloseParen)?;
         Ok(ast::Statement::CreateIndex {
             name,
             table,
-            column,
+            columns,
             unique,
         })
     }

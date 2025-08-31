@@ -18,6 +18,10 @@ pub mod stream;
 pub mod types;
 
 pub use error::{Error, Result};
+pub use execution::{ExecutionResult, Executor};
+pub use parser::Parser;
+pub use planner::planner::Planner;
 pub use storage::lock::LockManager;
 pub use storage::mvcc::MvccStorage;
+pub use types::schema::{Column, Table};
 pub use types::value::{DataType, Value};

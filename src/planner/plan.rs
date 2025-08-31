@@ -45,7 +45,7 @@ pub enum Plan {
     CreateIndex {
         name: String,
         table: String,
-        column: String,
+        columns: Vec<String>,
         unique: bool,
     },
 
@@ -66,18 +66,18 @@ pub enum Node {
     IndexScan {
         table: String,
         alias: Option<String>,
-        index_column: String,
-        value: Expression,
+        index_name: String,      // Name of the index to use
+        values: Vec<Expression>, // Values for each column in the index
     },
 
     /// Index range scan - uses an index for range queries
     IndexRangeScan {
         table: String,
         alias: Option<String>,
-        index_column: String,
-        start: Option<Expression>,
+        index_name: String,             // Name of the index to use
+        start: Option<Vec<Expression>>, // Start values for each column
         start_inclusive: bool,
-        end: Option<Expression>,
+        end: Option<Vec<Expression>>, // End values for each column
         end_inclusive: bool,
     },
 

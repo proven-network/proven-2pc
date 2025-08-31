@@ -95,14 +95,15 @@ impl Executor {
             Plan::CreateIndex {
                 name,
                 table,
-                column,
+                columns,
                 unique,
             } => {
                 // Actually create the index in storage
-                storage.create_index(name.clone(), &table, column.clone(), unique)?;
+                storage.create_index(name.clone(), &table, columns.clone(), unique)?;
+                let column_list = columns.join(", ");
                 Ok(ExecutionResult::DDL(format!(
-                    "Index '{}' created on {}.{}",
-                    name, table, column
+                    "Index '{}' created on {}({})",
+                    name, table, column_list
                 )))
             }
 
@@ -291,21 +292,24 @@ impl Executor {
 
             Node::IndexScan {
                 table,
-                index_column,
-                value,
+                index_name,
+                values,
                 ..
             } => {
-                // Evaluate the lookup value
-                let filter_value = self.evaluate_expression(&value, None, &tx_ctx)?;
+                // Evaluate the lookup values
+                let mut filter_values = Vec::new();
+                for value_expr in &values {
+                    filter_values.push(self.evaluate_expression(value_expr, None, &tx_ctx)?);
+                }
 
                 // Try to use index lookup first
                 if let Some(versioned_table) = storage.tables.get(&table) {
-                    // Check if this column has an index
-                    if versioned_table.indexes.contains_key(&index_column) {
+                    // Check if this index exists
+                    if versioned_table.index_columns.contains_key(&index_name) {
                         // Use index lookup for O(log n) performance
                         let rows = versioned_table.index_lookup(
-                            &index_column,
-                            &filter_value,
+                            &index_name,
+                            filter_values.clone(),
                             tx_ctx.id,
                             tx_ctx.timestamp,
                         );
@@ -317,34 +321,63 @@ impl Executor {
                 }
 
                 // Fall back to filtered table scan if no index exists
+                // We need to check if we can resolve the index_name to columns
                 let schema = self
                     .schemas
                     .get(&table)
                     .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
-                let col_idx = schema
-                    .columns
-                    .iter()
-                    .position(|c| c.name == index_column)
-                    .ok_or_else(|| Error::ColumnNotFound(index_column))?;
+                // Check if we can get column info from the versioned table's index_columns
+                let column_names = if let Some(versioned_table) = storage.tables.get(&table) {
+                    versioned_table.index_columns.get(&index_name).cloned()
+                } else {
+                    // Fallback: assume index_name is a column name for backward compatibility
+                    if schema.columns.iter().any(|c| c.name == index_name) {
+                        Some(vec![index_name.clone()])
+                    } else {
+                        None
+                    }
+                };
 
-                // Filtered scan as fallback
-                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.filter_map(
-                    move |row| {
-                        if row.get(col_idx) == Some(&filter_value) {
-                            Some(Ok(row))
+                if let Some(columns) = column_names {
+                    // Get column indices
+                    let mut col_indices = Vec::new();
+                    for col_name in &columns {
+                        if let Some(idx) = schema.columns.iter().position(|c| &c.name == col_name) {
+                            col_indices.push(idx);
                         } else {
-                            None
+                            // Column not found, can't filter
+                            let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
+                                .map(|row| Ok(row));
+                            return Ok(Box::new(iter));
                         }
-                    },
-                );
+                    }
 
+                    // Filter by checking all column values match
+                    if col_indices.len() == filter_values.len() {
+                        let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
+                            .filter_map(move |row| {
+                                // Check if all indexed columns match the filter values
+                                for (idx, expected_val) in col_indices.iter().zip(&filter_values) {
+                                    if row.get(*idx) != Some(expected_val) {
+                                        return None;
+                                    }
+                                }
+                                Some(Ok(row))
+                            });
+                        return Ok(Box::new(iter));
+                    }
+                }
+
+                // Can't determine columns, fall back to full scan
+                let iter =
+                    read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(|row| Ok(row));
                 Ok(Box::new(iter))
             }
 
             Node::IndexRangeScan {
                 table,
-                index_column,
+                index_name,
                 start,
                 start_inclusive,
                 end,
@@ -352,24 +385,34 @@ impl Executor {
                 ..
             } => {
                 // Evaluate range bounds
-                let start_value = start
+                let start_values = start
                     .as_ref()
-                    .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                    .map(|exprs| {
+                        exprs
+                            .iter()
+                            .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                            .collect::<Result<Vec<_>>>()
+                    })
                     .transpose()?;
-                let end_value = end
+                let end_values = end
                     .as_ref()
-                    .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                    .map(|exprs| {
+                        exprs
+                            .iter()
+                            .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                            .collect::<Result<Vec<_>>>()
+                    })
                     .transpose()?;
 
                 // Try to use index range lookup
                 if let Some(versioned_table) = storage.tables.get(&table) {
-                    if versioned_table.indexes.contains_key(&index_column) {
+                    if versioned_table.index_columns.contains_key(&index_name) {
                         // Use index range lookup for O(log n) performance
                         let rows = versioned_table.index_range_lookup(
-                            &index_column,
-                            start_value.as_ref(),
+                            &index_name,
+                            start_values,
                             start_inclusive,
-                            end_value.as_ref(),
+                            end_values,
                             end_inclusive,
                             tx_ctx.id,
                             tx_ctx.timestamp,
@@ -381,50 +424,82 @@ impl Executor {
                     }
                 }
 
-                // Fall back to filtered table scan if no index exists
+                // Fall back to filtered range scan if no index exists
                 let schema = self
                     .schemas
                     .get(&table)
                     .ok_or_else(|| Error::TableNotFound(table.clone()))?;
-                let col_idx = schema
-                    .columns
-                    .iter()
-                    .position(|c| c.name == index_column)
-                    .ok_or_else(|| Error::ColumnNotFound(index_column))?;
 
-                // Build filter predicate for range
-                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.filter_map(
-                    move |row| {
-                        let value = row.get(col_idx)?;
+                // Get column info from the versioned table's index_columns
+                let column_names = if let Some(versioned_table) = storage.tables.get(&table) {
+                    versioned_table.index_columns.get(&index_name).cloned()
+                } else {
+                    // Fallback: assume index_name is a column name
+                    if schema.columns.iter().any(|c| c.name == index_name) {
+                        Some(vec![index_name.clone()])
+                    } else {
+                        None
+                    }
+                };
 
-                        // Check start bound
-                        if let Some(ref start_val) = start_value {
-                            let cmp = value.partial_cmp(start_val)?;
-                            if start_inclusive {
-                                if cmp == std::cmp::Ordering::Less {
-                                    return None;
-                                }
-                            } else if cmp != std::cmp::Ordering::Greater {
-                                return None;
-                            }
+                if let Some(columns) = column_names {
+                    // Get column indices
+                    let mut col_indices = Vec::new();
+                    for col_name in &columns {
+                        if let Some(idx) = schema.columns.iter().position(|c| &c.name == col_name) {
+                            col_indices.push(idx);
+                        } else {
+                            // Column not found, can't filter
+                            let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
+                                .map(|row| Ok(row));
+                            return Ok(Box::new(iter));
                         }
+                    }
 
-                        // Check end bound
-                        if let Some(ref end_val) = end_value {
-                            let cmp = value.partial_cmp(end_val)?;
-                            if end_inclusive {
-                                if cmp == std::cmp::Ordering::Greater {
-                                    return None;
+                    // Perform range filtering
+                    let start_vals = start_values.clone();
+                    let end_vals = end_values.clone();
+                    let start_incl = start_inclusive;
+                    let end_incl = end_inclusive;
+
+                    let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
+                        .filter_map(move |row| {
+                            // Extract values for the indexed columns
+                            let mut row_values = Vec::new();
+                            for &idx in &col_indices {
+                                if let Some(val) = row.get(idx) {
+                                    row_values.push(val.clone());
+                                } else {
+                                    return None; // NULL in key, skip
                                 }
-                            } else if cmp != std::cmp::Ordering::Less {
-                                return None;
                             }
-                        }
 
-                        Some(Ok(row))
-                    },
-                );
+                            // Check start bound
+                            if let Some(ref start) = start_vals {
+                                match Value::compare_composite(&row_values, start) {
+                                    Some(std::cmp::Ordering::Less) => return None,
+                                    Some(std::cmp::Ordering::Equal) if !start_incl => return None,
+                                    _ => {}
+                                }
+                            }
 
+                            // Check end bound
+                            if let Some(ref end) = end_vals {
+                                match Value::compare_composite(&row_values, end) {
+                                    Some(std::cmp::Ordering::Greater) => return None,
+                                    Some(std::cmp::Ordering::Equal) if !end_incl => return None,
+                                    _ => {}
+                                }
+                            }
+
+                            Some(Ok(row))
+                        });
+                    return Ok(Box::new(iter));
+                }
+
+                // Can't determine columns, fall back to full scan
+                let iter =
+                    read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(|row| Ok(row));
                 Ok(Box::new(iter))
             }
 

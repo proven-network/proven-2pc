@@ -15,8 +15,39 @@ use std::sync::Arc;
 pub struct IndexKey {
     /// Table name
     pub table: String,
-    /// Column name
-    pub column: String,
+    /// Column name(s) - for composite indexes this contains multiple columns
+    pub columns: Vec<String>,
+}
+
+/// Composite index key that can hold multiple values
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CompositeKey {
+    /// Single value (for single-column indexes)
+    Single(Value),
+    /// Multiple values (for composite indexes)
+    Composite(Vec<Value>),
+}
+
+impl CompositeKey {
+    /// Create a composite key from values
+    pub fn from_values(values: Vec<Value>) -> Self {
+        if values.len() == 1 {
+            CompositeKey::Single(values.into_iter().next().unwrap())
+        } else {
+            CompositeKey::Composite(values)
+        }
+    }
+
+    /// Check if this key matches a prefix of values (for partial lookups)
+    pub fn matches_prefix(&self, prefix: &[Value]) -> bool {
+        match self {
+            CompositeKey::Single(v) => prefix.len() == 1 && v == &prefix[0],
+            CompositeKey::Composite(values) => {
+                prefix.len() <= values.len()
+                    && prefix.iter().zip(values.iter()).all(|(p, v)| p == v)
+            }
+        }
+    }
 }
 
 /// A versioned value in storage
@@ -48,8 +79,11 @@ pub struct VersionedTable {
     /// All versions of all rows (row_id -> versions)
     /// Versions are ordered by creation time (newest last)
     pub versions: BTreeMap<u64, Vec<VersionedValue>>,
-    /// Indexes with MVCC: column_name -> (value -> versioned entries)
-    pub indexes: HashMap<String, BTreeMap<Value, Vec<IndexEntry>>>,
+    /// Indexes with MVCC: index_name -> (composite_key -> versioned entries)
+    /// Single-column indexes use CompositeKey::Single, multi-column use CompositeKey::Composite
+    pub indexes: HashMap<String, BTreeMap<CompositeKey, Vec<IndexEntry>>>,
+    /// Map from index name to column names for that index
+    pub index_columns: HashMap<String, Vec<String>>,
     /// Next row ID for inserts
     pub next_id: u64,
     /// Track committed transactions
@@ -62,9 +96,14 @@ impl VersionedTable {
     pub fn new(name: String, schema: Table) -> Self {
         // Initialize indexes for columns marked as indexed
         let mut indexes = HashMap::new();
+        let mut index_columns = HashMap::new();
+
         for column in &schema.columns {
             if column.index || column.primary_key || column.unique {
-                indexes.insert(column.name.clone(), BTreeMap::new());
+                // Create single-column index
+                let index_name = column.name.clone();
+                indexes.insert(index_name.clone(), BTreeMap::new());
+                index_columns.insert(index_name, vec![column.name.clone()]);
             }
         }
 
@@ -73,6 +112,7 @@ impl VersionedTable {
             schema,
             versions: BTreeMap::new(),
             indexes,
+            index_columns,
             next_id: 1,
             committed_transactions: HashSet::new(),
             transaction_start_times: HashMap::new(),
@@ -113,12 +153,36 @@ impl VersionedTable {
         self.schema.validate_row(&values)?;
 
         // Check unique constraints before inserting
-        for (col_idx, column) in self.schema.columns.iter().enumerate() {
-            if column.unique || column.primary_key {
-                if let Some(index) = self.indexes.get(&column.name) {
-                    let value = &values[col_idx];
-                    if !value.is_null() {
-                        if let Some(entries) = index.get(value) {
+        for (index_name, column_names) in &self.index_columns.clone() {
+            // Check if this is a unique index (all columns must be unique/pk for composite to be unique)
+            let is_unique = column_names.iter().all(|col_name| {
+                self.schema
+                    .columns
+                    .iter()
+                    .any(|c| c.name == *col_name && (c.unique || c.primary_key))
+            });
+
+            if is_unique {
+                if let Some(index) = self.indexes.get(index_name) {
+                    // Build composite key from values
+                    let mut key_values = Vec::new();
+                    let mut has_null = false;
+                    for col_name in column_names {
+                        if let Some(col_idx) =
+                            self.schema.columns.iter().position(|c| c.name == *col_name)
+                        {
+                            let value = &values[col_idx];
+                            if value.is_null() {
+                                has_null = true;
+                                break;
+                            }
+                            key_values.push(value.clone());
+                        }
+                    }
+
+                    if !has_null {
+                        let key = CompositeKey::from_values(key_values);
+                        if let Some(entries) = index.get(&key) {
                             // Check if any entry is visible to this transaction
                             for entry in entries {
                                 // Entry is visible if added by committed txn and not removed
@@ -142,8 +206,8 @@ impl VersionedTable {
                                             .is_some()
                                         {
                                             return Err(Error::InvalidValue(format!(
-                                                "Unique constraint violation on column '{}'",
-                                                column.name
+                                                "Unique constraint violation on index '{}'",
+                                                index_name
                                             )));
                                         }
                                     }
@@ -159,19 +223,32 @@ impl VersionedTable {
         self.next_id += 1;
 
         // Update indexes with versioned entries
-        for (col_idx, column) in self.schema.columns.iter().enumerate() {
-            if let Some(index) = self.indexes.get_mut(&column.name) {
-                let value = &values[col_idx];
-                if !value.is_null() {
+        for (index_name, column_names) in &self.index_columns.clone() {
+            if let Some(index) = self.indexes.get_mut(index_name) {
+                // Build composite key from values
+                let mut key_values = Vec::new();
+                let mut has_null = false;
+                for col_name in column_names {
+                    if let Some(col_idx) =
+                        self.schema.columns.iter().position(|c| c.name == *col_name)
+                    {
+                        let value = &values[col_idx];
+                        if value.is_null() {
+                            has_null = true;
+                            break;
+                        }
+                        key_values.push(value.clone());
+                    }
+                }
+
+                if !has_null {
+                    let key = CompositeKey::from_values(key_values);
                     let entry = IndexEntry {
                         row_id,
                         added_by: txn_id,
                         removed_by: None,
                     };
-                    index
-                        .entry(value.clone())
-                        .or_insert_with(Vec::new)
-                        .push(entry);
+                    index.entry(key).or_insert_with(Vec::new).push(entry);
                 }
             }
         }
@@ -207,15 +284,50 @@ impl VersionedTable {
             .clone();
 
         // Check unique constraints for new values
-        for (col_idx, column) in self.schema.columns.iter().enumerate() {
-            if column.unique || column.primary_key {
-                if let Some(index) = self.indexes.get(&column.name) {
-                    let new_value = &values[col_idx];
-                    let old_value = &old_values[col_idx];
+        for (index_name, column_names) in &self.index_columns.clone() {
+            // Check if this is a unique index
+            let is_unique = column_names.iter().all(|col_name| {
+                self.schema
+                    .columns
+                    .iter()
+                    .any(|c| c.name == *col_name && (c.unique || c.primary_key))
+            });
 
-                    // Only check if value is changing
-                    if new_value != old_value && !new_value.is_null() {
-                        if let Some(entries) = index.get(new_value) {
+            if is_unique {
+                if let Some(index) = self.indexes.get(index_name) {
+                    // Build composite keys from old and new values
+                    let mut old_key_values = Vec::new();
+                    let mut new_key_values = Vec::new();
+                    let mut new_has_null = false;
+                    let mut values_changed = false;
+
+                    for col_name in column_names {
+                        if let Some(col_idx) =
+                            self.schema.columns.iter().position(|c| c.name == *col_name)
+                        {
+                            let old_value = &old_values[col_idx];
+                            let new_value = &values[col_idx];
+
+                            if !old_value.is_null() {
+                                old_key_values.push(old_value.clone());
+                            }
+
+                            if new_value.is_null() {
+                                new_has_null = true;
+                            } else {
+                                new_key_values.push(new_value.clone());
+                            }
+
+                            if old_value != new_value {
+                                values_changed = true;
+                            }
+                        }
+                    }
+
+                    // Only check if value is changing and new value is not null
+                    if values_changed && !new_has_null {
+                        let new_key = CompositeKey::from_values(new_key_values);
+                        if let Some(entries) = index.get(&new_key) {
                             for entry in entries {
                                 // Skip self
                                 if entry.row_id == row_id {
@@ -242,8 +354,8 @@ impl VersionedTable {
                                             .is_some()
                                         {
                                             return Err(Error::InvalidValue(format!(
-                                                "Unique constraint violation on column '{}'",
-                                                column.name
+                                                "Unique constraint violation on index '{}'",
+                                                index_name
                                             )));
                                         }
                                     }
@@ -256,14 +368,44 @@ impl VersionedTable {
         }
 
         // Update indexes with MVCC
-        for (col_idx, column) in self.schema.columns.iter().enumerate() {
-            if let Some(index) = self.indexes.get_mut(&column.name) {
-                let old_value = &old_values[col_idx];
-                let new_value = &values[col_idx];
+        for (index_name, column_names) in &self.index_columns.clone() {
+            if let Some(index) = self.indexes.get_mut(index_name) {
+                // Build composite keys from old and new values
+                let mut old_key_values = Vec::new();
+                let mut new_key_values = Vec::new();
+                let mut old_has_null = false;
+                let mut new_has_null = false;
+                let mut values_changed = false;
+
+                for col_name in column_names {
+                    if let Some(col_idx) =
+                        self.schema.columns.iter().position(|c| c.name == *col_name)
+                    {
+                        let old_value = &old_values[col_idx];
+                        let new_value = &values[col_idx];
+
+                        if old_value.is_null() {
+                            old_has_null = true;
+                        } else {
+                            old_key_values.push(old_value.clone());
+                        }
+
+                        if new_value.is_null() {
+                            new_has_null = true;
+                        } else {
+                            new_key_values.push(new_value.clone());
+                        }
+
+                        if old_value != new_value {
+                            values_changed = true;
+                        }
+                    }
+                }
 
                 // Mark old entry as removed (if value is changing)
-                if old_value != new_value && !old_value.is_null() {
-                    if let Some(entries) = index.get_mut(old_value) {
+                if values_changed && !old_has_null {
+                    let old_key = CompositeKey::from_values(old_key_values);
+                    if let Some(entries) = index.get_mut(&old_key) {
                         // Find the entry for this row and mark it as removed
                         for entry in entries.iter_mut() {
                             if entry.row_id == row_id && entry.removed_by.is_none() {
@@ -280,16 +422,14 @@ impl VersionedTable {
                 }
 
                 // Add new entry (if value is changing)
-                if old_value != new_value && !new_value.is_null() {
+                if values_changed && !new_has_null {
+                    let new_key = CompositeKey::from_values(new_key_values);
                     let entry = IndexEntry {
                         row_id,
                         added_by: txn_id,
                         removed_by: None,
                     };
-                    index
-                        .entry(new_value.clone())
-                        .or_insert_with(Vec::new)
-                        .push(entry);
+                    index.entry(new_key).or_insert_with(Vec::new).push(entry);
                 }
             }
         }
@@ -374,11 +514,27 @@ impl VersionedTable {
         let values = visible_version.row.values.clone();
 
         // Mark index entries as removed (MVCC style)
-        for (col_idx, column) in self.schema.columns.iter().enumerate() {
-            if let Some(index) = self.indexes.get_mut(&column.name) {
-                let value = &values[col_idx];
-                if !value.is_null() {
-                    if let Some(entries) = index.get_mut(value) {
+        for (index_name, column_names) in &self.index_columns.clone() {
+            if let Some(index) = self.indexes.get_mut(index_name) {
+                // Build composite key from values
+                let mut key_values = Vec::new();
+                let mut has_null = false;
+                for col_name in column_names {
+                    if let Some(col_idx) =
+                        self.schema.columns.iter().position(|c| c.name == *col_name)
+                    {
+                        let value = &values[col_idx];
+                        if value.is_null() {
+                            has_null = true;
+                            break;
+                        }
+                        key_values.push(value.clone());
+                    }
+                }
+
+                if !has_null {
+                    let key = CompositeKey::from_values(key_values);
+                    if let Some(entries) = index.get_mut(&key) {
                         // Find and mark the entry as removed
                         for entry in entries.iter_mut() {
                             if entry.row_id == row_id && entry.removed_by.is_none() {
@@ -543,18 +699,29 @@ impl VersionedTable {
         Ok(())
     }
 
-    /// Create an index on a column (builds the index from existing data)
-    pub fn create_index(&mut self, column_name: String, unique: bool) -> Result<()> {
-        // Check if column exists
-        let col_idx = self
-            .schema
-            .columns
-            .iter()
-            .position(|c| c.name == column_name)
-            .ok_or_else(|| Error::InvalidValue(format!("Column '{}' not found", column_name)))?;
+    /// Create an index on one or more columns (builds the index from existing data)
+    pub fn create_index(
+        &mut self,
+        index_name: String,
+        column_names: Vec<String>,
+        unique: bool,
+    ) -> Result<()> {
+        // Check if all columns exist and get their indices
+        let mut col_indices = Vec::new();
+        for column_name in &column_names {
+            let col_idx = self
+                .schema
+                .columns
+                .iter()
+                .position(|c| &c.name == column_name)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Column '{}' not found", column_name))
+                })?;
+            col_indices.push(col_idx);
+        }
 
         // Create new MVCC index
-        let mut index: BTreeMap<Value, Vec<IndexEntry>> = BTreeMap::new();
+        let mut index: BTreeMap<CompositeKey, Vec<IndexEntry>> = BTreeMap::new();
 
         // Build index from existing committed data
         for (&row_id, versions) in &self.versions {
@@ -562,13 +729,26 @@ impl VersionedTable {
             if let Some(version) = versions.iter().rev().find(|v| {
                 self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
             }) {
-                let value = &version.row.values[col_idx];
-                if !value.is_null() {
+                // Build composite key
+                let mut key_values = Vec::new();
+                let mut has_null = false;
+                for &col_idx in &col_indices {
+                    let value = &version.row.values[col_idx];
+                    if value.is_null() {
+                        has_null = true;
+                        break;
+                    }
+                    key_values.push(value.clone());
+                }
+
+                if !has_null {
+                    let key = CompositeKey::from_values(key_values);
+
                     // Check uniqueness if required
-                    if unique && index.contains_key(value) {
+                    if unique && index.contains_key(&key) {
                         return Err(Error::InvalidValue(format!(
-                            "Cannot create unique index on column '{}': duplicate values exist",
-                            column_name
+                            "Cannot create unique index '{}': duplicate values exist",
+                            index_name
                         )));
                     }
 
@@ -577,37 +757,37 @@ impl VersionedTable {
                         added_by: version.created_by, // Use the original creator
                         removed_by: None,
                     };
-                    index
-                        .entry(value.clone())
-                        .or_insert_with(Vec::new)
-                        .push(entry);
+                    index.entry(key).or_insert_with(Vec::new).push(entry);
                 }
             }
         }
 
-        self.indexes.insert(column_name, index);
+        self.indexes.insert(index_name.clone(), index);
+        self.index_columns.insert(index_name, column_names);
         Ok(())
     }
 
     /// Drop an index
-    pub fn drop_index(&mut self, column_name: &str) -> Result<()> {
-        self.indexes.remove(column_name);
+    pub fn drop_index(&mut self, index_name: &str) -> Result<()> {
+        self.indexes.remove(index_name);
+        self.index_columns.remove(index_name);
         Ok(())
     }
 
-    /// Lookup rows by indexed value (equality)
+    /// Lookup rows by indexed value (equality) - supports composite indexes
     pub fn index_lookup(
         &self,
-        column_name: &str,
-        value: &Value,
+        index_name: &str,
+        values: Vec<Value>,
         txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
     ) -> Vec<Arc<Row>> {
         let mut result = Vec::new();
         let mut seen_rows = HashSet::new();
 
-        if let Some(index) = self.indexes.get(column_name) {
-            if let Some(entries) = index.get(value) {
+        if let Some(index) = self.indexes.get(index_name) {
+            let key = CompositeKey::from_values(values);
+            if let Some(entries) = index.get(&key) {
                 for entry in entries {
                     // Check if entry is visible to this transaction
                     let is_visible = if entry.added_by == txn_id {
@@ -637,13 +817,13 @@ impl VersionedTable {
         result
     }
 
-    /// Lookup rows by index range
+    /// Lookup rows by index range - supports composite indexes
     pub fn index_range_lookup(
         &self,
-        column_name: &str,
-        start: Option<&Value>,
+        index_name: &str,
+        start: Option<Vec<Value>>,
         start_inclusive: bool,
-        end: Option<&Value>,
+        end: Option<Vec<Value>>,
         end_inclusive: bool,
         txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
@@ -651,37 +831,49 @@ impl VersionedTable {
         let mut result = Vec::new();
         let mut seen_rows = HashSet::new();
 
-        if let Some(index) = self.indexes.get(column_name) {
+        if let Some(index) = self.indexes.get(index_name) {
+            // Convert values to composite keys
+            let start_key = start.map(CompositeKey::from_values);
+            let end_key = end.map(CompositeKey::from_values);
+
             // Create range based on bounds
-            let range: Box<dyn Iterator<Item = (&Value, &Vec<IndexEntry>)>> = match (start, end) {
-                (None, None) => Box::new(index.iter()),
-                (Some(s), None) => {
-                    if start_inclusive {
-                        Box::new(index.range(s..))
-                    } else {
-                        Box::new(
-                            index.range((std::ops::Bound::Excluded(s), std::ops::Bound::Unbounded)),
-                        )
+            let range: Box<dyn Iterator<Item = (&CompositeKey, &Vec<IndexEntry>)>> =
+                match (start_key.as_ref(), end_key.as_ref()) {
+                    (None, None) => Box::new(index.iter()),
+                    (Some(s), None) => {
+                        if start_inclusive {
+                            Box::new(index.range(s..))
+                        } else {
+                            Box::new(
+                                index.range((
+                                    std::ops::Bound::Excluded(s),
+                                    std::ops::Bound::Unbounded,
+                                )),
+                            )
+                        }
                     }
-                }
-                (None, Some(e)) => {
-                    if end_inclusive {
-                        Box::new(index.range(..=e))
-                    } else {
-                        Box::new(index.range(..e))
+                    (None, Some(e)) => {
+                        if end_inclusive {
+                            Box::new(index.range(..=e))
+                        } else {
+                            Box::new(index.range(..e))
+                        }
                     }
-                }
-                (Some(s), Some(e)) => match (start_inclusive, end_inclusive) {
-                    (true, true) => Box::new(index.range(s..=e)),
-                    (true, false) => Box::new(index.range(s..e)),
-                    (false, true) => Box::new(
-                        index.range((std::ops::Bound::Excluded(s), std::ops::Bound::Included(e))),
-                    ),
-                    (false, false) => Box::new(
-                        index.range((std::ops::Bound::Excluded(s), std::ops::Bound::Excluded(e))),
-                    ),
-                },
-            };
+                    (Some(s), Some(e)) => {
+                        match (start_inclusive, end_inclusive) {
+                            (true, true) => Box::new(index.range(s..=e)),
+                            (true, false) => Box::new(index.range(s..e)),
+                            (false, true) => Box::new(index.range((
+                                std::ops::Bound::Excluded(s),
+                                std::ops::Bound::Included(e),
+                            ))),
+                            (false, false) => Box::new(index.range((
+                                std::ops::Bound::Excluded(s),
+                                std::ops::Bound::Excluded(e),
+                            ))),
+                        }
+                    }
+                };
 
             // Collect visible rows from the range
             for (_, entries) in range {
@@ -703,6 +895,49 @@ impl VersionedTable {
                         seen_rows.insert(entry.row_id);
                         if let Some(row) = self.read(txn_id, txn_timestamp, entry.row_id) {
                             result.push(row);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Lookup rows by composite index prefix (for partial key lookups)
+    pub fn index_prefix_lookup(
+        &self,
+        index_name: &str,
+        prefix_values: Vec<Value>,
+        txn_id: HlcTimestamp,
+        txn_timestamp: HlcTimestamp,
+    ) -> Vec<Arc<Row>> {
+        let mut result = Vec::new();
+        let mut seen_rows = HashSet::new();
+
+        if let Some(index) = self.indexes.get(index_name) {
+            // For prefix matching, we iterate through all entries and check prefix
+            for (key, entries) in index.iter() {
+                if key.matches_prefix(&prefix_values) {
+                    for entry in entries {
+                        // Check if entry is visible
+                        let is_visible = if entry.added_by == txn_id {
+                            entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
+                        } else if self.committed_transactions.contains(&entry.added_by) {
+                            entry.removed_by.is_none()
+                                || (entry.removed_by != Some(txn_id)
+                                    && !self
+                                        .committed_transactions
+                                        .contains(&entry.removed_by.unwrap_or(txn_id)))
+                        } else {
+                            false
+                        };
+
+                        if is_visible && !seen_rows.contains(&entry.row_id) {
+                            seen_rows.insert(entry.row_id);
+                            if let Some(row) = self.read(txn_id, txn_timestamp, entry.row_id) {
+                                result.push(row);
+                            }
                         }
                     }
                 }
@@ -860,7 +1095,7 @@ impl VersionedTable {
 pub struct IndexMetadata {
     pub name: String,
     pub table: String,
-    pub column: String,
+    pub columns: Vec<String>, // Changed to support composite indexes
     pub unique: bool,
 }
 
@@ -913,12 +1148,12 @@ impl MvccStorage {
         Ok(())
     }
 
-    /// Create an index on a table column
+    /// Create an index on one or more table columns
     pub fn create_index(
         &mut self,
         index_name: String,
         table_name: &str,
-        column_name: String,
+        column_names: Vec<String>,
         unique: bool,
     ) -> Result<()> {
         // Check if index name already exists
@@ -935,7 +1170,7 @@ impl MvccStorage {
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
         // Create the actual index
-        table.create_index(column_name.clone(), unique)?;
+        table.create_index(index_name.clone(), column_names.clone(), unique)?;
 
         // Store metadata
         self.index_metadata.insert(
@@ -943,7 +1178,7 @@ impl MvccStorage {
             IndexMetadata {
                 name: index_name,
                 table: table_name.to_string(),
-                column: column_name,
+                columns: column_names,
                 unique,
             },
         );
@@ -961,7 +1196,7 @@ impl MvccStorage {
 
         // Drop the actual index
         if let Some(table) = self.tables.get_mut(&metadata.table) {
-            table.drop_index(&metadata.column)?;
+            table.drop_index(index_name)?;
         }
 
         Ok(())
@@ -1205,7 +1440,9 @@ mod tests {
         table.commit_transaction(txn1).unwrap();
 
         // Create an index on email
-        table.create_index("email".to_string(), false).unwrap();
+        table
+            .create_index("email".to_string(), vec!["email".to_string()], false)
+            .unwrap();
 
         // Verify index contains the data
         assert!(table.indexes.contains_key("email"));
@@ -1219,7 +1456,7 @@ mod tests {
 
         let results = table.index_lookup(
             "email",
-            &Value::String("alice@example.com".to_string()),
+            vec![Value::String("alice@example.com".to_string())],
             txn2,
             timestamp2,
         );
@@ -1265,7 +1502,7 @@ mod tests {
 
         let results = table.index_lookup(
             "name",
-            &Value::String("Laptop".to_string()),
+            vec![Value::String("Laptop".to_string())],
             txn2,
             timestamp2,
         );
@@ -1274,7 +1511,7 @@ mod tests {
         // Transaction 1 can see its own data
         let results = table.index_lookup(
             "name",
-            &Value::String("Laptop".to_string()),
+            vec![Value::String("Laptop".to_string())],
             txn1,
             timestamp1,
         );
@@ -1286,7 +1523,7 @@ mod tests {
         // Now transaction 2 can see it
         let results = table.index_lookup(
             "name",
-            &Value::String("Laptop".to_string()),
+            vec![Value::String("Laptop".to_string())],
             txn2,
             timestamp2,
         );
@@ -1338,7 +1575,7 @@ mod tests {
         // Transaction 2 sees new value
         let results = table.index_lookup(
             "category",
-            &Value::String("Computers".to_string()),
+            vec![Value::String("Computers".to_string())],
             txn2,
             timestamp2,
         );
@@ -1351,7 +1588,7 @@ mod tests {
 
         let results = table.index_lookup(
             "category",
-            &Value::String("Electronics".to_string()),
+            vec![Value::String("Electronics".to_string())],
             txn3,
             timestamp3,
         );
@@ -1359,7 +1596,7 @@ mod tests {
 
         let results = table.index_lookup(
             "category",
-            &Value::String("Computers".to_string()),
+            vec![Value::String("Computers".to_string())],
             txn3,
             timestamp3,
         );
@@ -1404,7 +1641,7 @@ mod tests {
         // Transaction 2 should not see the deleted row in index
         let results = table.index_lookup(
             "status",
-            &Value::String("active".to_string()),
+            vec![Value::String("active".to_string())],
             txn2,
             timestamp2,
         );
@@ -1417,7 +1654,7 @@ mod tests {
 
         let results = table.index_lookup(
             "status",
-            &Value::String("active".to_string()),
+            vec![Value::String("active".to_string())],
             txn3,
             timestamp3,
         );
@@ -1437,7 +1674,7 @@ mod tests {
 
         let results = table.index_lookup(
             "status",
-            &Value::String("active".to_string()),
+            vec![Value::String("active".to_string())],
             txn4,
             timestamp4,
         );
@@ -1473,7 +1710,7 @@ mod tests {
         // Verify txn1 can see via index
         let results = table.index_lookup(
             "value",
-            &Value::String("test_value".to_string()),
+            vec![Value::String("test_value".to_string())],
             txn1,
             timestamp1,
         );
@@ -1489,7 +1726,7 @@ mod tests {
 
         let results = table.index_lookup(
             "value",
-            &Value::String("test_value".to_string()),
+            vec![Value::String("test_value".to_string())],
             txn2,
             timestamp2,
         );
@@ -1591,9 +1828,9 @@ mod tests {
         // Range: score >= 30 AND score <= 70
         let results = table.index_range_lookup(
             "score",
-            Some(&Value::Integer(30)),
+            Some(vec![Value::Integer(30)]),
             true, // inclusive
-            Some(&Value::Integer(70)),
+            Some(vec![Value::Integer(70)]),
             true, // inclusive
             txn2,
             timestamp2,
@@ -1604,7 +1841,7 @@ mod tests {
         // Range: score > 50
         let results = table.index_range_lookup(
             "score",
-            Some(&Value::Integer(50)),
+            Some(vec![Value::Integer(50)]),
             false, // exclusive
             None,
             false,
@@ -1613,5 +1850,205 @@ mod tests {
         );
 
         assert_eq!(results.len(), 5); // Should get scores 60, 70, 80, 90, 100
+    }
+
+    #[test]
+    fn test_composite_index() {
+        let schema = Table::new(
+            "orders".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("customer_id".to_string(), DataType::Integer),
+                Column::new("status".to_string(), DataType::String),
+                Column::new("amount".to_string(), DataType::Integer),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("orders".to_string(), schema);
+
+        // Insert some test data
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        // Customer 1 orders
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(1),
+                    Value::Integer(1),
+                    Value::String("pending".to_string()),
+                    Value::Integer(100),
+                ],
+            )
+            .unwrap();
+
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(2),
+                    Value::Integer(1),
+                    Value::String("shipped".to_string()),
+                    Value::Integer(200),
+                ],
+            )
+            .unwrap();
+
+        // Customer 2 orders
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(3),
+                    Value::Integer(2),
+                    Value::String("pending".to_string()),
+                    Value::Integer(150),
+                ],
+            )
+            .unwrap();
+
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(4),
+                    Value::Integer(2),
+                    Value::String("shipped".to_string()),
+                    Value::Integer(300),
+                ],
+            )
+            .unwrap();
+
+        table.commit_transaction(txn1).unwrap();
+
+        // Create composite index on (customer_id, status)
+        table
+            .create_index(
+                "idx_customer_status".to_string(),
+                vec!["customer_id".to_string(), "status".to_string()],
+                false,
+            )
+            .unwrap();
+
+        // Test exact composite key lookup
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        let results = table.index_lookup(
+            "idx_customer_status",
+            vec![Value::Integer(1), Value::String("pending".to_string())],
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].values[0], Value::Integer(1)); // Order ID 1
+
+        // Test prefix lookup (customer_id = 2)
+        let results = table.index_prefix_lookup(
+            "idx_customer_status",
+            vec![Value::Integer(2)],
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 2); // Both orders for customer 2
+
+        // Test composite range lookup
+        let results = table.index_range_lookup(
+            "idx_customer_status",
+            Some(vec![
+                Value::Integer(1),
+                Value::String("pending".to_string()),
+            ]),
+            true,
+            Some(vec![
+                Value::Integer(2),
+                Value::String("pending".to_string()),
+            ]),
+            true,
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 3); // Orders 1, 2, 3
+
+        // Test uniqueness on composite index
+        let mut unique_table = VersionedTable::new(
+            "unique_test".to_string(),
+            Table::new(
+                "unique_test".to_string(),
+                vec![
+                    Column::new("id".to_string(), DataType::Integer).primary_key(),
+                    Column::new("col1".to_string(), DataType::String),
+                    Column::new("col2".to_string(), DataType::Integer),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let txn3 = create_txn_id(300);
+        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
+        unique_table.register_transaction(txn3, timestamp3);
+
+        unique_table
+            .insert(
+                txn3,
+                timestamp3,
+                vec![
+                    Value::Integer(1),
+                    Value::String("a".to_string()),
+                    Value::Integer(1),
+                ],
+            )
+            .unwrap();
+
+        unique_table.commit_transaction(txn3).unwrap();
+
+        // Create unique composite index
+        unique_table
+            .create_index(
+                "idx_unique_composite".to_string(),
+                vec!["col1".to_string(), "col2".to_string()],
+                true,
+            )
+            .unwrap();
+
+        // Try to insert duplicate composite key
+        let txn4 = create_txn_id(400);
+        let timestamp4 = HlcTimestamp::new(400, 0, NodeId::new(1));
+        unique_table.register_transaction(txn4, timestamp4);
+
+        // This should fail due to unique constraint
+        unique_table.index_columns.insert(
+            "idx_unique_composite".to_string(),
+            vec!["col1".to_string(), "col2".to_string()],
+        );
+
+        // Mark col1 and col2 as unique for the constraint check to work
+        unique_table.schema.columns[1].unique = true;
+        unique_table.schema.columns[2].unique = true;
+
+        let result = unique_table.insert(
+            txn4,
+            timestamp4,
+            vec![
+                Value::Integer(2),
+                Value::String("a".to_string()),
+                Value::Integer(1),
+            ],
+        );
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unique constraint violation")
+        );
     }
 }

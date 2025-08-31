@@ -140,8 +140,8 @@ impl Optimizer {
                                 return Some(Node::IndexScan {
                                     table,
                                     alias,
-                                    index_column: column.name.clone(),
-                                    value: value_expr.clone(),
+                                    index_name: column.name.clone(),
+                                    values: vec![value_expr.clone()],
                                 });
                             }
                         }
@@ -158,8 +158,8 @@ impl Optimizer {
                                 return Some(Node::IndexScan {
                                     table,
                                     alias,
-                                    index_column: column.name.clone(),
-                                    value: value_expr.clone(),
+                                    index_name: column.name.clone(),
+                                    values: vec![value_expr.clone()],
                                 });
                             }
                         }

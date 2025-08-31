@@ -165,6 +165,18 @@ impl Value {
         }
     }
 
+    /// Compare two composite keys lexicographically
+    pub fn compare_composite(keys1: &[Value], keys2: &[Value]) -> Option<Ordering> {
+        for (v1, v2) in keys1.iter().zip(keys2.iter()) {
+            match v1.partial_cmp(v2)? {
+                Ordering::Equal => continue,
+                other => return Some(other),
+            }
+        }
+        // If all compared elements are equal, compare lengths
+        Some(keys1.len().cmp(&keys2.len()))
+    }
+
     /// Compare two values for ordering
     pub fn compare(&self, other: &Value) -> Result<Ordering> {
         match (self, other) {
