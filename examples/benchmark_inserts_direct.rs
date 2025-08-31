@@ -7,7 +7,7 @@ use proven_sql::hlc::{HlcClock, NodeId};
 use proven_sql::storage::lock::LockManager;
 use proven_sql::storage::mvcc::MvccStorage;
 use proven_sql::storage::write_ops;
-use proven_sql::stream::{TransactionContext, TransactionState};
+use proven_sql::stream::TransactionContext;
 use proven_sql::types::schema::{Column, Table};
 use proven_sql::types::value::{DataType, Value};
 use std::io::{self, Write};
@@ -91,14 +91,7 @@ fn main() {
     for i in 0..NUM_INSERTS {
         // Create transaction context
         let tx_id = clock.now();
-        let mut tx_ctx = TransactionContext {
-            id: tx_id,
-            timestamp: tx_id,
-            state: TransactionState::Active,
-            locks_held: Vec::new(),
-            access_log: Vec::new(),
-            context: proven_sql::context::TransactionContext::new(tx_id),
-        };
+        let mut tx_ctx = TransactionContext::new(tx_id);
 
         // Create row values
         let values = vec![

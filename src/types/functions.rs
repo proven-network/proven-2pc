@@ -3,8 +3,8 @@
 //! All SQL functions must be deterministic for consensus - they must produce
 //! the same output given the same inputs and transaction context.
 
-use crate::context::TransactionContext;
 use crate::error::{Error, Result};
+use crate::stream::transaction::TransactionContext;
 use crate::types::value::Value;
 
 /// Evaluate a SQL function call

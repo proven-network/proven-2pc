@@ -4,17 +4,15 @@
 //! and visibility rules. Unlike toydb's pure iterator-based joins, these
 //! joins integrate with transaction contexts and respect MVCC isolation.
 
-use crate::context::TransactionContext;
 use crate::error::{Error, Result};
 use crate::storage::MvccStorage;
+use crate::stream::transaction::TransactionContext;
 use crate::types::expression::Expression;
-use crate::types::query::{JoinType, RowRef};
+use crate::types::query::{JoinType, RowRef, Rows};
 use crate::types::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Row iterator type for join operations with lifetime parameter
-pub type Rows<'a> = Box<dyn Iterator<Item = Result<RowRef>> + 'a>;
 
 /// NestedLoopJoiner implements MVCC-aware nested loop joins.
 ///
@@ -332,8 +330,8 @@ pub fn execute_hash_join<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::TransactionContext;
     use crate::hlc::{HlcTimestamp, NodeId};
+    use crate::stream::transaction::TransactionContext;
     use crate::types::expression::Expression;
     use crate::types::value::Value;
 

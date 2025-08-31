@@ -132,6 +132,19 @@ async fn main() {
                 println!("  Type: Error");
                 println!("  Message: {}", e);
             }
+            SqlResponse::Wounded { wounded_by, reason } => {
+                println!("  Type: Wounded");
+                println!("  Wounded by: {}", wounded_by);
+                println!("  Reason: {}", reason);
+            }
+            SqlResponse::Deferred {
+                waiting_for,
+                lock_key,
+            } => {
+                println!("  Type: Deferred");
+                println!("  Waiting for: {}", waiting_for);
+                println!("  Lock needed: {}", lock_key);
+            }
         }
         println!();
     }

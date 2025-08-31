@@ -10,5 +10,5 @@ pub mod read_ops;
 pub mod write_ops;
 
 // Re-export the main types
-pub use lock::{LockKey, LockManager, LockMode, LockResult};
+pub use lock::{LockAttemptResult, LockKey, LockManager, LockMode};
 pub use mvcc::{MvccRowIterator, MvccRowWithIdIterator, MvccStorage};

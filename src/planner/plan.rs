@@ -168,7 +168,7 @@ impl Node {
             Node::Projection {
                 aliases,
                 expressions,
-                source,
+                ..
             } => {
                 let mut names = Vec::new();
                 for (i, alias) in aliases.iter().enumerate() {

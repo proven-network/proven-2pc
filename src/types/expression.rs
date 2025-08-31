@@ -6,8 +6,8 @@
 //! - Integrated with our Value types (including UUID, Timestamp, Blob)
 
 use super::value::{Row, Value};
-use crate::context::TransactionContext;
 use crate::error::{Error, Result};
+use crate::stream::transaction::TransactionContext;
 use regex::Regex;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
@@ -452,16 +452,13 @@ impl Display for Expression {
 mod tests {
     use super::super::value::{Row, Value};
     use super::Expression;
-    use crate::context::TransactionContext;
     use crate::hlc::{HlcTimestamp, NodeId};
+    use crate::stream::transaction::TransactionContext;
     use rust_decimal::Decimal;
     use std::str::FromStr;
 
     fn test_context() -> TransactionContext {
-        TransactionContext {
-            tx_id: HlcTimestamp::new(1000, 0, NodeId::new(1)),
-            read_only: false,
-        }
+        TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)))
     }
 
     #[test]

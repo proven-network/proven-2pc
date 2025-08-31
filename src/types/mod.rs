@@ -8,6 +8,6 @@ pub mod value;
 
 // Re-export key types - matching toydb's pattern
 pub use expression::Expression;
-pub use query::{Direction, JoinType, RowRef};
+pub use query::{Direction, JoinType, RowRef, Rows};
 pub use schema::{Column, Label, Table};
 pub use value::{DataType, Row, Value};

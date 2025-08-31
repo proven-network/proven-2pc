@@ -3,7 +3,7 @@
 use crate::error::Result;
 use crate::hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt;
 
 /// Transaction ID type alias
@@ -72,11 +72,11 @@ pub struct LockInfo {
     pub mode: LockMode,
 }
 
-/// Result of attempting to acquire a lock
+/// Result of checking if a lock can be acquired (pure function)
 #[derive(Debug, Clone, PartialEq)]
-pub enum LockResult {
-    /// Lock was granted
-    Granted,
+pub enum LockAttemptResult {
+    /// Lock would be granted if requested
+    WouldGrant,
     /// Lock conflicts with an existing lock
     Conflict {
         /// Transaction holding the conflicting lock
@@ -86,60 +86,44 @@ pub enum LockResult {
     },
 }
 
-/// A transaction waiting for a lock
-#[derive(Debug, Clone)]
-struct Waiter {
-    tx_id: TxId,
-    mode: LockMode,
-}
-
 /// Lock manager that tracks locks and detects conflicts
 ///
 /// This manager does NOT implement any deadlock prevention policy.
 /// It simply tracks who holds what locks and reports conflicts.
-/// The transaction layer is responsible for implementing policies
-/// like wound-wait, wait-die, or timeout-based deadlock prevention.
+/// The transaction layer (stream processor) is responsible for implementing
+/// policies like wound-wait and managing deferred operations.
 pub struct LockManager {
     /// All currently held locks
     locks: HashMap<LockKey, Vec<LockInfo>>,
-
-    /// Wait queue for blocked transactions
-    wait_queue: HashMap<LockKey, VecDeque<Waiter>>,
-
-    /// Lock escalation threshold
-    escalation_threshold: usize,
 }
 
 impl LockManager {
     pub fn new() -> Self {
-        Self::with_escalation_threshold(100)
-    }
-
-    pub fn with_escalation_threshold(threshold: usize) -> Self {
         Self {
             locks: HashMap::new(),
-            wait_queue: HashMap::new(),
-            escalation_threshold: threshold,
         }
     }
 
-    /// Try to acquire a lock, returning conflict information if it fails
-    pub fn try_acquire(&mut self, tx_id: TxId, key: LockKey, mode: LockMode) -> Result<LockResult> {
+    /// Check if a lock can be acquired without modifying state (pure function)
+    pub fn check(&self, tx_id: TxId, key: &LockKey, mode: LockMode) -> LockAttemptResult {
         // Check for existing locks on this key
-        if let Some(holders) = self.locks.get(&key) {
+        if let Some(holders) = self.locks.get(key) {
             // Check compatibility with all current holders
             for holder in holders {
                 if holder.holder != tx_id && !holder.mode.is_compatible_with(mode) {
-                    // Conflict detected - just report it
-                    return Ok(LockResult::Conflict {
+                    return LockAttemptResult::Conflict {
                         holder: holder.holder,
                         mode: holder.mode,
-                    });
+                    };
                 }
             }
         }
 
-        // Grant the lock
+        LockAttemptResult::WouldGrant
+    }
+
+    /// Grant a lock that was previously checked (modifies state)
+    pub fn grant(&mut self, tx_id: TxId, key: LockKey, mode: LockMode) -> Result<()> {
         let lock_info = LockInfo {
             holder: tx_id,
             mode,
@@ -150,131 +134,18 @@ impl LockManager {
             .or_insert_with(Vec::new)
             .push(lock_info);
 
-        Ok(LockResult::Granted)
-    }
-
-    /// Release a specific lock
-    pub fn release(&mut self, tx_id: TxId, key: LockKey) -> Result<()> {
-        if let Some(holders) = self.locks.get_mut(&key) {
-            holders.retain(|lock| lock.holder != tx_id);
-            if holders.is_empty() {
-                self.locks.remove(&key);
-            }
-        }
-
-        // Wake up waiters if possible
-        self.process_wait_queue(&key);
-
         Ok(())
     }
 
     /// Release all locks held by a transaction
     pub fn release_all(&mut self, tx_id: TxId) -> Result<()> {
-        let mut keys_to_check = Vec::new();
-
         // Remove all locks held by this transaction
-        self.locks.retain(|key, holders| {
+        self.locks.retain(|_key, holders| {
             holders.retain(|lock| lock.holder != tx_id);
-            if holders.is_empty() {
-                keys_to_check.push(key.clone());
-                false
-            } else {
-                true
-            }
+            !holders.is_empty()
         });
-
-        // Process wait queues for released locks
-        for key in keys_to_check {
-            self.process_wait_queue(&key);
-        }
 
         Ok(())
-    }
-
-    /// Get all locks held by a transaction
-    pub fn get_locks_held(&self, tx_id: TxId) -> Vec<(LockKey, LockMode)> {
-        let mut held = Vec::new();
-
-        for (key, holders) in self.locks.iter() {
-            for lock_info in holders {
-                if lock_info.holder == tx_id {
-                    held.push((key.clone(), lock_info.mode));
-                }
-            }
-        }
-
-        held
-    }
-
-    /// Get all current locks (for visibility/debugging)
-    pub fn get_all_locks(&self) -> Vec<(LockKey, Vec<LockInfo>)> {
-        self.locks
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
-    }
-
-    /// Check if a transaction holds a specific lock
-    pub fn holds_lock(&self, tx_id: TxId, key: &LockKey, mode: LockMode) -> bool {
-        if let Some(holders) = self.locks.get(key) {
-            holders.iter().any(|lock| {
-                lock.holder == tx_id
-                    && (lock.mode == mode ||
-                 // Exclusive lock satisfies shared requirement
-                 (mode == LockMode::Shared && lock.mode == LockMode::Exclusive))
-            })
-        } else {
-            false
-        }
-    }
-
-    /// Add a transaction to the wait queue for a lock
-    pub fn add_to_wait_queue(&mut self, tx_id: TxId, key: LockKey, mode: LockMode) {
-        let waiter = Waiter { tx_id, mode };
-
-        self.wait_queue
-            .entry(key)
-            .or_insert_with(VecDeque::new)
-            .push_back(waiter);
-    }
-
-    /// Remove a transaction from all wait queues
-    pub fn remove_from_wait_queues(&mut self, tx_id: TxId) {
-        self.wait_queue.retain(|_, waiters| {
-            waiters.retain(|w| w.tx_id != tx_id);
-            !waiters.is_empty()
-        });
-    }
-
-    /// Get waiting transactions for a lock
-    pub fn get_waiters(&self, key: &LockKey) -> Vec<TxId> {
-        self.wait_queue
-            .get(key)
-            .map(|waiters| waiters.iter().map(|w| w.tx_id).collect())
-            .unwrap_or_default()
-    }
-
-    /// Check lock escalation for a table
-    pub fn check_escalation(&self, table: &str, row_locks: Vec<u64>) -> Option<LockKey> {
-        if row_locks.len() > self.escalation_threshold {
-            Some(LockKey::Table {
-                table: table.to_string(),
-            })
-        } else {
-            None
-        }
-    }
-
-    // Internal helper methods
-
-    fn process_wait_queue(&mut self, key: &LockKey) {
-        // In a real implementation, this would notify waiting transactions
-        // For now, we just track them
-        if let Some(waiters) = self.wait_queue.get(key) {
-            // TODO: Notify waiters that the lock might be available
-            // This would be done through a callback or channel
-            let _ = waiters;
-        }
     }
 }
 
@@ -315,17 +186,18 @@ mod tests {
 
         // First lock should succeed
         assert_eq!(
-            manager
-                .try_acquire(tx1, key.clone(), LockMode::Exclusive)
-                .unwrap(),
-            LockResult::Granted
+            manager.check(tx1, &key, LockMode::Exclusive),
+            LockAttemptResult::WouldGrant
         );
+        manager
+            .grant(tx1, key.clone(), LockMode::Exclusive)
+            .unwrap();
 
         // Conflicting lock should report conflict
-        let result = manager
-            .try_acquire(tx2, key.clone(), LockMode::Exclusive)
-            .unwrap();
-        assert!(matches!(result, LockResult::Conflict { holder, .. } if holder == tx1));
+        match manager.check(tx2, &key, LockMode::Exclusive) {
+            LockAttemptResult::Conflict { holder, .. } => assert_eq!(holder, tx1),
+            _ => panic!("Expected conflict"),
+        }
     }
 
     #[test]
@@ -342,23 +214,22 @@ mod tests {
 
         // Multiple shared locks should succeed
         assert_eq!(
-            manager
-                .try_acquire(tx1, key.clone(), LockMode::Shared)
-                .unwrap(),
-            LockResult::Granted
+            manager.check(tx1, &key, LockMode::Shared),
+            LockAttemptResult::WouldGrant
         );
+        manager.grant(tx1, key.clone(), LockMode::Shared).unwrap();
+
         assert_eq!(
-            manager
-                .try_acquire(tx2, key.clone(), LockMode::Shared)
-                .unwrap(),
-            LockResult::Granted
+            manager.check(tx2, &key, LockMode::Shared),
+            LockAttemptResult::WouldGrant
         );
+        manager.grant(tx2, key.clone(), LockMode::Shared).unwrap();
 
         // Exclusive lock should conflict
-        let result = manager
-            .try_acquire(tx3, key.clone(), LockMode::Exclusive)
-            .unwrap();
-        assert!(matches!(result, LockResult::Conflict { .. }));
+        assert!(matches!(
+            manager.check(tx3, &key, LockMode::Exclusive),
+            LockAttemptResult::Conflict { .. }
+        ));
     }
 
     #[test]
@@ -374,16 +245,75 @@ mod tests {
 
         // Acquire and release a lock
         manager
-            .try_acquire(tx1, key.clone(), LockMode::Exclusive)
+            .grant(tx1, key.clone(), LockMode::Exclusive)
             .unwrap();
-        manager.release(tx1, key.clone()).unwrap();
+        manager.release_all(tx1).unwrap();
 
         // New lock should succeed
         assert_eq!(
-            manager
-                .try_acquire(tx2, key.clone(), LockMode::Exclusive)
-                .unwrap(),
-            LockResult::Granted
+            manager.check(tx2, &key, LockMode::Exclusive),
+            LockAttemptResult::WouldGrant
         );
+        manager
+            .grant(tx2, key.clone(), LockMode::Exclusive)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_pure_lock_check() {
+        let mut manager = LockManager::new();
+        let key = LockKey::Row {
+            table: "users".into(),
+            row_id: 1,
+        };
+
+        let tx1 = create_tx_id(1);
+        let tx2 = create_tx_id(2);
+
+        // Check before any locks
+        assert_eq!(
+            manager.check(tx1, &key, LockMode::Exclusive),
+            LockAttemptResult::WouldGrant
+        );
+
+        // Grant lock to tx1
+        manager
+            .grant(tx1, key.clone(), LockMode::Exclusive)
+            .unwrap();
+
+        // Check should show conflict for tx2
+        match manager.check(tx2, &key, LockMode::Exclusive) {
+            LockAttemptResult::Conflict { holder, mode } => {
+                assert_eq!(holder, tx1);
+                assert_eq!(mode, LockMode::Exclusive);
+            }
+            _ => panic!("Expected conflict"),
+        }
+
+        // Check with older transaction
+        let tx0 = HlcTimestamp::new(0, 0, crate::hlc::NodeId::new(0));
+        assert!(matches!(
+            manager.check(tx0, &key, LockMode::Exclusive),
+            LockAttemptResult::Conflict { .. }
+        ))
+    }
+
+    #[test]
+    fn test_release_returns_empty() {
+        let mut manager = LockManager::new();
+        let key1 = LockKey::Row {
+            table: "users".into(),
+            row_id: 1,
+        };
+
+        let tx1 = create_tx_id(1);
+
+        // tx1 holds lock on key1
+        manager
+            .grant(tx1, key1.clone(), LockMode::Exclusive)
+            .unwrap();
+
+        // Release all locks - returns nothing since wake-up is handled by stream processor
+        manager.release_all(tx1).unwrap();
     }
 }

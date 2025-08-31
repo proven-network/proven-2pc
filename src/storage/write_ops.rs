@@ -4,7 +4,7 @@
 //! to storage and lock manager. These operations modify data.
 
 use crate::error::{Error, Result};
-use crate::storage::lock::{LockKey, LockManager, LockMode, LockResult};
+use crate::storage::lock::{LockAttemptResult, LockKey, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
 use crate::stream::{AccessLogEntry, TransactionContext, TransactionState};
 use crate::types::value::Value;
@@ -22,24 +22,28 @@ pub fn insert(
         return Err(Error::TransactionNotActive(tx_ctx.id));
     }
 
-    // Insert into storage
+    // First, prepare the lock key (we need to insert first to get row_id)
+    // Insert into storage optimistically
     let table_mut = storage
         .tables
         .get_mut(table)
         .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
     let row_id = table_mut.insert(tx_ctx.id, tx_ctx.timestamp, values)?;
 
-    // Acquire exclusive lock for the new row
+    // Now check if we can acquire the lock
     let lock_key = LockKey::Row {
         table: table.to_string(),
         row_id,
     };
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, LockMode::Exclusive) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             // Rollback the insert since we couldn't get the lock
             table_mut.remove_transaction_versions(tx_ctx.id);
             return Err(Error::LockConflict { holder, mode });
@@ -71,17 +75,20 @@ pub fn update(
         return Err(Error::TransactionNotActive(tx_ctx.id));
     }
 
-    // Acquire exclusive lock first
+    // Check if we can acquire exclusive lock
     let lock_key = LockKey::Row {
         table: table.to_string(),
         row_id,
     };
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, LockMode::Exclusive) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             return Err(Error::LockConflict { holder, mode });
         }
     }
@@ -117,17 +124,20 @@ pub fn delete(
         return Err(Error::TransactionNotActive(tx_ctx.id));
     }
 
-    // Acquire exclusive lock first
+    // Check if we can acquire exclusive lock
     let lock_key = LockKey::Row {
         table: table.to_string(),
         row_id,
     };
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, LockMode::Exclusive) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             return Err(Error::LockConflict { holder, mode });
         }
     }
@@ -166,11 +176,14 @@ pub fn create_table(
     // Acquire schema lock for DDL operations
     let lock_key = LockKey::Schema;
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, LockMode::Exclusive) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             return Err(Error::LockConflict { holder, mode });
         }
     }
@@ -204,11 +217,14 @@ pub fn drop_table(
     // Acquire schema lock for DDL operations
     let lock_key = LockKey::Schema;
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, LockMode::Exclusive) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), LockMode::Exclusive)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             return Err(Error::LockConflict { holder, mode });
         }
     }

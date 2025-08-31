@@ -8,7 +8,6 @@
 //!
 //! See LAYERS.md for detailed architecture documentation.
 
-pub mod context;
 pub mod error;
 pub mod execution;
 pub mod hlc;

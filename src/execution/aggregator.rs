@@ -3,7 +3,7 @@
 //! This module handles aggregation operations with proper MVCC transaction context,
 //! ensuring all expression evaluation respects transaction visibility rules.
 
-use crate::context::TransactionContext;
+use crate::stream::transaction::TransactionContext;
 use crate::error::{Error, Result};
 use crate::planner::plan::AggregateFunc;
 use crate::storage::MvccStorage;

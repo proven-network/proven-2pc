@@ -4,7 +4,7 @@
 //! to storage, enabling true zero-copy streaming iterators.
 
 use crate::error::{Error, Result};
-use crate::storage::lock::{LockKey, LockManager, LockMode, LockResult};
+use crate::storage::lock::{LockAttemptResult, LockKey, LockManager, LockMode};
 use crate::storage::mvcc::{MvccRowIterator, MvccRowWithIdIterator, MvccStorage};
 use crate::stream::{AccessLogEntry, TransactionContext, TransactionState};
 use crate::types::value::Value;
@@ -27,11 +27,14 @@ pub fn scan_iter<'a>(
         table: table.to_string(),
     };
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), LockMode::IntentShared)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, LockMode::IntentShared) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), LockMode::IntentShared)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             return Err(Error::LockConflict { holder, mode });
         }
     }
@@ -78,11 +81,14 @@ pub fn scan_iter_with_ids<'a>(
         table: table.to_string(),
     };
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), lock_mode)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, lock_mode) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), lock_mode)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             return Err(Error::LockConflict { holder, mode });
         }
     }
@@ -129,11 +135,14 @@ pub fn read_row(
         row_id,
     };
 
-    match lock_manager.try_acquire(tx_ctx.id, lock_key.clone(), LockMode::Shared)? {
-        LockResult::Granted => {
+    // Use the new pure API: check first, then grant
+    match lock_manager.check(tx_ctx.id, &lock_key, LockMode::Shared) {
+        LockAttemptResult::WouldGrant => {
+            // Grant the lock
+            lock_manager.grant(tx_ctx.id, lock_key.clone(), LockMode::Shared)?;
             tx_ctx.locks_held.push(lock_key);
         }
-        LockResult::Conflict { holder, mode } => {
+        LockAttemptResult::Conflict { holder, mode } => {
             return Err(Error::LockConflict { holder, mode });
         }
     }

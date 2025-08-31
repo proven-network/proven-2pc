@@ -3,8 +3,7 @@
 //! This module contains transaction state management and context
 //! for executing SQL operations within the stream processor.
 
-use crate::error::{Error, Result};
-use crate::hlc::{HlcTimestamp, NodeId};
+use crate::hlc::HlcTimestamp;
 use crate::storage::lock::LockKey;
 use serde::{Deserialize, Serialize};
 
@@ -22,13 +21,20 @@ pub enum TransactionState {
 }
 
 /// Transaction execution state
+#[derive(Clone)]
 pub struct TransactionContext {
+    /// Transaction ID (HLC timestamp provides total ordering across the distributed system)
     pub id: HlcTimestamp,
+    /// Timestamp for this transaction (same as ID)
     pub timestamp: HlcTimestamp,
+    /// Current state of the transaction
     pub state: TransactionState,
+    /// Locks currently held by this transaction
     pub locks_held: Vec<LockKey>,
+    /// Access log for distributed coordination
     pub access_log: Vec<AccessLogEntry>,
-    pub context: crate::context::TransactionContext,
+    /// If this transaction has been wounded, tracks who wounded it
+    pub wounded_by: Option<HlcTimestamp>,
 }
 
 /// Access log entry for distributed coordination
@@ -41,37 +47,44 @@ pub struct AccessLogEntry {
 }
 
 impl TransactionContext {
-    /// Create a new transaction context from a transaction ID string
-    pub fn from_txn_id(txn_id: &str) -> Result<Self> {
-        // Parse the transaction ID to extract timestamp
-        let parts: Vec<&str> = txn_id.split('_').collect();
-        if parts.len() < 3 {
-            return Err(Error::InvalidValue(format!(
-                "Invalid txn_id format: {}",
-                txn_id
-            )));
-        }
-
-        let timestamp_str = parts[2];
-        let timestamp_nanos: u64 = timestamp_str
-            .parse()
-            .map_err(|_| Error::InvalidValue(format!("Invalid timestamp in txn_id: {}", txn_id)))?;
-
-        // Create HLC timestamp
-        let hlc_timestamp = HlcTimestamp::new(
-            timestamp_nanos / 1_000_000_000,
-            (timestamp_nanos % 1_000_000_000) as u32,
-            NodeId::new(1),
-        );
-
-        // Create new transaction context
-        Ok(Self {
+    /// Create a new transaction context with an HLC timestamp
+    pub fn new(hlc_timestamp: HlcTimestamp) -> Self {
+        Self {
             id: hlc_timestamp,
             timestamp: hlc_timestamp,
             state: TransactionState::Active,
             locks_held: Vec::new(),
             access_log: Vec::new(),
-            context: crate::context::TransactionContext::new(hlc_timestamp),
-        })
+            wounded_by: None,
+        }
+    }
+    
+    /// Get the timestamp for deterministic SQL functions
+    pub fn timestamp(&self) -> &HlcTimestamp {
+        &self.timestamp
+    }
+    
+    /// Generate a deterministic UUID based on transaction ID and a sequence
+    pub fn deterministic_uuid(&self, sequence: u64) -> uuid::Uuid {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.id.hash(&mut hasher);
+        sequence.hash(&mut hasher);
+
+        let hash = hasher.finish();
+        let bytes = hash.to_be_bytes();
+
+        // Create a v4-like UUID but deterministically
+        let mut uuid_bytes = [0u8; 16];
+        uuid_bytes[..8].copy_from_slice(&bytes);
+        uuid_bytes[8..].copy_from_slice(&bytes); // Repeat for full 16 bytes
+
+        // Set version (4) and variant bits
+        uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x40;
+        uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
+
+        uuid::Uuid::from_bytes(uuid_bytes)
     }
 }

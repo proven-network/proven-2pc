@@ -1,5 +1,7 @@
 //! Error types for the SQL engine
 
+use crate::hlc::HlcTimestamp;
+use crate::storage::lock::LockMode;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -32,8 +34,8 @@ pub enum Error {
     // Lock errors
     #[error("Lock conflict: held by transaction {holder} in mode {mode:?}")]
     LockConflict {
-        holder: crate::hlc::HlcTimestamp,
-        mode: crate::storage::lock::LockMode,
+        holder: HlcTimestamp,
+        mode: LockMode,
     },
 
     #[error("Operation would block")]
@@ -47,13 +49,16 @@ pub enum Error {
 
     // Transaction errors
     #[error("Transaction not found: {0}")]
-    TransactionNotFound(crate::hlc::HlcTimestamp),
+    TransactionNotFound(HlcTimestamp),
 
     #[error("Transaction aborted: {0}")]
-    TransactionAborted(crate::hlc::HlcTimestamp),
+    TransactionAborted(HlcTimestamp),
 
     #[error("Transaction not active: {0}")]
-    TransactionNotActive(crate::hlc::HlcTimestamp),
+    TransactionNotActive(HlcTimestamp),
+
+    #[error("Transaction wounded by {wounded_by} to prevent deadlock")]
+    TransactionWounded { wounded_by: HlcTimestamp },
 
     // SQL errors
     #[error("SQL parse error: {0}")]
