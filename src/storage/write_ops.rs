@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::storage::lock::{LockKey, LockManager, LockMode, LockResult};
 use crate::storage::mvcc::MvccStorage;
-use crate::stream_processor::{AccessLogEntry, TransactionContext, TransactionState};
+use crate::stream::{AccessLogEntry, TransactionContext, TransactionState};
 use crate::types::value::Value;
 
 /// Insert a row into storage with proper locking

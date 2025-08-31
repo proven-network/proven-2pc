@@ -15,7 +15,7 @@ pub mod hlc;
 pub mod parser;
 pub mod planner;
 pub mod storage;
-pub mod stream_processor;
+pub mod stream;
 pub mod types;
 
 pub use error::{Error, Result};

@@ -165,7 +165,11 @@ impl Node {
     ) -> Vec<String> {
         match self {
             // Projection node has the aliases we want
-            Node::Projection { aliases, expressions, source } => {
+            Node::Projection {
+                aliases,
+                expressions,
+                source,
+            } => {
                 let mut names = Vec::new();
                 for (i, alias) in aliases.iter().enumerate() {
                     if let Some(name) = alias {
@@ -181,15 +185,13 @@ impl Node {
                 }
                 names
             }
-            
+
             // For nodes that pass through their source columns, recurse
-            Node::Filter { source, .. } |
-            Node::Order { source, .. } |
-            Node::Limit { source, .. } |
-            Node::Offset { source, .. } => {
-                source.get_column_names(schemas)
-            }
-            
+            Node::Filter { source, .. }
+            | Node::Order { source, .. }
+            | Node::Limit { source, .. }
+            | Node::Offset { source, .. } => source.get_column_names(schemas),
+
             // Scan nodes get column names from table schema
             Node::Scan { table, .. } | Node::IndexScan { table, .. } => {
                 if let Some(schema) = schemas.get(table) {
@@ -200,9 +202,13 @@ impl Node {
                     (0..count).map(|i| format!("column_{}", i)).collect()
                 }
             }
-            
+
             // Aggregate nodes need special handling
-            Node::Aggregate { group_by, aggregates, .. } => {
+            Node::Aggregate {
+                group_by,
+                aggregates,
+                ..
+            } => {
                 let mut names = Vec::new();
                 // First the GROUP BY columns (would need more context to get their names)
                 for i in 0..group_by.len() {
@@ -221,21 +227,20 @@ impl Node {
                 }
                 names
             }
-            
+
             // Join nodes concatenate columns from both sides
-            Node::HashJoin { left, right, .. } |
-            Node::NestedLoopJoin { left, right, .. } => {
+            Node::HashJoin { left, right, .. } | Node::NestedLoopJoin { left, right, .. } => {
                 let mut names = left.get_column_names(schemas);
                 names.extend(right.get_column_names(schemas));
                 names
             }
-            
+
             // Values and Nothing nodes
             Node::Values { rows } => {
                 let count = rows.first().map(|r| r.len()).unwrap_or(0);
                 (0..count).map(|i| format!("column_{}", i)).collect()
             }
-            
+
             Node::Nothing => vec![],
         }
     }

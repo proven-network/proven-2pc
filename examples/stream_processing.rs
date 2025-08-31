@@ -3,7 +3,7 @@
 //! This demonstrates how the SQL engine consumes ordered messages from a stream,
 //! handles transactions with PCC, and returns results through a response channel.
 
-use proven_sql::stream_processor::{
+use proven_sql::stream::{
     MockResponseChannel, SqlOperation, SqlResponse, SqlStreamProcessor, StreamMessage,
 };
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ async fn main() {
 
     // Create response channel to capture results
     let mock_channel = Arc::new(MockResponseChannel::new());
-    let response_channel: Box<dyn proven_sql::stream_processor::ResponseChannel> =
+    let response_channel: Box<dyn proven_sql::stream::ResponseChannel> =
         Box::new(mock_channel.clone());
 
     // Create stream processor with empty storage

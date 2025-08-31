@@ -3,7 +3,7 @@
 //! This benchmark measures the throughput of the SQL engine by inserting
 //! 1 million rows into a table through the streaming interface.
 
-use proven_sql::stream_processor::{
+use proven_sql::stream::{
     MockResponseChannel, SqlOperation, SqlResponse, SqlStreamProcessor, StreamMessage,
 };
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ async fn main() {
 
     // Create response channel to capture results
     let mock_channel = Arc::new(MockResponseChannel::new());
-    let response_channel: Box<dyn proven_sql::stream_processor::ResponseChannel> =
+    let response_channel: Box<dyn proven_sql::stream::ResponseChannel> =
         Box::new(mock_channel.clone());
 
     // Create stream processor with empty storage

@@ -7,7 +7,7 @@ use proven_sql::hlc::{HlcClock, NodeId};
 use proven_sql::storage::lock::LockManager;
 use proven_sql::storage::mvcc::MvccStorage;
 use proven_sql::storage::write_ops;
-use proven_sql::stream_processor::{TransactionContext, TransactionState};
+use proven_sql::stream::{TransactionContext, TransactionState};
 use proven_sql::types::schema::{Column, Table};
 use proven_sql::types::value::{DataType, Value};
 use std::io::{self, Write};

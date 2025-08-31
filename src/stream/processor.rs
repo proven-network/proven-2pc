@@ -1,132 +1,19 @@
-//! Stream-based SQL engine processor
+//! Core stream processor implementation
 //!
 //! Consumes ordered messages from a Raft-ordered stream and processes SQL operations
 //! with proper transaction isolation using MVCC for rollback support and PCC for
 //! conflict prevention.
 
+use super::message::{SqlOperation, StreamMessage};
+use super::response::{ResponseChannel, SqlResponse, convert_execution_result};
+use super::transaction::{TransactionContext, TransactionState};
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, Executor};
-use crate::hlc::HlcTimestamp;
 use crate::planner::planner::Planner;
-use crate::storage::lock::{LockKey, LockManager, LockMode};
+use crate::storage::lock::LockManager;
 use crate::storage::mvcc::MvccStorage;
 use crate::types::schema::Table;
-use bincode::{Decode, Encode};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc; // Only for MockResponseChannel
-
-/// Transaction state
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TransactionState {
-    /// Transaction is active and can execute operations
-    Active,
-    /// Transaction is preparing to commit (2PC)
-    Preparing,
-    /// Transaction has committed
-    Committed,
-    /// Transaction has been aborted
-    Aborted,
-}
-
-/// Access log entry for distributed coordination
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccessLogEntry {
-    pub operation: String,
-    pub table: String,
-    pub keys: Vec<u64>,
-    pub lock_mode: LockMode,
-}
-
-/// SQL operation types that can be sent in messages
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
-pub enum SqlOperation {
-    /// Execute SQL statement (DDL or DML)
-    Execute { sql: String },
-
-    /// Query that returns results
-    Query { sql: String },
-
-    /// Schema migration with version tracking
-    Migrate { version: u32, sql: String },
-}
-
-/// Response sent back to coordinator
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SqlResponse {
-    /// Query results
-    QueryResult {
-        columns: Vec<String>,
-        rows: Vec<Vec<crate::types::value::Value>>,
-    },
-
-    /// Execution result
-    ExecuteResult {
-        result_type: String,
-        rows_affected: Option<usize>,
-        message: Option<String>,
-    },
-
-    /// Error occurred
-    Error(String),
-}
-
-/// Message from the stream
-pub struct StreamMessage {
-    /// Message body (serialized SqlOperation or empty for commit/abort)
-    pub body: Vec<u8>,
-
-    /// Headers for transaction control
-    pub headers: HashMap<String, String>,
-}
-
-/// Channel for sending responses back to coordinators
-pub trait ResponseChannel: Send + Sync {
-    fn send(&self, coordinator_id: &str, txn_id: &str, response: SqlResponse);
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        panic!("as_any not implemented for this ResponseChannel")
-    }
-}
-
-/// Mock implementation for testing
-pub struct MockResponseChannel {
-    responses: Arc<parking_lot::Mutex<Vec<(String, String, SqlResponse)>>>,
-}
-
-impl MockResponseChannel {
-    pub fn new() -> Self {
-        Self {
-            responses: Arc::new(parking_lot::Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn get_responses(&self) -> Vec<(String, String, SqlResponse)> {
-        self.responses.lock().clone()
-    }
-}
-
-impl ResponseChannel for Arc<MockResponseChannel> {
-    fn send(&self, coordinator_id: &str, txn_id: &str, response: SqlResponse) {
-        self.responses
-            .lock()
-            .push((coordinator_id.to_string(), txn_id.to_string(), response));
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-/// Transaction execution state
-pub struct TransactionContext {
-    pub id: crate::hlc::HlcTimestamp,
-    pub timestamp: crate::hlc::HlcTimestamp,
-    pub state: TransactionState,
-    pub locks_held: Vec<LockKey>,
-    pub access_log: Vec<AccessLogEntry>,
-    pub context: crate::context::TransactionContext,
-}
 
 /// SQL stream processor with transaction isolation
 pub struct SqlStreamProcessor {
@@ -172,23 +59,23 @@ impl SqlStreamProcessor {
     /// Process a message from the stream
     pub async fn process_message(&mut self, message: StreamMessage) -> Result<()> {
         let txn_id = message
-            .headers
-            .get("txn_id")
-            .ok_or_else(|| Error::InvalidValue("Missing txn_id header".into()))?
-            .clone();
+            .txn_id()
+            .ok_or_else(|| Error::InvalidValue("Missing txn_id header".into()))?;
 
         // Check if this is a commit/abort message (empty body)
-        if message.body.is_empty() {
-            if let Some(phase) = message.headers.get("txn_phase") {
-                match phase.as_str() {
-                    "commit" => return self.commit_transaction(&txn_id).await,
-                    "abort" => return self.abort_transaction(&txn_id).await,
-                    _ => return Err(Error::InvalidValue(format!("Unknown txn_phase: {}", phase))),
+        if message.is_transaction_control() {
+            match message.txn_phase() {
+                Some("commit") => return self.commit_transaction(txn_id).await,
+                Some("abort") => return self.abort_transaction(txn_id).await,
+                Some(phase) => {
+                    return Err(Error::InvalidValue(format!("Unknown txn_phase: {}", phase)));
+                }
+                None => {
+                    return Err(Error::InvalidValue(
+                        "Empty message without txn_phase".into(),
+                    ));
                 }
             }
-            return Err(Error::InvalidValue(
-                "Empty message without txn_phase".into(),
-            ));
         }
 
         // Deserialize the operation
@@ -200,26 +87,25 @@ impl SqlStreamProcessor {
                 .0;
 
         // Ensure transaction exists
-        if !self.active_transactions.contains_key(&txn_id) {
-            self.create_transaction(&txn_id)?;
+        if !self.active_transactions.contains_key(txn_id) {
+            self.create_transaction(txn_id)?;
         }
 
         // Execute the operation
-        let result = self.execute_operation(operation, &txn_id).await;
+        let result = self.execute_operation(operation, txn_id).await;
 
         // Send response if coordinator_id is present
-        if let Some(coordinator_id) = message.headers.get("coordinator_id") {
+        if let Some(coordinator_id) = message.coordinator_id() {
             let response = match result {
                 Ok(res) => res,
                 Err(e) => SqlResponse::Error(format!("{:?}", e)),
             };
-            self.response_channel
-                .send(coordinator_id, &txn_id, response);
+            self.response_channel.send(coordinator_id, txn_id, response);
         }
 
         // Auto-commit if specified
-        if message.headers.get("auto_commit") == Some(&"true".to_string()) {
-            self.commit_transaction(&txn_id).await?;
+        if message.is_auto_commit() {
+            self.commit_transaction(txn_id).await?;
         }
 
         Ok(())
@@ -227,37 +113,7 @@ impl SqlStreamProcessor {
 
     /// Create new transaction context
     fn create_transaction(&mut self, txn_id: &str) -> Result<()> {
-        // Parse the transaction ID to extract timestamp
-        let parts: Vec<&str> = txn_id.split('_').collect();
-        if parts.len() < 3 {
-            return Err(Error::InvalidValue(format!(
-                "Invalid txn_id format: {}",
-                txn_id
-            )));
-        }
-
-        let timestamp_str = parts[2];
-        let timestamp_nanos: u64 = timestamp_str
-            .parse()
-            .map_err(|_| Error::InvalidValue(format!("Invalid timestamp in txn_id: {}", txn_id)))?;
-
-        // Create HLC timestamp
-        let hlc_timestamp = HlcTimestamp::new(
-            timestamp_nanos / 1_000_000_000,
-            (timestamp_nanos % 1_000_000_000) as u32,
-            crate::hlc::NodeId::new(1),
-        );
-
-        // Create new transaction context
-        let tx_ctx = TransactionContext {
-            id: hlc_timestamp,
-            timestamp: hlc_timestamp,
-            state: TransactionState::Active,
-            locks_held: Vec::new(),
-            access_log: Vec::new(),
-            context: crate::context::TransactionContext::new(hlc_timestamp),
-        };
-
+        let tx_ctx = TransactionContext::from_txn_id(txn_id)?;
         self.active_transactions.insert(txn_id.to_string(), tx_ctx);
         Ok(())
     }
@@ -394,29 +250,11 @@ impl SqlStreamProcessor {
     }
 }
 
-/// Convert ExecutionResult to SqlResponse
-fn convert_execution_result(result: ExecutionResult) -> SqlResponse {
-    match result {
-        ExecutionResult::Select { columns, rows } => {
-            let rows = rows.into_iter().map(|row| row.as_ref().clone()).collect();
-            SqlResponse::QueryResult { columns, rows }
-        }
-        ExecutionResult::Modified(count) => SqlResponse::ExecuteResult {
-            result_type: "modified".to_string(),
-            rows_affected: Some(count),
-            message: None,
-        },
-        ExecutionResult::DDL(msg) => SqlResponse::ExecuteResult {
-            result_type: "ddl".to_string(),
-            rows_affected: None,
-            message: Some(msg),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::response::MockResponseChannel;
+    use std::sync::Arc;
 
     fn create_message(
         operation: Option<SqlOperation>,
@@ -446,7 +284,7 @@ mod tests {
             Vec::new()
         };
 
-        StreamMessage { body, headers }
+        StreamMessage::new(body, headers)
     }
 
     #[tokio::test]

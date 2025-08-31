@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::storage::lock::{LockKey, LockManager, LockMode, LockResult};
 use crate::storage::mvcc::{MvccRowIterator, MvccRowWithIdIterator, MvccStorage};
-use crate::stream_processor::{AccessLogEntry, TransactionContext, TransactionState};
+use crate::stream::{AccessLogEntry, TransactionContext, TransactionState};
 use crate::types::value::Value;
 use std::sync::Arc;
 

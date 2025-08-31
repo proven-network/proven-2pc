@@ -123,7 +123,7 @@ impl Planner {
         // Apply GROUP BY and aggregates
         let has_aggregates = self.has_aggregates(&select);
         let group_by_count = group_by.len();
-        
+
         if !group_by.is_empty() || has_aggregates {
             let group_exprs = group_by
                 .into_iter()
@@ -174,13 +174,13 @@ impl Planner {
             let mut expressions = Vec::new();
             let mut aliases = Vec::new();
             let mut col_idx = group_by_count; // Start after GROUP BY columns
-            
+
             for (expr, alias) in select {
                 if self.is_aggregate_expr(&expr) {
                     // For aggregate functions, project the corresponding aggregate result column
                     expressions.push(Expression::Column(col_idx));
                     col_idx += 1;
-                    
+
                     // Generate alias for aggregate function
                     let func_alias = alias.or_else(|| {
                         if let ast::Expression::Function(name, _) = &expr {
@@ -200,7 +200,7 @@ impl Planner {
         } else {
             self.plan_projection(select, &mut context)?
         };
-        
+
         node = Node::Projection {
             source: Box::new(node),
             expressions,

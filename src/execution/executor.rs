@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::planner::plan::{Node, Plan};
 use crate::storage::lock::LockManager;
 use crate::storage::{MvccStorage, read_ops, write_ops};
-use crate::stream_processor::TransactionContext as TxContext;
+use crate::stream::TransactionContext as TxContext;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use crate::types::value::Value;
@@ -138,7 +138,7 @@ impl Executor {
     ) -> Result<ExecutionResult> {
         // Get column names from the node tree
         let columns = node.get_column_names(&self.schemas);
-        
+
         // Execute using read-only node execution
         let rows = self.execute_node_read(node, storage, lock_manager, tx_ctx, context)?;
         let mut collected = Vec::new();
