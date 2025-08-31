@@ -24,7 +24,7 @@ fn main() {
     let table_name = "bench";
     let schema = Table {
         name: table_name.to_string(),
-        primary_key: 0, // First column is primary key
+        primary_key: Some(0), // First column is primary key
         columns: vec![
             Column {
                 name: "id".to_string(),

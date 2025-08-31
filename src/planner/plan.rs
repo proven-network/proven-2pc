@@ -62,12 +62,23 @@ pub enum Node {
         alias: Option<String>,
     },
 
-    /// Index scan - uses an index to lookup rows
+    /// Index scan - uses an index to lookup rows (equality)
     IndexScan {
         table: String,
         alias: Option<String>,
         index_column: String,
         value: Expression,
+    },
+
+    /// Index range scan - uses an index for range queries
+    IndexRangeScan {
+        table: String,
+        alias: Option<String>,
+        index_column: String,
+        start: Option<Expression>,
+        start_inclusive: bool,
+        end: Option<Expression>,
+        end_inclusive: bool,
     },
 
     /// Filter rows (WHERE clause)
@@ -137,6 +148,9 @@ impl Node {
             Node::IndexScan { table, .. } => {
                 schemas.get(table).map(|s| s.columns.len()).unwrap_or(0)
             }
+            Node::IndexRangeScan { table, .. } => {
+                schemas.get(table).map(|s| s.columns.len()).unwrap_or(0)
+            }
             Node::Projection { expressions, .. } => expressions.len(),
             Node::Filter { source, .. } => source.column_count(schemas),
             Node::Order { source, .. } => source.column_count(schemas),
@@ -193,7 +207,9 @@ impl Node {
             | Node::Offset { source, .. } => source.get_column_names(schemas),
 
             // Scan nodes get column names from table schema
-            Node::Scan { table, .. } | Node::IndexScan { table, .. } => {
+            Node::Scan { table, .. }
+            | Node::IndexScan { table, .. }
+            | Node::IndexRangeScan { table, .. } => {
                 if let Some(schema) = schemas.get(table) {
                     schema.columns.iter().map(|c| c.name.clone()).collect()
                 } else {

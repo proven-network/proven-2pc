@@ -111,13 +111,10 @@ impl Planner {
         // Start with FROM clause
         let mut node = self.plan_from(from, &mut context)?;
 
-        // Apply WHERE filter
+        // Apply WHERE filter - check for index optimization opportunities
         if let Some(where_expr) = r#where {
-            let predicate = context.resolve_expression(where_expr)?;
-            node = Node::Filter {
-                source: Box::new(node),
-                predicate,
-            };
+            // Try to optimize single table queries with indexed columns
+            node = self.plan_where_with_index(where_expr, node, &mut context)?;
         }
 
         // Apply GROUP BY and aggregates
@@ -557,6 +554,189 @@ impl Planner {
                 "Expected non-negative integer constant".into(),
             )),
         }
+    }
+
+    /// Plan WHERE clause with index optimization
+    fn plan_where_with_index(
+        &self,
+        where_expr: ast::Expression,
+        source: Node,
+        context: &mut PlanContext,
+    ) -> Result<Node> {
+        // Check if this is a simple equality on an indexed column
+        if let Node::Scan {
+            ref table,
+            ref alias,
+        } = source
+        {
+            if let Some(index_scan) = self.try_create_index_scan(&where_expr, table, alias, context)
+            {
+                return Ok(index_scan);
+            }
+        }
+
+        // Fall back to regular filter
+        let predicate = context.resolve_expression(where_expr)?;
+        Ok(Node::Filter {
+            source: Box::new(source),
+            predicate,
+        })
+    }
+
+    /// Try to create an IndexScan or IndexRangeScan node if WHERE clause matches an indexed column
+    fn try_create_index_scan(
+        &self,
+        where_expr: &ast::Expression,
+        table_name: &str,
+        alias: &Option<String>,
+        context: &PlanContext,
+    ) -> Option<Node> {
+        // First check for range queries (e.g., col > X AND col < Y)
+        if let Some(range_scan) = self.try_create_range_scan(where_expr, table_name, alias, context)
+        {
+            return Some(range_scan);
+        }
+
+        // Check for simple equality: column = value
+        if let ast::Expression::Operator(ast::Operator::Equal(left, right)) = where_expr {
+            // Check if left side is a column
+            if let ast::Expression::Column(ref table_ref, ref column_name) = **left {
+                // Verify this column belongs to our table
+                if table_ref.is_none()
+                    || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
+                    || table_ref == alias
+                {
+                    // Check if this column has an index
+                    if let Some(schema) = self.schemas.get(table_name) {
+                        if let Some((_col_idx, column)) = schema.get_column(column_name) {
+                            // Check if column is indexed (primary key, unique, or has index)
+                            if column.primary_key || column.unique || column.index {
+                                // Create IndexScan node
+                                return Some(Node::IndexScan {
+                                    table: table_name.to_string(),
+                                    alias: alias.clone(),
+                                    index_column: column_name.to_string(),
+                                    value: context.resolve_expression((**right).clone()).ok()?,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // Also check if right side is a column (value = column)
+            else if let ast::Expression::Column(ref table_ref, ref column_name) = **right {
+                if table_ref.is_none()
+                    || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
+                    || table_ref == alias
+                {
+                    if let Some(schema) = self.schemas.get(table_name) {
+                        if let Some((_col_idx, column)) = schema.get_column(column_name) {
+                            if column.primary_key || column.unique || column.index {
+                                return Some(Node::IndexScan {
+                                    table: table_name.to_string(),
+                                    alias: alias.clone(),
+                                    index_column: column_name.to_string(),
+                                    value: context.resolve_expression((**left).clone()).ok()?,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Try to create an IndexRangeScan node for range queries
+    fn try_create_range_scan(
+        &self,
+        where_expr: &ast::Expression,
+        table_name: &str,
+        alias: &Option<String>,
+        context: &PlanContext,
+    ) -> Option<Node> {
+        // Check for single comparison operators (>, <, >=, <=)
+        match where_expr {
+            ast::Expression::Operator(op) => {
+                match op {
+                    ast::Operator::GreaterThan(left, right)
+                    | ast::Operator::GreaterThanOrEqual(left, right)
+                    | ast::Operator::LessThan(left, right)
+                    | ast::Operator::LessThanOrEqual(left, right) => {
+                        // Check if one side is an indexed column
+                        if let ast::Expression::Column(ref table_ref, ref column_name) = **left {
+                            if table_ref.is_none()
+                                || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
+                                || table_ref == alias
+                            {
+                                if let Some(schema) = self.schemas.get(table_name) {
+                                    if let Some((_, column)) = schema.get_column(column_name) {
+                                        if column.primary_key || column.unique || column.index {
+                                            // Create range scan based on operator
+                                            let value = context
+                                                .resolve_expression((**right).clone())
+                                                .ok()?;
+                                            return Some(match op {
+                                                ast::Operator::GreaterThan(..) => {
+                                                    Node::IndexRangeScan {
+                                                        table: table_name.to_string(),
+                                                        alias: alias.clone(),
+                                                        index_column: column_name.to_string(),
+                                                        start: Some(value),
+                                                        start_inclusive: false,
+                                                        end: None,
+                                                        end_inclusive: false,
+                                                    }
+                                                }
+                                                ast::Operator::GreaterThanOrEqual(..) => {
+                                                    Node::IndexRangeScan {
+                                                        table: table_name.to_string(),
+                                                        alias: alias.clone(),
+                                                        index_column: column_name.to_string(),
+                                                        start: Some(value),
+                                                        start_inclusive: true,
+                                                        end: None,
+                                                        end_inclusive: false,
+                                                    }
+                                                }
+                                                ast::Operator::LessThan(..) => {
+                                                    Node::IndexRangeScan {
+                                                        table: table_name.to_string(),
+                                                        alias: alias.clone(),
+                                                        index_column: column_name.to_string(),
+                                                        start: None,
+                                                        start_inclusive: false,
+                                                        end: Some(value),
+                                                        end_inclusive: false,
+                                                    }
+                                                }
+                                                ast::Operator::LessThanOrEqual(..) => {
+                                                    Node::IndexRangeScan {
+                                                        table: table_name.to_string(),
+                                                        alias: alias.clone(),
+                                                        index_column: column_name.to_string(),
+                                                        start: None,
+                                                        start_inclusive: false,
+                                                        end: Some(value),
+                                                        end_inclusive: true,
+                                                    }
+                                                }
+                                                _ => unreachable!(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+
+        None
     }
 }
 

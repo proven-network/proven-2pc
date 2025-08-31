@@ -92,11 +92,23 @@ impl Executor {
                 Ok(ExecutionResult::DDL(format!("Table '{}' dropped", name)))
             }
 
-            Plan::CreateIndex { name, .. } => {
-                Ok(ExecutionResult::DDL(format!("Index '{}' created", name)))
+            Plan::CreateIndex {
+                name,
+                table,
+                column,
+                unique,
+            } => {
+                // Actually create the index in storage
+                storage.create_index(name.clone(), &table, column.clone(), unique)?;
+                Ok(ExecutionResult::DDL(format!(
+                    "Index '{}' created on {}.{}",
+                    name, table, column
+                )))
             }
 
             Plan::DropIndex { name, .. } => {
+                // Drop the index using its name
+                storage.drop_index(&name)?;
                 Ok(ExecutionResult::DDL(format!("Index '{}' dropped", name)))
             }
         }
@@ -283,8 +295,28 @@ impl Executor {
                 value,
                 ..
             } => {
-                // For now, just do a filtered table scan
+                // Evaluate the lookup value
                 let filter_value = self.evaluate_expression(&value, None, &tx_ctx)?;
+
+                // Try to use index lookup first
+                if let Some(versioned_table) = storage.tables.get(&table) {
+                    // Check if this column has an index
+                    if versioned_table.indexes.contains_key(&index_column) {
+                        // Use index lookup for O(log n) performance
+                        let rows = versioned_table.index_lookup(
+                            &index_column,
+                            &filter_value,
+                            tx_ctx.id,
+                            tx_ctx.timestamp,
+                        );
+
+                        // Convert to iterator format
+                        let iter = rows.into_iter().map(|row| Ok(Arc::new(row.values.clone())));
+                        return Ok(Box::new(iter));
+                    }
+                }
+
+                // Fall back to filtered table scan if no index exists
                 let schema = self
                     .schemas
                     .get(&table)
@@ -296,7 +328,7 @@ impl Executor {
                     .position(|c| c.name == index_column)
                     .ok_or_else(|| Error::ColumnNotFound(index_column))?;
 
-                // True streaming with filtering!
+                // Filtered scan as fallback
                 let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.filter_map(
                     move |row| {
                         if row.get(col_idx) == Some(&filter_value) {
@@ -304,6 +336,92 @@ impl Executor {
                         } else {
                             None
                         }
+                    },
+                );
+
+                Ok(Box::new(iter))
+            }
+
+            Node::IndexRangeScan {
+                table,
+                index_column,
+                start,
+                start_inclusive,
+                end,
+                end_inclusive,
+                ..
+            } => {
+                // Evaluate range bounds
+                let start_value = start
+                    .as_ref()
+                    .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                    .transpose()?;
+                let end_value = end
+                    .as_ref()
+                    .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                    .transpose()?;
+
+                // Try to use index range lookup
+                if let Some(versioned_table) = storage.tables.get(&table) {
+                    if versioned_table.indexes.contains_key(&index_column) {
+                        // Use index range lookup for O(log n) performance
+                        let rows = versioned_table.index_range_lookup(
+                            &index_column,
+                            start_value.as_ref(),
+                            start_inclusive,
+                            end_value.as_ref(),
+                            end_inclusive,
+                            tx_ctx.id,
+                            tx_ctx.timestamp,
+                        );
+
+                        // Convert to iterator format
+                        let iter = rows.into_iter().map(|row| Ok(Arc::new(row.values.clone())));
+                        return Ok(Box::new(iter));
+                    }
+                }
+
+                // Fall back to filtered table scan if no index exists
+                let schema = self
+                    .schemas
+                    .get(&table)
+                    .ok_or_else(|| Error::TableNotFound(table.clone()))?;
+                let col_idx = schema
+                    .columns
+                    .iter()
+                    .position(|c| c.name == index_column)
+                    .ok_or_else(|| Error::ColumnNotFound(index_column))?;
+
+                // Build filter predicate for range
+                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.filter_map(
+                    move |row| {
+                        let value = row.get(col_idx)?;
+
+                        // Check start bound
+                        if let Some(ref start_val) = start_value {
+                            let cmp = value.partial_cmp(start_val)?;
+                            if start_inclusive {
+                                if cmp == std::cmp::Ordering::Less {
+                                    return None;
+                                }
+                            } else if cmp != std::cmp::Ordering::Greater {
+                                return None;
+                            }
+                        }
+
+                        // Check end bound
+                        if let Some(ref end_val) = end_value {
+                            let cmp = value.partial_cmp(end_val)?;
+                            if end_inclusive {
+                                if cmp == std::cmp::Ordering::Greater {
+                                    return None;
+                                }
+                            } else if cmp != std::cmp::Ordering::Less {
+                                return None;
+                            }
+                        }
+
+                        Some(Ok(row))
                     },
                 );
 

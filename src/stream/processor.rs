@@ -355,12 +355,8 @@ impl SqlStreamProcessor {
             .active_transactions
             .get_mut(&txn_id)
             .ok_or_else(|| Error::InvalidValue(format!("Transaction {:?} not found", txn_id)))?;
-        self.executor.execute(
-            plan,
-            &mut self.storage,
-            &mut self.lock_manager,
-            tx_ctx,
-        )
+        self.executor
+            .execute(plan, &mut self.storage, &mut self.lock_manager, tx_ctx)
     }
 
     /// Commit a transaction

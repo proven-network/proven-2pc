@@ -58,12 +58,12 @@ impl TransactionContext {
             wounded_by: None,
         }
     }
-    
+
     /// Get the timestamp for deterministic SQL functions
     pub fn timestamp(&self) -> &HlcTimestamp {
         &self.timestamp
     }
-    
+
     /// Generate a deterministic UUID based on transaction ID and a sequence
     pub fn deterministic_uuid(&self, sequence: u64) -> uuid::Uuid {
         use std::collections::hash_map::DefaultHasher;

@@ -31,11 +31,11 @@ pub struct DeferredOperation {
 pub struct DeferredOperationsManager {
     /// Operations waiting for locks, grouped by transaction
     operations: HashMap<HlcTimestamp, Vec<DeferredOperation>>,
-    
+
     /// Wait graph: waiter -> holder
     /// Used for deadlock detection and wound-wait decisions
     wait_graph: HashMap<HlcTimestamp, HlcTimestamp>,
-    
+
     /// Reverse wait graph: holder -> set of waiters
     /// Used for efficient wake-up when locks are released
     reverse_wait_graph: HashMap<HlcTimestamp, HashSet<HlcTimestamp>>,
@@ -66,7 +66,7 @@ impl DeferredOperationsManager {
 
         // Update wait graph
         self.wait_graph.insert(tx_id, waiting_for);
-        
+
         // Update reverse wait graph
         self.reverse_wait_graph
             .entry(waiting_for)
@@ -139,7 +139,7 @@ impl DeferredOperationsManager {
         // Simple cycle detection: follow the chain from holder
         let mut current = holder;
         let mut visited = HashSet::new();
-        
+
         while let Some(&next) = self.wait_graph.get(&current) {
             if next == waiter {
                 return true; // Found cycle
@@ -149,7 +149,7 @@ impl DeferredOperationsManager {
             }
             current = next;
         }
-        
+
         false
     }
 
@@ -199,16 +199,16 @@ mod tests {
     #[test]
     fn test_should_wound() {
         let manager = DeferredOperationsManager::new();
-        
+
         let older_tx = create_timestamp(100);
         let younger_tx = create_timestamp(200);
-        
+
         // Older should wound younger
         assert!(manager.should_wound(older_tx, younger_tx));
-        
+
         // Younger should not wound older
         assert!(!manager.should_wound(younger_tx, older_tx));
-        
+
         // Same age should not wound
         assert!(!manager.should_wound(older_tx, older_tx));
     }
@@ -216,35 +216,42 @@ mod tests {
     #[test]
     fn test_wait_graph_management() {
         let mut manager = DeferredOperationsManager::new();
-        
+
         let tx1 = create_timestamp(100);
         let tx2 = create_timestamp(200);
         let tx3 = create_timestamp(300);
-        
+
         // Create a simple deferred operation
         let op = DeferredOperation {
-            operation: SqlOperation::Query { sql: "SELECT 1".to_string() },
+            operation: SqlOperation::Query {
+                sql: "SELECT 1".to_string(),
+            },
             sql: "SELECT 1".to_string(),
             coordinator_id: "coord1".to_string(),
-            lock_requested: (LockKey::Table { table: "test".to_string() }, LockMode::Shared),
+            lock_requested: (
+                LockKey::Table {
+                    table: "test".to_string(),
+                },
+                LockMode::Shared,
+            ),
             waiting_for: tx1,
             attempt_count: 1,
             created_at: tx2,
         };
-        
+
         // tx2 waits for tx1
         manager.add_deferred(tx2, op.clone(), tx1);
-        
+
         // Check wait graph
         assert_eq!(manager.get_waiters(tx1), vec![tx2]);
-        
+
         // tx3 also waits for tx1
         let op2 = DeferredOperation {
             waiting_for: tx1,
             ..op.clone()
         };
         manager.add_deferred(tx3, op2, tx1);
-        
+
         // Should have both waiters in deterministic order
         let waiters = manager.get_waiters(tx1);
         assert_eq!(waiters.len(), 2);
@@ -254,23 +261,23 @@ mod tests {
     #[test]
     fn test_cycle_detection() {
         let mut manager = DeferredOperationsManager::new();
-        
+
         let tx1 = create_timestamp(100);
         let tx2 = create_timestamp(200);
         let tx3 = create_timestamp(300);
-        
+
         // Create chain: tx2 -> tx1
         manager.wait_graph.insert(tx2, tx1);
-        
+
         // Check if tx1 -> tx2 would create cycle (it would)
         assert!(manager.would_create_cycle(tx1, tx2));
-        
+
         // Check if tx3 -> tx1 would create cycle (it wouldn't)
         assert!(!manager.would_create_cycle(tx3, tx1));
-        
+
         // Create longer chain: tx3 -> tx2 -> tx1
         manager.wait_graph.insert(tx3, tx2);
-        
+
         // Check if tx1 -> tx3 would create cycle (it would)
         assert!(manager.would_create_cycle(tx1, tx3));
     }
@@ -278,32 +285,39 @@ mod tests {
     #[test]
     fn test_wound_transaction() {
         let mut manager = DeferredOperationsManager::new();
-        
+
         let tx1 = create_timestamp(100);
         let tx2 = create_timestamp(200);
         let tx3 = create_timestamp(300);
-        
+
         // Setup: tx2 and tx3 wait for tx1
         let op = DeferredOperation {
-            operation: SqlOperation::Query { sql: "SELECT 1".to_string() },
+            operation: SqlOperation::Query {
+                sql: "SELECT 1".to_string(),
+            },
             sql: "SELECT 1".to_string(),
             coordinator_id: "coord1".to_string(),
-            lock_requested: (LockKey::Table { table: "test".to_string() }, LockMode::Shared),
+            lock_requested: (
+                LockKey::Table {
+                    table: "test".to_string(),
+                },
+                LockMode::Shared,
+            ),
             waiting_for: tx1,
             attempt_count: 1,
             created_at: tx2,
         };
-        
+
         manager.add_deferred(tx2, op.clone(), tx1);
         manager.add_deferred(tx3, op.clone(), tx1);
-        
+
         // Wound tx2
         let wounded_ops = manager.wound_transaction(tx2);
         assert_eq!(wounded_ops.len(), 1);
-        
+
         // tx2 should be removed from wait graph
         assert!(!manager.wait_graph.contains_key(&tx2));
-        
+
         // tx1 should only have tx3 waiting now
         assert_eq!(manager.get_waiters(tx1), vec![tx3]);
     }

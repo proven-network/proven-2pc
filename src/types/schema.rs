@@ -16,8 +16,9 @@ use std::fmt::Display;
 pub struct Table {
     /// The table name. Unique identifier for the table. Can't be empty.
     pub name: String,
-    /// The primary key column index. A table must have a primary key.
-    pub primary_key: usize,
+    /// The primary key column index. None if no primary key specified.
+    /// Note: Tables still have internal row IDs for storage and locking.
+    pub primary_key: Option<usize>,
     /// The table's columns. Must have at least one.
     pub columns: Vec<Column>,
 }
@@ -34,7 +35,7 @@ impl Table {
             ));
         }
 
-        // Find the primary key column
+        // Find the primary key column (optional)
         let primary_keys: Vec<_> = columns
             .iter()
             .enumerate()
@@ -42,27 +43,27 @@ impl Table {
             .map(|(i, _)| i)
             .collect();
 
-        if primary_keys.is_empty() {
-            return Err(Error::InvalidValue("Table must have a primary key".into()));
-        }
-        if primary_keys.len() > 1 {
+        let primary_key = if primary_keys.is_empty() {
+            // No primary key is allowed - tables use internal row IDs
+            None
+        } else if primary_keys.len() > 1 {
             return Err(Error::InvalidValue(
-                "Table can only have one primary key".into(),
+                "Table can only have one primary key (composite keys not yet supported)".into(),
             ));
-        }
-
-        let primary_key = primary_keys[0];
-
-        // Validate primary key column
-        let pk_column = &columns[primary_key];
-        if pk_column.nullable {
-            return Err(Error::InvalidValue("Primary key cannot be nullable".into()));
-        }
-        if pk_column.default.is_some() {
-            return Err(Error::InvalidValue(
-                "Primary key cannot have a default value".into(),
-            ));
-        }
+        } else {
+            // Validate primary key column
+            let pk_idx = primary_keys[0];
+            let pk_column = &columns[pk_idx];
+            if pk_column.nullable {
+                return Err(Error::InvalidValue("Primary key cannot be nullable".into()));
+            }
+            if pk_column.default.is_some() {
+                return Err(Error::InvalidValue(
+                    "Primary key cannot have a default value".into(),
+                ));
+            }
+            Some(pk_idx)
+        };
 
         Ok(Table {
             name,
@@ -288,7 +289,7 @@ mod tests {
 
         let table = Table::new("users".into(), columns).unwrap();
         assert_eq!(table.name, "users");
-        assert_eq!(table.primary_key, 0);
+        assert_eq!(table.primary_key, Some(0));
         assert_eq!(table.columns.len(), 3);
         assert!(table.columns[0].primary_key);
         assert!(!table.columns[0].nullable);
@@ -301,12 +302,12 @@ mod tests {
         // No columns
         assert!(Table::new("empty".into(), vec![]).is_err());
 
-        // No primary key
+        // No primary key is now allowed
         let columns = vec![
             Column::new("id".into(), DataType::Integer),
             Column::new("name".into(), DataType::String),
         ];
-        assert!(Table::new("nopk".into(), columns).is_err());
+        assert!(Table::new("nopk".into(), columns).is_ok());
 
         // Multiple primary keys
         let columns = vec![

@@ -114,8 +114,9 @@ impl Optimizer {
                 predicate,
                 join_type,
             },
-            Node::IndexScan { .. } => node, // Already optimized
-            other => other,                 // Leaf nodes
+            Node::IndexScan { .. } => node,      // Already optimized
+            Node::IndexRangeScan { .. } => node, // Already optimized
+            other => other,                      // Leaf nodes
         })
     }
 

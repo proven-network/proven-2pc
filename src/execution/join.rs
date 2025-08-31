@@ -13,7 +13,6 @@ use crate::types::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-
 /// NestedLoopJoiner implements MVCC-aware nested loop joins.
 ///
 /// For every row in the left source, iterate over the right source and join

@@ -10,6 +10,15 @@ use crate::types::value::{StorageRow as Row, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+/// Key for identifying an index
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct IndexKey {
+    /// Table name
+    pub table: String,
+    /// Column name
+    pub column: String,
+}
+
 /// A versioned value in storage
 #[derive(Debug, Clone)]
 pub struct VersionedValue {
@@ -23,6 +32,14 @@ pub struct VersionedValue {
     pub deleted_by: Option<HlcTimestamp>,
 }
 
+/// Versioned index entry - tracks which transaction added/removed a row_id
+#[derive(Debug, Clone)]
+pub struct IndexEntry {
+    pub row_id: u64,
+    pub added_by: HlcTimestamp,
+    pub removed_by: Option<HlcTimestamp>,
+}
+
 /// Versioned table with MVCC support
 #[derive(Debug)]
 pub struct VersionedTable {
@@ -31,6 +48,8 @@ pub struct VersionedTable {
     /// All versions of all rows (row_id -> versions)
     /// Versions are ordered by creation time (newest last)
     pub versions: BTreeMap<u64, Vec<VersionedValue>>,
+    /// Indexes with MVCC: column_name -> (value -> versioned entries)
+    pub indexes: HashMap<String, BTreeMap<Value, Vec<IndexEntry>>>,
     /// Next row ID for inserts
     pub next_id: u64,
     /// Track committed transactions
@@ -41,10 +60,19 @@ pub struct VersionedTable {
 
 impl VersionedTable {
     pub fn new(name: String, schema: Table) -> Self {
+        // Initialize indexes for columns marked as indexed
+        let mut indexes = HashMap::new();
+        for column in &schema.columns {
+            if column.index || column.primary_key || column.unique {
+                indexes.insert(column.name.clone(), BTreeMap::new());
+            }
+        }
+
         Self {
             name,
             schema,
             versions: BTreeMap::new(),
+            indexes,
             next_id: 1,
             committed_transactions: HashSet::new(),
             transaction_start_times: HashMap::new(),
@@ -84,8 +112,69 @@ impl VersionedTable {
         // Validate against schema
         self.schema.validate_row(&values)?;
 
+        // Check unique constraints before inserting
+        for (col_idx, column) in self.schema.columns.iter().enumerate() {
+            if column.unique || column.primary_key {
+                if let Some(index) = self.indexes.get(&column.name) {
+                    let value = &values[col_idx];
+                    if !value.is_null() {
+                        if let Some(entries) = index.get(value) {
+                            // Check if any entry is visible to this transaction
+                            for entry in entries {
+                                // Entry is visible if added by committed txn and not removed
+                                let is_visible = if entry.added_by == txn_id {
+                                    entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
+                                } else if self.committed_transactions.contains(&entry.added_by) {
+                                    entry.removed_by.is_none()
+                                        || (entry.removed_by != Some(txn_id)
+                                            && !self
+                                                .committed_transactions
+                                                .contains(&entry.removed_by.unwrap_or(txn_id)))
+                                } else {
+                                    false
+                                };
+
+                                if is_visible {
+                                    // Verify the row still exists and is visible
+                                    if let Some(versions) = self.versions.get(&entry.row_id) {
+                                        if self
+                                            .find_visible_version(versions, txn_id, txn_timestamp)
+                                            .is_some()
+                                        {
+                                            return Err(Error::InvalidValue(format!(
+                                                "Unique constraint violation on column '{}'",
+                                                column.name
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let row_id = self.next_id;
         self.next_id += 1;
+
+        // Update indexes with versioned entries
+        for (col_idx, column) in self.schema.columns.iter().enumerate() {
+            if let Some(index) = self.indexes.get_mut(&column.name) {
+                let value = &values[col_idx];
+                if !value.is_null() {
+                    let entry = IndexEntry {
+                        row_id,
+                        added_by: txn_id,
+                        removed_by: None,
+                    };
+                    index
+                        .entry(value.clone())
+                        .or_insert_with(Vec::new)
+                        .push(entry);
+                }
+            }
+        }
 
         let version = VersionedValue {
             row: Arc::new(Row::new(row_id, values)),
@@ -109,11 +198,107 @@ impl VersionedTable {
         // Validate against schema
         self.schema.validate_row(&values)?;
 
+        // Get old values for index updates
+        let old_values = self
+            .get_visible_version(txn_id, txn_timestamp, row_id)
+            .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", row_id)))?
+            .row
+            .values
+            .clone();
+
+        // Check unique constraints for new values
+        for (col_idx, column) in self.schema.columns.iter().enumerate() {
+            if column.unique || column.primary_key {
+                if let Some(index) = self.indexes.get(&column.name) {
+                    let new_value = &values[col_idx];
+                    let old_value = &old_values[col_idx];
+
+                    // Only check if value is changing
+                    if new_value != old_value && !new_value.is_null() {
+                        if let Some(entries) = index.get(new_value) {
+                            for entry in entries {
+                                // Skip self
+                                if entry.row_id == row_id {
+                                    continue;
+                                }
+
+                                // Check if entry is visible
+                                let is_visible = if entry.added_by == txn_id {
+                                    entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
+                                } else if self.committed_transactions.contains(&entry.added_by) {
+                                    entry.removed_by.is_none()
+                                        || (entry.removed_by != Some(txn_id)
+                                            && !self
+                                                .committed_transactions
+                                                .contains(&entry.removed_by.unwrap_or(txn_id)))
+                                } else {
+                                    false
+                                };
+
+                                if is_visible {
+                                    if let Some(versions) = self.versions.get(&entry.row_id) {
+                                        if self
+                                            .find_visible_version(versions, txn_id, txn_timestamp)
+                                            .is_some()
+                                        {
+                                            return Err(Error::InvalidValue(format!(
+                                                "Unique constraint violation on column '{}'",
+                                                column.name
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update indexes with MVCC
+        for (col_idx, column) in self.schema.columns.iter().enumerate() {
+            if let Some(index) = self.indexes.get_mut(&column.name) {
+                let old_value = &old_values[col_idx];
+                let new_value = &values[col_idx];
+
+                // Mark old entry as removed (if value is changing)
+                if old_value != new_value && !old_value.is_null() {
+                    if let Some(entries) = index.get_mut(old_value) {
+                        // Find the entry for this row and mark it as removed
+                        for entry in entries.iter_mut() {
+                            if entry.row_id == row_id && entry.removed_by.is_none() {
+                                // Only mark our own uncommitted entries or committed entries
+                                if entry.added_by == txn_id
+                                    || self.committed_transactions.contains(&entry.added_by)
+                                {
+                                    entry.removed_by = Some(txn_id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add new entry (if value is changing)
+                if old_value != new_value && !new_value.is_null() {
+                    let entry = IndexEntry {
+                        row_id,
+                        added_by: txn_id,
+                        removed_by: None,
+                    };
+                    index
+                        .entry(new_value.clone())
+                        .or_insert_with(Vec::new)
+                        .push(entry);
+                }
+            }
+        }
+
         // Check if we need to update in place or create new version
         let needs_new_version = {
             let visible_version = self
                 .get_visible_version(txn_id, txn_timestamp, row_id)
-                .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", row_id)))?;
+                .unwrap();
 
             // If this transaction created the visible version, we can update in place
             !(visible_version.created_by == txn_id
@@ -164,15 +349,15 @@ impl VersionedTable {
         Ok(())
     }
 
-    /// Delete a row (marks version as deleted)
+    /// Delete a row (marks version as deleted and updates indexes)
     pub fn delete(
         &mut self,
         txn_id: HlcTimestamp,
         _txn_timestamp: HlcTimestamp,
         row_id: u64,
     ) -> Result<()> {
-        // First check if the row exists and is visible
-        let is_visible = self
+        // First get the visible version to extract values for index removal
+        let visible_version = self
             .versions
             .get(&row_id)
             .and_then(|versions| {
@@ -181,13 +366,34 @@ impl VersionedTable {
                     .rev()
                     .find(|v| self.is_version_visible_to(v, txn_id, _txn_timestamp))
             })
-            .is_some();
+            .ok_or_else(|| {
+                Error::InvalidValue(format!("Row {} not found or not visible", row_id))
+            })?;
 
-        if !is_visible {
-            return Err(Error::InvalidValue(format!(
-                "Row {} not found or not visible",
-                row_id
-            )));
+        // Get the values for index removal
+        let values = visible_version.row.values.clone();
+
+        // Mark index entries as removed (MVCC style)
+        for (col_idx, column) in self.schema.columns.iter().enumerate() {
+            if let Some(index) = self.indexes.get_mut(&column.name) {
+                let value = &values[col_idx];
+                if !value.is_null() {
+                    if let Some(entries) = index.get_mut(value) {
+                        // Find and mark the entry as removed
+                        for entry in entries.iter_mut() {
+                            if entry.row_id == row_id && entry.removed_by.is_none() {
+                                // Only mark our own uncommitted entries or committed entries
+                                if entry.added_by == txn_id
+                                    || self.committed_transactions.contains(&entry.added_by)
+                                {
+                                    entry.removed_by = Some(txn_id);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Now mark it as deleted
@@ -312,12 +518,198 @@ impl VersionedTable {
 
     /// Abort a transaction, removing all its changes
     pub fn abort_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
+        // Remove row versions
         self.remove_transaction_versions(txn_id);
+
+        // Remove index entries created by this transaction
+        // and unmark removals by this transaction
+        for index in self.indexes.values_mut() {
+            for entries in index.values_mut() {
+                // Remove entries added by this transaction
+                entries.retain(|entry| entry.added_by != txn_id);
+
+                // Clear removal marks by this transaction
+                for entry in entries.iter_mut() {
+                    if entry.removed_by == Some(txn_id) {
+                        entry.removed_by = None;
+                    }
+                }
+            }
+        }
 
         // Clean up tracking
         self.transaction_start_times.remove(&txn_id);
 
         Ok(())
+    }
+
+    /// Create an index on a column (builds the index from existing data)
+    pub fn create_index(&mut self, column_name: String, unique: bool) -> Result<()> {
+        // Check if column exists
+        let col_idx = self
+            .schema
+            .columns
+            .iter()
+            .position(|c| c.name == column_name)
+            .ok_or_else(|| Error::InvalidValue(format!("Column '{}' not found", column_name)))?;
+
+        // Create new MVCC index
+        let mut index: BTreeMap<Value, Vec<IndexEntry>> = BTreeMap::new();
+
+        // Build index from existing committed data
+        for (&row_id, versions) in &self.versions {
+            // Find the latest committed version that's not deleted
+            if let Some(version) = versions.iter().rev().find(|v| {
+                self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
+            }) {
+                let value = &version.row.values[col_idx];
+                if !value.is_null() {
+                    // Check uniqueness if required
+                    if unique && index.contains_key(value) {
+                        return Err(Error::InvalidValue(format!(
+                            "Cannot create unique index on column '{}': duplicate values exist",
+                            column_name
+                        )));
+                    }
+
+                    let entry = IndexEntry {
+                        row_id,
+                        added_by: version.created_by, // Use the original creator
+                        removed_by: None,
+                    };
+                    index
+                        .entry(value.clone())
+                        .or_insert_with(Vec::new)
+                        .push(entry);
+                }
+            }
+        }
+
+        self.indexes.insert(column_name, index);
+        Ok(())
+    }
+
+    /// Drop an index
+    pub fn drop_index(&mut self, column_name: &str) -> Result<()> {
+        self.indexes.remove(column_name);
+        Ok(())
+    }
+
+    /// Lookup rows by indexed value (equality)
+    pub fn index_lookup(
+        &self,
+        column_name: &str,
+        value: &Value,
+        txn_id: HlcTimestamp,
+        txn_timestamp: HlcTimestamp,
+    ) -> Vec<Arc<Row>> {
+        let mut result = Vec::new();
+        let mut seen_rows = HashSet::new();
+
+        if let Some(index) = self.indexes.get(column_name) {
+            if let Some(entries) = index.get(value) {
+                for entry in entries {
+                    // Check if entry is visible to this transaction
+                    let is_visible = if entry.added_by == txn_id {
+                        // See our own additions if not removed by us
+                        entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
+                    } else if self.committed_transactions.contains(&entry.added_by) {
+                        // See committed additions if not removed
+                        entry.removed_by.is_none()
+                            || (entry.removed_by != Some(txn_id)
+                                && !self
+                                    .committed_transactions
+                                    .contains(&entry.removed_by.unwrap_or(txn_id)))
+                    } else {
+                        false
+                    };
+
+                    if is_visible && !seen_rows.contains(&entry.row_id) {
+                        seen_rows.insert(entry.row_id);
+                        if let Some(row) = self.read(txn_id, txn_timestamp, entry.row_id) {
+                            result.push(row);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Lookup rows by index range
+    pub fn index_range_lookup(
+        &self,
+        column_name: &str,
+        start: Option<&Value>,
+        start_inclusive: bool,
+        end: Option<&Value>,
+        end_inclusive: bool,
+        txn_id: HlcTimestamp,
+        txn_timestamp: HlcTimestamp,
+    ) -> Vec<Arc<Row>> {
+        let mut result = Vec::new();
+        let mut seen_rows = HashSet::new();
+
+        if let Some(index) = self.indexes.get(column_name) {
+            // Create range based on bounds
+            let range: Box<dyn Iterator<Item = (&Value, &Vec<IndexEntry>)>> = match (start, end) {
+                (None, None) => Box::new(index.iter()),
+                (Some(s), None) => {
+                    if start_inclusive {
+                        Box::new(index.range(s..))
+                    } else {
+                        Box::new(
+                            index.range((std::ops::Bound::Excluded(s), std::ops::Bound::Unbounded)),
+                        )
+                    }
+                }
+                (None, Some(e)) => {
+                    if end_inclusive {
+                        Box::new(index.range(..=e))
+                    } else {
+                        Box::new(index.range(..e))
+                    }
+                }
+                (Some(s), Some(e)) => match (start_inclusive, end_inclusive) {
+                    (true, true) => Box::new(index.range(s..=e)),
+                    (true, false) => Box::new(index.range(s..e)),
+                    (false, true) => Box::new(
+                        index.range((std::ops::Bound::Excluded(s), std::ops::Bound::Included(e))),
+                    ),
+                    (false, false) => Box::new(
+                        index.range((std::ops::Bound::Excluded(s), std::ops::Bound::Excluded(e))),
+                    ),
+                },
+            };
+
+            // Collect visible rows from the range
+            for (_, entries) in range {
+                for entry in entries {
+                    // Check if entry is visible
+                    let is_visible = if entry.added_by == txn_id {
+                        entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
+                    } else if self.committed_transactions.contains(&entry.added_by) {
+                        entry.removed_by.is_none()
+                            || (entry.removed_by != Some(txn_id)
+                                && !self
+                                    .committed_transactions
+                                    .contains(&entry.removed_by.unwrap_or(txn_id)))
+                    } else {
+                        false
+                    };
+
+                    if is_visible && !seen_rows.contains(&entry.row_id) {
+                        seen_rows.insert(entry.row_id);
+                        if let Some(row) = self.read(txn_id, txn_timestamp, entry.row_id) {
+                            result.push(row);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     /// Garbage collection: remove old committed versions that no active transaction can see
@@ -463,6 +855,15 @@ impl VersionedTable {
     }
 }
 
+/// Index metadata for tracking index names
+#[derive(Debug, Clone)]
+pub struct IndexMetadata {
+    pub name: String,
+    pub table: String,
+    pub column: String,
+    pub unique: bool,
+}
+
 /// MVCC-enabled storage engine
 ///
 /// Since operations are processed sequentially by the state machine,
@@ -471,6 +872,8 @@ impl VersionedTable {
 pub struct MvccStorage {
     /// Tables with versioned data
     pub tables: HashMap<String, VersionedTable>,
+    /// Index metadata: index_name -> metadata
+    pub index_metadata: HashMap<String, IndexMetadata>,
     /// Track all committed transactions globally
     pub global_committed: HashSet<HlcTimestamp>,
     /// Track active transactions for GC
@@ -481,6 +884,7 @@ impl MvccStorage {
     pub fn new() -> Self {
         Self {
             tables: HashMap::new(),
+            index_metadata: HashMap::new(),
             global_committed: HashSet::new(),
             active_transactions: HashSet::new(),
         }
@@ -504,6 +908,60 @@ impl MvccStorage {
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         if self.tables.remove(name).is_none() {
             return Err(Error::TableNotFound(name.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// Create an index on a table column
+    pub fn create_index(
+        &mut self,
+        index_name: String,
+        table_name: &str,
+        column_name: String,
+        unique: bool,
+    ) -> Result<()> {
+        // Check if index name already exists
+        if self.index_metadata.contains_key(&index_name) {
+            return Err(Error::InvalidValue(format!(
+                "Index '{}' already exists",
+                index_name
+            )));
+        }
+
+        let table = self
+            .tables
+            .get_mut(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Create the actual index
+        table.create_index(column_name.clone(), unique)?;
+
+        // Store metadata
+        self.index_metadata.insert(
+            index_name.clone(),
+            IndexMetadata {
+                name: index_name,
+                table: table_name.to_string(),
+                column: column_name,
+                unique,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Drop an index by name
+    pub fn drop_index(&mut self, index_name: &str) -> Result<()> {
+        // Look up index metadata
+        let metadata = self
+            .index_metadata
+            .remove(index_name)
+            .ok_or_else(|| Error::InvalidValue(format!("Index '{}' not found", index_name)))?;
+
+        // Drop the actual index
+        if let Some(table) = self.tables.get_mut(&metadata.table) {
+            table.drop_index(&metadata.column)?;
         }
 
         Ok(())
@@ -699,5 +1157,461 @@ mod tests {
 
         let row = table.read(txn3, timestamp3, row_id).unwrap();
         assert_eq!(row.values[1], Value::String("Alice".to_string()));
+    }
+
+    #[test]
+    fn test_mvcc_index_creation() {
+        let schema = Table::new(
+            "users".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("email".to_string(), DataType::String),
+                Column::new("age".to_string(), DataType::Integer),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("users".to_string(), schema);
+
+        // Insert some committed data
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(1),
+                    Value::String("alice@example.com".to_string()),
+                    Value::Integer(25),
+                ],
+            )
+            .unwrap();
+
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(2),
+                    Value::String("bob@example.com".to_string()),
+                    Value::Integer(30),
+                ],
+            )
+            .unwrap();
+
+        table.commit_transaction(txn1).unwrap();
+
+        // Create an index on email
+        table.create_index("email".to_string(), false).unwrap();
+
+        // Verify index contains the data
+        assert!(table.indexes.contains_key("email"));
+        let email_index = table.indexes.get("email").unwrap();
+        assert_eq!(email_index.len(), 2);
+
+        // Verify we can look up by index
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        let results = table.index_lookup(
+            "email",
+            &Value::String("alice@example.com".to_string()),
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].values[0], Value::Integer(1));
+    }
+
+    #[test]
+    fn test_mvcc_index_isolation() {
+        let schema = Table::new(
+            "products".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("name".to_string(), DataType::String).with_index(true),
+                Column::new("price".to_string(), DataType::Decimal(10, 2)),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("products".to_string(), schema);
+
+        // Transaction 1: Insert a product
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(1),
+                    Value::String("Laptop".to_string()),
+                    Value::Decimal(rust_decimal::Decimal::from(999)),
+                ],
+            )
+            .unwrap();
+
+        // Transaction 2: Should not see uncommitted data
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        let results = table.index_lookup(
+            "name",
+            &Value::String("Laptop".to_string()),
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 0, "Should not see uncommitted data");
+
+        // Transaction 1 can see its own data
+        let results = table.index_lookup(
+            "name",
+            &Value::String("Laptop".to_string()),
+            txn1,
+            timestamp1,
+        );
+        assert_eq!(results.len(), 1, "Should see own uncommitted data");
+
+        // Commit transaction 1
+        table.commit_transaction(txn1).unwrap();
+
+        // Now transaction 2 can see it
+        let results = table.index_lookup(
+            "name",
+            &Value::String("Laptop".to_string()),
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 1, "Should see committed data");
+    }
+
+    #[test]
+    fn test_mvcc_index_update() {
+        let schema = Table::new(
+            "items".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("category".to_string(), DataType::String).with_index(true),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("items".to_string(), schema);
+
+        // Insert and commit initial data
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        let row_id = table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![Value::Integer(1), Value::String("Electronics".to_string())],
+            )
+            .unwrap();
+
+        table.commit_transaction(txn1).unwrap();
+
+        // Update the category
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        table
+            .update(
+                txn2,
+                timestamp2,
+                row_id,
+                vec![Value::Integer(1), Value::String("Computers".to_string())],
+            )
+            .unwrap();
+
+        // Transaction 2 sees new value
+        let results = table.index_lookup(
+            "category",
+            &Value::String("Computers".to_string()),
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 1);
+
+        // Transaction 3 still sees old value
+        let txn3 = create_txn_id(300);
+        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
+        table.register_transaction(txn3, timestamp3);
+
+        let results = table.index_lookup(
+            "category",
+            &Value::String("Electronics".to_string()),
+            txn3,
+            timestamp3,
+        );
+        assert_eq!(results.len(), 1);
+
+        let results = table.index_lookup(
+            "category",
+            &Value::String("Computers".to_string()),
+            txn3,
+            timestamp3,
+        );
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_mvcc_index_delete() {
+        let schema = Table::new(
+            "records".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("status".to_string(), DataType::String).with_index(true),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("records".to_string(), schema);
+
+        // Insert and commit data
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        let row_id = table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![Value::Integer(1), Value::String("active".to_string())],
+            )
+            .unwrap();
+
+        table.commit_transaction(txn1).unwrap();
+
+        // Delete the row
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        table.delete(txn2, timestamp2, row_id).unwrap();
+
+        // Transaction 2 should not see the deleted row in index
+        let results = table.index_lookup(
+            "status",
+            &Value::String("active".to_string()),
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 0, "Deleted row should not be visible");
+
+        // Transaction 3 should still see it (delete not committed)
+        let txn3 = create_txn_id(300);
+        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
+        table.register_transaction(txn3, timestamp3);
+
+        let results = table.index_lookup(
+            "status",
+            &Value::String("active".to_string()),
+            txn3,
+            timestamp3,
+        );
+        assert_eq!(
+            results.len(),
+            1,
+            "Uncommitted delete should not affect other transactions"
+        );
+
+        // Commit the delete
+        table.commit_transaction(txn2).unwrap();
+
+        // New transaction should not see deleted row
+        let txn4 = create_txn_id(400);
+        let timestamp4 = HlcTimestamp::new(400, 0, NodeId::new(1));
+        table.register_transaction(txn4, timestamp4);
+
+        let results = table.index_lookup(
+            "status",
+            &Value::String("active".to_string()),
+            txn4,
+            timestamp4,
+        );
+        assert_eq!(results.len(), 0, "Committed delete should be visible");
+    }
+
+    #[test]
+    fn test_mvcc_index_abort() {
+        let schema = Table::new(
+            "test".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("value".to_string(), DataType::String).with_index(true),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("test".to_string(), schema);
+
+        // Transaction 1: Insert and abort
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![Value::Integer(1), Value::String("test_value".to_string())],
+            )
+            .unwrap();
+
+        // Verify txn1 can see via index
+        let results = table.index_lookup(
+            "value",
+            &Value::String("test_value".to_string()),
+            txn1,
+            timestamp1,
+        );
+        assert_eq!(results.len(), 1);
+
+        // Abort
+        table.abort_transaction(txn1).unwrap();
+
+        // New transaction should not see aborted data
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        let results = table.index_lookup(
+            "value",
+            &Value::String("test_value".to_string()),
+            txn2,
+            timestamp2,
+        );
+        assert_eq!(results.len(), 0, "Aborted insert should not be visible");
+    }
+
+    #[test]
+    fn test_mvcc_unique_index_constraint() {
+        let schema = Table::new(
+            "users".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("email".to_string(), DataType::String).unique(),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("users".to_string(), schema);
+
+        // Insert first user
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        table
+            .insert(
+                txn1,
+                timestamp1,
+                vec![
+                    Value::Integer(1),
+                    Value::String("user@example.com".to_string()),
+                ],
+            )
+            .unwrap();
+
+        table.commit_transaction(txn1).unwrap();
+
+        // Try to insert duplicate email
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        let result = table.insert(
+            txn2,
+            timestamp2,
+            vec![
+                Value::Integer(2),
+                Value::String("user@example.com".to_string()),
+            ],
+        );
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unique constraint violation")
+        );
+    }
+
+    #[test]
+    fn test_mvcc_index_range_lookup() {
+        let schema = Table::new(
+            "scores".to_string(),
+            vec![
+                Column::new("id".to_string(), DataType::Integer).primary_key(),
+                Column::new("score".to_string(), DataType::Integer).with_index(true),
+            ],
+        )
+        .unwrap();
+
+        let mut table = VersionedTable::new("scores".to_string(), schema);
+
+        // Insert test data
+        let txn1 = create_txn_id(100);
+        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+        table.register_transaction(txn1, timestamp1);
+
+        for i in 1..=10 {
+            table
+                .insert(
+                    txn1,
+                    timestamp1,
+                    vec![
+                        Value::Integer(i),
+                        Value::Integer(i * 10), // scores: 10, 20, 30, ..., 100
+                    ],
+                )
+                .unwrap();
+        }
+
+        table.commit_transaction(txn1).unwrap();
+
+        // Test range lookup
+        let txn2 = create_txn_id(200);
+        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+        table.register_transaction(txn2, timestamp2);
+
+        // Range: score >= 30 AND score <= 70
+        let results = table.index_range_lookup(
+            "score",
+            Some(&Value::Integer(30)),
+            true, // inclusive
+            Some(&Value::Integer(70)),
+            true, // inclusive
+            txn2,
+            timestamp2,
+        );
+
+        assert_eq!(results.len(), 5); // Should get scores 30, 40, 50, 60, 70
+
+        // Range: score > 50
+        let results = table.index_range_lookup(
+            "score",
+            Some(&Value::Integer(50)),
+            false, // exclusive
+            None,
+            false,
+            txn2,
+            timestamp2,
+        );
+
+        assert_eq!(results.len(), 5); // Should get scores 60, 70, 80, 90, 100
     }
 }
