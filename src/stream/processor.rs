@@ -7,6 +7,7 @@
 use super::deferred::DeferredOperationsManager;
 use super::message::{SqlOperation, StreamMessage};
 use super::response::{ResponseChannel, SqlResponse, convert_execution_result};
+use super::stats_cache::StatisticsCache;
 use super::transaction::{TransactionContext, TransactionState};
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, Executor};
@@ -14,7 +15,6 @@ use crate::hlc::HlcTimestamp;
 use crate::planner::planner::Planner;
 use crate::storage::lock::LockManager;
 use crate::storage::mvcc::MvccStorage;
-use crate::types::schema::Table;
 use std::collections::HashMap;
 
 /// SQL stream processor with transaction isolation
@@ -34,9 +34,7 @@ pub struct SqlStreamProcessor {
     /// Deferred operations manager
     deferred_manager: DeferredOperationsManager,
 
-    /// SQL planner
-    planner: Planner,
-    /// SQL executor
+    /// SQL executor (stateless)
     executor: Executor,
 
     /// Response channel for sending results back
@@ -45,8 +43,8 @@ pub struct SqlStreamProcessor {
     /// Current migration version
     migration_version: u32,
 
-    /// Table schemas (rebuilt from stream)
-    schemas: HashMap<String, Table>,
+    /// Statistics cache for query optimization
+    stats_cache: StatisticsCache,
 }
 
 impl SqlStreamProcessor {
@@ -58,11 +56,10 @@ impl SqlStreamProcessor {
             active_transactions: HashMap::new(),
             transaction_coordinators: HashMap::new(),
             deferred_manager: DeferredOperationsManager::new(),
-            planner: Planner::new(HashMap::new()),
-            executor: Executor::new(HashMap::new()),
+            executor: Executor::new(),
             response_channel,
             migration_version: 0,
-            schemas: HashMap::new(),
+            stats_cache: StatisticsCache::new(100), // Update stats every 100 commits
         }
     }
 
@@ -317,46 +314,39 @@ impl SqlStreamProcessor {
         // Parse SQL
         let statement = crate::parser::parse_sql(sql)?;
 
-        // Plan the query
-        let plan = self.planner.plan(statement.clone())?;
+        // Get schemas for planning
+        let schemas = self.storage.get_schemas();
 
-        // Check if this is DDL that affects schemas
-        match &plan {
-            crate::planner::plan::Plan::CreateTable { name, schema } => {
-                // Update our schema tracking
-                self.schemas.insert(name.clone(), schema.clone());
+        // Create a stateless planner for this query
+        let mut planner = Planner::new(schemas);
 
-                // Create table in storage
-                self.storage.create_table(name.clone(), schema.clone())?;
-
-                // Update planner and executor with new schemas
-                self.planner = Planner::new(self.schemas.clone());
-                self.executor.update_schemas(self.schemas.clone());
-
-                return Ok(ExecutionResult::DDL(format!("Table '{}' created", name)));
-            }
-
-            crate::planner::plan::Plan::DropTable { name, .. } => {
-                self.schemas.remove(name);
-                self.storage.drop_table(name)?;
-
-                // Update planner and executor
-                self.planner = Planner::new(self.schemas.clone());
-                self.executor.update_schemas(self.schemas.clone());
-
-                return Ok(ExecutionResult::DDL(format!("Table '{}' dropped", name)));
-            }
-
-            _ => {}
+        // Add cached statistics if available for optimization
+        if let Some(stats) = self.stats_cache.get() {
+            planner.update_statistics(stats.clone());
         }
+
+        // Plan the query
+        let plan = planner.plan(statement)?;
 
         // Execute with direct references to storage and lock manager
         let tx_ctx = self
             .active_transactions
             .get_mut(&txn_id)
             .ok_or_else(|| Error::InvalidValue(format!("Transaction {:?} not found", txn_id)))?;
-        self.executor
-            .execute(plan, &mut self.storage, &mut self.lock_manager, tx_ctx)
+
+        let result = self.executor.execute(
+            plan.clone(),
+            &mut self.storage,
+            &mut self.lock_manager,
+            tx_ctx,
+        )?;
+
+        // After successful DDL operations, invalidate statistics cache
+        if plan.is_ddl() {
+            self.stats_cache.invalidate();
+        }
+
+        Ok(result)
     }
 
     /// Commit a transaction
@@ -364,6 +354,13 @@ impl SqlStreamProcessor {
         if let Some(mut tx_ctx) = self.active_transactions.remove(&txn_id) {
             // Commit in storage
             self.storage.commit_transaction(tx_ctx.id)?;
+
+            // Record the commit for statistics tracking
+            self.stats_cache.record_commit();
+
+            // Update statistics if needed and no transactions are waiting
+            let active_count = self.active_transactions.len();
+            self.stats_cache.maybe_update(&self.storage, active_count);
 
             // Release all locks
             self.lock_manager.release_all(tx_ctx.id)?;

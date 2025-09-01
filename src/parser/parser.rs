@@ -293,11 +293,26 @@ impl Parser<'_> {
         }
 
         self.expect(Token::CloseParen)?;
+
+        // Parse optional INCLUDE clause for covering indexes
+        let included_columns = if self.next_is(Keyword::Include.into()) {
+            self.expect(Token::OpenParen)?;
+            let mut included = vec![self.next_ident()?];
+            while self.next_is(Token::Comma) {
+                included.push(self.next_ident()?);
+            }
+            self.expect(Token::CloseParen)?;
+            Some(included)
+        } else {
+            None
+        };
+
         Ok(ast::Statement::CreateIndex {
             name,
             table,
             columns,
             unique,
+            included_columns,
         })
     }
 

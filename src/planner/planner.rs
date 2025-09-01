@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use crate::parser::ast;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
+use crate::types::statistics::DatabaseStatistics;
 use std::collections::{BTreeMap, HashMap};
 
 /// Index metadata for planning
@@ -26,6 +27,8 @@ pub struct Planner {
     optimizer: Optimizer,
     /// Available indexes: table_name -> list of indexes
     indexes: HashMap<String, Vec<IndexInfo>>,
+    /// Optional statistics for optimization
+    statistics: Option<DatabaseStatistics>,
 }
 
 impl Planner {
@@ -56,6 +59,7 @@ impl Planner {
             schemas,
             optimizer,
             indexes,
+            statistics: None,
         }
     }
 
@@ -65,6 +69,16 @@ impl Planner {
             .entry(index.table.clone())
             .or_insert_with(Vec::new)
             .push(index);
+    }
+
+    /// Update statistics for query optimization
+    pub fn update_statistics(&mut self, stats: DatabaseStatistics) {
+        self.statistics = Some(stats);
+    }
+
+    /// Clear statistics (useful when they become stale)
+    pub fn clear_statistics(&mut self) {
+        self.statistics = None;
     }
 
     /// Plan a statement
@@ -108,6 +122,7 @@ impl Planner {
                 table,
                 columns,
                 unique,
+                included_columns,
             } => {
                 // Verify table exists
                 if !self.schemas.contains_key(&table) {
@@ -125,6 +140,7 @@ impl Planner {
                     table,
                     columns,
                     unique,
+                    included_columns,
                 })
             }
 
@@ -191,23 +207,44 @@ impl Planner {
         }
 
         // Apply ORDER BY first (before projection, like toydb)
+        // Check if we can use an index to avoid sorting
         if !order_by.is_empty() {
-            let order = order_by
-                .into_iter()
-                .map(|(e, d)| {
-                    let expr = context.resolve_expression(e)?;
-                    let dir = match d {
-                        ast::Direction::Ascending => Direction::Ascending,
-                        ast::Direction::Descending => Direction::Descending,
-                    };
-                    Ok((expr, dir))
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let mut can_use_index = false;
 
-            node = Node::Order {
-                source: Box::new(node),
-                order_by: order,
-            };
+            // Check if ORDER BY matches an existing index
+            if let Node::Scan { ref table, .. } = node {
+                if let Some(table_indexes) = self.indexes.get(table) {
+                    for index in table_indexes {
+                        // Check if ORDER BY columns match index columns (in order)
+                        if self.order_by_matches_index(&order_by, &index.columns, table, &context) {
+                            // TODO: Transform node to use IndexScan with the matching index
+                            // For now, we'll mark that we could use it
+                            can_use_index = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Only add Order node if we can't use an index
+            if !can_use_index {
+                let order = order_by
+                    .into_iter()
+                    .map(|(e, d)| {
+                        let expr = context.resolve_expression(e)?;
+                        let dir = match d {
+                            ast::Direction::Ascending => Direction::Ascending,
+                            ast::Direction::Descending => Direction::Descending,
+                        };
+                        Ok((expr, dir))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                node = Node::Order {
+                    source: Box::new(node),
+                    order_by: order,
+                };
+            }
         }
 
         // Apply projection after ORDER BY
@@ -670,6 +707,72 @@ impl Planner {
         conditions
     }
 
+    /// Estimate the selectivity of an index for given conditions
+    fn estimate_index_selectivity(
+        &self,
+        index_name: &str,
+        table_name: &str,
+        conditions: &[(String, ast::Expression)],
+    ) -> f64 {
+        // Get table statistics if available
+        if let Some(db_stats) = &self.statistics {
+            if let Some(table_stats) = db_stats.tables.get(table_name) {
+                let mut combined_selectivity = 1.0;
+                
+                // Use column-level statistics for more accurate selectivity
+                for (col_name, expr) in conditions {
+                    if let Some(col_stats) = table_stats.columns.get(col_name) {
+                        // Check if the value is in most common values
+                        if let ast::Expression::Literal(ast::Literal::Integer(i)) = expr {
+                            let value = crate::types::value::Value::Integer(*i);
+                            
+                            // Check most common values first
+                            let mut found_selectivity = None;
+                            for (common_val, freq) in &col_stats.most_common_values {
+                                if common_val == &value {
+                                    found_selectivity = Some(*freq as f64 / table_stats.row_count.max(1) as f64);
+                                    break;
+                                }
+                            }
+                            
+                            if let Some(sel) = found_selectivity {
+                                combined_selectivity *= sel;
+                            } else if col_stats.distinct_count > 0 {
+                                // Use 1/distinct_count for non-common values
+                                combined_selectivity *= 1.0 / col_stats.distinct_count as f64;
+                            } else {
+                                combined_selectivity *= 0.1; // Default
+                            }
+                        } else if col_stats.distinct_count > 0 {
+                            // For non-literal expressions, use 1/distinct_count
+                            combined_selectivity *= 1.0 / col_stats.distinct_count as f64;
+                        } else {
+                            combined_selectivity *= 0.1; // Default
+                        }
+                    } else if let Some(index_stats) = table_stats.indexes.get(index_name) {
+                        // Fall back to index statistics if column stats not available
+                        if let Some(col_idx) = index_stats.columns.iter().position(|c| c == col_name) {
+                            if col_idx < index_stats.selectivity.len() {
+                                combined_selectivity *= index_stats.selectivity[col_idx];
+                            } else {
+                                combined_selectivity *= 0.1;
+                            }
+                        } else {
+                            combined_selectivity *= 0.1;
+                        }
+                    } else {
+                        combined_selectivity *= 0.1; // Default
+                    }
+                }
+                
+                return combined_selectivity;
+            }
+        }
+
+        // Default: assume 10% selectivity per condition if no stats available
+        0.1_f64.powf(conditions.len() as f64)
+    }
+
     /// Try to create an IndexScan or IndexRangeScan node if WHERE clause matches an indexed column
     fn try_create_index_scan(
         &self,
@@ -687,18 +790,24 @@ impl Planner {
         // Extract all equality conditions from the WHERE clause
         let conditions = self.extract_equality_conditions(where_expr, table_name, alias);
 
-        // Try to find a matching index (composite or single)
+        // Try to find the best matching index using statistics
         if let Some(table_indexes) = self.indexes.get(table_name) {
-            // Look for exact match or prefix match
+            let mut best_index = None;
+            let mut best_selectivity = 1.0;
+            let mut best_matched_values = Vec::new();
+
+            // Evaluate each index
             for index in table_indexes {
                 // Check if we have values for all or a prefix of the index columns
                 let mut matched_values = Vec::new();
+                let mut matched_conditions = Vec::new();
 
                 for index_col in &index.columns {
-                    if let Some((_, expr)) = conditions.iter().find(|(col, _)| col == index_col) {
+                    if let Some((col, expr)) = conditions.iter().find(|(col, _)| col == index_col) {
                         // Try to resolve the expression
                         if let Ok(value) = context.resolve_expression(expr.clone()) {
                             matched_values.push(value);
+                            matched_conditions.push((col.clone(), expr.clone()));
                         } else {
                             break;
                         }
@@ -708,13 +817,31 @@ impl Planner {
                     }
                 }
 
-                // If we matched at least one column, use this index
+                // If we matched at least one column, evaluate this index
                 if !matched_values.is_empty() {
+                    let selectivity = self.estimate_index_selectivity(
+                        &index.name,
+                        table_name,
+                        &matched_conditions,
+                    );
+
+                    // Choose this index if it's more selective
+                    if selectivity < best_selectivity {
+                        best_selectivity = selectivity;
+                        best_index = Some(index);
+                        best_matched_values = matched_values;
+                    }
+                }
+            }
+
+            // Use the best index if selectivity is good enough (< 30%)
+            if let Some(index) = best_index {
+                if best_selectivity < 0.3 {
                     return Some(Node::IndexScan {
                         table: table_name.to_string(),
                         alias: alias.clone(),
                         index_name: index.name.clone(),
-                        values: matched_values,
+                        values: best_matched_values,
                     });
                 }
             }
@@ -774,6 +901,41 @@ impl Planner {
         }
 
         None
+    }
+
+    /// Check if ORDER BY matches an index (for optimization)
+    fn order_by_matches_index(
+        &self,
+        order_by: &[(ast::Expression, ast::Direction)],
+        index_columns: &[String],
+        _table_name: &str,
+        _context: &PlanContext,
+    ) -> bool {
+        // ORDER BY must have same or fewer columns than index
+        if order_by.len() > index_columns.len() {
+            return false;
+        }
+
+        // Check each ORDER BY column matches the corresponding index column
+        for (i, (expr, dir)) in order_by.iter().enumerate() {
+            // For now, only support ASC order (most indexes are ASC by default)
+            if !matches!(dir, ast::Direction::Ascending) {
+                return false;
+            }
+
+            // Check if expression is a simple column reference
+            if let ast::Expression::Column(None, col_name) = expr {
+                // Check if it matches the index column at this position
+                if &index_columns[i] != col_name {
+                    return false;
+                }
+            } else {
+                // Not a simple column reference
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Try to create an IndexRangeScan node for range queries

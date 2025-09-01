@@ -11,9 +11,7 @@ use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
 use crate::types::expression::Expression;
 use crate::types::query::Rows;
-use crate::types::schema::Table;
 use crate::types::value::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Result of executing a SQL statement
@@ -31,20 +29,16 @@ pub enum ExecutionResult {
 }
 
 /// Complete MVCC-aware SQL executor
-pub struct Executor {
-    /// Table schemas for metadata
-    schemas: HashMap<String, Table>,
-}
+///
+/// The executor is now stateless - it gets all necessary information
+/// from storage or as parameters. This makes it simpler and eliminates
+/// synchronization issues.
+pub struct Executor;
 
 impl Executor {
-    /// Create a new executor
-    pub fn new(schemas: HashMap<String, Table>) -> Self {
-        Self { schemas }
-    }
-
-    /// Update schemas after DDL operations
-    pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
-        self.schemas = schemas;
+    /// Create a new executor (stateless)
+    pub fn new() -> Self {
+        Self
     }
 
     /// Execute a query plan - dispatches to read or write execution
@@ -83,34 +77,13 @@ impl Executor {
                 self.execute_delete(table, *source, storage, lock_manager, tx_ctx)
             }
 
-            Plan::CreateTable { name, schema: _ } => {
-                // Table creation is handled at stream processor level
-                Ok(ExecutionResult::DDL(format!("Table '{}' created", name)))
-            }
-
-            Plan::DropTable { name, .. } => {
-                Ok(ExecutionResult::DDL(format!("Table '{}' dropped", name)))
-            }
-
-            Plan::CreateIndex {
-                name,
-                table,
-                columns,
-                unique,
-            } => {
-                // Actually create the index in storage
-                storage.create_index(name.clone(), &table, columns.clone(), unique)?;
-                let column_list = columns.join(", ");
-                Ok(ExecutionResult::DDL(format!(
-                    "Index '{}' created on {}({})",
-                    name, table, column_list
-                )))
-            }
-
-            Plan::DropIndex { name, .. } => {
-                // Drop the index using its name
-                storage.drop_index(&name)?;
-                Ok(ExecutionResult::DDL(format!("Index '{}' dropped", name)))
+            // DDL operations are delegated to storage
+            Plan::CreateTable { .. }
+            | Plan::DropTable { .. }
+            | Plan::CreateIndex { .. }
+            | Plan::DropIndex { .. } => {
+                let result_msg = storage.execute_ddl(&plan)?;
+                Ok(ExecutionResult::DDL(result_msg))
             }
         }
     }
@@ -123,8 +96,11 @@ impl Executor {
         lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<ExecutionResult> {
+        // Get schemas from storage
+        let schemas = storage.get_schemas();
+
         // Get column names from the node tree
-        let columns = node.get_column_names(&self.schemas);
+        let columns = node.get_column_names(&schemas);
 
         // Execute using read-only node execution
         let rows = self.execute_node_read(node, storage, lock_manager, tx_ctx)?;
@@ -149,8 +125,9 @@ impl Executor {
         lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<ExecutionResult> {
-        let schema = self
-            .schemas
+        // Get schema from storage
+        let schemas = storage.get_schemas();
+        let schema = schemas
             .get(&table)
             .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
@@ -322,8 +299,8 @@ impl Executor {
 
                 // Fall back to filtered table scan if no index exists
                 // We need to check if we can resolve the index_name to columns
-                let schema = self
-                    .schemas
+                let schemas = storage.get_schemas();
+                let schema = schemas
                     .get(&table)
                     .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
@@ -425,8 +402,8 @@ impl Executor {
                 }
 
                 // Fall back to filtered range scan if no index exists
-                let schema = self
-                    .schemas
+                let schemas = storage.get_schemas();
+                let schema = schemas
                     .get(&table)
                     .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
@@ -505,13 +482,14 @@ impl Executor {
 
             Node::Filter { source, predicate } => {
                 let source_rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
-                let executor = self.clone_for_closure();
 
                 // Clone transaction context for use in closure
                 let tx_ctx_clone = tx_ctx.clone();
 
                 let filtered = source_rows.filter_map(move |row| match row {
                     Ok(row) => {
+                        // Create executor instance in closure (it's stateless)
+                        let executor = Executor::new();
                         match executor.evaluate_expression(&predicate, Some(&row), &tx_ctx_clone) {
                             Ok(v) if v.to_bool().unwrap_or(false) => Some(Ok(row)),
                             Ok(_) => None,
@@ -526,11 +504,11 @@ impl Executor {
 
             Node::Values { rows } => {
                 // Values node contains literal rows - convert Expression to Value lazily
-                let executor = self.clone_for_closure();
                 let tx_ctx_clone = tx_ctx.clone();
 
                 let values_iter = rows.into_iter().map(move |row| {
                     let mut value_row = Vec::new();
+                    let executor = Executor::new();
                     for expr in row {
                         value_row.push(executor.evaluate_expression(&expr, None, &tx_ctx_clone)?);
                     }
@@ -546,7 +524,6 @@ impl Executor {
                 ..
             } => {
                 let source_rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
-                let executor = self.clone_for_closure();
 
                 // Clone transaction context for use in closure
                 let tx_ctx_clone = tx_ctx.clone();
@@ -554,6 +531,7 @@ impl Executor {
                 let projected = source_rows.map(move |row| match row {
                     Ok(row) => {
                         let mut result = Vec::with_capacity(expressions.len());
+                        let executor = Executor::new();
                         for expr in &expressions {
                             result.push(executor.evaluate_expression(
                                 expr,
@@ -611,7 +589,8 @@ impl Executor {
                 join_type,
             } => {
                 // Get column count from right node for outer join NULL padding
-                let right_columns = right.column_count(&self.schemas);
+                let schemas = storage.get_schemas();
+                let right_columns = right.column_count(&schemas);
 
                 // Both can borrow storage immutably!
                 let left_rows = self.execute_node_read(*left, storage, lock_manager, tx_ctx)?;
@@ -636,7 +615,8 @@ impl Executor {
                 join_type,
             } => {
                 // Get column count from right node for outer join NULL padding
-                let right_columns = right.column_count(&self.schemas);
+                let schemas = storage.get_schemas();
+                let right_columns = right.column_count(&schemas);
 
                 let left_rows = self.execute_node_read(*left, storage, lock_manager, tx_ctx)?;
                 let right_rows = self.execute_node_read(*right, storage, lock_manager, tx_ctx)?;
@@ -660,14 +640,12 @@ impl Executor {
                 let mut collected: Vec<_> = rows.collect::<Result<Vec<_>>>()?;
 
                 // Sort based on order_by expressions
-                let executor = self.clone_for_closure();
-
                 collected.sort_by(|a, b| {
                     for (expr, direction) in &order_by {
-                        let val_a = executor
+                        let val_a = self
                             .evaluate_expression(expr, Some(a), tx_ctx)
                             .unwrap_or(Value::Null);
-                        let val_b = executor
+                        let val_b = self
                             .evaluate_expression(expr, Some(b), tx_ctx)
                             .unwrap_or(Value::Null);
 
@@ -789,13 +767,6 @@ impl Executor {
 
             // Other expression types...
             _ => Ok(Value::Null),
-        }
-    }
-
-    /// Clone executor for use in closures
-    fn clone_for_closure(&self) -> Self {
-        Self {
-            schemas: self.schemas.clone(),
         }
     }
 }

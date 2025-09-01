@@ -4,6 +4,7 @@ pub mod expression;
 pub mod functions;
 pub mod query;
 pub mod schema;
+pub mod statistics;
 pub mod value;
 
 // Re-export key types - matching toydb's pattern

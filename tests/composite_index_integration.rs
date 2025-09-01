@@ -46,7 +46,7 @@ fn execute_sql(
     let planner = Planner::new(schemas.clone());
     let plan = planner.plan(ast)?;
 
-    let executor = Executor::new(schemas.clone());
+    let executor = Executor::new();
 
     // Create a transaction context
     let tx_id = HlcTimestamp::new(1000, 0, NodeId::new(1));

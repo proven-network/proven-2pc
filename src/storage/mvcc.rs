@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::hlc::HlcTimestamp;
 use crate::types::schema::Table;
 use crate::types::value::{StorageRow as Row, Value};
+use rust_decimal::prelude::ToPrimitive;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -69,6 +70,8 @@ pub struct IndexEntry {
     pub row_id: u64,
     pub added_by: HlcTimestamp,
     pub removed_by: Option<HlcTimestamp>,
+    /// Values for included columns (for covering indexes)
+    pub included_values: Option<Vec<Value>>,
 }
 
 /// Versioned table with MVCC support
@@ -84,6 +87,8 @@ pub struct VersionedTable {
     pub indexes: HashMap<String, BTreeMap<CompositeKey, Vec<IndexEntry>>>,
     /// Map from index name to column names for that index
     pub index_columns: HashMap<String, Vec<String>>,
+    /// Map from index name to included columns (for covering indexes)
+    pub index_included_columns: HashMap<String, Vec<String>>,
     /// Next row ID for inserts
     pub next_id: u64,
     /// Track committed transactions
@@ -97,6 +102,7 @@ impl VersionedTable {
         // Initialize indexes for columns marked as indexed
         let mut indexes = HashMap::new();
         let mut index_columns = HashMap::new();
+        let index_included_columns = HashMap::new();
 
         for column in &schema.columns {
             if column.index || column.primary_key || column.unique {
@@ -113,6 +119,7 @@ impl VersionedTable {
             versions: BTreeMap::new(),
             indexes,
             index_columns,
+            index_included_columns,
             next_id: 1,
             committed_transactions: HashSet::new(),
             transaction_start_times: HashMap::new(),
@@ -243,10 +250,27 @@ impl VersionedTable {
 
                 if !has_null {
                     let key = CompositeKey::from_values(key_values);
+                    // Collect included column values if any
+                    let included_values =
+                        if let Some(included_cols) = self.index_included_columns.get(index_name) {
+                            let mut vals = Vec::new();
+                            for col_name in included_cols {
+                                if let Some(col_idx) =
+                                    self.schema.columns.iter().position(|c| c.name == *col_name)
+                                {
+                                    vals.push(values[col_idx].clone());
+                                }
+                            }
+                            Some(vals)
+                        } else {
+                            None
+                        };
+
                     let entry = IndexEntry {
                         row_id,
                         added_by: txn_id,
                         removed_by: None,
+                        included_values,
                     };
                     index.entry(key).or_insert_with(Vec::new).push(entry);
                 }
@@ -424,10 +448,27 @@ impl VersionedTable {
                 // Add new entry (if value is changing)
                 if values_changed && !new_has_null {
                     let new_key = CompositeKey::from_values(new_key_values);
+                    // Collect included column values if any
+                    let included_values =
+                        if let Some(included_cols) = self.index_included_columns.get(index_name) {
+                            let mut vals = Vec::new();
+                            for col_name in included_cols {
+                                if let Some(col_idx) =
+                                    self.schema.columns.iter().position(|c| c.name == *col_name)
+                                {
+                                    vals.push(values[col_idx].clone());
+                                }
+                            }
+                            Some(vals)
+                        } else {
+                            None
+                        };
+
                     let entry = IndexEntry {
                         row_id,
                         added_by: txn_id,
                         removed_by: None,
+                        included_values,
                     };
                     index.entry(new_key).or_insert_with(Vec::new).push(entry);
                 }
@@ -704,6 +745,7 @@ impl VersionedTable {
         &mut self,
         index_name: String,
         column_names: Vec<String>,
+        included_columns: Option<Vec<String>>,
         unique: bool,
     ) -> Result<()> {
         // Check if all columns exist and get their indices
@@ -752,10 +794,26 @@ impl VersionedTable {
                         )));
                     }
 
+                    // Collect included column values if any
+                    let included_values = if let Some(ref included) = included_columns {
+                        let mut values = Vec::new();
+                        for col_name in included {
+                            if let Some(col_idx) =
+                                self.schema.columns.iter().position(|c| c.name == *col_name)
+                            {
+                                values.push(version.row.values[col_idx].clone());
+                            }
+                        }
+                        Some(values)
+                    } else {
+                        None
+                    };
+
                     let entry = IndexEntry {
                         row_id,
                         added_by: version.created_by, // Use the original creator
                         removed_by: None,
+                        included_values,
                     };
                     index.entry(key).or_insert_with(Vec::new).push(entry);
                 }
@@ -763,14 +821,245 @@ impl VersionedTable {
         }
 
         self.indexes.insert(index_name.clone(), index);
-        self.index_columns.insert(index_name, column_names);
+        self.index_columns.insert(index_name.clone(), column_names);
+        if let Some(included) = included_columns {
+            self.index_included_columns
+                .insert(index_name.clone(), included);
+        }
+
         Ok(())
+    }
+
+    /// Get statistics for query planning
+    pub fn get_table_stats(&self) -> crate::types::statistics::TableStatistics {
+        use crate::types::statistics::ColumnStatistics;
+        
+        let mut stats = crate::types::statistics::TableStatistics {
+            row_count: self.versions.len(),
+            indexes: HashMap::new(),
+            columns: HashMap::new(),
+            correlations: HashMap::new(),
+        };
+        
+        // Calculate column statistics
+        for (col_idx, column) in self.schema.columns.iter().enumerate() {
+            let mut col_stats = ColumnStatistics {
+                name: column.name.clone(),
+                distinct_count: 0,
+                null_count: 0,
+                min_value: None,
+                max_value: None,
+                most_common_values: Vec::new(),
+                histogram: None,
+            };
+            
+            // Collect all values for this column from committed versions
+            let mut value_counts: HashMap<Value, usize> = HashMap::new();
+            let mut all_values = Vec::new();
+            
+            for versions in self.versions.values() {
+                // Only count the latest committed version
+                if let Some(version) = versions.iter().rev().find(|v| 
+                    self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
+                ) {
+                    if col_idx < version.row.values.len() {
+                        let value = &version.row.values[col_idx];
+                        if value.is_null() {
+                            col_stats.null_count += 1;
+                        } else {
+                            all_values.push(value.clone());
+                            *value_counts.entry(value.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+            
+            col_stats.distinct_count = value_counts.len();
+            
+            // Find min/max for ordered types
+            if !all_values.is_empty() {
+                all_values.sort();
+                col_stats.min_value = Some(all_values.first().unwrap().clone());
+                col_stats.max_value = Some(all_values.last().unwrap().clone());
+                
+                // Create histogram for numeric columns
+                if matches!(column.datatype, crate::types::value::DataType::Integer | crate::types::value::DataType::Decimal(_, _)) {
+                    col_stats.histogram = self.create_histogram(&all_values, 10);
+                }
+            }
+            
+            // Find most common values (top 5)
+            let mut value_freq: Vec<(Value, usize)> = value_counts.into_iter().collect();
+            value_freq.sort_by(|a, b| b.1.cmp(&a.1));
+            col_stats.most_common_values = value_freq.into_iter().take(5).collect();
+            
+            stats.columns.insert(column.name.clone(), col_stats);
+        }
+
+        // Calculate correlations between columns (for join selectivity)
+        // Sample-based correlation for efficiency
+        let sample_size = 100.min(stats.row_count);
+        if sample_size >= 10 {
+            let mut sampled_rows = Vec::new();
+            let mut count = 0;
+            
+            // Sample rows evenly across the table
+            let step = stats.row_count.max(1) / sample_size;
+            for (i, versions) in self.versions.values().enumerate() {
+                if i % step == 0 && count < sample_size {
+                    if let Some(version) = versions.iter().rev().find(|v| 
+                        self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
+                    ) {
+                        sampled_rows.push(&version.row.values);
+                        count += 1;
+                    }
+                }
+            }
+            
+            // Calculate pairwise correlations for numeric columns
+            for (i, col1) in self.schema.columns.iter().enumerate() {
+                if !matches!(col1.datatype, crate::types::value::DataType::Integer | crate::types::value::DataType::Decimal(_, _)) {
+                    continue;
+                }
+                
+                for (j, col2) in self.schema.columns.iter().enumerate().skip(i + 1) {
+                    if !matches!(col2.datatype, crate::types::value::DataType::Integer | crate::types::value::DataType::Decimal(_, _)) {
+                        continue;
+                    }
+                    
+                    // Calculate Pearson correlation coefficient
+                    let correlation = self.calculate_correlation(&sampled_rows, i, j);
+                    if let Some(corr) = correlation {
+                        stats.correlations.insert((col1.name.clone(), col2.name.clone()), corr);
+                        stats.correlations.insert((col2.name.clone(), col1.name.clone()), corr);
+                    }
+                }
+            }
+        }
+
+        // Calculate statistics for each index on-demand
+        for (index_name, index) in &self.indexes {
+            if let Some(columns) = self.index_columns.get(index_name) {
+                let total_entries: usize = index.values().map(|entries| entries.len()).sum();
+                let distinct_keys = index.len();
+
+                // Calculate per-column cardinality (simplified)
+                let cardinality = vec![distinct_keys; columns.len()];
+                let selectivity: Vec<f64> = cardinality
+                    .iter()
+                    .map(|&c| if c > 0 { 1.0 / c as f64 } else { 1.0 })
+                    .collect();
+
+                stats.indexes.insert(
+                    index_name.clone(),
+                    crate::types::statistics::IndexStatistics {
+                        name: index_name.clone(),
+                        columns: columns.clone(),
+                        cardinality,
+                        total_entries,
+                        selectivity,
+                    },
+                );
+            }
+        }
+
+        stats
+    }
+    
+    /// Create a histogram from sorted values
+    fn create_histogram(&self, sorted_values: &[Value], num_buckets: usize) -> Option<crate::types::statistics::Histogram> {
+        if sorted_values.is_empty() || num_buckets == 0 {
+            return None;
+        }
+        
+        let mut boundaries = Vec::new();
+        let mut frequencies = vec![0; num_buckets];
+        
+        // Create equal-width buckets (simplified - could be improved with equal-depth)
+        let step = sorted_values.len() / num_buckets;
+        for i in 0..=num_buckets {
+            let idx = (i * step).min(sorted_values.len() - 1);
+            boundaries.push(sorted_values[idx].clone());
+        }
+        
+        // Count values in each bucket
+        let mut bucket_idx = 0;
+        for value in sorted_values {
+            while bucket_idx < num_buckets - 1 && value > &boundaries[bucket_idx + 1] {
+                bucket_idx += 1;
+            }
+            if bucket_idx < num_buckets {
+                frequencies[bucket_idx] += 1;
+            }
+        }
+        
+        Some(crate::types::statistics::Histogram {
+            num_buckets,
+            boundaries,
+            frequencies,
+        })
+    }
+    
+    /// Calculate Pearson correlation coefficient between two columns
+    fn calculate_correlation(&self, sampled_rows: &[&Vec<Value>], col1: usize, col2: usize) -> Option<f64> {
+        if sampled_rows.is_empty() {
+            return None;
+        }
+        
+        let mut x_values = Vec::new();
+        let mut y_values = Vec::new();
+        
+        // Extract numeric values
+        for row in sampled_rows {
+            if col1 < row.len() && col2 < row.len() {
+                let x_val = match &row[col1] {
+                    Value::Integer(i) => *i as f64,
+                    Value::Decimal(d) => d.to_f64().unwrap_or(0.0),
+                    _ => continue,
+                };
+                let y_val = match &row[col2] {
+                    Value::Integer(i) => *i as f64,
+                    Value::Decimal(d) => d.to_f64().unwrap_or(0.0),
+                    _ => continue,
+                };
+                x_values.push(x_val);
+                y_values.push(y_val);
+            }
+        }
+        
+        if x_values.len() < 2 {
+            return None;
+        }
+        
+        // Calculate means
+        let x_mean = x_values.iter().sum::<f64>() / x_values.len() as f64;
+        let y_mean = y_values.iter().sum::<f64>() / y_values.len() as f64;
+        
+        // Calculate correlation
+        let mut covariance: f64 = 0.0;
+        let mut x_variance: f64 = 0.0;
+        let mut y_variance: f64 = 0.0;
+        
+        for i in 0..x_values.len() {
+            let x_diff = x_values[i] - x_mean;
+            let y_diff = y_values[i] - y_mean;
+            covariance += x_diff * y_diff;
+            x_variance += x_diff * x_diff;
+            y_variance += y_diff * y_diff;
+        }
+        
+        if x_variance == 0.0 || y_variance == 0.0 {
+            return Some(0.0);
+        }
+        
+        Some(covariance / (x_variance.sqrt() * y_variance.sqrt()))
     }
 
     /// Drop an index
     pub fn drop_index(&mut self, index_name: &str) -> Result<()> {
         self.indexes.remove(index_name);
         self.index_columns.remove(index_name);
+        self.index_included_columns.remove(index_name);
         Ok(())
     }
 
@@ -1148,12 +1437,75 @@ impl MvccStorage {
         Ok(())
     }
 
+    /// Execute a DDL operation directly in storage
+    /// This centralizes all DDL operations in storage where they belong
+    pub fn execute_ddl(&mut self, plan: &crate::planner::plan::Plan) -> Result<String> {
+        use crate::planner::plan::Plan;
+
+        match plan {
+            Plan::CreateTable { name, schema } => {
+                self.create_table(name.clone(), schema.clone())?;
+                Ok(format!("Table '{}' created", name))
+            }
+
+            Plan::DropTable { name, if_exists } => match self.drop_table(name) {
+                Ok(_) => Ok(format!("Table '{}' dropped", name)),
+                Err(Error::TableNotFound(_)) if *if_exists => Ok(format!(
+                    "Table '{}' does not exist (IF EXISTS specified)",
+                    name
+                )),
+                Err(e) => Err(e),
+            },
+
+            Plan::CreateIndex {
+                name,
+                table,
+                columns,
+                unique,
+                included_columns,
+            } => {
+                self.create_index(
+                    name.clone(),
+                    table,
+                    columns.clone(),
+                    included_columns.clone(),
+                    *unique,
+                )?;
+                let column_list = columns.join(", ");
+                let result_msg = if let Some(included) = included_columns {
+                    format!(
+                        "Index '{}' created on {}({}) INCLUDE ({})",
+                        name,
+                        table,
+                        column_list,
+                        included.join(", ")
+                    )
+                } else {
+                    format!("Index '{}' created on {}({})", name, table, column_list)
+                };
+                Ok(result_msg)
+            }
+
+            Plan::DropIndex { name, if_exists } => match self.drop_index(name) {
+                Ok(_) => Ok(format!("Index '{}' dropped", name)),
+                Err(Error::InvalidValue(_)) if *if_exists => Ok(format!(
+                    "Index '{}' does not exist (IF EXISTS specified)",
+                    name
+                )),
+                Err(e) => Err(e),
+            },
+
+            _ => Err(Error::InvalidValue("Not a DDL operation".into())),
+        }
+    }
+
     /// Create an index on one or more table columns
     pub fn create_index(
         &mut self,
         index_name: String,
         table_name: &str,
         column_names: Vec<String>,
+        included_columns: Option<Vec<String>>,
         unique: bool,
     ) -> Result<()> {
         // Check if index name already exists
@@ -1170,7 +1522,12 @@ impl MvccStorage {
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
         // Create the actual index
-        table.create_index(index_name.clone(), column_names.clone(), unique)?;
+        table.create_index(
+            index_name.clone(),
+            column_names.clone(),
+            included_columns,
+            unique,
+        )?;
 
         // Store metadata
         self.index_metadata.insert(
@@ -1200,6 +1557,27 @@ impl MvccStorage {
         }
 
         Ok(())
+    }
+
+    /// Get schemas (without statistics)
+    pub fn get_schemas(&self) -> HashMap<String, crate::types::schema::Table> {
+        let mut schemas = HashMap::new();
+        for (table_name, versioned_table) in &self.tables {
+            schemas.insert(table_name.clone(), versioned_table.schema.clone());
+        }
+        schemas
+    }
+
+    /// Calculate current database statistics
+    pub fn calculate_statistics(&self) -> crate::types::statistics::DatabaseStatistics {
+        let mut db_stats = crate::types::statistics::DatabaseStatistics::new();
+
+        for (table_name, versioned_table) in &self.tables {
+            let table_stats = versioned_table.get_table_stats();
+            db_stats.update_table(table_name.clone(), table_stats);
+        }
+
+        db_stats
     }
 
     /// Register a new transaction
@@ -1441,7 +1819,7 @@ mod tests {
 
         // Create an index on email
         table
-            .create_index("email".to_string(), vec!["email".to_string()], false)
+            .create_index("email".to_string(), vec!["email".to_string()], None, false)
             .unwrap();
 
         // Verify index contains the data
@@ -1933,6 +2311,7 @@ mod tests {
             .create_index(
                 "idx_customer_status".to_string(),
                 vec!["customer_id".to_string(), "status".to_string()],
+                None,
                 false,
             )
             .unwrap();
@@ -2015,6 +2394,7 @@ mod tests {
             .create_index(
                 "idx_unique_composite".to_string(),
                 vec!["col1".to_string(), "col2".to_string()],
+                None,
                 true,
             )
             .unwrap();

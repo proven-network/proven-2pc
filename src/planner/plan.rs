@@ -47,10 +47,37 @@ pub enum Plan {
         table: String,
         columns: Vec<String>,
         unique: bool,
+        included_columns: Option<Vec<String>>,
     },
 
     /// DROP INDEX
     DropIndex { name: String, if_exists: bool },
+}
+
+impl Plan {
+    /// Check if this plan is a DDL operation
+    pub fn is_ddl(&self) -> bool {
+        matches!(
+            self,
+            Plan::CreateTable { .. }
+                | Plan::DropTable { .. }
+                | Plan::CreateIndex { .. }
+                | Plan::DropIndex { .. }
+        )
+    }
+
+    /// Check if this plan is a DML operation (modifies data)
+    pub fn is_dml(&self) -> bool {
+        matches!(
+            self,
+            Plan::Insert { .. } | Plan::Update { .. } | Plan::Delete { .. }
+        )
+    }
+
+    /// Check if this plan is a query (SELECT)
+    pub fn is_query(&self) -> bool {
+        matches!(self, Plan::Select(_))
+    }
 }
 
 /// Execution node in the plan tree

@@ -44,6 +44,8 @@ pub enum Statement {
         columns: Vec<String>,
         /// UNIQUE: if true, create a unique index.
         unique: bool,
+        /// INCLUDE: additional columns to store in the index (covering index).
+        included_columns: Option<Vec<String>>,
     },
     /// DROP INDEX: drops an index.
     DropIndex {
