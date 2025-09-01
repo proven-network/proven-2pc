@@ -10,7 +10,7 @@ use crate::stream::transaction::TransactionContext;
 use crate::types::expression::Expression;
 use crate::types::query::{JoinType, RowRef, Rows};
 use crate::types::value::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// NestedLoopJoiner implements MVCC-aware nested loop joins.
@@ -27,10 +27,16 @@ pub struct NestedLoopJoiner {
     right_rows: Vec<RowRef>,
     /// Current right row index
     right_index: usize,
+    /// The number of columns in the left source
+    left_columns: usize,
     /// The number of columns in the right source
     right_columns: usize,
     /// True if a right match has been seen for the current left row
     right_matched: bool,
+    /// Set of right row indices that have been matched (for RIGHT/FULL joins)
+    matched_right_indices: HashSet<usize>,
+    /// Whether we're in the phase of emitting unmatched right rows
+    emitting_unmatched_right: bool,
     /// The join predicate
     predicate: Expression,
     /// The join type
@@ -44,6 +50,7 @@ impl NestedLoopJoiner {
     pub fn new(
         left: Rows<'_>,
         right: Rows<'_>,
+        left_columns: usize,
         right_columns: usize,
         predicate: Expression,
         join_type: JoinType,
@@ -65,8 +72,11 @@ impl NestedLoopJoiner {
             left_index: 0,
             right_rows,
             right_index: 0,
+            left_columns,
             right_columns,
             right_matched: false,
+            matched_right_indices: HashSet::new(),
+            emitting_unmatched_right: false,
             predicate,
             join_type,
             context,
@@ -75,48 +85,78 @@ impl NestedLoopJoiner {
 
     /// Get the next joined row, respecting MVCC visibility
     pub fn next_row(&mut self) -> Result<Option<RowRef>> {
-        // While there is a valid left row, look for a right-hand match to return
-        while self.left_index < self.left_rows.len() {
-            let left = &self.left_rows[self.left_index];
+        // Phase 1: Process all left rows
+        if !self.emitting_unmatched_right {
+            while self.left_index < self.left_rows.len() {
+                let left = &self.left_rows[self.left_index];
 
-            // If there is a match in the remaining right rows, return it
-            while self.right_index < self.right_rows.len() {
-                let right = &self.right_rows[self.right_index];
-                self.right_index += 1;
+                // If there is a match in the remaining right rows, return it
+                while self.right_index < self.right_rows.len() {
+                    let right = &self.right_rows[self.right_index];
+                    let right_idx = self.right_index;
+                    self.right_index += 1;
 
-                // Create joined row
-                let mut row = left.to_vec();
-                row.extend(right.iter().cloned());
-                let joined_row = Arc::new(row);
+                    // Create joined row
+                    let mut row = left.to_vec();
+                    row.extend(right.iter().cloned());
+                    let joined_row = Arc::new(row);
 
-                // Check join predicate
-                match self.evaluate_predicate(&joined_row)? {
-                    Value::Boolean(true) => {
-                        self.right_matched = true;
-                        return Ok(Some(joined_row));
-                    }
-                    Value::Boolean(false) | Value::Null => continue,
-                    v => {
-                        return Err(Error::InvalidValue(format!(
-                            "join predicate returned {}, expected boolean",
-                            v
-                        )));
+                    // Check join predicate
+                    match self.evaluate_predicate(&joined_row)? {
+                        Value::Boolean(true) => {
+                            self.right_matched = true;
+                            self.matched_right_indices.insert(right_idx);
+                            return Ok(Some(joined_row));
+                        }
+                        Value::Boolean(false) | Value::Null => continue,
+                        v => {
+                            return Err(Error::InvalidValue(format!(
+                                "join predicate returned {}, expected boolean",
+                                v
+                            )));
+                        }
                     }
                 }
+
+                // Handle LEFT/FULL outer joins when no right match found
+                if !self.right_matched && matches!(self.join_type, JoinType::Left | JoinType::Full)
+                {
+                    self.right_matched = true;
+                    let mut row = left.to_vec();
+                    row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+                    return Ok(Some(Arc::new(row)));
+                }
+
+                // Move to next left row and reset right iteration
+                self.left_index += 1;
+                self.right_index = 0;
+                self.right_matched = false;
             }
 
-            // Handle outer joins when no right match found
-            if !self.right_matched && matches!(self.join_type, JoinType::Left | JoinType::Full) {
-                self.right_matched = true;
-                let mut row = left.to_vec();
-                row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+            // Done with left rows, now handle unmatched right rows for RIGHT/FULL joins
+            if matches!(self.join_type, JoinType::Right | JoinType::Full) {
+                self.emitting_unmatched_right = true;
+                self.right_index = 0;
+            }
+        }
+
+        // Phase 2: Emit unmatched right rows for RIGHT/FULL joins
+        if self.emitting_unmatched_right {
+            while self.right_index < self.right_rows.len() {
+                let right_idx = self.right_index;
+                self.right_index += 1;
+
+                // Skip if this right row was already matched
+                if self.matched_right_indices.contains(&right_idx) {
+                    continue;
+                }
+
+                // Create row with NULL left columns and the unmatched right row
+                let right = &self.right_rows[right_idx];
+                let mut row = vec![Value::Null; self.left_columns];
+                row.extend(right.iter().cloned());
                 return Ok(Some(Arc::new(row)));
             }
-
-            // Move to next left row and reset right iteration
-            self.left_index += 1;
-            self.right_index = 0;
-            self.right_matched = false;
         }
 
         Ok(None)
@@ -154,12 +194,22 @@ pub struct HashJoiner {
     left_column: usize,
     /// The right hash map to join on
     right_hash: HashMap<Value, Vec<RowRef>>,
+    /// All right rows (for RIGHT/FULL join unmatched emission)
+    right_rows: Vec<RowRef>,
     /// Current matches for the current left row
     current_matches: Vec<RowRef>,
     /// Current match index
     match_index: usize,
+    /// The number of columns in the left source
+    left_columns: usize,
     /// The number of columns in the right source
     right_columns: usize,
+    /// Set of right rows that have been matched
+    matched_right_rows: HashSet<usize>,
+    /// Whether we're emitting unmatched right rows
+    emitting_unmatched_right: bool,
+    /// Current index for unmatched right emission
+    unmatched_right_index: usize,
     /// The join type
     join_type: JoinType,
 }
@@ -171,6 +221,7 @@ impl HashJoiner {
         left_column: usize,
         right: Rows<'_>,
         right_column: usize,
+        left_columns: usize,
         right_columns: usize,
         join_type: JoinType,
     ) -> Result<Self> {
@@ -180,9 +231,11 @@ impl HashJoiner {
             left_rows.push(row?);
         }
 
-        // Build hash table from right source
+        // Build hash table from right source and collect all right rows
         let mut right_hash: HashMap<Value, Vec<RowRef>> = HashMap::new();
-        for row in right {
+        let mut right_rows = Vec::new();
+
+        for (_idx, row) in right.enumerate() {
             let row = row?;
             let key_value = row
                 .get(right_column)
@@ -191,12 +244,13 @@ impl HashJoiner {
                 })?
                 .clone();
 
-            // Skip undefined values (they never match)
-            if matches!(key_value, Value::Null) {
-                continue;
-            }
+            // Store the row with its index for tracking
+            right_rows.push(row.clone());
 
-            right_hash.entry(key_value).or_default().push(row);
+            // Skip undefined values (they never match)
+            if !matches!(key_value, Value::Null) {
+                right_hash.entry(key_value).or_default().push(row);
+            }
         }
 
         Ok(Self {
@@ -204,71 +258,120 @@ impl HashJoiner {
             left_index: 0,
             left_column,
             right_hash,
+            right_rows,
             current_matches: Vec::new(),
             match_index: 0,
+            left_columns,
             right_columns,
+            matched_right_rows: HashSet::new(),
+            emitting_unmatched_right: false,
+            unmatched_right_index: 0,
             join_type,
         })
     }
 
     /// Get the next joined row
     pub fn next_row(&mut self) -> Result<Option<RowRef>> {
-        // First, return any pending matches from the current left row
-        if self.match_index < self.current_matches.len() {
-            let left = &self.left_rows[self.left_index - 1]; // Use previous left row
-            let right = &self.current_matches[self.match_index];
-            self.match_index += 1;
+        // Phase 1: Process left rows and their matches
+        if !self.emitting_unmatched_right {
+            // First, return any pending matches from the current left row
+            if self.match_index < self.current_matches.len() {
+                let left = &self.left_rows[self.left_index - 1]; // Use previous left row
+                let right = &self.current_matches[self.match_index];
+                self.match_index += 1;
 
-            let mut row = left.to_vec();
-            row.extend(right.iter().cloned());
-            return Ok(Some(Arc::new(row)));
-        }
-
-        // Move to the next left row
-        while self.left_index < self.left_rows.len() {
-            let left = &self.left_rows[self.left_index];
-
-            // Get the join key from left row
-            let join_key = left
-                .get(self.left_column)
-                .ok_or_else(|| {
-                    Error::InvalidValue(format!("Left column {} not found", self.left_column))
-                })?
-                .clone();
-
-            // Move to next left row immediately
-            self.left_index += 1;
-
-            // Find matching right rows
-            if let Some(matches) = self.right_hash.get(&join_key).cloned() {
-                // Found matches - set them up for iteration
-                self.current_matches = matches;
-                self.match_index = 0;
-
-                // Return first match
-                if !self.current_matches.is_empty() {
-                    let right = &self.current_matches[0];
-                    self.match_index = 1;
-
-                    let mut row = left.to_vec();
-                    row.extend(right.iter().cloned());
-                    return Ok(Some(Arc::new(row)));
+                // Track which right row was matched
+                for (idx, r) in self.right_rows.iter().enumerate() {
+                    if Arc::ptr_eq(r, right) {
+                        self.matched_right_rows.insert(idx);
+                        break;
+                    }
                 }
-            }
-
-            // Handle outer joins when no match found
-            if matches!(self.join_type, JoinType::Left | JoinType::Full) {
-                self.current_matches.clear();
-                self.match_index = 0;
 
                 let mut row = left.to_vec();
-                row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+                row.extend(right.iter().cloned());
                 return Ok(Some(Arc::new(row)));
             }
 
-            // No match and not an outer join, continue to next left row
-            self.current_matches.clear();
-            self.match_index = 0;
+            // Move to the next left row
+            while self.left_index < self.left_rows.len() {
+                let left = &self.left_rows[self.left_index];
+
+                // Get the join key from left row
+                let join_key = left
+                    .get(self.left_column)
+                    .ok_or_else(|| {
+                        Error::InvalidValue(format!("Left column {} not found", self.left_column))
+                    })?
+                    .clone();
+
+                // Move to next left row immediately
+                self.left_index += 1;
+
+                // Find matching right rows
+                if let Some(matches) = self.right_hash.get(&join_key).cloned() {
+                    // Found matches - set them up for iteration
+                    self.current_matches = matches;
+                    self.match_index = 0;
+
+                    // Return first match
+                    if !self.current_matches.is_empty() {
+                        let right = &self.current_matches[0];
+                        self.match_index = 1;
+
+                        // Track which right row was matched
+                        for (idx, r) in self.right_rows.iter().enumerate() {
+                            if Arc::ptr_eq(r, right) {
+                                self.matched_right_rows.insert(idx);
+                                break;
+                            }
+                        }
+
+                        let mut row = left.to_vec();
+                        row.extend(right.iter().cloned());
+                        return Ok(Some(Arc::new(row)));
+                    }
+                }
+
+                // Handle LEFT/FULL outer joins when no match found
+                if matches!(self.join_type, JoinType::Left | JoinType::Full) {
+                    self.current_matches.clear();
+                    self.match_index = 0;
+
+                    let mut row = left.to_vec();
+                    row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+                    return Ok(Some(Arc::new(row)));
+                }
+
+                // No match and not an outer join, continue to next left row
+                self.current_matches.clear();
+                self.match_index = 0;
+            }
+
+            // Done with left rows, now handle unmatched right rows for RIGHT/FULL joins
+            if matches!(self.join_type, JoinType::Right | JoinType::Full) {
+                self.emitting_unmatched_right = true;
+                self.unmatched_right_index = 0;
+            }
+        }
+
+        // Phase 2: Emit unmatched right rows for RIGHT/FULL joins
+        if self.emitting_unmatched_right {
+            while self.unmatched_right_index < self.right_rows.len() {
+                let idx = self.unmatched_right_index;
+                self.unmatched_right_index += 1;
+
+                // Skip if this right row was already matched
+                if self.matched_right_rows.contains(&idx) {
+                    continue;
+                }
+
+                // Create row with NULL left columns and the unmatched right row
+                let right = &self.right_rows[idx];
+                let mut row = vec![Value::Null; self.left_columns];
+                row.extend(right.iter().cloned());
+                return Ok(Some(Arc::new(row)));
+            }
         }
 
         Ok(None)
@@ -291,6 +394,7 @@ impl Iterator for HashJoiner {
 pub fn execute_nested_loop_join<'a>(
     left: Rows<'a>,
     right: Rows<'a>,
+    left_columns: usize,
     right_columns: usize,
     predicate: Expression,
     join_type: JoinType,
@@ -299,7 +403,15 @@ pub fn execute_nested_loop_join<'a>(
     // For now, create a dummy context - this should come from the transaction context
     use crate::hlc::{HlcTimestamp, NodeId};
     let context = TransactionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)));
-    let joiner = NestedLoopJoiner::new(left, right, right_columns, predicate, join_type, context)?;
+    let joiner = NestedLoopJoiner::new(
+        left,
+        right,
+        left_columns,
+        right_columns,
+        predicate,
+        join_type,
+        context,
+    )?;
 
     Ok(Box::new(joiner))
 }
@@ -310,6 +422,7 @@ pub fn execute_hash_join<'a>(
     left_column: usize,
     right: Rows<'a>,
     right_column: usize,
+    left_columns: usize,
     right_columns: usize,
     join_type: JoinType,
     _storage: &MvccStorage,
@@ -319,6 +432,7 @@ pub fn execute_hash_join<'a>(
         left_column,
         right,
         right_column,
+        left_columns,
         right_columns,
         join_type,
     )?;
@@ -363,6 +477,7 @@ mod tests {
         let joiner = NestedLoopJoiner::new(
             Box::new(left_rows.into_iter().map(Ok)),
             Box::new(right_rows.into_iter().map(Ok)),
+            2, // left has 2 columns
             2, // right has 2 columns
             predicate,
             JoinType::Inner,
@@ -403,6 +518,7 @@ mod tests {
             0, // left join column (id)
             Box::new(right_rows.into_iter().map(Ok)),
             0, // right join column (id)
+            2, // left has 2 columns
             2, // right has 2 columns
             JoinType::Inner,
         )
@@ -451,6 +567,7 @@ mod tests {
             0, // left join column (id)
             Box::new(right_rows.into_iter().map(Ok)),
             0, // right join column (id)
+            2, // left has 2 columns
             2, // right has 2 columns
             JoinType::Left,
         )

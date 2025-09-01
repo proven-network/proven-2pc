@@ -588,8 +588,9 @@ impl Executor {
                 right_col,
                 join_type,
             } => {
-                // Get column count from right node for outer join NULL padding
+                // Get column counts from both nodes for outer join NULL padding
                 let schemas = storage.get_schemas();
+                let left_columns = left.column_count(&schemas);
                 let right_columns = right.column_count(&schemas);
 
                 // Both can borrow storage immutably!
@@ -601,6 +602,7 @@ impl Executor {
                     left_col,
                     right_rows,
                     right_col,
+                    left_columns,
                     right_columns,
                     join_type,
                     storage,
@@ -614,8 +616,9 @@ impl Executor {
                 predicate,
                 join_type,
             } => {
-                // Get column count from right node for outer join NULL padding
+                // Get column counts from both nodes for outer join NULL padding
                 let schemas = storage.get_schemas();
+                let left_columns = left.column_count(&schemas);
                 let right_columns = right.column_count(&schemas);
 
                 let left_rows = self.execute_node_read(*left, storage, lock_manager, tx_ctx)?;
@@ -625,6 +628,7 @@ impl Executor {
                 join::execute_nested_loop_join(
                     left_rows,
                     right_rows,
+                    left_columns,
                     right_columns,
                     predicate,
                     join_type,

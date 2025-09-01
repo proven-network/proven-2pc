@@ -525,6 +525,11 @@ impl Parser<'_> {
             self.expect(Keyword::Join.into())?;
             return Ok(Some(ast::JoinType::Right));
         }
+        if self.next_is(Keyword::Full.into()) {
+            self.skip(Keyword::Outer.into());
+            self.expect(Keyword::Join.into())?;
+            return Ok(Some(ast::JoinType::Full));
+        }
         Ok(None)
     }
 

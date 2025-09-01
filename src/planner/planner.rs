@@ -340,10 +340,65 @@ impl Planner {
                     });
                 }
 
-                ast::FromClause::Join { .. } => {
-                    return Err(Error::ExecutionError(
-                        "Joins not yet fully implemented".into(),
-                    ));
+                ast::FromClause::Join {
+                    left,
+                    right,
+                    r#type,
+                    predicate,
+                } => {
+                    // Recursively plan left and right sides
+                    let left_node = self.plan_from(vec![*left], context)?;
+                    let right_node = self.plan_from(vec![*right], context)?;
+
+                    // Determine join algorithm based on predicate
+                    let join_node = if let Some(ref pred) = predicate {
+                        // Check if this is an equi-join (equality condition)
+                        if let Some((left_col, right_col)) =
+                            self.extract_equi_join_columns(pred, &left_node, &right_node, context)
+                        {
+                            // Use hash join for equi-joins - generally more efficient
+                            Node::HashJoin {
+                                left: Box::new(left_node),
+                                right: Box::new(right_node),
+                                left_col,
+                                right_col,
+                                join_type: r#type,
+                            }
+                        } else {
+                            // Use nested loop join for complex predicates
+                            let join_predicate = context.resolve_expression(pred.clone())?;
+                            Node::NestedLoopJoin {
+                                left: Box::new(left_node),
+                                right: Box::new(right_node),
+                                predicate: join_predicate,
+                                join_type: r#type,
+                            }
+                        }
+                    } else {
+                        // Cross join (no predicate)
+                        Node::NestedLoopJoin {
+                            left: Box::new(left_node),
+                            right: Box::new(right_node),
+                            predicate: Expression::Constant(crate::types::value::Value::Boolean(
+                                true,
+                            )),
+                            join_type: JoinType::Cross,
+                        }
+                    };
+
+                    node = Some(if let Some(prev) = node {
+                        // Chain multiple joins
+                        Node::NestedLoopJoin {
+                            left: Box::new(prev),
+                            right: Box::new(join_node),
+                            predicate: Expression::Constant(crate::types::value::Value::Boolean(
+                                true,
+                            )),
+                            join_type: JoinType::Inner,
+                        }
+                    } else {
+                        join_node
+                    });
                 }
             }
         }
@@ -718,23 +773,24 @@ impl Planner {
         if let Some(db_stats) = &self.statistics {
             if let Some(table_stats) = db_stats.tables.get(table_name) {
                 let mut combined_selectivity = 1.0;
-                
+
                 // Use column-level statistics for more accurate selectivity
                 for (col_name, expr) in conditions {
                     if let Some(col_stats) = table_stats.columns.get(col_name) {
                         // Check if the value is in most common values
                         if let ast::Expression::Literal(ast::Literal::Integer(i)) = expr {
                             let value = crate::types::value::Value::Integer(*i);
-                            
+
                             // Check most common values first
                             let mut found_selectivity = None;
                             for (common_val, freq) in &col_stats.most_common_values {
                                 if common_val == &value {
-                                    found_selectivity = Some(*freq as f64 / table_stats.row_count.max(1) as f64);
+                                    found_selectivity =
+                                        Some(*freq as f64 / table_stats.row_count.max(1) as f64);
                                     break;
                                 }
                             }
-                            
+
                             if let Some(sel) = found_selectivity {
                                 combined_selectivity *= sel;
                             } else if col_stats.distinct_count > 0 {
@@ -751,7 +807,9 @@ impl Planner {
                         }
                     } else if let Some(index_stats) = table_stats.indexes.get(index_name) {
                         // Fall back to index statistics if column stats not available
-                        if let Some(col_idx) = index_stats.columns.iter().position(|c| c == col_name) {
+                        if let Some(col_idx) =
+                            index_stats.columns.iter().position(|c| c == col_name)
+                        {
                             if col_idx < index_stats.selectivity.len() {
                                 combined_selectivity *= index_stats.selectivity[col_idx];
                             } else {
@@ -764,7 +822,7 @@ impl Planner {
                         combined_selectivity *= 0.1; // Default
                     }
                 }
-                
+
                 return combined_selectivity;
             }
         }
@@ -1027,6 +1085,70 @@ impl Planner {
         }
 
         None
+    }
+
+    /// Extract equi-join columns from a join predicate (e.g., t1.id = t2.id)
+    fn extract_equi_join_columns(
+        &self,
+        predicate: &ast::Expression,
+        left_node: &Node,
+        right_node: &Node,
+        _context: &PlanContext,
+    ) -> Option<(usize, usize)> {
+        // Look for equality operator
+        if let ast::Expression::Operator(ast::Operator::Equal(left_expr, right_expr)) = predicate {
+            // Get column names from both nodes
+            let left_columns = left_node.get_column_names(&self.schemas);
+            let right_columns = right_node.get_column_names(&self.schemas);
+
+            // Try to extract column references
+            let left_col = self.extract_column_name(left_expr);
+            let right_col = self.extract_column_name(right_expr);
+
+            if let (Some(left_col_name), Some(right_col_name)) = (left_col, right_col) {
+                // Find column indices
+                let left_idx = left_columns.iter().position(|name| {
+                    name == &left_col_name || name.ends_with(&format!(".{}", left_col_name))
+                });
+                let right_idx = right_columns.iter().position(|name| {
+                    name == &right_col_name || name.ends_with(&format!(".{}", right_col_name))
+                });
+
+                if let (Some(left_idx), Some(right_idx)) = (left_idx, right_idx) {
+                    return Some((left_idx, right_idx));
+                }
+
+                // Try swapping - maybe left column is in right node and vice versa
+                let left_in_right = right_columns.iter().position(|name| {
+                    name == &left_col_name || name.ends_with(&format!(".{}", left_col_name))
+                });
+                let right_in_left = left_columns.iter().position(|name| {
+                    name == &right_col_name || name.ends_with(&format!(".{}", right_col_name))
+                });
+
+                if let (Some(right_in_left_idx), Some(left_in_right_idx)) =
+                    (right_in_left, left_in_right)
+                {
+                    return Some((right_in_left_idx, left_in_right_idx));
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Extract column name from an expression
+    fn extract_column_name(&self, expr: &ast::Expression) -> Option<String> {
+        match expr {
+            ast::Expression::Column(table_ref, column_name) => {
+                if let Some(table) = table_ref {
+                    Some(format!("{}.{}", table, column_name))
+                } else {
+                    Some(column_name.clone())
+                }
+            }
+            _ => None,
+        }
     }
 }
 

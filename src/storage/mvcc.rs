@@ -833,14 +833,14 @@ impl VersionedTable {
     /// Get statistics for query planning
     pub fn get_table_stats(&self) -> crate::types::statistics::TableStatistics {
         use crate::types::statistics::ColumnStatistics;
-        
+
         let mut stats = crate::types::statistics::TableStatistics {
             row_count: self.versions.len(),
             indexes: HashMap::new(),
             columns: HashMap::new(),
             correlations: HashMap::new(),
         };
-        
+
         // Calculate column statistics
         for (col_idx, column) in self.schema.columns.iter().enumerate() {
             let mut col_stats = ColumnStatistics {
@@ -852,16 +852,16 @@ impl VersionedTable {
                 most_common_values: Vec::new(),
                 histogram: None,
             };
-            
+
             // Collect all values for this column from committed versions
             let mut value_counts: HashMap<Value, usize> = HashMap::new();
             let mut all_values = Vec::new();
-            
+
             for versions in self.versions.values() {
                 // Only count the latest committed version
-                if let Some(version) = versions.iter().rev().find(|v| 
+                if let Some(version) = versions.iter().rev().find(|v| {
                     self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
-                ) {
+                }) {
                     if col_idx < version.row.values.len() {
                         let value = &version.row.values[col_idx];
                         if value.is_null() {
@@ -873,26 +873,30 @@ impl VersionedTable {
                     }
                 }
             }
-            
+
             col_stats.distinct_count = value_counts.len();
-            
+
             // Find min/max for ordered types
             if !all_values.is_empty() {
                 all_values.sort();
                 col_stats.min_value = Some(all_values.first().unwrap().clone());
                 col_stats.max_value = Some(all_values.last().unwrap().clone());
-                
+
                 // Create histogram for numeric columns
-                if matches!(column.datatype, crate::types::value::DataType::Integer | crate::types::value::DataType::Decimal(_, _)) {
+                if matches!(
+                    column.datatype,
+                    crate::types::value::DataType::Integer
+                        | crate::types::value::DataType::Decimal(_, _)
+                ) {
                     col_stats.histogram = self.create_histogram(&all_values, 10);
                 }
             }
-            
+
             // Find most common values (top 5)
             let mut value_freq: Vec<(Value, usize)> = value_counts.into_iter().collect();
             value_freq.sort_by(|a, b| b.1.cmp(&a.1));
             col_stats.most_common_values = value_freq.into_iter().take(5).collect();
-            
+
             stats.columns.insert(column.name.clone(), col_stats);
         }
 
@@ -902,36 +906,49 @@ impl VersionedTable {
         if sample_size >= 10 {
             let mut sampled_rows = Vec::new();
             let mut count = 0;
-            
+
             // Sample rows evenly across the table
             let step = stats.row_count.max(1) / sample_size;
             for (i, versions) in self.versions.values().enumerate() {
                 if i % step == 0 && count < sample_size {
-                    if let Some(version) = versions.iter().rev().find(|v| 
-                        self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
-                    ) {
+                    if let Some(version) = versions.iter().rev().find(|v| {
+                        self.committed_transactions.contains(&v.created_by)
+                            && v.deleted_by.is_none()
+                    }) {
                         sampled_rows.push(&version.row.values);
                         count += 1;
                     }
                 }
             }
-            
+
             // Calculate pairwise correlations for numeric columns
             for (i, col1) in self.schema.columns.iter().enumerate() {
-                if !matches!(col1.datatype, crate::types::value::DataType::Integer | crate::types::value::DataType::Decimal(_, _)) {
+                if !matches!(
+                    col1.datatype,
+                    crate::types::value::DataType::Integer
+                        | crate::types::value::DataType::Decimal(_, _)
+                ) {
                     continue;
                 }
-                
+
                 for (j, col2) in self.schema.columns.iter().enumerate().skip(i + 1) {
-                    if !matches!(col2.datatype, crate::types::value::DataType::Integer | crate::types::value::DataType::Decimal(_, _)) {
+                    if !matches!(
+                        col2.datatype,
+                        crate::types::value::DataType::Integer
+                            | crate::types::value::DataType::Decimal(_, _)
+                    ) {
                         continue;
                     }
-                    
+
                     // Calculate Pearson correlation coefficient
                     let correlation = self.calculate_correlation(&sampled_rows, i, j);
                     if let Some(corr) = correlation {
-                        stats.correlations.insert((col1.name.clone(), col2.name.clone()), corr);
-                        stats.correlations.insert((col2.name.clone(), col1.name.clone()), corr);
+                        stats
+                            .correlations
+                            .insert((col1.name.clone(), col2.name.clone()), corr);
+                        stats
+                            .correlations
+                            .insert((col2.name.clone(), col1.name.clone()), corr);
                     }
                 }
             }
@@ -965,23 +982,27 @@ impl VersionedTable {
 
         stats
     }
-    
+
     /// Create a histogram from sorted values
-    fn create_histogram(&self, sorted_values: &[Value], num_buckets: usize) -> Option<crate::types::statistics::Histogram> {
+    fn create_histogram(
+        &self,
+        sorted_values: &[Value],
+        num_buckets: usize,
+    ) -> Option<crate::types::statistics::Histogram> {
         if sorted_values.is_empty() || num_buckets == 0 {
             return None;
         }
-        
+
         let mut boundaries = Vec::new();
         let mut frequencies = vec![0; num_buckets];
-        
+
         // Create equal-width buckets (simplified - could be improved with equal-depth)
         let step = sorted_values.len() / num_buckets;
         for i in 0..=num_buckets {
             let idx = (i * step).min(sorted_values.len() - 1);
             boundaries.push(sorted_values[idx].clone());
         }
-        
+
         // Count values in each bucket
         let mut bucket_idx = 0;
         for value in sorted_values {
@@ -992,23 +1013,28 @@ impl VersionedTable {
                 frequencies[bucket_idx] += 1;
             }
         }
-        
+
         Some(crate::types::statistics::Histogram {
             num_buckets,
             boundaries,
             frequencies,
         })
     }
-    
+
     /// Calculate Pearson correlation coefficient between two columns
-    fn calculate_correlation(&self, sampled_rows: &[&Vec<Value>], col1: usize, col2: usize) -> Option<f64> {
+    fn calculate_correlation(
+        &self,
+        sampled_rows: &[&Vec<Value>],
+        col1: usize,
+        col2: usize,
+    ) -> Option<f64> {
         if sampled_rows.is_empty() {
             return None;
         }
-        
+
         let mut x_values = Vec::new();
         let mut y_values = Vec::new();
-        
+
         // Extract numeric values
         for row in sampled_rows {
             if col1 < row.len() && col2 < row.len() {
@@ -1026,20 +1052,20 @@ impl VersionedTable {
                 y_values.push(y_val);
             }
         }
-        
+
         if x_values.len() < 2 {
             return None;
         }
-        
+
         // Calculate means
         let x_mean = x_values.iter().sum::<f64>() / x_values.len() as f64;
         let y_mean = y_values.iter().sum::<f64>() / y_values.len() as f64;
-        
+
         // Calculate correlation
         let mut covariance: f64 = 0.0;
         let mut x_variance: f64 = 0.0;
         let mut y_variance: f64 = 0.0;
-        
+
         for i in 0..x_values.len() {
             let x_diff = x_values[i] - x_mean;
             let y_diff = y_values[i] - y_mean;
@@ -1047,11 +1073,11 @@ impl VersionedTable {
             x_variance += x_diff * x_diff;
             y_variance += y_diff * y_diff;
         }
-        
+
         if x_variance == 0.0 || y_variance == 0.0 {
             return Some(0.0);
         }
-        
+
         Some(covariance / (x_variance.sqrt() * y_variance.sqrt()))
     }
 
