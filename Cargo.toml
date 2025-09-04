@@ -3,6 +3,8 @@ members = [
     "crates/hlc",
     "crates/sql",
     "crates/kv",
+    "crates/engine",
+    "crates/coordinator",
 ]
 resolver = "2"
 
@@ -27,3 +29,22 @@ uuid = { version = "1.18.1", features = ["serde", "v4"] }
 proven-hlc = { path = "crates/hlc" }
 proven-sql = { path = "crates/sql" }
 proven-kv = { path = "crates/kv" }
+
+# Root package for examples
+[package]
+name = "proven-sql-examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[example]]
+name = "distributed_transaction"
+path = "examples/distributed_transaction.rs"
+
+[dependencies]
+bincode = { workspace = true }
+proven-coordinator = { path = "crates/coordinator" }
+proven-engine = { path = "crates/engine" }
+proven-kv = { path = "crates/kv" }
+proven-sql = { path = "crates/sql" }
+tokio = { workspace = true }

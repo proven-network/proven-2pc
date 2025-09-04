@@ -1,15 +1,18 @@
 [package]
-name = "proven-kv"
+name = "proven-engine"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 bincode = { workspace = true }
+futures = "0.3"
 parking_lot = { workspace = true }
 proven-hlc = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+uuid = { version = "1.0", features = ["v4"] }
 
 [dev-dependencies]
-proven-engine = { path = "../engine" }
+proven-kv = { path = "../kv" }
+proven-sql = { path = "../sql" }

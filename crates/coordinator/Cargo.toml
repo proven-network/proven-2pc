@@ -1,15 +1,17 @@
 [package]
-name = "proven-kv"
+name = "proven-coordinator"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bincode = { workspace = true }
 parking_lot = { workspace = true }
+proven-engine = { path = "../engine" }
 proven-hlc = { workspace = true }
+proven-kv = { path = "../kv" }
+proven-sql = { path = "../sql" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-proven-engine = { path = "../engine" }
+bincode = { workspace = true }

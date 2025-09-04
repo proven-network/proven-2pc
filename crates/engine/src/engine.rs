@@ -1,0 +1,203 @@
+//! Core mock engine implementation
+//!
+//! This module provides the central mock engine that manages streams,
+//! pub/sub, and coordination between components.
+
+use crate::{Message, MockEngineError, Result, stream::StreamManager};
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
+
+/// Mock engine that simulates the production consensus engine
+pub struct MockEngine {
+    /// Stream manager for ordered message streams
+    streams: Arc<StreamManager>,
+
+    /// Pub/sub subscriptions
+    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>>,
+
+    /// Request/reply handlers
+    request_handlers:
+        Arc<Mutex<HashMap<String, mpsc::Sender<(Message, oneshot::Sender<Message>)>>>>,
+}
+
+impl MockEngine {
+    /// Create a new mock engine
+    pub fn new() -> Self {
+        Self {
+            streams: Arc::new(StreamManager::new()),
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            request_handlers: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Get the stream manager
+    pub fn streams(&self) -> &Arc<StreamManager> {
+        &self.streams
+    }
+
+    /// Create a new stream
+    pub fn create_stream(&self, name: String) -> Result<()> {
+        self.streams.create_stream(name)
+    }
+
+    /// Publish messages to a stream
+    pub fn publish_to_stream(&self, stream_name: &str, messages: Vec<Message>) -> Result<u64> {
+        self.streams.append_to_stream(stream_name, messages)
+    }
+
+    /// Stream messages from a stream
+    pub fn stream_messages(
+        &self,
+        stream_name: &str,
+        start_sequence: Option<u64>,
+    ) -> Result<mpsc::Receiver<Message>> {
+        self.streams.create_consumer(stream_name, start_sequence)
+    }
+
+    /// Publish messages to a subject (pub/sub)
+    pub fn publish(&self, subject: &str, messages: Vec<Message>) -> Result<()> {
+        let subs = self.subscriptions.lock();
+
+        // Find all matching subscriptions
+        let mut sent = false;
+        for (pattern, subscribers) in subs.iter() {
+            if subject_matches(subject, pattern) {
+                for sub in subscribers {
+                    for msg in &messages {
+                        let _ = sub.try_send(msg.clone());
+                        sent = true;
+                    }
+                }
+            }
+        }
+
+        // Also check request handlers
+        let handlers = self.request_handlers.lock();
+        if let Some(handler) = handlers.get(subject) {
+            // For request handlers, we expect a single message and need a reply
+            if messages.len() == 1 {
+                let (reply_tx, _reply_rx) = oneshot::channel();
+                let _ = handler.try_send((messages[0].clone(), reply_tx));
+                sent = true;
+            }
+        }
+
+        if !sent {
+            // It's OK if no one is listening - that's valid in pub/sub
+            // But we'll return success
+        }
+
+        Ok(())
+    }
+
+    /// Subscribe to a subject pattern
+    pub fn subscribe(&self, subject_pattern: &str) -> mpsc::Receiver<Message> {
+        let (tx, rx) = mpsc::channel(1000);
+
+        let mut subs = self.subscriptions.lock();
+        subs.entry(subject_pattern.to_string())
+            .or_insert_with(Vec::new)
+            .push(tx);
+
+        rx
+    }
+
+    /// Register a request handler for a subject
+    pub fn register_handler(
+        &self,
+        subject: &str,
+    ) -> mpsc::Receiver<(Message, oneshot::Sender<Message>)> {
+        let (tx, rx) = mpsc::channel(100);
+
+        let mut handlers = self.request_handlers.lock();
+        handlers.insert(subject.to_string(), tx);
+
+        rx
+    }
+
+    /// Send a request and wait for reply
+    pub async fn request(
+        &self,
+        subject: &str,
+        message: Message,
+        timeout_ms: u64,
+    ) -> Result<Message> {
+        // Check if there's a handler for this subject
+        let handlers = self.request_handlers.lock();
+        if let Some(handler) = handlers.get(subject) {
+            let (reply_tx, reply_rx) = oneshot::channel();
+
+            // Send the request to the handler
+            if handler.try_send((message, reply_tx)).is_err() {
+                return Err(MockEngineError::ChannelClosed);
+            }
+
+            // Wait for reply with timeout
+            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), reply_rx).await
+            {
+                Ok(Ok(reply)) => Ok(reply),
+                Ok(Err(_)) => Err(MockEngineError::ChannelClosed),
+                Err(_) => Err(MockEngineError::Timeout),
+            }
+        } else {
+            // No handler registered
+            Err(MockEngineError::NoSubscribers(subject.to_string()))
+        }
+    }
+
+    /// Clean up closed subscriptions
+    pub fn cleanup(&self) {
+        let mut subs = self.subscriptions.lock();
+        for subscribers in subs.values_mut() {
+            subscribers.retain(|s| !s.is_closed());
+        }
+
+        let mut handlers = self.request_handlers.lock();
+        handlers.retain(|_, h| !h.is_closed());
+    }
+}
+
+impl Default for MockEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Check if a subject matches a pattern
+fn subject_matches(subject: &str, pattern: &str) -> bool {
+    // Simple pattern matching:
+    // - Exact match
+    // - Wildcard * matches one token
+    // - Wildcard > matches one or more tokens
+
+    let subject_parts: Vec<&str> = subject.split('.').collect();
+    let pattern_parts: Vec<&str> = pattern.split('.').collect();
+
+    let mut s_idx = 0;
+    let mut p_idx = 0;
+
+    while s_idx < subject_parts.len() && p_idx < pattern_parts.len() {
+        let pattern_part = pattern_parts[p_idx];
+
+        if pattern_part == ">" {
+            // > matches the rest
+            return true;
+        } else if pattern_part == "*" {
+            // * matches exactly one token
+            s_idx += 1;
+            p_idx += 1;
+        } else if pattern_part == subject_parts[s_idx] {
+            // Exact match
+            s_idx += 1;
+            p_idx += 1;
+        } else {
+            // No match
+            return false;
+        }
+    }
+
+    // Check if we consumed both entirely
+    s_idx == subject_parts.len() && p_idx == pattern_parts.len()
+}
