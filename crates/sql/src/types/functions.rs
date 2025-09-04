@@ -181,7 +181,7 @@ pub fn evaluate_function(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hlc::{HlcTimestamp, NodeId};
+    use proven_hlc::{HlcTimestamp, NodeId};
 
     #[test]
     fn test_deterministic_now() {

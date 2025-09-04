@@ -362,8 +362,8 @@ pub(crate) fn evaluate_expression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hlc::{HlcClock, NodeId};
     use crate::storage::mvcc::MvccStorage;
+    use proven_hlc::{HlcClock, NodeId};
 
     fn setup_test() -> (MvccStorage, TransactionContext) {
         let storage = MvccStorage::new();

@@ -1,0 +1,18 @@
+[package]
+name = "proven-sql"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+proven-hlc = { workspace = true }
+
+bincode = { workspace = true }
+bytes = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }

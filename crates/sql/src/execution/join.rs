@@ -401,7 +401,7 @@ pub fn execute_nested_loop_join<'a>(
     _storage: &MvccStorage,
 ) -> Result<Rows<'a>> {
     // For now, create a dummy context - this should come from the transaction context
-    use crate::hlc::{HlcTimestamp, NodeId};
+    use proven_hlc::{HlcTimestamp, NodeId};
     let context = TransactionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)));
     let joiner = NestedLoopJoiner::new(
         left,
@@ -443,10 +443,10 @@ pub fn execute_hash_join<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hlc::{HlcTimestamp, NodeId};
     use crate::stream::transaction::TransactionContext;
     use crate::types::expression::Expression;
     use crate::types::value::Value;
+    use proven_hlc::{HlcTimestamp, NodeId};
 
     fn create_test_context() -> TransactionContext {
         TransactionContext::new(HlcTimestamp::new(100, 0, NodeId::new(1)))

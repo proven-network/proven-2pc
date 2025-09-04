@@ -452,8 +452,8 @@ impl Display for Expression {
 mod tests {
     use super::super::value::{Row, Value};
     use super::Expression;
-    use crate::hlc::{HlcTimestamp, NodeId};
     use crate::stream::transaction::TransactionContext;
+    use proven_hlc::{HlcTimestamp, NodeId};
     use rust_decimal::Decimal;
     use std::str::FromStr;
 

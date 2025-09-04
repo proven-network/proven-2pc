@@ -1,9 +1,17 @@
-[package]
-name = "proven-sql"
+[workspace]
+members = [
+    "crates/hlc",
+    "crates/sql",
+    "crates/kv",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+# External dependencies
 bincode = "2.0.1"
 bytes = { version = "1.7", features = ["serde"] }
 hex = "0.4"
@@ -13,4 +21,9 @@ rust_decimal = { version = "1.32", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 thiserror = "2.0.16"
 tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "macros", "time"] }
-uuid = { version = "1.10", features = ["serde", "v4"] }
+uuid = { version = "1.18.1", features = ["serde", "v4"] }
+
+# Internal crates
+proven-hlc = { path = "crates/hlc" }
+proven-sql = { path = "crates/sql" }
+proven-kv = { path = "crates/kv" }

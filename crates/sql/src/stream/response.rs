@@ -4,8 +4,8 @@
 //! results back to coordinators.
 
 use crate::execution::ExecutionResult;
-use crate::hlc::HlcTimestamp;
 use crate::types::value::Value;
+use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

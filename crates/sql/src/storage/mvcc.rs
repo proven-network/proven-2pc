@@ -4,9 +4,9 @@
 //! with PCC for conflict prevention.
 
 use crate::error::{Error, Result};
-use crate::hlc::HlcTimestamp;
 use crate::types::schema::Table;
 use crate::types::value::{StorageRow as Row, Value};
+use proven_hlc::HlcTimestamp;
 use rust_decimal::prelude::ToPrimitive;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -1661,9 +1661,9 @@ impl MvccStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hlc::{HlcTimestamp, NodeId};
     use crate::types::schema::Column;
     use crate::types::value::DataType;
+    use proven_hlc::{HlcTimestamp, NodeId};
 
     fn create_test_schema() -> Table {
         Table::new(

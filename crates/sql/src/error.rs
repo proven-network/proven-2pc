@@ -1,7 +1,7 @@
 //! Error types for the SQL engine
 
-use crate::hlc::HlcTimestamp;
 use crate::storage::lock::LockMode;
+use proven_hlc::HlcTimestamp;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;

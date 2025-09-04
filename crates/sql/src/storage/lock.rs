@@ -1,7 +1,7 @@
 //! Lock manager that tracks lock ownership and detects conflicts
 
 use crate::error::Result;
-use crate::hlc::HlcTimestamp;
+use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -160,7 +160,7 @@ mod tests {
     use super::*;
 
     fn create_tx_id(seed: u8) -> TxId {
-        use crate::hlc::{HlcClock, NodeId};
+        use proven_hlc::{HlcClock, NodeId};
         let clock = HlcClock::new(NodeId::from_seed(seed));
         clock.now()
     }

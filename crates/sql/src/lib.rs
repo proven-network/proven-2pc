@@ -10,12 +10,14 @@
 
 pub mod error;
 pub mod execution;
-pub mod hlc;
 pub mod parser;
 pub mod planner;
 pub mod storage;
 pub mod stream;
 pub mod types;
+
+// Re-export HLC types from proven-hlc
+pub use proven_hlc as hlc;
 
 pub use error::{Error, Result};
 pub use execution::{ExecutionResult, Executor};

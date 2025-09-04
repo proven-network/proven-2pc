@@ -3,8 +3,8 @@
 //! This module contains transaction state management and context
 //! for executing SQL operations within the stream processor.
 
-use crate::hlc::HlcTimestamp;
 use crate::storage::lock::LockKey;
+use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 
 /// Transaction state

@@ -1,0 +1,11 @@
+[package]
+name = "proven-kv"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+proven-hlc = { workspace = true }
+
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

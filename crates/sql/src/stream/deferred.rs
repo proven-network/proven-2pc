@@ -3,9 +3,9 @@
 //! This module handles operations that must wait for locks to be released,
 //! manages the wait graph for deadlock detection, and implements wound-wait logic.
 
-use crate::hlc::HlcTimestamp;
 use crate::storage::lock::{LockKey, LockMode};
 use crate::stream::message::SqlOperation;
+use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
 
 /// A SQL operation that is waiting for locks
@@ -190,7 +190,7 @@ impl Default for DeferredOperationsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hlc::NodeId;
+    use proven_hlc::NodeId;
 
     fn create_timestamp(seconds: u64) -> HlcTimestamp {
         HlcTimestamp::new(seconds, 0, NodeId::new(1))

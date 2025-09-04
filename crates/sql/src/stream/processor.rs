@@ -11,10 +11,10 @@ use super::stats_cache::StatisticsCache;
 use super::transaction::{TransactionContext, TransactionState};
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, Executor};
-use crate::hlc::HlcTimestamp;
 use crate::planner::planner::Planner;
 use crate::storage::lock::LockManager;
 use crate::storage::mvcc::MvccStorage;
+use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 
 /// SQL stream processor with transaction isolation
