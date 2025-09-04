@@ -3,6 +3,7 @@
 //! This crate will provide a distributed key-value store using the same
 //! HLC timestamps and stream processing patterns as the SQL engine.
 
+pub mod storage;
 pub mod stream;
 pub mod types;
 

@@ -412,6 +412,8 @@ dependencies = [
 name = "proven-kv"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "parking_lot",
  "proven-hlc",
  "serde",
  "thiserror",
