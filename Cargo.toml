@@ -1,10 +1,11 @@
 [workspace]
 members = [
-    "crates/hlc",
-    "crates/sql",
-    "crates/kv",
-    "crates/engine",
     "crates/coordinator",
+    "crates/engine",
+    "crates/hlc",
+    "crates/kv",
+    "crates/sql",
+    "crates/stream",
 ]
 resolver = "2"
 
@@ -14,6 +15,7 @@ edition = "2024"
 
 [workspace.dependencies]
 # External dependencies
+async-trait = "0.1"
 bytes = { version = "1.7", features = ["serde"] }
 hex = "0.4"
 parking_lot = "0.12"
@@ -23,9 +25,14 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 thiserror = "2.0.16"
 tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio-test = "0.4"
+tracing = "0.1"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 
 # Internal crates
+proven-coordinator = { path = "crates/coordinator" }
+proven-engine = { path = "crates/engine" }
 proven-hlc = { path = "crates/hlc" }
-proven-sql = { path = "crates/sql" }
 proven-kv = { path = "crates/kv" }
+proven-sql = { path = "crates/sql" }
+proven-stream = { path = "crates/stream" }
