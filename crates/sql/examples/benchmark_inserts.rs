@@ -3,10 +3,8 @@
 //! This benchmark measures the throughput of the SQL engine by inserting
 //! 1 million rows into a table through the streaming interface.
 
-use proven_engine::{MockClient, MockEngine};
-use proven_sql::stream::{
-    message::StreamMessage, operation::SqlOperation, processor::SqlStreamProcessor,
-};
+use proven_engine::{Message, MockClient, MockEngine};
+use proven_sql::stream::{operation::SqlOperation, processor::SqlStreamProcessor};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -159,7 +157,7 @@ fn create_message(
     coordinator_id: Option<&str>,
     auto_commit: bool,
     txn_phase: Option<&str>,
-) -> StreamMessage {
+) -> Message {
     let mut headers = HashMap::new();
     headers.insert("txn_id".to_string(), txn_id.to_string());
 
@@ -181,5 +179,5 @@ fn create_message(
         Vec::new()
     };
 
-    StreamMessage { body, headers }
+    Message::new(body, headers)
 }

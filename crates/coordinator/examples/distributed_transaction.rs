@@ -8,13 +8,10 @@
 use proven_coordinator::MockCoordinator;
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::{
-    stream::{
-        message::{KvOperation, StreamMessage as KvStreamMessage},
-        processor::KvStreamProcessor,
-    },
+    stream::{operation::KvOperation, processor::KvStreamProcessor},
     types::Value as KvValue,
 };
-use proven_sql::stream::{message::SqlOperation, processor::SqlStreamProcessor};
+use proven_sql::stream::{operation::SqlOperation, processor::SqlStreamProcessor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -57,12 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut processor = sql_processor;
 
         while let Some(msg) = sql_stream.recv().await {
-            // Convert engine Message to SQL StreamMessage
-            let sql_msg = proven_sql::stream::message::StreamMessage::new(
-                msg.body.clone(),
-                msg.headers.clone(),
-            );
-
             // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {
@@ -75,8 +66,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Process the message
-            if let Err(e) = processor.process_message(sql_msg).await {
+            // Process the message directly - no conversion needed
+            if let Err(e) = processor.process_message(msg).await {
                 println!("  [SQL] Error processing message: {}", e);
             }
         }
@@ -97,14 +88,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut processor = kv_processor;
 
         while let Some(msg) = kv_stream.recv().await {
-            // Convert engine Message to KV StreamMessage
-            let kv_msg = KvStreamMessage::new(msg.body.clone(), msg.headers.clone());
-
             // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {
                     println!("  [KV] Received {} phase for transaction {}", phase, txn_id);
-                } else if !kv_msg.body.is_empty() {
+                } else if !msg.body.is_empty() {
                     // Try to decode the KV operation
                     if let Ok(op) = serde_json::from_slice::<KvOperation>(&msg.body) {
                         println!(
@@ -116,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Process the message
-            if let Err(e) = processor.process_message(kv_msg).await {
+            if let Err(e) = processor.process_message(msg).await {
                 println!("  [KV] Error processing message: {}", e);
             }
         }

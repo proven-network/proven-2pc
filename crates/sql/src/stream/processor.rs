@@ -5,7 +5,7 @@
 //! conflict prevention.
 
 use super::deferred::DeferredOperationsManager;
-use super::message::{SqlOperation, StreamMessage};
+use super::operation::SqlOperation;
 use super::response::{SqlResponse, convert_execution_result};
 use super::stats_cache::StatisticsCache;
 use super::transaction::{TransactionContext, TransactionState};
@@ -14,7 +14,7 @@ use crate::execution::{ExecutionResult, Executor};
 use crate::planner::planner::Planner;
 use crate::storage::lock::{LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
-use proven_engine::MockClient;
+use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -121,7 +121,7 @@ impl SqlStreamProcessor {
     ///
     /// All operation messages must include a coordinator_id to ensure proper
     /// response routing, especially for deferred operations and wound notifications.
-    pub async fn process_message(&mut self, message: StreamMessage) -> Result<()> {
+    pub async fn process_message(&mut self, message: Message) -> Result<()> {
         let txn_id_str = message
             .txn_id()
             .ok_or_else(|| Error::InvalidValue("Missing txn_id header".into()))?;
@@ -617,7 +617,7 @@ mod tests {
         coordinator_id: &str, // Required for all operations
         auto_commit: bool,
         txn_phase: Option<&str>,
-    ) -> StreamMessage {
+    ) -> Message {
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
 
@@ -640,7 +640,7 @@ mod tests {
             Vec::new()
         };
 
-        StreamMessage::new(body, headers)
+        Message::new(body, headers)
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 //! manages the wait graph for deadlock detection, and implements wound-wait logic.
 
 use crate::storage::lock::LockMode;
-use crate::stream::message::KvOperation;
+use crate::stream::operation::KvOperation;
 use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
 

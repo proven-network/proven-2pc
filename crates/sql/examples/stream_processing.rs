@@ -3,10 +3,9 @@
 //! This demonstrates how the SQL engine consumes ordered messages from a stream,
 //! handles transactions with PCC, and returns results through a response channel.
 
-use proven_engine::{MockClient, MockEngine};
+use proven_engine::{Message, MockClient, MockEngine};
 use proven_sql::stream::{
-    message::StreamMessage, operation::SqlOperation, processor::SqlStreamProcessor,
-    response::SqlResponse,
+    operation::SqlOperation, processor::SqlStreamProcessor, response::SqlResponse,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -180,7 +179,7 @@ fn create_message(
     coordinator_id: Option<&str>,
     auto_commit: bool,
     txn_phase: Option<&str>,
-) -> StreamMessage {
+) -> Message {
     let mut headers = HashMap::new();
     headers.insert("txn_id".to_string(), txn_id.to_string());
 
@@ -202,5 +201,5 @@ fn create_message(
         Vec::new()
     };
 
-    StreamMessage { body, headers }
+    Message::new(body, headers)
 }

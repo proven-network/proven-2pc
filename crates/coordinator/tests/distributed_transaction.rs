@@ -2,7 +2,7 @@
 
 use proven_coordinator::MockCoordinator;
 use proven_engine::MockEngine;
-use proven_kv::stream::message::KvOperation;
+use proven_kv::stream::operation::KvOperation;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

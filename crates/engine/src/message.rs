@@ -65,6 +65,36 @@ impl Message {
     pub fn get_header(&self, key: &str) -> Option<&str> {
         self.headers.get(key).map(|s| s.as_str())
     }
+
+    /// Get transaction ID from headers
+    pub fn txn_id(&self) -> Option<&str> {
+        self.get_header("txn_id")
+    }
+
+    /// Get coordinator ID from headers
+    pub fn coordinator_id(&self) -> Option<&str> {
+        self.get_header("coordinator_id")
+    }
+
+    /// Get transaction phase from headers
+    pub fn txn_phase(&self) -> Option<&str> {
+        self.get_header("txn_phase")
+    }
+
+    /// Get request ID from headers
+    pub fn request_id(&self) -> Option<&str> {
+        self.get_header("request_id")
+    }
+
+    /// Check if this is an auto-commit message
+    pub fn is_auto_commit(&self) -> bool {
+        self.get_header("auto_commit") == Some("true")
+    }
+
+    /// Check if this is a transaction control message (commit/abort/prepare)
+    pub fn is_transaction_control(&self) -> bool {
+        self.body.is_empty() && self.txn_phase().is_some()
+    }
 }
 
 // Allow conversion from byte vectors

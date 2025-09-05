@@ -5,13 +5,13 @@
 //! conflict prevention.
 
 use super::deferred::{DeferredOperation, DeferredOperationsManager};
-use super::message::{KvOperation, StreamMessage};
+use super::operation::KvOperation;
 use super::response::KvResponse;
 use super::transaction::TransactionContext;
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
 use crate::types::Value;
-use proven_engine::MockClient;
+use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -124,7 +124,7 @@ impl KvStreamProcessor {
     }
 
     /// Process a message from the stream (matches SQL pattern)
-    pub async fn process_message(&mut self, message: StreamMessage) -> Result<()> {
+    pub async fn process_message(&mut self, message: Message) -> Result<()> {
         let txn_id_str = message
             .txn_id()
             .ok_or_else(|| Error::InvalidValue("Missing txn_id header".into()))?;
@@ -140,7 +140,7 @@ impl KvStreamProcessor {
                         .prepare_transaction(
                             txn_id,
                             txn_id_str,
-                            message.headers.get("request_id").cloned(),
+                            message.request_id().map(|s| s.to_string()),
                         )
                         .await;
                 }
@@ -172,7 +172,7 @@ impl KvStreamProcessor {
         })?;
 
         // Get request ID if present
-        let request_id = message.headers.get("request_id").cloned();
+        let request_id = message.request_id().map(|s| s.to_string());
 
         // Store coordinator ID for this transaction (for wounded notifications)
         self.transaction_coordinators
@@ -696,7 +696,7 @@ impl KvStreamProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_engine::MockClient;
+    use proven_engine::{Message, MockClient};
 
     fn create_message(
         operation: Option<KvOperation>,
@@ -704,7 +704,7 @@ mod tests {
         coordinator_id: &str,
         auto_commit: bool,
         txn_phase: Option<&str>,
-    ) -> StreamMessage {
+    ) -> Message {
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
 
@@ -727,7 +727,7 @@ mod tests {
             Vec::new()
         };
 
-        StreamMessage::new(body, headers)
+        Message::new(body, headers)
     }
 
     #[tokio::test]

@@ -5,10 +5,10 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::stream::message::{SqlOperation, StreamMessage};
+    use crate::stream::operation::SqlOperation;
     use crate::stream::processor::SqlStreamProcessor;
     use crate::stream::response::SqlResponse;
-    use proven_engine::MockClient;
+    use proven_engine::{Message, MockClient};
     use std::collections::HashMap;
 
     /// Helper to create a test message
@@ -18,7 +18,7 @@ mod tests {
         coordinator_id: &str,
         auto_commit: bool,
         txn_phase: Option<&str>,
-    ) -> StreamMessage {
+    ) -> Message {
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
 
@@ -40,7 +40,7 @@ mod tests {
             Vec::new()
         };
 
-        StreamMessage::new(body, headers)
+        Message::new(body, headers)
     }
 
     #[tokio::test]
