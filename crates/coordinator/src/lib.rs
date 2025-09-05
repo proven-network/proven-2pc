@@ -176,4 +176,120 @@ mod tests {
             Some(TransactionState::Committed)
         ));
     }
+
+    #[tokio::test]
+    async fn test_single_participant_optimization() {
+        let engine = Arc::new(MockEngine::new());
+        engine.create_stream("single-stream".to_string()).unwrap();
+
+        let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
+
+        // Begin transaction with no participants
+        let txn_id = coordinator.begin_transaction().await.unwrap();
+
+        // Execute operation on single stream
+        coordinator
+            .execute_operation(&txn_id, "single-stream", b"operation".to_vec())
+            .await
+            .unwrap();
+
+        // Subscribe to stream to verify prepare_and_commit is sent
+        let mut stream_consumer = engine.stream_messages("single-stream", None).unwrap();
+
+        // Commit - should use prepare_and_commit optimization
+        tokio::spawn(async move {
+            coordinator.commit_transaction(&txn_id).await.unwrap();
+        });
+
+        // First message should be the operation
+        let op_msg = stream_consumer.recv().await.unwrap();
+        assert_eq!(op_msg.body, b"operation");
+
+        // Second message should be prepare_and_commit
+        let commit_msg = stream_consumer.recv().await.unwrap();
+        assert_eq!(
+            commit_msg.headers.get("txn_phase"),
+            Some(&"prepare_and_commit".to_string())
+        );
+        assert!(commit_msg.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_empty_transaction_commit() {
+        let engine = Arc::new(MockEngine::new());
+        let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
+
+        // Begin transaction with no participants
+        let txn_id = coordinator.begin_transaction().await.unwrap();
+
+        // Commit with no operations (0 participants)
+        coordinator.commit_transaction(&txn_id).await.unwrap();
+
+        // Should be committed without any messages sent
+        assert!(matches!(
+            coordinator.get_transaction_state(&txn_id),
+            Some(TransactionState::Committed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_participants_uses_2pc() {
+        let engine = Arc::new(MockEngine::new());
+        engine.create_stream("stream-a".to_string()).unwrap();
+        engine.create_stream("stream-b".to_string()).unwrap();
+
+        let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
+
+        // Begin transaction
+        let txn_id = coordinator.begin_transaction().await.unwrap();
+
+        // Execute operations on two streams
+        coordinator
+            .execute_operation(&txn_id, "stream-a", b"op1".to_vec())
+            .await
+            .unwrap();
+        coordinator
+            .execute_operation(&txn_id, "stream-b", b"op2".to_vec())
+            .await
+            .unwrap();
+
+        // Subscribe to verify prepare messages
+        let mut stream_a_consumer = engine.stream_messages("stream-a", None).unwrap();
+        let mut stream_b_consumer = engine.stream_messages("stream-b", None).unwrap();
+
+        // Commit - should use standard 2PC
+        tokio::spawn(async move {
+            coordinator.commit_transaction(&txn_id).await.unwrap();
+        });
+
+        // Skip operation messages
+        let _ = stream_a_consumer.recv().await.unwrap();
+        let _ = stream_b_consumer.recv().await.unwrap();
+
+        // Both should receive prepare (not prepare_and_commit)
+        let prepare_a = stream_a_consumer.recv().await.unwrap();
+        assert_eq!(
+            prepare_a.headers.get("txn_phase"),
+            Some(&"prepare".to_string())
+        );
+
+        let prepare_b = stream_b_consumer.recv().await.unwrap();
+        assert_eq!(
+            prepare_b.headers.get("txn_phase"),
+            Some(&"prepare".to_string())
+        );
+
+        // Then commit messages
+        let commit_a = stream_a_consumer.recv().await.unwrap();
+        assert_eq!(
+            commit_a.headers.get("txn_phase"),
+            Some(&"commit".to_string())
+        );
+
+        let commit_b = stream_b_consumer.recv().await.unwrap();
+        assert_eq!(
+            commit_b.headers.get("txn_phase"),
+            Some(&"commit".to_string())
+        );
+    }
 }

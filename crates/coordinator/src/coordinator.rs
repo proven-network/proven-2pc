@@ -273,25 +273,106 @@ impl MockCoordinator {
 
     /// Commit a distributed transaction using 2PC
     ///
-    /// TODO (Phase 3): Check participant count and use prepare_and_commit for single participant
+    /// Optimizes for single participant by sending combined prepare_and_commit
     pub async fn commit_transaction(&self, txn_id: &str) -> Result<()> {
-        // Phase 1: Prepare
+        // Get participants and check count
+        let participants = {
+            let txns = self.transactions.lock();
+            let txn = txns
+                .get(txn_id)
+                .ok_or_else(|| CoordinatorError::TransactionNotFound(txn_id.to_string()))?;
+            txn.participants.clone()
+        };
+
+        match participants.len() {
+            0 => {
+                // Empty transaction - just mark as committed
+                let mut txns = self.transactions.lock();
+                let txn = txns.get_mut(txn_id).unwrap();
+                txn.state = TransactionState::Committed;
+                Ok(())
+            }
+            1 => {
+                // Single participant optimization - use prepare_and_commit
+                self.commit_single_participant(txn_id, &participants[0])
+                    .await
+            }
+            _ => {
+                // Multiple participants - use standard 2PC
+                self.commit_multiple_participants(txn_id, &participants)
+                    .await
+            }
+        }
+    }
+
+    /// Commit with single participant optimization
+    async fn commit_single_participant(&self, txn_id: &str, participant: &str) -> Result<()> {
+        // Update state to preparing
         {
             let mut txns = self.transactions.lock();
-            let txn = txns
-                .get_mut(txn_id)
-                .ok_or_else(|| CoordinatorError::TransactionNotFound(txn_id.to_string()))?;
-
+            let txn = txns.get_mut(txn_id).unwrap();
             txn.state = TransactionState::Preparing;
         }
 
-        // Send prepare messages to all participants
-        let participants = {
-            let txns = self.transactions.lock();
-            txns.get(txn_id).unwrap().participants.clone()
-        };
+        // Send prepare_and_commit message
+        let request_id = format!(
+            "prepare_commit-{}-{}",
+            txn_id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        );
 
-        // TODO (Phase 3): If participants.len() == 1, send prepare_and_commit instead
+        let mut headers = HashMap::new();
+        headers.insert("txn_id".to_string(), txn_id.to_string());
+        headers.insert("txn_phase".to_string(), "prepare_and_commit".to_string());
+        headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
+        headers.insert("request_id".to_string(), request_id.clone());
+
+        let message = Message::new(Vec::new(), headers);
+        self.client
+            .publish_to_stream(participant.to_string(), vec![message])
+            .await?;
+
+        // Wait for response if enabled
+        if self.wait_for_prepare_votes {
+            // For prepare_and_commit, we expect either success or failure
+            let success = self
+                .collect_prepare_votes(txn_id, &[participant.to_string()], &request_id)
+                .await?;
+
+            if !success {
+                // Single participant couldn't prepare_and_commit, mark as aborted
+                let mut txns = self.transactions.lock();
+                let txn = txns.get_mut(txn_id).unwrap();
+                txn.state = TransactionState::Aborted;
+                return Ok(()); // Already handled by participant
+            }
+        }
+
+        // Mark as committed
+        {
+            let mut txns = self.transactions.lock();
+            let txn = txns.get_mut(txn_id).unwrap();
+            txn.state = TransactionState::Committed;
+        }
+
+        Ok(())
+    }
+
+    /// Commit with standard 2PC for multiple participants
+    async fn commit_multiple_participants(
+        &self,
+        txn_id: &str,
+        participants: &[String],
+    ) -> Result<()> {
+        // Phase 1: Prepare
+        {
+            let mut txns = self.transactions.lock();
+            let txn = txns.get_mut(txn_id).unwrap();
+            txn.state = TransactionState::Preparing;
+        }
 
         // Generate a unique request ID for this prepare round
         let request_id = format!(
@@ -303,7 +384,7 @@ impl MockCoordinator {
                 .as_millis()
         );
 
-        for stream in &participants {
+        for stream in participants {
             let mut headers = HashMap::new();
             headers.insert("txn_id".to_string(), txn_id.to_string());
             headers.insert("txn_phase".to_string(), "prepare".to_string());
@@ -321,7 +402,7 @@ impl MockCoordinator {
         // Wait for prepare votes if enabled, otherwise mock success
         if self.wait_for_prepare_votes {
             let all_prepared = self
-                .collect_prepare_votes(txn_id, &participants, &request_id)
+                .collect_prepare_votes(txn_id, participants, &request_id)
                 .await?;
 
             if !all_prepared {
@@ -346,7 +427,7 @@ impl MockCoordinator {
         }
 
         // Send commit messages to all participants
-        for stream in &participants {
+        for stream in participants {
             let mut headers = HashMap::new();
             headers.insert("txn_id".to_string(), txn_id.to_string());
             headers.insert("txn_phase".to_string(), "commit".to_string());

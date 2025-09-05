@@ -141,6 +141,47 @@ impl SqlStreamProcessor {
                         )
                         .await;
                 }
+                Some("prepare_and_commit") => {
+                    // Single participant optimization - prepare and commit atomically
+                    let request_id = message.headers.get("request_id").cloned();
+
+                    // Try to prepare
+                    return match self
+                        .prepare_transaction(txn_id, txn_id_str, request_id.clone())
+                        .await
+                    {
+                        Ok(()) => {
+                            // Prepare succeeded, immediately commit
+                            match self.commit_transaction(txn_id).await {
+                                Ok(()) => {
+                                    // Send success response (Prepared is success for prepare_and_commit)
+                                    if let Some(coordinator_id) =
+                                        message.headers.get("coordinator_id")
+                                    {
+                                        self.send_response_with_request(
+                                            coordinator_id,
+                                            txn_id_str,
+                                            SqlResponse::Prepared,
+                                            request_id,
+                                        );
+                                    }
+                                    Ok(())
+                                }
+                                Err(e) => {
+                                    // Commit failed after prepare - this shouldn't happen
+                                    // but abort and report error
+                                    let _ = self.abort_transaction(txn_id).await;
+                                    Err(e)
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Prepare failed - abort and report
+                            let _ = self.abort_transaction(txn_id).await;
+                            Err(e)
+                        }
+                    };
+                }
                 Some("commit") => return self.commit_transaction(txn_id).await,
                 Some("abort") => return self.abort_transaction(txn_id).await,
                 Some(phase) => {
