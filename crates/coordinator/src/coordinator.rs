@@ -79,15 +79,15 @@ impl MockCoordinator {
 
     /// Begin a new distributed transaction
     ///
-    /// TODO (Phase 2): Remove participants parameter and discover dynamically
-    pub async fn begin_transaction(&self, participants: Vec<String>) -> Result<String> {
+    /// Participants will be discovered dynamically as operations are sent to streams
+    pub async fn begin_transaction(&self) -> Result<String> {
         let timestamp = self.hlc.lock().now();
         let txn_id = format!("{}:{}", self.coordinator_id, timestamp);
 
         let transaction = Transaction {
             id: txn_id.clone(),
             state: TransactionState::Active,
-            participants: participants.clone(),
+            participants: Vec::new(), // Start with empty participants
             timestamp,
             prepare_votes: HashMap::new(),
         };
@@ -100,7 +100,7 @@ impl MockCoordinator {
 
     /// Execute an operation within a transaction
     ///
-    /// TODO (Phase 2): Add stream to participants if not already present
+    /// Adds the stream as a participant if not already present
     /// TODO (Phase 4): Include participant awareness info in message headers
     pub async fn execute_operation(
         &self,
@@ -108,19 +108,25 @@ impl MockCoordinator {
         stream: &str,
         operation: Vec<u8>,
     ) -> Result<()> {
-        // Check transaction exists and is active
-        let txns = self.transactions.lock();
-        let txn = txns
-            .get(txn_id)
-            .ok_or_else(|| CoordinatorError::TransactionNotFound(txn_id.to_string()))?;
+        // Check transaction exists and is active, add participant if new
+        {
+            let mut txns = self.transactions.lock();
+            let txn = txns
+                .get_mut(txn_id)
+                .ok_or_else(|| CoordinatorError::TransactionNotFound(txn_id.to_string()))?;
 
-        if !matches!(txn.state, TransactionState::Active) {
-            return Err(CoordinatorError::InvalidState(format!(
-                "Transaction {} is not active",
-                txn_id
-            )));
+            if !matches!(txn.state, TransactionState::Active) {
+                return Err(CoordinatorError::InvalidState(format!(
+                    "Transaction {} is not active",
+                    txn_id
+                )));
+            }
+
+            // Add participant if not already present
+            if !txn.participants.contains(&stream.to_string()) {
+                txn.participants.push(stream.to_string());
+            }
         }
-        drop(txns);
 
         // Create message with transaction headers and unique request ID
         let request_id = format!(

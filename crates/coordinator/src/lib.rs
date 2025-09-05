@@ -46,11 +46,8 @@
 //!     let engine = Arc::new(MockEngine::new());
 //!     let coordinator = MockCoordinator::new("coord-1".to_string(), engine);
 //!     
-//!     // Begin transaction across SQL and KV
-//!     let txn_id = coordinator
-//!         .begin_transaction(vec!["sql-stream".to_string(), "kv-stream".to_string()])
-//!         .await
-//!         .unwrap();
+//!     // Begin transaction (participants discovered dynamically)
+//!     let txn_id = coordinator.begin_transaction().await.unwrap();
 //!     
 //!     // Execute operations
 //!     coordinator.execute_operation(&txn_id, "sql-stream", b"INSERT...".to_vec()).await.unwrap();
@@ -85,11 +82,8 @@ mod tests {
 
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
-        // Begin a transaction across both systems
-        let txn_id = coordinator
-            .begin_transaction(vec!["sql-stream".to_string(), "kv-stream".to_string()])
-            .await
-            .unwrap();
+        // Begin a transaction (participants discovered dynamically)
+        let txn_id = coordinator.begin_transaction().await.unwrap();
 
         // Verify transaction is active
         assert!(matches!(
@@ -130,10 +124,7 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin and then abort a transaction
-        let txn_id = coordinator
-            .begin_transaction(vec!["sql-stream".to_string(), "kv-stream".to_string()])
-            .await
-            .unwrap();
+        let txn_id = coordinator.begin_transaction().await.unwrap();
 
         // Abort the transaction
         coordinator.abort_transaction(&txn_id).await.unwrap();
@@ -142,6 +133,47 @@ mod tests {
         assert!(matches!(
             coordinator.get_transaction_state(&txn_id),
             Some(TransactionState::Aborted)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_participant_discovery() {
+        let engine = Arc::new(MockEngine::new());
+
+        // Create streams
+        engine.create_stream("stream-a".to_string()).unwrap();
+        engine.create_stream("stream-b".to_string()).unwrap();
+        engine.create_stream("stream-c".to_string()).unwrap();
+
+        let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
+
+        // Begin transaction with no participants
+        let txn_id = coordinator.begin_transaction().await.unwrap();
+
+        // Execute operations on different streams (participants added dynamically)
+        coordinator
+            .execute_operation(&txn_id, "stream-a", b"op1".to_vec())
+            .await
+            .unwrap();
+
+        coordinator
+            .execute_operation(&txn_id, "stream-b", b"op2".to_vec())
+            .await
+            .unwrap();
+
+        // Same stream again (should not duplicate)
+        coordinator
+            .execute_operation(&txn_id, "stream-a", b"op3".to_vec())
+            .await
+            .unwrap();
+
+        // Commit should send prepare to only stream-a and stream-b
+        coordinator.commit_transaction(&txn_id).await.unwrap();
+
+        // Verify the transaction committed successfully
+        assert!(matches!(
+            coordinator.get_transaction_state(&txn_id),
+            Some(TransactionState::Committed)
         ));
     }
 }

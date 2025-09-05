@@ -119,12 +119,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     println!("✓ Created coordinator\n");
 
-    // 9. Begin a distributed transaction
+    // 9. Begin a distributed transaction (participants discovered dynamically)
     println!("=== Starting Distributed Transaction ===");
-    let txn_id = coordinator
-        .begin_transaction(vec!["sql-stream".to_string(), "kv-stream".to_string()])
-        .await?;
-    println!("✓ Transaction started: {}\n", txn_id);
+    let txn_id = coordinator.begin_transaction().await?;
+    println!("✓ Transaction started: {}", txn_id);
+    println!("  (Participants will be discovered as operations are sent)\n");
 
     // 10. Execute SQL operations
     println!("=== Executing SQL Operations ===");
@@ -209,9 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 14. Demonstrate abort scenario
     println!("=== Demonstrating Transaction Abort ===");
-    let abort_txn_id = coordinator
-        .begin_transaction(vec!["sql-stream".to_string(), "kv-stream".to_string()])
-        .await?;
+    let abort_txn_id = coordinator.begin_transaction().await?;
     println!("✓ Started new transaction: {}", abort_txn_id);
 
     // Execute some operations
