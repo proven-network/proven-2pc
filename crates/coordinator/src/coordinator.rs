@@ -19,12 +19,14 @@ use crate::transaction::{PrepareVote, Transaction, TransactionState};
 use parking_lot::Mutex;
 use proven_engine::{Message, MockClient, MockEngine};
 use proven_hlc::{HlcClock, NodeId};
+use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
 /// Mock coordinator for distributed transactions
+#[derive(Clone)]
 pub struct MockCoordinator {
     /// Coordinator ID
     coordinator_id: String,
@@ -90,6 +92,8 @@ impl MockCoordinator {
             participants: Vec::new(), // Start with empty participants
             timestamp,
             prepare_votes: HashMap::new(),
+            participant_awareness: HashMap::new(),
+            participant_offsets: HashMap::new(),
         };
 
         self.transactions.lock().insert(txn_id.clone(), transaction);
@@ -100,16 +104,16 @@ impl MockCoordinator {
 
     /// Execute an operation within a transaction
     ///
-    /// Adds the stream as a participant if not already present
-    /// TODO (Phase 4): Include participant awareness info in message headers
+    /// Adds the stream as a participant if not already present and
+    /// includes information about other participants this stream hasn't been told about yet
     pub async fn execute_operation(
         &self,
         txn_id: &str,
         stream: &str,
         operation: Vec<u8>,
     ) -> Result<()> {
-        // Check transaction exists and is active, add participant if new
-        {
+        // Check transaction exists and is active, add participant if new, get unknown participants
+        let (is_new_participant, new_participant_offsets) = {
             let mut txns = self.transactions.lock();
             let txn = txns
                 .get_mut(txn_id)
@@ -123,10 +127,44 @@ impl MockCoordinator {
             }
 
             // Add participant if not already present
-            if !txn.participants.contains(&stream.to_string()) {
+            let is_new_participant = !txn.participants.contains(&stream.to_string());
+            if is_new_participant {
                 txn.participants.push(stream.to_string());
+                txn.participant_awareness
+                    .insert(stream.to_string(), HashSet::new());
+                // We'll set the actual offset after we publish the message
             }
-        }
+
+            // Build map of participants this stream doesn't know about yet
+            let mut new_participants = HashMap::new();
+            let stream_awareness = txn
+                .participant_awareness
+                .get(&stream.to_string())
+                .cloned()
+                .unwrap_or_default();
+
+            for participant in &txn.participants {
+                // Don't tell a stream about itself
+                if participant != stream && !stream_awareness.contains(participant) {
+                    // Get the offset when this participant joined
+                    let offset = txn
+                        .participant_offsets
+                        .get(participant)
+                        .copied()
+                        .unwrap_or(0);
+                    new_participants.insert(participant.clone(), offset);
+                }
+            }
+
+            // Update this stream's awareness with the participants we're about to tell it about
+            if let Some(awareness) = txn.participant_awareness.get_mut(stream) {
+                for participant in new_participants.keys() {
+                    awareness.insert(participant.clone());
+                }
+            }
+
+            (is_new_participant, new_participants)
+        };
 
         // Create message with transaction headers and unique request ID
         let request_id = format!(
@@ -143,14 +181,29 @@ impl MockCoordinator {
         headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
         headers.insert("request_id".to_string(), request_id);
 
-        // TODO (Phase 4): Add participant list and offsets to headers
+        // Include new participants if there are any
+        if !new_participant_offsets.is_empty() {
+            headers.insert(
+                "new_participants".to_string(),
+                serde_json::to_string(&new_participant_offsets).unwrap(),
+            );
+        }
 
         let message = Message::new(operation, headers);
 
-        // Send to the appropriate stream
-        self.client
+        // Send to the appropriate stream and get the actual offset
+        let offset = self
+            .client
             .publish_to_stream(stream.to_string(), vec![message])
             .await?;
+
+        // If this is a new participant, store its actual offset
+        if is_new_participant {
+            let mut txns = self.transactions.lock();
+            if let Some(txn) = txns.get_mut(txn_id) {
+                txn.participant_offsets.insert(stream.to_string(), offset);
+            }
+        }
 
         Ok(())
     }
@@ -385,13 +438,57 @@ impl MockCoordinator {
         );
 
         for stream in participants {
+            // Calculate any final participant deltas for this stream
+            let new_participant_offsets = {
+                let txns = self.transactions.lock();
+                let txn = txns.get(txn_id).unwrap();
+
+                let mut new_participants = HashMap::new();
+                let stream_awareness = txn
+                    .participant_awareness
+                    .get(stream)
+                    .cloned()
+                    .unwrap_or_default();
+
+                for participant in &txn.participants {
+                    // Don't tell a stream about itself, and only include participants it doesn't know about
+                    if participant != stream && !stream_awareness.contains(participant) {
+                        let offset = txn
+                            .participant_offsets
+                            .get(participant)
+                            .copied()
+                            .unwrap_or(0);
+                        new_participants.insert(participant.clone(), offset);
+                    }
+                }
+
+                new_participants
+            };
+
+            // Update awareness for this prepare message
+            if !new_participant_offsets.is_empty() {
+                let mut txns = self.transactions.lock();
+                let txn = txns.get_mut(txn_id).unwrap();
+                if let Some(awareness) = txn.participant_awareness.get_mut(stream) {
+                    for participant in new_participant_offsets.keys() {
+                        awareness.insert(participant.clone());
+                    }
+                }
+            }
+
             let mut headers = HashMap::new();
             headers.insert("txn_id".to_string(), txn_id.to_string());
             headers.insert("txn_phase".to_string(), "prepare".to_string());
             headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
             headers.insert("request_id".to_string(), request_id.clone());
 
-            // TODO (Phase 4): Include participant list and offsets for recovery
+            // Include any final participant deltas
+            if !new_participant_offsets.is_empty() {
+                headers.insert(
+                    "new_participants".to_string(),
+                    serde_json::to_string(&new_participant_offsets).unwrap(),
+                );
+            }
 
             let message = Message::new(Vec::new(), headers);
             self.client

@@ -292,4 +292,202 @@ mod tests {
             Some(&"commit".to_string())
         );
     }
+
+    #[tokio::test]
+    async fn test_participant_awareness_tracking() {
+        let engine = Arc::new(MockEngine::new());
+
+        // Create three streams
+        engine.create_stream("stream-a".to_string()).unwrap();
+        engine.create_stream("stream-b".to_string()).unwrap();
+        engine.create_stream("stream-c".to_string()).unwrap();
+
+        let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
+
+        // Begin transaction
+        let txn_id = coordinator.begin_transaction().await.unwrap();
+
+        // Subscribe to streams to verify awareness updates
+        let mut stream_a_consumer = engine.stream_messages("stream-a", None).unwrap();
+        let mut stream_b_consumer = engine.stream_messages("stream-b", None).unwrap();
+        let mut stream_c_consumer = engine.stream_messages("stream-c", None).unwrap();
+
+        // First operation on stream-a (no new_participants header expected)
+        coordinator
+            .execute_operation(&txn_id, "stream-a", b"op1".to_vec())
+            .await
+            .unwrap();
+
+        let msg_a1 = stream_a_consumer.recv().await.unwrap();
+        assert_eq!(msg_a1.body, b"op1");
+        assert!(msg_a1.headers.get("new_participants").is_none());
+
+        // Second operation on stream-b (should learn about stream-a)
+        coordinator
+            .execute_operation(&txn_id, "stream-b", b"op2".to_vec())
+            .await
+            .unwrap();
+
+        let msg_b1 = stream_b_consumer.recv().await.unwrap();
+        assert_eq!(msg_b1.body, b"op2");
+
+        // Verify stream-b learns about stream-a with its offset
+        let new_participants_b = msg_b1.headers.get("new_participants").unwrap();
+        let participants_map: std::collections::HashMap<String, u64> =
+            serde_json::from_str(new_participants_b).unwrap();
+        assert_eq!(participants_map.len(), 1);
+        assert!(participants_map.contains_key("stream-a"));
+
+        // Third operation on stream-c (should learn about both stream-a and stream-b)
+        coordinator
+            .execute_operation(&txn_id, "stream-c", b"op3".to_vec())
+            .await
+            .unwrap();
+
+        let msg_c1 = stream_c_consumer.recv().await.unwrap();
+        assert_eq!(msg_c1.body, b"op3");
+
+        let new_participants_c = msg_c1.headers.get("new_participants").unwrap();
+        let participants_map: std::collections::HashMap<String, u64> =
+            serde_json::from_str(new_participants_c).unwrap();
+        assert_eq!(participants_map.len(), 2);
+        assert!(participants_map.contains_key("stream-a"));
+        assert!(participants_map.contains_key("stream-b"));
+
+        // Fourth operation back on stream-a (should only learn about stream-c, not stream-b again)
+        coordinator
+            .execute_operation(&txn_id, "stream-a", b"op4".to_vec())
+            .await
+            .unwrap();
+
+        let msg_a2 = stream_a_consumer.recv().await.unwrap();
+        assert_eq!(msg_a2.body, b"op4");
+
+        let new_participants_a = msg_a2.headers.get("new_participants").unwrap();
+        let participants_map: std::collections::HashMap<String, u64> =
+            serde_json::from_str(new_participants_a).unwrap();
+        assert_eq!(participants_map.len(), 2); // stream-b and stream-c
+        assert!(participants_map.contains_key("stream-b"));
+        assert!(participants_map.contains_key("stream-c"));
+
+        // Commit and verify prepare messages include any final deltas
+        tokio::spawn({
+            let coordinator = coordinator.clone();
+            let txn_id = txn_id.clone();
+            async move {
+                coordinator.commit_transaction(&txn_id).await.unwrap();
+            }
+        });
+
+        // Check prepare messages
+        let prepare_a = stream_a_consumer.recv().await.unwrap();
+        assert_eq!(
+            prepare_a.headers.get("txn_phase"),
+            Some(&"prepare".to_string())
+        );
+        // stream-a already knows about all participants, no new_participants expected
+        assert!(prepare_a.headers.get("new_participants").is_none());
+
+        let prepare_b = stream_b_consumer.recv().await.unwrap();
+        assert_eq!(
+            prepare_b.headers.get("txn_phase"),
+            Some(&"prepare".to_string())
+        );
+        // stream-b should learn about stream-c in prepare
+        if let Some(new_participants) = prepare_b.headers.get("new_participants") {
+            let participants_map: std::collections::HashMap<String, u64> =
+                serde_json::from_str(new_participants).unwrap();
+            assert_eq!(participants_map.len(), 1);
+            assert!(participants_map.contains_key("stream-c"));
+        }
+
+        let prepare_c = stream_c_consumer.recv().await.unwrap();
+        assert_eq!(
+            prepare_c.headers.get("txn_phase"),
+            Some(&"prepare".to_string())
+        );
+        // stream-c already knows about all participants
+        assert!(prepare_c.headers.get("new_participants").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_participant_awareness_no_duplicates() {
+        let engine = Arc::new(MockEngine::new());
+
+        engine.create_stream("stream-a".to_string()).unwrap();
+        engine.create_stream("stream-b".to_string()).unwrap();
+
+        let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
+        let txn_id = coordinator.begin_transaction().await.unwrap();
+
+        let mut stream_b_consumer = engine.stream_messages("stream-b", None).unwrap();
+
+        // Execute operations
+        coordinator
+            .execute_operation(&txn_id, "stream-a", b"op1".to_vec())
+            .await
+            .unwrap();
+
+        coordinator
+            .execute_operation(&txn_id, "stream-b", b"op2".to_vec())
+            .await
+            .unwrap();
+
+        let msg_b1 = stream_b_consumer.recv().await.unwrap();
+        let new_participants = msg_b1.headers.get("new_participants").unwrap();
+        let participants_map: std::collections::HashMap<String, u64> =
+            serde_json::from_str(new_participants).unwrap();
+        assert_eq!(participants_map.len(), 1);
+        assert!(participants_map.contains_key("stream-a"));
+
+        // Another operation on stream-b (should not re-learn about stream-a)
+        coordinator
+            .execute_operation(&txn_id, "stream-b", b"op3".to_vec())
+            .await
+            .unwrap();
+
+        let msg_b2 = stream_b_consumer.recv().await.unwrap();
+        assert!(msg_b2.headers.get("new_participants").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_participant_offsets_tracking() {
+        let engine = Arc::new(MockEngine::new());
+
+        engine.create_stream("stream-a".to_string()).unwrap();
+        engine.create_stream("stream-b".to_string()).unwrap();
+
+        let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
+        let txn_id = coordinator.begin_transaction().await.unwrap();
+
+        // Subscribe to get actual offsets
+        let mut stream_a_consumer = engine.stream_messages("stream-a", None).unwrap();
+        let mut stream_b_consumer = engine.stream_messages("stream-b", None).unwrap();
+
+        // Execute first operation
+        coordinator
+            .execute_operation(&txn_id, "stream-a", b"op1".to_vec())
+            .await
+            .unwrap();
+
+        let msg_a = stream_a_consumer.recv().await.unwrap();
+        // The first message in stream-a should have sequence 1
+        assert_eq!(msg_a.sequence, Some(1));
+
+        // Execute second operation
+        coordinator
+            .execute_operation(&txn_id, "stream-b", b"op2".to_vec())
+            .await
+            .unwrap();
+
+        let msg_b = stream_b_consumer.recv().await.unwrap();
+
+        // Verify stream-b receives correct offset for stream-a
+        let new_participants = msg_b.headers.get("new_participants").unwrap();
+        let participants_map: std::collections::HashMap<String, u64> =
+            serde_json::from_str(new_participants).unwrap();
+
+        // The offset should be 1 (the sequence number where stream-a joined)
+        assert_eq!(*participants_map.get("stream-a").unwrap(), 1);
+    }
 }

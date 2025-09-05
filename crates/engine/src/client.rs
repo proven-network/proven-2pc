@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Mock client for interacting with the mock engine
+#[derive(Clone)]
 pub struct MockClient {
     /// Node ID
     node_id: String,

@@ -4,7 +4,7 @@
 //! to track distributed transaction state across multiple participants.
 
 use proven_hlc::HlcTimestamp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Transaction state in the coordinator
 ///
@@ -47,9 +47,14 @@ pub struct Transaction {
 
     /// Prepare votes collected from participants
     pub prepare_votes: HashMap<String, PrepareVote>,
-    // Future fields for recovery protocol:
-    // pub participant_awareness: HashMap<String, ParticipantView>,
-    // pub participant_offsets: HashMap<String, u64>,
+
+    /// Track which participants each stream knows about
+    /// Key: stream name, Value: set of other participants it has been told about
+    pub participant_awareness: HashMap<String, HashSet<String>>,
+
+    /// Log offset when each participant first received an operation
+    /// Used as a hint for where to start looking during recovery
+    pub participant_offsets: HashMap<String, u64>,
 }
 
 /// Prepare vote from a participant during 2PC
