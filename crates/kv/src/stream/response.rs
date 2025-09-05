@@ -1,13 +1,13 @@
 //! Response handling for KV stream processing
 //!
-//! This module defines response types and channels for sending
-//! results back to coordinators.
+//! This module defines response types for KV operations.
+//! Protocol-level responses (Prepared, Wounded, etc.) are handled
+//! by the generic stream processor via message headers.
 
 use crate::types::Value;
-use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 
-/// Response sent back to coordinator
+/// Response sent back to coordinator for KV operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KvResponse {
     /// Successful get operation
@@ -22,25 +22,6 @@ pub enum KvResponse {
     /// Successful delete operation
     DeleteResult { key: String, deleted: bool },
 
-    /// Error occurred
+    /// Error occurred during operation
     Error(String),
-
-    /// Transaction was wounded by an older transaction
-    Wounded {
-        /// Transaction that wounded us
-        wounded_by: HlcTimestamp,
-        /// Reason for wounding
-        reason: String,
-    },
-
-    /// Operation is deferred waiting for locks
-    Deferred {
-        /// Transaction we're waiting for
-        waiting_for: HlcTimestamp,
-        /// Key that we need lock for
-        lock_key: String,
-    },
-
-    /// Transaction is prepared and ready to commit
-    Prepared,
 }

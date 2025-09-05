@@ -4,7 +4,6 @@
 mod tests {
     use crate::engine::{OperationResult, TransactionEngine};
     use crate::processor::StreamProcessor;
-    use async_trait::async_trait;
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_hlc::{HlcTimestamp, NodeId};
     use serde::{Deserialize, Serialize};
@@ -40,12 +39,11 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl TransactionEngine for TestEngine {
         type Operation = TestOperation;
         type Response = TestResponse;
 
-        async fn apply_operation(
+        fn apply_operation(
             &mut self,
             operation: Self::Operation,
             _txn_id: HlcTimestamp,
@@ -62,16 +60,16 @@ mod tests {
             }
         }
 
-        async fn prepare(&mut self, _txn_id: HlcTimestamp) -> Result<(), String> {
+        fn prepare(&mut self, _txn_id: HlcTimestamp) -> Result<(), String> {
             Ok(())
         }
 
-        async fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
             self.active_txns.retain(|&id| id != txn_id);
             Ok(())
         }
 
-        async fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
             self.active_txns.retain(|&id| id != txn_id);
             Ok(())
         }

@@ -246,48 +246,61 @@ impl MockCoordinator {
                             && resp_txn_id == txn_id
                             && pending_participants.contains(participant)
                         {
-                            // Deserialize the response from body using serde_json
-                            // Try SQL response first, then KV response
-                            let vote = if let Ok(sql_response) =
-                                serde_json::from_slice::<proven_sql::stream::response::SqlResponse>(
-                                    &msg.body,
-                                ) {
-                                match sql_response {
-                                    proven_sql::stream::response::SqlResponse::Prepared => {
-                                        PrepareVote::Prepared
+                            // Check headers first for protocol status (from generic processor)
+                            let vote = if let Some(status) = msg.headers.get("status") {
+                                match status.as_str() {
+                                    "prepared" => PrepareVote::Prepared,
+                                    "wounded" => {
+                                        let wounded_by = msg.headers.get("wounded_by")
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| "unknown".to_string());
+                                        PrepareVote::Wounded { wounded_by }
                                     }
-                                    proven_sql::stream::response::SqlResponse::Wounded {
-                                        wounded_by,
-                                        ..
-                                    } => PrepareVote::Wounded {
-                                        wounded_by: wounded_by.to_string(),
-                                    },
-                                    proven_sql::stream::response::SqlResponse::Error(e) => {
-                                        PrepareVote::Error(e)
+                                    "error" => {
+                                        let error = msg.headers.get("error")
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| "Unknown error".to_string());
+                                        PrepareVote::Error(error)
                                     }
-                                    _ => PrepareVote::Error("Unexpected response type".to_string()),
+                                    _ => PrepareVote::Error(format!("Unknown status: {}", status))
                                 }
-                            } else if let Ok(kv_response) = serde_json::from_slice::<
-                                proven_kv::stream::response::KvResponse,
-                            >(&msg.body)
-                            {
-                                match kv_response {
-                                    proven_kv::stream::response::KvResponse::Prepared => {
-                                        PrepareVote::Prepared
+                            } else if !msg.body.is_empty() {
+                                // Fallback to deserializing body for backward compatibility
+                                // Try SQL response first, then KV response
+                                if let Ok(sql_response) =
+                                    serde_json::from_slice::<proven_sql::stream::response::SqlResponse>(
+                                        &msg.body,
+                                    ) {
+                                    match sql_response {
+                                        proven_sql::stream::response::SqlResponse::Prepared => {
+                                            PrepareVote::Prepared
+                                        }
+                                        proven_sql::stream::response::SqlResponse::Wounded {
+                                            wounded_by,
+                                            ..
+                                        } => PrepareVote::Wounded {
+                                            wounded_by: wounded_by.to_string(),
+                                        },
+                                        proven_sql::stream::response::SqlResponse::Error(e) => {
+                                            PrepareVote::Error(e)
+                                        }
+                                        _ => PrepareVote::Error("Unexpected response type".to_string()),
                                     }
-                                    proven_kv::stream::response::KvResponse::Wounded {
-                                        wounded_by,
-                                        ..
-                                    } => PrepareVote::Wounded {
-                                        wounded_by: wounded_by.to_string(),
-                                    },
-                                    proven_kv::stream::response::KvResponse::Error(e) => {
-                                        PrepareVote::Error(e)
+                                } else if let Ok(kv_response) = serde_json::from_slice::<
+                                    proven_kv::stream::response::KvResponse,
+                                >(&msg.body)
+                                {
+                                    match kv_response {
+                                        proven_kv::stream::response::KvResponse::Error(e) => {
+                                            PrepareVote::Error(e)
+                                        }
+                                        _ => PrepareVote::Error("Unexpected KV response type for prepare phase".to_string()),
                                     }
-                                    _ => PrepareVote::Error("Unexpected response type".to_string()),
+                                } else {
+                                    PrepareVote::Error("Failed to deserialize response".to_string())
                                 }
                             } else {
-                                PrepareVote::Error("Failed to deserialize response".to_string())
+                                PrepareVote::Error("Empty response with no status header".to_string())
                             };
 
                             // Record vote

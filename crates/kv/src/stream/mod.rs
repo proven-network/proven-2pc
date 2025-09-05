@@ -1,11 +1,15 @@
 //! Stream processing components for KV storage
 
-pub mod deferred;
+pub mod engine;
 pub mod operation;
 pub mod processor;
 pub mod response;
 pub mod transaction;
 
+#[cfg(test)]
+mod test;
+
+pub use engine::KvTransactionEngine;
 pub use operation::KvOperation;
 pub use processor::KvStreamProcessor;
 pub use response::KvResponse;

@@ -158,7 +158,6 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         if message.is_auto_commit() {
             self.engine
                 .commit(txn_id)
-                .await
                 .map_err(ProcessorError::EngineError)?;
             self.retry_deferred_operations(txn_id).await;
         }
@@ -175,7 +174,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         coordinator_id: &str,
         request_id: Option<String>,
     ) -> Result<()> {
-        match self.engine.apply_operation(operation.clone(), txn_id).await {
+        match self.engine.apply_operation(operation.clone(), txn_id) {
             OperationResult::Success(response) => {
                 self.send_response(coordinator_id, txn_id_str, response, request_id);
                 Ok(())
@@ -197,7 +196,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                 // Send wounded response
                 self.send_wounded_response(coordinator_id, txn_id_str, wounded_by, request_id);
                 // Abort the wounded transaction
-                let _ = self.engine.abort(txn_id).await;
+                let _ = self.engine.abort(txn_id);
                 self.deferred_manager
                     .remove_operations_for_transaction(&txn_id);
                 Ok(())
@@ -218,7 +217,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         coordinator_id: Option<&str>,
         request_id: Option<String>,
     ) -> Result<()> {
-        match self.engine.prepare(txn_id).await {
+        match self.engine.prepare(txn_id) {
             Ok(()) => {
                 if let Some(coord_id) = coordinator_id {
                     self.send_prepared_response(coord_id, txn_id_str, request_id);
@@ -243,10 +242,10 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         request_id: Option<String>,
     ) -> Result<()> {
         // Try to prepare
-        match self.engine.prepare(txn_id).await {
+        match self.engine.prepare(txn_id) {
             Ok(()) => {
                 // Prepare succeeded, try to commit
-                match self.engine.commit(txn_id).await {
+                match self.engine.commit(txn_id) {
                     Ok(()) => {
                         if let Some(coord_id) = coordinator_id {
                             self.send_prepared_response(coord_id, txn_id_str, request_id);
@@ -256,7 +255,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                     }
                     Err(e) => {
                         // Commit failed, abort
-                        let _ = self.engine.abort(txn_id).await;
+                        let _ = self.engine.abort(txn_id);
                         if let Some(coord_id) = coordinator_id {
                             self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
                         }
@@ -266,7 +265,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             }
             Err(e) => {
                 // Prepare failed, abort
-                let _ = self.engine.abort(txn_id).await;
+                let _ = self.engine.abort(txn_id);
                 if let Some(coord_id) = coordinator_id {
                     self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
                 }
@@ -285,7 +284,6 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     ) -> Result<()> {
         self.engine
             .commit(txn_id)
-            .await
             .map_err(ProcessorError::EngineError)?;
 
         self.retry_deferred_operations(txn_id).await;
@@ -302,7 +300,6 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     ) -> Result<()> {
         self.engine
             .abort(txn_id)
-            .await
             .map_err(ProcessorError::EngineError)?;
 
         self.deferred_manager
@@ -368,19 +365,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         txn_id: &str,
         request_id: Option<String>,
     ) {
-        #[derive(Serialize)]
-        struct PreparedResponse {
-            status: String,
+        let mut headers = HashMap::new();
+        headers.insert("txn_id".to_string(), txn_id.to_string());
+        headers.insert("participant".to_string(), self.stream_name.clone());
+        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("status".to_string(), "prepared".to_string());
+        
+        if let Some(req_id) = request_id {
+            headers.insert("request_id".to_string(), req_id);
         }
 
-        self.send_response(
-            coordinator_id,
-            txn_id,
-            PreparedResponse {
-                status: "prepared".to_string(),
-            },
-            request_id,
-        );
+        let subject = format!("coordinator.{}.response", coordinator_id);
+        let message = Message::new(Vec::new(), headers);
+
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = client.publish(&subject, vec![message]).await;
+        });
     }
 
     /// Send a wounded response
@@ -391,21 +392,24 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         wounded_by: HlcTimestamp,
         request_id: Option<String>,
     ) {
-        #[derive(Serialize)]
-        struct WoundedResponse {
-            status: String,
-            wounded_by: String,
+        let mut headers = HashMap::new();
+        headers.insert("txn_id".to_string(), txn_id.to_string());
+        headers.insert("participant".to_string(), self.stream_name.clone());
+        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("status".to_string(), "wounded".to_string());
+        headers.insert("wounded_by".to_string(), wounded_by.to_string());
+        
+        if let Some(req_id) = request_id {
+            headers.insert("request_id".to_string(), req_id);
         }
 
-        self.send_response(
-            coordinator_id,
-            txn_id,
-            WoundedResponse {
-                status: "wounded".to_string(),
-                wounded_by: wounded_by.to_string(),
-            },
-            request_id,
-        );
+        let subject = format!("coordinator.{}.response", coordinator_id);
+        let message = Message::new(Vec::new(), headers);
+
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = client.publish(&subject, vec![message]).await;
+        });
     }
 
     /// Send an error response
@@ -416,20 +420,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         error: String,
         request_id: Option<String>,
     ) {
-        #[derive(Serialize)]
-        struct ErrorResponse {
-            status: String,
-            error: String,
+        let mut headers = HashMap::new();
+        headers.insert("txn_id".to_string(), txn_id.to_string());
+        headers.insert("participant".to_string(), self.stream_name.clone());
+        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("status".to_string(), "error".to_string());
+        headers.insert("error".to_string(), error);
+        
+        if let Some(req_id) = request_id {
+            headers.insert("request_id".to_string(), req_id);
         }
 
-        self.send_response(
-            coordinator_id,
-            txn_id,
-            ErrorResponse {
-                status: "error".to_string(),
-                error,
-            },
-            request_id,
-        );
+        let subject = format!("coordinator.{}.response", coordinator_id);
+        let message = Message::new(Vec::new(), headers);
+
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = client.publish(&subject, vec![message]).await;
+        });
     }
 }

@@ -3,7 +3,6 @@
 //! This trait defines the interface that SQL, KV, and other storage
 //! systems must implement to work with the generic stream processor.
 
-use async_trait::async_trait;
 use proven_hlc::HlcTimestamp;
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -30,7 +29,10 @@ pub enum OperationResult<R> {
 }
 
 /// Transaction engine that handles the actual storage operations
-#[async_trait]
+///
+/// Note: All methods are synchronous since stream processing must be
+/// ordered and sequential. Each message must be fully processed before
+/// moving to the next one.
 pub trait TransactionEngine: Send + Sync {
     /// The type of operations this engine processes
     type Operation: DeserializeOwned + Send + Clone;
@@ -42,7 +44,7 @@ pub trait TransactionEngine: Send + Sync {
     ///
     /// Returns a result indicating success, blocking, wounding, or error.
     /// The stream processor will handle control flow based on the result.
-    async fn apply_operation(
+    fn apply_operation(
         &mut self,
         operation: Self::Operation,
         txn_id: HlcTimestamp,
@@ -52,17 +54,17 @@ pub trait TransactionEngine: Send + Sync {
     ///
     /// Should validate that the transaction can be committed and
     /// make any necessary preparations, but not actually commit.
-    async fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
+    fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
 
     /// Commit a prepared transaction (2PC phase 2)
     ///
     /// Makes all changes from the transaction visible.
-    async fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
+    fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
 
     /// Abort a transaction, rolling back any changes
     ///
     /// Should clean up all transaction state and release locks.
-    async fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
+    fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
 
     /// Begin a new transaction
     ///
