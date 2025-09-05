@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bincode = { workspace = true }
 futures = "0.3"
 parking_lot = { workspace = true }
 proven-hlc = { workspace = true }

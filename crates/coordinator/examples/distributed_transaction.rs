@@ -6,19 +6,15 @@
 //! Run with: cargo run --example distributed_transaction
 
 use proven_coordinator::MockCoordinator;
-use proven_engine::MockEngine;
+use proven_engine::{MockClient, MockEngine};
 use proven_kv::{
     stream::{
         message::{KvOperation, StreamMessage as KvStreamMessage},
         processor::KvStreamProcessor,
-        response::MockResponseChannel,
     },
     types::Value as KvValue,
 };
-use proven_sql::stream::{
-    message::StreamMessage as SqlStreamMessage, processor::SqlStreamProcessor,
-    response::MockResponseChannel as SqlResponseChannel,
-};
+use proven_sql::stream::{message::SqlOperation, processor::SqlStreamProcessor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -35,65 +31,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.create_stream("kv-stream".to_string())?;
     println!("✓ Created SQL and KV streams");
 
-    // 3. Set up SQL processor with response channel
-    let sql_response_channel = Box::new(Arc::new(SqlResponseChannel::new()));
-    let mut sql_processor = SqlStreamProcessor::new(sql_response_channel);
+    // 3. Create clients for SQL and KV processors
+    let sql_client = Arc::new(MockClient::new("sql-processor".to_string(), engine.clone()));
+    let kv_client = Arc::new(MockClient::new("kv-processor".to_string(), engine.clone()));
+    println!("✓ Created processor clients");
 
-    // 4. Set up KV processor with response channel
-    let kv_response_channel = Box::new(Arc::new(MockResponseChannel::new()));
-    let mut kv_processor = KvStreamProcessor::new(kv_response_channel);
+    // 4. Create SQL processor with its client
+    let sql_processor = SqlStreamProcessor::new(sql_client.clone(), "sql-stream".to_string());
+
+    // 5. Create KV processor with its client
+    let kv_processor = KvStreamProcessor::new(kv_client.clone(), "kv-stream".to_string());
 
     println!("✓ Initialized SQL and KV processors");
-
-    // 5. Create consumers for the streams
-    let mut sql_consumer = engine.stream_messages("sql-stream", None)?;
-    let mut kv_consumer = engine.stream_messages("kv-stream", None)?;
 
     // 6. Spawn SQL processor task
     tokio::spawn(async move {
         println!("  [SQL] Processor started");
-        while let Some(msg) = sql_consumer.recv().await {
-            let sql_msg = SqlStreamMessage {
-                body: msg.body,
-                headers: msg.headers.clone(),
-            };
 
+        // SQL processor consumes messages directly from its stream via the client
+        let mut sql_stream = sql_client
+            .stream_messages("sql-stream".to_string(), None)
+            .await
+            .expect("Failed to create SQL stream consumer");
+
+        let mut processor = sql_processor;
+
+        while let Some(msg) = sql_stream.recv().await {
+            // Convert engine Message to SQL StreamMessage
+            let sql_msg = proven_sql::stream::message::StreamMessage::new(
+                msg.body.clone(),
+                msg.headers.clone(),
+            );
+
+            // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {
                     println!(
                         "  [SQL] Received {} phase for transaction {}",
                         phase, txn_id
                     );
-                } else if !sql_msg.body.is_empty() {
+                } else if !msg.body.is_empty() {
                     println!("  [SQL] Processing operation for transaction {}", txn_id);
-                    // In a real implementation, we'd deserialize and execute SQL
-                    let sql_text = String::from_utf8_lossy(&sql_msg.body);
-                    println!("  [SQL] Query: {}", sql_text);
                 }
             }
 
             // Process the message
-            if let Err(e) = sql_processor.process_message(sql_msg).await {
+            if let Err(e) = processor.process_message(sql_msg).await {
                 println!("  [SQL] Error processing message: {}", e);
             }
         }
+
+        println!("  [SQL] Processor stopped");
     });
 
     // 7. Spawn KV processor task
     tokio::spawn(async move {
         println!("  [KV] Processor started");
-        while let Some(msg) = kv_consumer.recv().await {
+
+        // KV processor consumes messages directly from its stream via the client
+        let mut kv_stream = kv_client
+            .stream_messages("kv-stream".to_string(), None)
+            .await
+            .expect("Failed to create KV stream consumer");
+
+        let mut processor = kv_processor;
+
+        while let Some(msg) = kv_stream.recv().await {
+            // Convert engine Message to KV StreamMessage
             let kv_msg = KvStreamMessage::new(msg.body.clone(), msg.headers.clone());
 
+            // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {
                     println!("  [KV] Received {} phase for transaction {}", phase, txn_id);
                 } else if !kv_msg.body.is_empty() {
                     // Try to decode the KV operation
-                    if let Ok((op, _)) = bincode::decode_from_slice::<KvOperation, _>(
-                        &msg.body,
-                        bincode::config::standard(),
-                    ) {
+                    if let Ok(op) = serde_json::from_slice::<KvOperation>(&msg.body) {
                         println!(
                             "  [KV] Processing operation for transaction {}: {:?}",
                             txn_id, op
@@ -103,14 +116,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Process the message
-            if let Err(e) = kv_processor.process_message(kv_msg).await {
+            if let Err(e) = processor.process_message(kv_msg).await {
                 println!("  [KV] Error processing message: {}", e);
             }
         }
+
+        println!("  [KV] Processor stopped");
     });
 
-    // 8. Create the coordinator
-    let coordinator = Arc::new(MockCoordinator::new(
+    // 8. Create the coordinator with prepare vote collection enabled
+    let coordinator = Arc::new(MockCoordinator::new_with_prepare_votes(
         "coordinator-1".to_string(),
         engine.clone(),
     ));
@@ -127,17 +142,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Executing SQL Operations ===");
 
     // Create table
-    let sql_create = b"CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)".to_vec();
+    let sql_create = SqlOperation::Execute {
+        sql: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)".to_string(),
+    };
+    let sql_create_bytes = serde_json::to_vec(&sql_create)?;
     coordinator
-        .execute_operation(&txn_id, "sql-stream", sql_create)
+        .execute_operation(&txn_id, "sql-stream", sql_create_bytes)
         .await?;
     println!("→ Sent CREATE TABLE command");
 
     // Insert user
-    let sql_insert =
-        b"INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')".to_vec();
+    let sql_insert = SqlOperation::Execute {
+        sql: "INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')"
+            .to_string(),
+    };
+    let sql_insert_bytes = serde_json::to_vec(&sql_insert)?;
     coordinator
-        .execute_operation(&txn_id, "sql-stream", sql_insert)
+        .execute_operation(&txn_id, "sql-stream", sql_insert_bytes)
         .await?;
     println!("→ Sent INSERT command\n");
 
@@ -149,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key: "user:1:metadata".to_string(),
         value: KvValue::String("created_at:2024-01-01T00:00:00Z".to_string()),
     };
-    let metadata_bytes = bincode::encode_to_vec(&user_metadata, bincode::config::standard())?;
+    let metadata_bytes = serde_json::to_vec(&user_metadata)?;
     coordinator
         .execute_operation(&txn_id, "kv-stream", metadata_bytes)
         .await?;
@@ -165,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key: "user:1:preferences".to_string(),
         value: KvValue::Map(preferences),
     };
-    let prefs_bytes = bincode::encode_to_vec(&user_prefs, bincode::config::standard())?;
+    let prefs_bytes = serde_json::to_vec(&user_prefs)?;
     coordinator
         .execute_operation(&txn_id, "kv-stream", prefs_bytes)
         .await?;
@@ -180,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("expires".to_string(), KvValue::Integer(1704067200)), // Unix timestamp
         ])),
     };
-    let session_bytes = bincode::encode_to_vec(&session_data, bincode::config::standard())?;
+    let session_bytes = serde_json::to_vec(&session_data)?;
     coordinator
         .execute_operation(&txn_id, "kv-stream", session_bytes)
         .await?;
@@ -206,16 +227,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Started new transaction: {}", abort_txn_id);
 
     // Execute some operations
-    let sql_op = b"UPDATE users SET name = 'Bob' WHERE id = 1".to_vec();
+    let sql_update = SqlOperation::Execute {
+        sql: "UPDATE users SET name = 'Bob' WHERE id = 1".to_string(),
+    };
+    let sql_update_bytes = serde_json::to_vec(&sql_update)?;
     coordinator
-        .execute_operation(&abort_txn_id, "sql-stream", sql_op)
+        .execute_operation(&abort_txn_id, "sql-stream", sql_update_bytes)
         .await?;
     println!("→ Sent UPDATE command");
 
     let kv_op = KvOperation::Delete {
         key: "session:abc123".to_string(),
     };
-    let kv_bytes = bincode::encode_to_vec(&kv_op, bincode::config::standard())?;
+    let kv_bytes = serde_json::to_vec(&kv_op)?;
     coordinator
         .execute_operation(&abort_txn_id, "kv-stream", kv_bytes)
         .await?;

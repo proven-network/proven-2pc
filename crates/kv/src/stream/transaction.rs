@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 pub enum TransactionState {
     /// Transaction is active and can execute operations
     Active,
+    /// Transaction is prepared (cannot be wounded, waiting for commit/abort)
+    Prepared,
     /// Transaction has committed
     Committed,
     /// Transaction has been aborted
@@ -59,6 +61,21 @@ impl TransactionContext {
     /// Check if transaction is active
     pub fn is_active(&self) -> bool {
         self.state == TransactionState::Active
+    }
+
+    /// Check if transaction is prepared
+    pub fn is_prepared(&self) -> bool {
+        self.state == TransactionState::Prepared
+    }
+
+    /// Mark transaction as prepared (cannot be wounded after this)
+    pub fn prepare(&mut self) -> bool {
+        if self.state == TransactionState::Active && self.wounded_by.is_none() {
+            self.state = TransactionState::Prepared;
+            true
+        } else {
+            false
+        }
     }
 
     /// Mark transaction as committed

@@ -7,9 +7,9 @@
 mod tests {
     use crate::stream::message::{SqlOperation, StreamMessage};
     use crate::stream::processor::SqlStreamProcessor;
-    use crate::stream::response::{MockResponseChannel, SqlResponse};
+    use crate::stream::response::SqlResponse;
+    use proven_engine::MockClient;
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     /// Helper to create a test message
     fn create_message(
@@ -35,7 +35,7 @@ mod tests {
         }
 
         let body = if let Some(op) = operation {
-            bincode::encode_to_vec(&op, bincode::config::standard()).unwrap()
+            serde_json::to_vec(&op).unwrap()
         } else {
             Vec::new()
         };
@@ -45,8 +45,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_wound_older_wounds_younger() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let mut processor = SqlStreamProcessor::new(Box::new(mock_channel.clone()));
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create test client and subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+        let mut younger_responses = test_client
+            .subscribe("coordinator.coord_younger.response", None)
+            .await
+            .unwrap();
+        let mut older_responses = test_client
+            .subscribe("coordinator.coord_older.response", None)
+            .await
+            .unwrap();
 
         // Setup: Create table with a row
         let setup_sql = vec![
@@ -91,33 +101,53 @@ mod tests {
         );
         processor.process_message(msg).await.unwrap();
 
-        // Verify responses
-        let responses = mock_channel.get_responses();
-
-        // Check that younger got wounded notification
-        let wounded_response = responses.iter().find(|(c, _, resp)| {
-            c == "coord_younger" && matches!(resp, SqlResponse::Wounded { .. })
-        });
+        // First, younger transaction should get execute result
+        let younger_initial = younger_responses
+            .recv()
+            .await
+            .expect("Should receive initial response for younger");
+        let younger_initial_resp: SqlResponse =
+            serde_json::from_slice(&younger_initial.body).expect("Should deserialize response");
         assert!(
-            wounded_response.is_some(),
+            matches!(younger_initial_resp, SqlResponse::ExecuteResult { .. }),
+            "Younger transaction should succeed initially"
+        );
+
+        // Then younger should get wounded notification
+        let younger_wounded = younger_responses
+            .recv()
+            .await
+            .expect("Should receive wounded notification for younger");
+        let younger_wounded_resp: SqlResponse = serde_json::from_slice(&younger_wounded.body)
+            .expect("Should deserialize wounded response");
+        assert!(
+            matches!(younger_wounded_resp, SqlResponse::Wounded { .. }),
             "Younger should receive wounded notification"
         );
 
-        // Check that older succeeded
-        let older_response = responses.iter().find(|(c, _, _)| c == "coord_older");
+        // Older transaction should succeed
+        let older_response = older_responses
+            .recv()
+            .await
+            .expect("Should receive response for older transaction");
+        let older_resp: SqlResponse =
+            serde_json::from_slice(&older_response.body).expect("Should deserialize response");
         assert!(
-            matches!(
-                older_response,
-                Some((_, _, SqlResponse::ExecuteResult { .. }))
-            ),
+            matches!(older_resp, SqlResponse::ExecuteResult { .. }),
             "Older transaction should succeed after wounding"
         );
     }
 
     #[tokio::test]
     async fn test_younger_defers_to_older() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let mut processor = SqlStreamProcessor::new(Box::new(mock_channel.clone()));
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create test client and subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+        let mut younger_responses = test_client
+            .subscribe("coordinator.coord_younger.response", None)
+            .await
+            .unwrap();
 
         // Setup
         let setup_sql = vec![
@@ -163,10 +193,14 @@ mod tests {
         processor.process_message(msg).await.unwrap();
 
         // Check that younger got deferred response
-        let responses = mock_channel.get_responses();
-        let younger_response = responses.iter().find(|(c, _, _)| c == "coord_younger");
+        let younger_response = younger_responses
+            .recv()
+            .await
+            .expect("Should receive response for younger transaction");
+        let younger_resp: SqlResponse =
+            serde_json::from_slice(&younger_response.body).expect("Should deserialize response");
         assert!(
-            matches!(younger_response, Some((_, _, SqlResponse::Deferred { .. }))),
+            matches!(younger_resp, SqlResponse::Deferred { .. }),
             "Younger transaction should be deferred"
         );
 
@@ -186,8 +220,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_multi_level_wound_chain() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let mut processor = SqlStreamProcessor::new(Box::new(mock_channel.clone()));
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create test client and subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+        let mut oldest_responses = test_client
+            .subscribe("coordinator.coord_oldest.response", None)
+            .await
+            .unwrap();
 
         // Setup
         let msg = create_message(
@@ -249,21 +289,36 @@ mod tests {
         processor.process_message(msg).await.unwrap();
 
         // Verify oldest succeeded
-        let responses = mock_channel.get_responses();
-        let oldest_response = responses.iter().find(|(c, _, _)| c == "coord_oldest");
+        let oldest_response = oldest_responses
+            .recv()
+            .await
+            .expect("Should receive response for oldest transaction");
+        let oldest_resp: SqlResponse =
+            serde_json::from_slice(&oldest_response.body).expect("Should deserialize response");
         assert!(
-            matches!(
-                oldest_response,
-                Some((_, _, SqlResponse::ExecuteResult { .. }))
-            ),
+            matches!(oldest_resp, SqlResponse::ExecuteResult { .. }),
             "Oldest should succeed after wounding"
         );
     }
 
     #[tokio::test]
     async fn test_wound_with_multiple_locks() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let mut processor = SqlStreamProcessor::new(Box::new(mock_channel.clone()));
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create test client and subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+        let mut younger_responses = test_client
+            .subscribe("coordinator.coord_younger.response", None)
+            .await
+            .unwrap();
+        let mut older_responses = test_client
+            .subscribe("coordinator.coord_older.response", None)
+            .await
+            .unwrap();
+        let mut new_responses = test_client
+            .subscribe("coordinator.coord_new.response", None)
+            .await
+            .unwrap();
 
         // Setup: Create table with multiple rows
         let setup_sql = vec![
@@ -311,17 +366,50 @@ mod tests {
         );
         processor.process_message(msg).await.unwrap();
 
-        // Verify older succeeded
-        let responses = mock_channel.get_responses();
-        let older_response = responses
-            .iter()
-            .filter(|(c, _, _)| c == "coord_older")
-            .last();
+        // First, younger should get execute result for each update
+        let younger_resp1 = younger_responses
+            .recv()
+            .await
+            .expect("Should receive first response for younger");
+        let younger_r1: SqlResponse =
+            serde_json::from_slice(&younger_resp1.body).expect("Should deserialize response");
         assert!(
-            matches!(
-                older_response,
-                Some((_, _, SqlResponse::ExecuteResult { .. }))
-            ),
+            matches!(younger_r1, SqlResponse::ExecuteResult { .. }),
+            "Younger should succeed initially on row 1"
+        );
+
+        let younger_resp2 = younger_responses
+            .recv()
+            .await
+            .expect("Should receive second response for younger");
+        let younger_r2: SqlResponse =
+            serde_json::from_slice(&younger_resp2.body).expect("Should deserialize response");
+        assert!(
+            matches!(younger_r2, SqlResponse::ExecuteResult { .. }),
+            "Younger should succeed initially on row 2"
+        );
+
+        // Then younger should get wounded notification
+        let younger_wounded = younger_responses
+            .recv()
+            .await
+            .expect("Should receive wounded notification");
+        let younger_w: SqlResponse =
+            serde_json::from_slice(&younger_wounded.body).expect("Should deserialize response");
+        assert!(
+            matches!(younger_w, SqlResponse::Wounded { .. }),
+            "Younger should be wounded"
+        );
+
+        // Older should succeed
+        let older_response = older_responses
+            .recv()
+            .await
+            .expect("Should receive response for older");
+        let older_resp: SqlResponse =
+            serde_json::from_slice(&older_response.body).expect("Should deserialize response");
+        assert!(
+            matches!(older_resp, SqlResponse::ExecuteResult { .. }),
             "Older should succeed after wounding"
         );
 
@@ -337,17 +425,15 @@ mod tests {
         );
         processor.process_message(msg).await.unwrap();
 
-        // Get fresh responses after the new operation
-        let all_responses = mock_channel.get_responses();
-        let new_response = all_responses
-            .iter()
-            .filter(|(c, _, _)| c == "coord_new")
-            .last();
+        // New transaction should succeed
+        let new_response = new_responses
+            .recv()
+            .await
+            .expect("Should receive response for new transaction");
+        let new_resp: SqlResponse =
+            serde_json::from_slice(&new_response.body).expect("Should deserialize response");
         assert!(
-            matches!(
-                new_response,
-                Some((_, _, SqlResponse::ExecuteResult { .. }))
-            ),
+            matches!(new_resp, SqlResponse::ExecuteResult { .. }),
             "New transaction should succeed - younger's locks should be released"
         );
     }
@@ -377,8 +463,31 @@ mod tests {
     }
 
     async fn run_wound_sequence() -> Vec<(String, String, SqlResponse)> {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let mut processor = SqlStreamProcessor::new(Box::new(mock_channel.clone()));
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create test client and subscribe to all coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+
+        // We'll collect all responses here
+        let mut collected_responses = Vec::new();
+
+        // Subscribe to the coordinators we'll use
+        let mut coord_1000_responses = test_client
+            .subscribe("coordinator.coord_1000.response", None)
+            .await
+            .unwrap();
+        let mut coord_3000_responses = test_client
+            .subscribe("coordinator.coord_3000.response", None)
+            .await
+            .unwrap();
+        let mut coord_2000_responses = test_client
+            .subscribe("coordinator.coord_2000.response", None)
+            .await
+            .unwrap();
+        let mut coord_4000_responses = test_client
+            .subscribe("coordinator.coord_4000.response", None)
+            .await
+            .unwrap();
 
         // Fixed sequence of operations
         let operations = vec![
@@ -410,25 +519,67 @@ mod tests {
         ];
 
         for (txn_id, sql, auto_commit) in operations {
+            let coord_id = format!("coord_{}", &txn_id[13..17]);
             let msg = create_message(
                 Some(SqlOperation::Execute {
                     sql: sql.to_string(),
                 }),
                 txn_id,
-                &format!("coord_{}", &txn_id[13..17]),
+                &coord_id,
                 auto_commit,
                 None,
             );
             processor.process_message(msg).await.unwrap();
+
+            // Collect responses from appropriate coordinator channel
+            let responses = match &coord_id[6..] {
+                "1000" => &mut coord_1000_responses,
+                "2000" => &mut coord_2000_responses,
+                "3000" => &mut coord_3000_responses,
+                "4000" => &mut coord_4000_responses,
+                _ => continue,
+            };
+
+            // Try to collect any immediate responses
+            while let Some(response_msg) = responses.try_recv() {
+                if let Ok(response) = serde_json::from_slice::<SqlResponse>(&response_msg.body) {
+                    collected_responses.push((coord_id.clone(), txn_id.to_string(), response));
+                }
+            }
         }
 
-        mock_channel.get_responses()
+        // Give time for any delayed responses and collect them
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Collect any remaining responses
+        for (coord_id, responses) in [
+            ("coord_1000", &mut coord_1000_responses),
+            ("coord_2000", &mut coord_2000_responses),
+            ("coord_3000", &mut coord_3000_responses),
+            ("coord_4000", &mut coord_4000_responses),
+        ] {
+            while let Some(response_msg) = responses.try_recv() {
+                if let Ok(response) = serde_json::from_slice::<SqlResponse>(&response_msg.body) {
+                    if let Some(txn_id) = response_msg.headers.get("txn_id") {
+                        collected_responses.push((coord_id.to_string(), txn_id.clone(), response));
+                    }
+                }
+            }
+        }
+
+        collected_responses
     }
 
     #[tokio::test]
     async fn test_wound_clears_wait_graph() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let mut processor = SqlStreamProcessor::new(Box::new(mock_channel.clone()));
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create test client and subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+        let mut t2_responses = test_client
+            .subscribe("coordinator.coord_t2.response", None)
+            .await
+            .unwrap();
 
         // Setup
         let setup_sql = vec![
@@ -498,10 +649,14 @@ mod tests {
         processor.process_message(msg).await.unwrap();
 
         // Verify T2 succeeded
-        let responses = mock_channel.get_responses();
-        let t2_response = responses.iter().filter(|(c, _, _)| c == "coord_t2").last();
+        let t2_response = t2_responses
+            .recv()
+            .await
+            .expect("Should receive response for T2");
+        let t2_resp: SqlResponse =
+            serde_json::from_slice(&t2_response.body).expect("Should deserialize response");
         assert!(
-            matches!(t2_response, Some((_, _, SqlResponse::ExecuteResult { .. }))),
+            matches!(t2_resp, SqlResponse::ExecuteResult { .. }),
             "T2 should succeed after wounding T3"
         );
 

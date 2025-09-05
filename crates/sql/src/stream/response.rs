@@ -7,7 +7,6 @@ use crate::execution::ExecutionResult;
 use crate::types::value::Value;
 use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// Response sent back to coordinator
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,44 +42,9 @@ pub enum SqlResponse {
         /// Lock that we need
         lock_key: String,
     },
-}
 
-/// Channel for sending responses back to coordinators
-pub trait ResponseChannel: Send + Sync {
-    fn send(&self, coordinator_id: &str, txn_id: &str, response: SqlResponse);
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        panic!("as_any not implemented for this ResponseChannel")
-    }
-}
-
-/// Mock implementation for testing
-pub struct MockResponseChannel {
-    responses: Arc<parking_lot::Mutex<Vec<(String, String, SqlResponse)>>>,
-}
-
-impl MockResponseChannel {
-    pub fn new() -> Self {
-        Self {
-            responses: Arc::new(parking_lot::Mutex::new(Vec::new())),
-        }
-    }
-
-    pub fn get_responses(&self) -> Vec<(String, String, SqlResponse)> {
-        self.responses.lock().clone()
-    }
-}
-
-impl ResponseChannel for Arc<MockResponseChannel> {
-    fn send(&self, coordinator_id: &str, txn_id: &str, response: SqlResponse) {
-        self.responses
-            .lock()
-            .push((coordinator_id.to_string(), txn_id.to_string(), response));
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    /// Transaction is prepared and ready to commit
+    Prepared,
 }
 
 /// Convert ExecutionResult to SqlResponse

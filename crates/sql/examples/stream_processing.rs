@@ -3,8 +3,10 @@
 //! This demonstrates how the SQL engine consumes ordered messages from a stream,
 //! handles transactions with PCC, and returns results through a response channel.
 
+use proven_engine::{MockClient, MockEngine};
 use proven_sql::stream::{
-    MockResponseChannel, SqlOperation, SqlResponse, SqlStreamProcessor, StreamMessage,
+    message::StreamMessage, operation::SqlOperation, processor::SqlStreamProcessor,
+    response::SqlResponse,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,13 +15,21 @@ use std::sync::Arc;
 async fn main() {
     println!("=== SQL Stream Processing Demo ===\n");
 
-    // Create response channel to capture results
-    let mock_channel = Arc::new(MockResponseChannel::new());
-    let response_channel: Box<dyn proven_sql::stream::ResponseChannel> =
-        Box::new(mock_channel.clone());
+    // Create mock engine and client
+    let engine = Arc::new(MockEngine::new());
+    let client = Arc::new(MockClient::new("sql-example".to_string(), engine.clone()));
 
-    // Create stream processor with empty storage
-    let mut processor = SqlStreamProcessor::new(response_channel);
+    // Create stream processor
+    let mut processor = SqlStreamProcessor::new(client.clone(), "sql-stream".to_string());
+
+    // Create a test client to subscribe to coordinator responses
+    let test_client = MockClient::new("demo-observer".to_string(), engine.clone());
+
+    // Subscribe to coordinator response channel
+    let mut coord_responses = test_client
+        .subscribe("coordinator.coordinator_1.response", None)
+        .await
+        .unwrap();
 
     // Simulate a stream of messages
     let messages = vec![
@@ -94,62 +104,74 @@ async fn main() {
     println!("Processing {} messages...\n", messages.len());
     for (i, message) in messages.into_iter().enumerate() {
         println!("Message {}: Processing...", i + 1);
+
+        // Get description from the message
+        let description = if let Some(phase) = message.headers.get("txn_phase") {
+            format!("{} phase", phase)
+        } else if message.body.is_empty() {
+            "Empty message".to_string()
+        } else {
+            "SQL operation".to_string()
+        };
+
+        println!("  Type: {}", description);
+
         if let Err(e) = processor.process_message(message).await {
             eprintln!("  Error: {:?}", e);
         }
-    }
 
-    // Display responses
-    println!("\n=== Responses Sent to Coordinators ===\n");
-    let responses = mock_channel.get_responses();
-    for (i, (coordinator, txn_id, response)) in responses.iter().enumerate() {
-        println!("Response {}:", i + 1);
-        println!("  Coordinator: {}", coordinator);
-        println!("  Transaction: {}", txn_id);
-        match response {
-            SqlResponse::QueryResult { columns, rows } => {
-                println!("  Type: Query Result");
-                println!("  Columns: {:?}", columns);
-                println!("  Rows: {} returned", rows.len());
-                for row in rows {
-                    println!("    {:?}", row);
-                }
-            }
-            SqlResponse::ExecuteResult {
-                result_type,
-                rows_affected,
-                message,
-            } => {
-                println!("  Type: Execute Result ({})", result_type);
-                if let Some(count) = rows_affected {
-                    println!("  Rows affected: {}", count);
-                }
-                if let Some(msg) = message {
-                    println!("  Message: {}", msg);
-                }
-            }
-            SqlResponse::Error(e) => {
-                println!("  Type: Error");
-                println!("  Message: {}", e);
-            }
-            SqlResponse::Wounded { wounded_by, reason } => {
-                println!("  Type: Wounded");
-                println!("  Wounded by: {}", wounded_by);
-                println!("  Reason: {}", reason);
-            }
-            SqlResponse::Deferred {
-                waiting_for,
-                lock_key,
-            } => {
-                println!("  Type: Deferred");
-                println!("  Waiting for: {}", waiting_for);
-                println!("  Lock needed: {}", lock_key);
+        // Check for responses (non-blocking)
+        while let Some(response_msg) = coord_responses.try_recv() {
+            if let Ok(response) = serde_json::from_slice::<SqlResponse>(&response_msg.body) {
+                println!("  Response: {}", format_response(&response));
             }
         }
-        println!();
     }
 
-    println!("=== Demo Complete ===");
+    // Give time for final responses and collect them
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    while let Some(response_msg) = coord_responses.try_recv() {
+        if let Ok(response) = serde_json::from_slice::<SqlResponse>(&response_msg.body) {
+            println!("  Late response: {}", format_response(&response));
+        }
+    }
+
+    println!("\n=== Processing Complete ===\n");
+    println!("All messages have been processed and responses collected.");
+
+    println!("\n=== Demo Complete ===");
+}
+
+fn format_response(response: &SqlResponse) -> String {
+    match response {
+        SqlResponse::ExecuteResult {
+            result_type,
+            rows_affected,
+            message,
+        } => {
+            let rows_str = rows_affected
+                .map(|n| format!("{} rows affected", n))
+                .unwrap_or_else(|| "no rows affected".to_string());
+            let msg_str = message
+                .as_ref()
+                .map(|m| format!(", {}", m))
+                .unwrap_or_default();
+            format!("{}: {}{}", result_type, rows_str, msg_str)
+        }
+        SqlResponse::QueryResult { rows, .. } => {
+            if rows.is_empty() {
+                "Query returned 0 rows".to_string()
+            } else if rows.len() == 1 {
+                format!("Query result: {:?}", rows[0])
+            } else {
+                format!("Query returned {} rows: {:?}", rows.len(), rows)
+            }
+        }
+        SqlResponse::Error(e) => format!("Error: {}", e),
+        SqlResponse::Deferred { .. } => "Transaction deferred".to_string(),
+        SqlResponse::Wounded { .. } => "Transaction wounded".to_string(),
+        SqlResponse::Prepared => "Transaction prepared".to_string(),
+    }
 }
 
 fn create_message(
@@ -175,7 +197,7 @@ fn create_message(
     }
 
     let body = if let Some(op) = operation {
-        bincode::encode_to_vec(&op, bincode::config::standard()).unwrap()
+        serde_json::to_vec(&op).unwrap()
     } else {
         Vec::new()
     };

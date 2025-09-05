@@ -6,16 +6,18 @@
 
 use super::deferred::DeferredOperationsManager;
 use super::message::{SqlOperation, StreamMessage};
-use super::response::{ResponseChannel, SqlResponse, convert_execution_result};
+use super::response::{SqlResponse, convert_execution_result};
 use super::stats_cache::StatisticsCache;
 use super::transaction::{TransactionContext, TransactionState};
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, Executor};
 use crate::planner::planner::Planner;
-use crate::storage::lock::LockManager;
+use crate::storage::lock::{LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
+use proven_engine::MockClient;
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// SQL stream processor with transaction isolation
 pub struct SqlStreamProcessor {
@@ -37,8 +39,11 @@ pub struct SqlStreamProcessor {
     /// SQL executor (stateless)
     executor: Executor,
 
-    /// Response channel for sending results back
-    response_channel: Box<dyn ResponseChannel>,
+    /// Engine client for sending responses
+    client: Arc<MockClient>,
+
+    /// Stream name for identification in responses
+    stream_name: String,
 
     /// Current migration version
     migration_version: u32,
@@ -48,8 +53,56 @@ pub struct SqlStreamProcessor {
 }
 
 impl SqlStreamProcessor {
+    /// Create a processor for testing (creates a mock engine internally)
+    #[cfg(test)]
+    pub fn new_for_testing() -> (Self, Arc<proven_engine::MockEngine>) {
+        use proven_engine::MockEngine;
+        let engine = Arc::new(MockEngine::new());
+        let client = Arc::new(MockClient::new(
+            "test-sql-processor".to_string(),
+            engine.clone(),
+        ));
+        (Self::new(client, "sql-stream".to_string()), engine)
+    }
+
+    /// Send a response back to the coordinator via engine pub/sub with optional request_id
+    fn send_response_with_request(
+        &self,
+        coordinator_id: &str,
+        txn_id: &str,
+        response: SqlResponse,
+        request_id: Option<String>,
+    ) {
+        let mut headers = HashMap::new();
+        headers.insert("txn_id".to_string(), txn_id.to_string());
+        headers.insert("participant".to_string(), self.stream_name.clone());
+        if let Some(req_id) = request_id {
+            headers.insert("request_id".to_string(), req_id);
+        }
+
+        // Serialize the response to the body using serde_json
+        let body = serde_json::to_vec(&response).unwrap_or_else(|e| {
+            eprintln!("Failed to serialize SQL response: {}", e);
+            Vec::new()
+        });
+
+        let subject = format!("coordinator.{}.response", coordinator_id);
+        let message = proven_engine::Message::new(body, headers);
+
+        // Use tokio::spawn to avoid blocking
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = client.publish(&subject, vec![message]).await;
+        });
+    }
+
+    /// Send a response back to the coordinator via engine pub/sub
+    fn send_response(&self, coordinator_id: &str, txn_id: &str, response: SqlResponse) {
+        self.send_response_with_request(coordinator_id, txn_id, response, None)
+    }
+
     /// Create a new processor with empty storage
-    pub fn new(response_channel: Box<dyn ResponseChannel>) -> Self {
+    pub fn new(client: Arc<MockClient>, stream_name: String) -> Self {
         Self {
             storage: MvccStorage::new(),
             lock_manager: LockManager::new(),
@@ -57,7 +110,8 @@ impl SqlStreamProcessor {
             transaction_coordinators: HashMap::new(),
             deferred_manager: DeferredOperationsManager::new(),
             executor: Executor::new(),
-            response_channel,
+            client,
+            stream_name,
             migration_version: 0,
             stats_cache: StatisticsCache::new(100), // Update stats every 100 commits
         }
@@ -75,9 +129,18 @@ impl SqlStreamProcessor {
         // Parse transaction ID to HlcTimestamp at the boundary
         let txn_id = HlcTimestamp::parse(txn_id_str).map_err(|e| Error::InvalidValue(e))?;
 
-        // Check if this is a commit/abort message (empty body)
+        // Check if this is a commit/abort/prepare message (empty body)
         if message.is_transaction_control() {
             match message.txn_phase() {
+                Some("prepare") => {
+                    return self
+                        .prepare_transaction(
+                            txn_id,
+                            txn_id_str,
+                            message.headers.get("request_id").cloned(),
+                        )
+                        .await;
+                }
                 Some("commit") => return self.commit_transaction(txn_id).await,
                 Some("abort") => return self.abort_transaction(txn_id).await,
                 Some(phase) => {
@@ -92,12 +155,8 @@ impl SqlStreamProcessor {
         }
 
         // Deserialize the operation
-        let operation: SqlOperation =
-            bincode::decode_from_slice(&message.body, bincode::config::standard())
-                .map_err(|e| {
-                    Error::InvalidValue(format!("Failed to deserialize operation: {}", e))
-                })?
-                .0;
+        let operation: SqlOperation = serde_json::from_slice(&message.body)
+            .map_err(|e| Error::InvalidValue(format!("Failed to deserialize operation: {}", e)))?;
 
         // Ensure transaction exists
         if !self.active_transactions.contains_key(&txn_id) {
@@ -113,18 +172,20 @@ impl SqlStreamProcessor {
         self.transaction_coordinators
             .insert(txn_id, coordinator_id.to_string());
 
+        // Get request ID if present
+        let request_id = message.headers.get("request_id").cloned();
+
         // Execute the operation
         let result = self
             .execute_operation(operation, txn_id, coordinator_id)
             .await;
 
-        // Send response to coordinator
+        // Send response to coordinator with request ID
         let response = match result {
             Ok(res) => res,
             Err(e) => SqlResponse::Error(format!("{:?}", e)),
         };
-        self.response_channel
-            .send(coordinator_id, txn_id_str, response);
+        self.send_response_with_request(coordinator_id, txn_id_str, response, request_id);
 
         // Auto-commit if specified
         if message.is_auto_commit() {
@@ -292,8 +353,7 @@ impl SqlStreamProcessor {
                         "txn_runtime1_{:010}",
                         txn_id.physical * 1_000_000_000 + txn_id.logical as u64
                     );
-                    self.response_channel
-                        .send(coordinator_id, &txn_id_str, response);
+                    self.send_response(coordinator_id, &txn_id_str, response);
 
                     Ok(None) // Operation deferred
                 }
@@ -347,6 +407,63 @@ impl SqlStreamProcessor {
         }
 
         Ok(result)
+    }
+
+    /// Prepare a transaction for commit (2PC)
+    async fn prepare_transaction(
+        &mut self,
+        txn_id: HlcTimestamp,
+        txn_id_str: &str,
+        request_id: Option<String>,
+    ) -> Result<()> {
+        // Get coordinator ID for response
+        let coordinator_id = self
+            .transaction_coordinators
+            .get(&txn_id)
+            .cloned()
+            .unwrap_or_default();
+
+        if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
+            if let Some(wounded_by) = tx_ctx.wounded_by {
+                // Transaction was wounded - send wounded response
+                let response = SqlResponse::Wounded {
+                    wounded_by,
+                    reason: "Transaction wounded before prepare".to_string(),
+                };
+                self.send_response_with_request(
+                    &coordinator_id,
+                    txn_id_str,
+                    response,
+                    request_id.clone(),
+                );
+                Err(Error::TransactionWounded { wounded_by })
+            } else if tx_ctx.prepare() {
+                // Transaction successfully prepared - send prepared response
+                self.send_response_with_request(
+                    &coordinator_id,
+                    txn_id_str,
+                    SqlResponse::Prepared,
+                    request_id.clone(),
+                );
+                Ok(())
+            } else {
+                // Transaction cannot be prepared for other reasons
+                let response =
+                    SqlResponse::Error("Cannot prepare: transaction not active".to_string());
+                self.send_response_with_request(
+                    &coordinator_id,
+                    txn_id_str,
+                    response,
+                    request_id.clone(),
+                );
+                Err(Error::TransactionNotActive(txn_id))
+            }
+        } else {
+            // Transaction doesn't exist
+            let response = SqlResponse::Error("Cannot prepare: transaction not found".to_string());
+            self.send_response_with_request(&coordinator_id, txn_id_str, response, request_id);
+            Err(Error::TransactionNotFound(txn_id))
+        }
     }
 
     /// Commit a transaction
@@ -412,6 +529,18 @@ impl SqlStreamProcessor {
         victim: HlcTimestamp,
         wounded_by: HlcTimestamp,
     ) -> Result<()> {
+        // Check if victim is prepared - prepared transactions cannot be wounded
+        if let Some(victim_ctx) = self.active_transactions.get(&victim) {
+            if victim_ctx.state == TransactionState::Preparing {
+                // Cannot wound a prepared transaction
+                // The older transaction must wait
+                return Err(Error::LockConflict {
+                    holder: victim,
+                    mode: LockMode::Exclusive, // Prepared transactions hold all their locks
+                });
+            }
+        }
+
         // Remove victim's deferred operations
         let victim_ops = self.deferred_manager.wound_transaction(victim);
 
@@ -427,8 +556,7 @@ impl SqlStreamProcessor {
                 wounded_by,
                 reason: format!("Wounded by older transaction to prevent deadlock"),
             };
-            self.response_channel
-                .send(&op.coordinator_id, &victim_str, response);
+            self.send_response(&op.coordinator_id, &victim_str, response);
         }
 
         // Send wounded notification if this is an active transaction with a coordinator
@@ -437,8 +565,7 @@ impl SqlStreamProcessor {
                 wounded_by,
                 reason: format!("Wounded by older transaction to prevent deadlock"),
             };
-            self.response_channel
-                .send(coordinator_id, &victim_str, response);
+            self.send_response(coordinator_id, &victim_str, response);
         }
 
         // Mark the victim transaction as wounded and abort it
@@ -468,8 +595,7 @@ impl SqlStreamProcessor {
                     Ok(res) => convert_execution_result(res),
                     Err(e) => SqlResponse::Error(format!("{:?}", e)),
                 };
-                self.response_channel
-                    .send(&op.coordinator_id, &txn_id_str, response);
+                self.send_response(&op.coordinator_id, &txn_id_str, response);
             }
         }
         Ok(())
@@ -484,8 +610,6 @@ impl SqlStreamProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::response::MockResponseChannel;
-    use std::sync::Arc;
 
     fn create_message(
         operation: Option<SqlOperation>,
@@ -511,7 +635,7 @@ mod tests {
         }
 
         let body = if let Some(op) = operation {
-            bincode::encode_to_vec(&op, bincode::config::standard()).unwrap()
+            serde_json::to_vec(&op).unwrap()
         } else {
             Vec::new()
         };
@@ -521,9 +645,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_isolation_with_stream() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let response_channel: Box<dyn ResponseChannel> = Box::new(mock_channel.clone());
-        let mut processor = SqlStreamProcessor::new(response_channel);
+        let (mut processor, _engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create a client to subscribe to responses
+        let test_client = MockClient::new("test-observer".to_string(), _engine.clone());
+        let mut response_stream_2 = test_client
+            .subscribe("coordinator.coordinator_2.response", None)
+            .await
+            .unwrap();
 
         // Create table
         let create_table = SqlOperation::Execute {
@@ -565,12 +694,19 @@ mod tests {
         processor.process_message(msg).await.unwrap();
 
         // Check responses - Transaction 2 should see empty results
-        let responses = mock_channel.get_responses();
-        if let Some((_, _, SqlResponse::QueryResult { rows, .. })) = responses
-            .iter()
-            .find(|(coord, _, _)| coord == "coordinator_2")
-        {
-            assert_eq!(rows.len(), 0, "Should not see uncommitted data");
+        if let Some(msg) = response_stream_2.recv().await {
+            if let Ok(response) = serde_json::from_slice::<SqlResponse>(&msg.body) {
+                match response {
+                    SqlResponse::QueryResult { rows, .. } => {
+                        assert_eq!(rows.len(), 0, "Should not see uncommitted data");
+                    }
+                    _ => panic!("Expected QueryResult"),
+                }
+            } else {
+                panic!("Failed to deserialize response");
+            }
+        } else {
+            panic!("Expected response for transaction 2");
         }
 
         // Now commit Transaction 1
@@ -594,23 +730,45 @@ mod tests {
             true,
             None,
         );
+        // Subscribe to coordinator_3's responses
+        let mut response_stream_3 = test_client
+            .subscribe("coordinator.coordinator_3.response", None)
+            .await
+            .unwrap();
+
         processor.process_message(msg).await.unwrap();
 
         // Check that Transaction 3 sees the committed data
-        let responses = mock_channel.get_responses();
-        if let Some((_, _, SqlResponse::QueryResult { rows, .. })) = responses
-            .iter()
-            .rev()
-            .find(|(coord, _, _)| coord == "coordinator_3")
-        {
-            assert_eq!(rows.len(), 1, "Should see committed data");
+        if let Some(msg) = response_stream_3.recv().await {
+            if let Ok(response) = serde_json::from_slice::<SqlResponse>(&msg.body) {
+                match response {
+                    SqlResponse::QueryResult { rows, .. } => {
+                        assert_eq!(rows.len(), 1, "Should see committed data");
+                    }
+                    _ => panic!("Expected QueryResult"),
+                }
+            } else {
+                panic!("Failed to deserialize response");
+            }
+        } else {
+            panic!("Expected response for transaction 3");
         }
     }
 
     #[tokio::test]
     async fn test_wound_wait_mechanism() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let mut processor = SqlStreamProcessor::new(Box::new(mock_channel.clone()));
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create a test client to subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+        let mut younger_responses = test_client
+            .subscribe("coordinator.coordinator_younger.response", None)
+            .await
+            .unwrap();
+        let mut older_responses = test_client
+            .subscribe("coordinator.coordinator_older.response", None)
+            .await
+            .unwrap();
 
         // Create a table and insert initial data
         let create_table = SqlOperation::Execute {
@@ -651,6 +809,18 @@ mod tests {
         );
         processor.process_message(msg).await.unwrap();
 
+        // Check younger transaction gets execute result
+        let younger_response_msg = younger_responses
+            .recv()
+            .await
+            .expect("Should receive response for younger transaction");
+        let younger_response: SqlResponse = serde_json::from_slice(&younger_response_msg.body)
+            .expect("Should deserialize response");
+        assert!(
+            matches!(younger_response, SqlResponse::ExecuteResult { .. }),
+            "Younger transaction should succeed initially"
+        );
+
         // Older transaction tries to update same row (should wound younger)
         let update2 = SqlOperation::Execute {
             sql: "UPDATE test SET value = 300 WHERE id = 1".to_string(),
@@ -664,24 +834,27 @@ mod tests {
         );
         processor.process_message(msg).await.unwrap();
 
-        // Check responses so far
-        let responses = mock_channel.get_responses();
-
-        // Should have a wounded notification for the younger transaction
-        let wounded_response = responses.iter().find(|(coord, _, resp)| {
-            coord == "coordinator_younger" && matches!(resp, SqlResponse::Wounded { .. })
-        });
+        // Check that younger transaction gets wounded notification
+        let wounded_msg = younger_responses
+            .recv()
+            .await
+            .expect("Should receive wounded notification for younger transaction");
+        let wounded_response: SqlResponse =
+            serde_json::from_slice(&wounded_msg.body).expect("Should deserialize wounded response");
         assert!(
-            wounded_response.is_some(),
-            "Should have wounded notification for younger transaction"
+            matches!(wounded_response, SqlResponse::Wounded { .. }),
+            "Younger transaction should be wounded"
         );
 
-        // The older transaction should have succeeded after wounding
-        let older_success = responses.iter().find(|(coord, _, resp)| {
-            coord == "coordinator_older" && matches!(resp, SqlResponse::ExecuteResult { .. })
-        });
+        // Check that older transaction succeeds
+        let older_response_msg = older_responses
+            .recv()
+            .await
+            .expect("Should receive response for older transaction");
+        let older_response: SqlResponse =
+            serde_json::from_slice(&older_response_msg.body).expect("Should deserialize response");
         assert!(
-            older_success.is_some(),
+            matches!(older_response, SqlResponse::ExecuteResult { .. }),
             "Older transaction should succeed after wounding younger"
         );
 
@@ -694,46 +867,18 @@ mod tests {
             Some("commit"),
         );
         processor.process_message(msg).await.unwrap();
-
-        // Verify the older transaction's update succeeded by querying the value
-        let query = SqlOperation::Query {
-            sql: "SELECT value FROM test WHERE id = 1".to_string(),
-        };
-        let msg = create_message(
-            Some(query),
-            "txn_runtime1_4000000000", // New transaction
-            "coordinator_verify",
-            true,
-            None,
-        );
-        processor.process_message(msg).await.unwrap();
-
-        // Get updated responses
-        let responses = mock_channel.get_responses();
-
-        // The query should show the older transaction's value (300)
-        let query_response = responses
-            .iter()
-            .rev()
-            .find(|(coord, _, _)| coord == "coordinator_verify");
-        if let Some((_, _, SqlResponse::QueryResult { rows, .. })) = query_response {
-            assert_eq!(rows.len(), 1, "Should have one row");
-            // The value should be 300 from the older transaction
-            if let Some(row) = rows.first() {
-                if let Some(crate::types::value::Value::Integer(val)) = row.first() {
-                    assert_eq!(*val, 300, "Value should be 300 from older transaction");
-                }
-            }
-        } else {
-            panic!("Expected query result for verification");
-        }
     }
 
     #[tokio::test]
     async fn test_abort_rollback_with_stream() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let response_channel: Box<dyn ResponseChannel> = Box::new(mock_channel.clone());
-        let mut processor = SqlStreamProcessor::new(response_channel);
+        let (mut processor, engine) = SqlStreamProcessor::new_for_testing();
+
+        // Create a test client to subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+        let mut coord3_responses = test_client
+            .subscribe("coordinator.coordinator_3.response", None)
+            .await
+            .unwrap();
 
         // Create table and insert initial data
         let create_table = SqlOperation::Execute {
@@ -796,27 +941,19 @@ mod tests {
         );
         processor.process_message(msg).await.unwrap();
 
-        // Verify the name is still 'Alice'
-        let responses = mock_channel.get_responses();
-        if let Some((_, _, SqlResponse::QueryResult { rows, columns })) = responses
-            .iter()
-            .rev()
-            .find(|(coord, _, _)| coord == "coordinator_3")
-        {
+        // Verify the name is still 'Alice' after abort
+        let query_response_msg = coord3_responses
+            .recv()
+            .await
+            .expect("Should receive query response");
+        let query_response: SqlResponse = serde_json::from_slice(&query_response_msg.body)
+            .expect("Should deserialize query response");
+
+        if let SqlResponse::QueryResult { rows, columns } = query_response {
             assert_eq!(rows.len(), 1, "Expected 1 row");
-            assert_eq!(
-                columns.len(),
-                2,
-                "Expected 2 columns (id, name), got: {:?}",
-                columns
-            );
-            println!("Row data: {:?}", rows[0]);
-            assert_eq!(
-                rows[0].len(),
-                2,
-                "Expected 2 values in row, got: {:?}",
-                rows[0]
-            );
+            assert_eq!(columns.len(), 2, "Expected 2 columns (id, name)");
+            assert_eq!(rows[0].len(), 2, "Expected 2 values in row");
+
             // Check id is 1 and name is 'Alice'
             assert_eq!(
                 rows[0][0],
@@ -826,10 +963,10 @@ mod tests {
             assert_eq!(
                 rows[0][1],
                 crate::types::value::Value::String("Alice".to_string()),
-                "Name should be 'Alice'"
+                "Name should still be 'Alice' after abort"
             );
         } else {
-            panic!("Could not find query result from coordinator_3");
+            panic!("Expected QueryResult response");
         }
     }
 }

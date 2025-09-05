@@ -64,6 +64,17 @@ impl TransactionContext {
         &self.timestamp
     }
 
+    /// Prepare the transaction for commit (2PC)
+    /// Returns true if prepared successfully, false if wounded or not active
+    pub fn prepare(&mut self) -> bool {
+        if self.state == TransactionState::Active && self.wounded_by.is_none() {
+            self.state = TransactionState::Preparing;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Generate a deterministic UUID based on transaction ID and a sequence
     pub fn deterministic_uuid(&self, sequence: u64) -> uuid::Uuid {
         use std::collections::hash_map::DefaultHasher;

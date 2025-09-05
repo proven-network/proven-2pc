@@ -66,10 +66,7 @@ async fn test_distributed_transaction_sql_and_kv() {
                     } else if !msg.body.is_empty() {
                         operation_count += 1;
                         // Try to decode as KV operation
-                        if let Ok((op, _)) = bincode::decode_from_slice::<KvOperation, _>(
-                            &msg.body,
-                            bincode::config::standard(),
-                        ) {
+                        if let Ok(op) = serde_json::from_slice::<KvOperation>(&msg.body) {
                             println!("KV received operation {}: {:?}", operation_count, op);
                         }
                     }
@@ -96,7 +93,7 @@ async fn test_distributed_transaction_sql_and_kv() {
         key: "user:1:metadata".to_string(),
         value: proven_kv::types::Value::String("created_at:2024-01-01".to_string()),
     };
-    let kv_put_bytes = bincode::encode_to_vec(&kv_put, bincode::config::standard()).unwrap();
+    let kv_put_bytes = serde_json::to_vec(&kv_put).unwrap();
 
     coordinator
         .execute_operation(&txn_id, "kv-stream", kv_put_bytes)
@@ -118,7 +115,7 @@ async fn test_distributed_transaction_sql_and_kv() {
         key: "user:1:preferences".to_string(),
         value: proven_kv::types::Value::Map(prefs),
     };
-    let kv_put2_bytes = bincode::encode_to_vec(&kv_put2, bincode::config::standard()).unwrap();
+    let kv_put2_bytes = serde_json::to_vec(&kv_put2).unwrap();
 
     coordinator
         .execute_operation(&txn_id, "kv-stream", kv_put2_bytes)
@@ -171,7 +168,7 @@ async fn test_distributed_transaction_abort() {
         key: "test:1".to_string(),
         value: proven_kv::types::Value::Integer(42),
     };
-    let kv_op_bytes = bincode::encode_to_vec(&kv_op, bincode::config::standard()).unwrap();
+    let kv_op_bytes = serde_json::to_vec(&kv_op).unwrap();
     coordinator
         .execute_operation(&txn_id, "kv-stream", kv_op_bytes)
         .await
@@ -216,7 +213,7 @@ async fn test_coordinator_lifecycle() {
     let kv_op = KvOperation::Get {
         key: "test".to_string(),
     };
-    let bytes = bincode::encode_to_vec(&kv_op, bincode::config::standard()).unwrap();
+    let bytes = serde_json::to_vec(&kv_op).unwrap();
     coordinator
         .execute_operation(&txn_id, "kv-stream", bytes)
         .await

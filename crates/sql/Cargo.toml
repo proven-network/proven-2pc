@@ -4,17 +4,17 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bincode = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
+proven-engine = { path = "../engine" }
 proven-hlc = { workspace = true }
 regex = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-proven-engine = { path = "../engine" }

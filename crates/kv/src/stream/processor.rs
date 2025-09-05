@@ -6,13 +6,15 @@
 
 use super::deferred::{DeferredOperation, DeferredOperationsManager};
 use super::message::{KvOperation, StreamMessage};
-use super::response::{KvResponse, ResponseChannel};
+use super::response::KvResponse;
 use super::transaction::TransactionContext;
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
 use crate::types::Value;
+use proven_engine::MockClient;
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Error type for KV operations
 #[derive(Debug, thiserror::Error)]
@@ -52,21 +54,73 @@ pub struct KvStreamProcessor {
     /// Deferred operations manager
     deferred_manager: DeferredOperationsManager,
 
-    /// Response channel for sending results back
-    response_channel: Box<dyn ResponseChannel>,
+    /// Engine client for sending responses
+    client: Arc<MockClient>,
+
+    /// Stream name for identification in responses
+    stream_name: String,
 }
 
 impl KvStreamProcessor {
+    /// Create a processor for testing (creates a mock engine internally)
+    #[cfg(test)]
+    pub fn new_for_testing() -> (Self, Arc<proven_engine::MockEngine>) {
+        use proven_engine::MockEngine;
+        let engine = Arc::new(MockEngine::new());
+        let client = Arc::new(MockClient::new(
+            "test-kv-processor".to_string(),
+            engine.clone(),
+        ));
+        (Self::new(client, "kv-stream".to_string()), engine)
+    }
+
     /// Create a new processor with empty storage
-    pub fn new(response_channel: Box<dyn ResponseChannel>) -> Self {
+    pub fn new(client: Arc<MockClient>, stream_name: String) -> Self {
         Self {
             storage: MvccStorage::new(),
             lock_manager: LockManager::new(),
             active_transactions: HashMap::new(),
             transaction_coordinators: HashMap::new(),
             deferred_manager: DeferredOperationsManager::new(),
-            response_channel,
+            client,
+            stream_name,
         }
+    }
+
+    /// Send a response back to the coordinator via engine pub/sub with optional request_id
+    fn send_response_with_request(
+        &self,
+        coordinator_id: &str,
+        txn_id: &str,
+        response: KvResponse,
+        request_id: Option<String>,
+    ) {
+        let mut headers = HashMap::new();
+        headers.insert("txn_id".to_string(), txn_id.to_string());
+        headers.insert("participant".to_string(), self.stream_name.clone());
+        if let Some(req_id) = request_id {
+            headers.insert("request_id".to_string(), req_id);
+        }
+
+        // Serialize the response to the body using serde_json
+        let body = serde_json::to_vec(&response).unwrap_or_else(|e| {
+            eprintln!("Failed to serialize KV response: {}", e);
+            Vec::new()
+        });
+
+        let subject = format!("coordinator.{}.response", coordinator_id);
+        let message = proven_engine::Message::new(body, headers);
+
+        // Use tokio::spawn to avoid blocking
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _ = client.publish(&subject, vec![message]).await;
+        });
+    }
+
+    /// Send a response back to the coordinator via engine pub/sub
+    fn send_response(&self, coordinator_id: &str, txn_id: &str, response: KvResponse) {
+        self.send_response_with_request(coordinator_id, txn_id, response, None)
     }
 
     /// Process a message from the stream (matches SQL pattern)
@@ -78,9 +132,18 @@ impl KvStreamProcessor {
         // Parse transaction ID to HlcTimestamp at the boundary
         let txn_id = HlcTimestamp::parse(txn_id_str).map_err(|e| Error::InvalidValue(e))?;
 
-        // Check if this is a commit/abort message (empty body)
+        // Check if this is a commit/abort/prepare message (empty body)
         if message.is_transaction_control() {
             match message.txn_phase() {
+                Some("prepare") => {
+                    return self
+                        .prepare_transaction(
+                            txn_id,
+                            txn_id_str,
+                            message.headers.get("request_id").cloned(),
+                        )
+                        .await;
+                }
                 Some("commit") => return self.commit_transaction(txn_id).await,
                 Some("abort") => return self.abort_transaction(txn_id).await,
                 Some(phase) => {
@@ -95,12 +158,8 @@ impl KvStreamProcessor {
         }
 
         // Deserialize the operation
-        let operation: KvOperation =
-            bincode::decode_from_slice(&message.body, bincode::config::standard())
-                .map_err(|e| {
-                    Error::InvalidValue(format!("Failed to deserialize operation: {}", e))
-                })?
-                .0;
+        let operation: KvOperation = serde_json::from_slice(&message.body)
+            .map_err(|e| Error::InvalidValue(format!("Failed to deserialize operation: {}", e)))?;
 
         // Ensure transaction exists (automatically create if needed)
         if !self.active_transactions.contains_key(&txn_id) {
@@ -111,6 +170,9 @@ impl KvStreamProcessor {
         let coordinator_id = message.coordinator_id().ok_or_else(|| {
             Error::InvalidValue("coordinator_id is required for all operations".to_string())
         })?;
+
+        // Get request ID if present
+        let request_id = message.headers.get("request_id").cloned();
 
         // Store coordinator ID for this transaction (for wounded notifications)
         self.transaction_coordinators
@@ -130,8 +192,7 @@ impl KvStreamProcessor {
             }
             Err(e) => KvResponse::Error(format!("{:?}", e)),
         };
-        self.response_channel
-            .send(coordinator_id, txn_id_str, response);
+        self.send_response_with_request(coordinator_id, txn_id_str, response, request_id);
 
         // Auto-commit if specified
         if message.is_auto_commit() {
@@ -300,15 +361,50 @@ impl KvStreamProcessor {
                 let should_wound = txn_id < holder;
 
                 if should_wound {
-                    // We're older, wound the younger transaction
-                    self.wound_transaction(holder, txn_id).await?;
+                    // Check if holder is prepared first
+                    let holder_prepared = self
+                        .active_transactions
+                        .get(&holder)
+                        .map(|ctx| ctx.is_prepared())
+                        .unwrap_or(false);
 
-                    // Retry lock acquisition
-                    self.lock_manager.grant(txn_id, key.to_string(), mode);
-                    if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-                        tx_ctx.add_lock(key.to_string(), mode);
+                    if holder_prepared {
+                        // Cannot wound prepared transaction, must wait
+                        let deferred_op = DeferredOperation {
+                            operation,
+                            coordinator_id: coordinator_id.to_string(),
+                            lock_requested: (key.to_string(), mode),
+                            waiting_for: holder,
+                            attempt_count: 1,
+                            created_at: txn_id,
+                        };
+
+                        self.deferred_manager
+                            .add_deferred(txn_id, deferred_op, holder);
+
+                        // Send deferred response
+                        let response = KvResponse::Deferred {
+                            waiting_for: holder,
+                            lock_key: key.to_string(),
+                        };
+                        let txn_id_str = format!(
+                            "txn_runtime1_{:010}",
+                            txn_id.physical * 1_000_000_000 + txn_id.logical as u64
+                        );
+                        self.send_response(coordinator_id, &txn_id_str, response);
+
+                        Ok(None) // Must wait even though we're older
+                    } else {
+                        // We're older and holder isn't prepared, wound it
+                        self.wound_transaction(holder, txn_id).await?;
+
+                        // Retry lock acquisition
+                        self.lock_manager.grant(txn_id, key.to_string(), mode);
+                        if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
+                            tx_ctx.add_lock(key.to_string(), mode);
+                        }
+                        Ok(Some(()))
                     }
-                    Ok(Some(()))
                 } else {
                     // We're younger, must wait
                     let deferred_op = DeferredOperation {
@@ -334,12 +430,68 @@ impl KvStreamProcessor {
                         "txn_runtime1_{:010}",
                         txn_id.physical * 1_000_000_000 + txn_id.logical as u64
                     );
-                    self.response_channel
-                        .send(coordinator_id, &txn_id_str, response);
+                    self.send_response(coordinator_id, &txn_id_str, response);
 
                     Ok(None) // Operation deferred
                 }
             }
+        }
+    }
+
+    /// Prepare a transaction for commit
+    async fn prepare_transaction(
+        &mut self,
+        txn_id: HlcTimestamp,
+        txn_id_str: &str,
+        request_id: Option<String>,
+    ) -> Result<()> {
+        // Get coordinator ID for response
+        let coordinator_id = self
+            .transaction_coordinators
+            .get(&txn_id)
+            .cloned()
+            .unwrap_or_default();
+
+        if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
+            if let Some(wounded_by) = tx_ctx.wounded_by {
+                // Transaction was wounded - send wounded response
+                let response = KvResponse::Wounded {
+                    wounded_by,
+                    reason: "Transaction wounded before prepare".to_string(),
+                };
+                self.send_response_with_request(
+                    &coordinator_id,
+                    txn_id_str,
+                    response,
+                    request_id.clone(),
+                );
+                Err(Error::TransactionWounded { wounded_by })
+            } else if tx_ctx.prepare() {
+                // Transaction successfully prepared - send prepared response
+                self.send_response_with_request(
+                    &coordinator_id,
+                    txn_id_str,
+                    KvResponse::Prepared,
+                    request_id.clone(),
+                );
+                Ok(())
+            } else {
+                // Transaction cannot be prepared for other reasons
+                let response =
+                    KvResponse::Error("Cannot prepare: transaction not active".to_string());
+                self.send_response_with_request(
+                    &coordinator_id,
+                    txn_id_str,
+                    response,
+                    request_id.clone(),
+                );
+                Err(Error::TransactionNotActive(txn_id))
+            }
+        } else {
+            // Transaction doesn't exist
+            let response = KvResponse::Error("Cannot prepare: transaction not found".to_string());
+            self.send_response_with_request(&coordinator_id, txn_id_str, response, request_id);
+            Err(Error::TransactionNotActive(txn_id))
         }
     }
 
@@ -396,6 +548,18 @@ impl KvStreamProcessor {
         victim: HlcTimestamp,
         wounded_by: HlcTimestamp,
     ) -> Result<()> {
+        // Check if victim is prepared - prepared transactions cannot be wounded
+        if let Some(victim_ctx) = self.active_transactions.get(&victim) {
+            if victim_ctx.is_prepared() {
+                // Cannot wound a prepared transaction
+                // The older transaction must wait or abort itself
+                return Err(Error::LockConflict {
+                    holder: victim,
+                    mode: LockMode::Exclusive, // Prepared transactions hold all their locks
+                });
+            }
+        }
+
         // Remove victim's deferred operations
         let victim_ops = self.deferred_manager.wound_transaction(victim);
 
@@ -411,8 +575,7 @@ impl KvStreamProcessor {
                 wounded_by,
                 reason: "Wounded by older transaction to prevent deadlock".to_string(),
             };
-            self.response_channel
-                .send(&op.coordinator_id, &victim_str, response);
+            self.send_response(&op.coordinator_id, &victim_str, response);
         }
 
         // Send wounded notification if victim has a coordinator
@@ -421,8 +584,7 @@ impl KvStreamProcessor {
                 wounded_by,
                 reason: "Wounded by older transaction to prevent deadlock".to_string(),
             };
-            self.response_channel
-                .send(coordinator_id, &victim_str, response);
+            self.send_response(coordinator_id, &victim_str, response);
         }
 
         // Mark the victim as wounded
@@ -524,8 +686,7 @@ impl KvStreamProcessor {
 
                 // Send response if we executed
                 if let Ok(response) = result {
-                    self.response_channel
-                        .send(&op.coordinator_id, &txn_id_str, response);
+                    self.send_response(&op.coordinator_id, &txn_id_str, response);
                 }
             }
         }
@@ -535,8 +696,7 @@ impl KvStreamProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::response::MockResponseChannel;
-    use std::sync::Arc;
+    use proven_engine::MockClient;
 
     fn create_message(
         operation: Option<KvOperation>,
@@ -562,7 +722,7 @@ mod tests {
         }
 
         let body = if let Some(op) = operation {
-            bincode::encode_to_vec(&op, bincode::config::standard()).unwrap()
+            serde_json::to_vec(&op).unwrap()
         } else {
             Vec::new()
         };
@@ -572,9 +732,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_operations() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let response_channel: Box<dyn ResponseChannel> = Box::new(mock_channel.clone());
-        let mut processor = KvStreamProcessor::new(response_channel);
+        let (mut processor, engine) = KvStreamProcessor::new_for_testing();
+
+        // Create a test client to subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+
+        // Subscribe to coordinator response channels
+        let mut coord1_responses = test_client
+            .subscribe("coordinator.coord1.response", None)
+            .await
+            .unwrap();
+        let mut coord2_responses = test_client
+            .subscribe("coordinator.coord2.response", None)
+            .await
+            .unwrap();
 
         // Put operation with auto-commit
         let put_op = KvOperation::Put {
@@ -591,6 +762,18 @@ mod tests {
 
         processor.process_message(msg).await.unwrap();
 
+        // Check Put response
+        let put_response_msg = coord1_responses
+            .recv()
+            .await
+            .expect("Should receive put response");
+        let put_response: KvResponse = serde_json::from_slice(&put_response_msg.body)
+            .expect("Should deserialize put response");
+        assert!(
+            matches!(put_response, KvResponse::PutResult { .. }),
+            "Should receive PutResult"
+        );
+
         // Get operation with auto-commit
         let get_op = KvOperation::Get {
             key: "key1".to_string(),
@@ -605,55 +788,80 @@ mod tests {
 
         processor.process_message(msg).await.unwrap();
 
-        // Check responses
-        let responses = mock_channel.get_responses();
-        assert_eq!(responses.len(), 2);
+        // Check Get response
+        let get_response_msg = coord2_responses
+            .recv()
+            .await
+            .expect("Should receive get response");
+        let get_response: KvResponse = serde_json::from_slice(&get_response_msg.body)
+            .expect("Should deserialize get response");
 
-        // First response should be put result
-        if let KvResponse::PutResult { key, previous } = &responses[0].2 {
-            assert_eq!(key, "key1");
-            assert!(previous.is_none());
+        if let KvResponse::GetResult { value, .. } = get_response {
+            assert_eq!(
+                value,
+                Some(Value::String("value1".to_string())),
+                "Should get the value we put"
+            );
         } else {
-            panic!("Expected PutResult");
-        }
-
-        // Second response should be get result
-        if let KvResponse::GetResult { key, value } = &responses[1].2 {
-            assert_eq!(key, "key1");
-            assert_eq!(value, &Some(Value::String("value1".to_string())));
-        } else {
-            panic!("Expected GetResult");
+            panic!("Expected GetResult response");
         }
     }
 
     #[tokio::test]
     async fn test_transaction_isolation() {
-        let mock_channel = Arc::new(MockResponseChannel::new());
-        let response_channel: Box<dyn ResponseChannel> = Box::new(mock_channel.clone());
-        let mut processor = KvStreamProcessor::new(response_channel);
+        let (mut processor, engine) = KvStreamProcessor::new_for_testing();
 
-        // Transaction 1: Put but don't commit
+        // Create a test client to subscribe to coordinator responses
+        let test_client = MockClient::new("test-observer".to_string(), engine.clone());
+
+        // Subscribe to coordinator response channels
+        let mut coord1_responses = test_client
+            .subscribe("coordinator.coord1.response", None)
+            .await
+            .unwrap();
+        let mut coord2_responses = test_client
+            .subscribe("coordinator.coord2.response", None)
+            .await
+            .unwrap();
+        let mut coord3_responses = test_client
+            .subscribe("coordinator.coord3.response", None)
+            .await
+            .unwrap();
+
+        // Transaction 1 (older): Put but don't commit yet
         let put_op = KvOperation::Put {
             key: "key1".to_string(),
             value: Value::String("value1".to_string()),
         };
         let msg = create_message(
             Some(put_op),
-            "txn_runtime1_1000000000",
+            "txn_runtime1_1000000000", // Older transaction
             "coord1",
-            false, // No auto-commit
+            false, // No auto-commit - will hold lock
             None,
         );
 
         processor.process_message(msg).await.unwrap();
 
-        // Transaction 2: Try to get (should not see uncommitted data)
+        // Check Put response for tx1
+        let put_response_msg = coord1_responses
+            .recv()
+            .await
+            .expect("Should receive put response");
+        let put_response: KvResponse = serde_json::from_slice(&put_response_msg.body)
+            .expect("Should deserialize put response");
+        assert!(
+            matches!(put_response, KvResponse::PutResult { .. }),
+            "Should receive PutResult"
+        );
+
+        // Transaction 2 (younger): Try to get the same key - should defer since tx1 holds lock
         let get_op = KvOperation::Get {
             key: "key1".to_string(),
         };
         let msg = create_message(
             Some(get_op),
-            "txn_runtime1_2000000000",
+            "txn_runtime1_2000000000", // Younger transaction - will defer to older
             "coord2",
             true, // Auto-commit
             None,
@@ -661,12 +869,22 @@ mod tests {
 
         processor.process_message(msg).await.unwrap();
 
-        // Check that tx2 doesn't see uncommitted data
-        let responses = mock_channel.get_responses();
-        if let Some((_, _, KvResponse::GetResult { value, .. })) =
-            responses.iter().find(|(coord, _, _)| coord == "coord2")
-        {
-            assert!(value.is_none(), "Should not see uncommitted data");
+        // Check that tx2 gets deferred (can't read while tx1 holds lock)
+        let response_msg = coord2_responses
+            .recv()
+            .await
+            .expect("Should receive response for tx2");
+        let response: KvResponse =
+            serde_json::from_slice(&response_msg.body).expect("Should deserialize response");
+
+        match response {
+            KvResponse::Deferred { .. } => {
+                // Expected - younger transaction defers to older
+            }
+            other => panic!(
+                "Expected Deferred response for younger transaction, got: {:?}",
+                other
+            ),
         }
 
         // Now commit tx1
@@ -688,15 +906,21 @@ mod tests {
         processor.process_message(msg).await.unwrap();
 
         // Check that tx3 sees committed data
-        let responses = mock_channel.get_responses();
-        if let Some((_, _, KvResponse::GetResult { value, .. })) = responses
-            .iter()
-            .rev()
-            .find(|(coord, _, _)| coord == "coord3")
-        {
-            assert_eq!(value, &Some(Value::String("value1".to_string())));
+        let response_msg = coord3_responses
+            .recv()
+            .await
+            .expect("Should receive response for tx3");
+        let response: KvResponse =
+            serde_json::from_slice(&response_msg.body).expect("Should deserialize response");
+
+        if let KvResponse::GetResult { value, .. } = response {
+            assert_eq!(
+                value,
+                Some(Value::String("value1".to_string())),
+                "Should see committed data"
+            );
         } else {
-            panic!("Expected GetResult for coord3");
+            panic!("Expected GetResult response");
         }
     }
 }

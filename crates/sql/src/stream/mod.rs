@@ -5,6 +5,9 @@
 
 pub mod deferred;
 pub mod message;
+pub mod operation {
+    pub use super::message::SqlOperation;
+}
 pub mod processor;
 pub mod response;
 pub mod stats_cache;
@@ -14,5 +17,5 @@ pub mod wound_wait_tests;
 // Re-export commonly used types
 pub use message::{SqlOperation, StreamMessage};
 pub use processor::SqlStreamProcessor;
-pub use response::{MockResponseChannel, ResponseChannel, SqlResponse};
+pub use response::SqlResponse;
 pub use transaction::{AccessLogEntry, TransactionContext, TransactionState};

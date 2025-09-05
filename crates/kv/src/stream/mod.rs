@@ -8,5 +8,5 @@ pub mod transaction;
 
 pub use message::{KvOperation, StreamMessage};
 pub use processor::KvStreamProcessor;
-pub use response::{KvResponse, ResponseChannel};
+pub use response::KvResponse;
 pub use transaction::TransactionContext;

@@ -3,12 +3,11 @@
 //! This module defines the message format and operation types
 //! that flow through the stream processor.
 
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// SQL operation types that can be sent in messages
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SqlOperation {
     /// Execute SQL statement (DDL or DML)
     Execute { sql: String },

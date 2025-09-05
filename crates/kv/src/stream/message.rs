@@ -4,12 +4,11 @@
 //! matching the SQL stream message pattern for production use.
 
 use crate::types::Value;
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// KV operation types that can be sent in messages
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KvOperation {
     /// Get a value by key
     Get { key: String },
@@ -71,7 +70,7 @@ impl StreamMessage {
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("coordinator_id".to_string(), coordinator_id.to_string());
 
-        let body = bincode::encode_to_vec(&operation, bincode::config::standard()).unwrap();
+        let body = serde_json::to_vec(&operation).unwrap();
         Self { body, headers }
     }
 

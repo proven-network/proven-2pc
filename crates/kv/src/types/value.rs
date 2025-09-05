@@ -3,13 +3,12 @@
 //! This module provides a typed value system for the key-value store,
 //! supporting common data types with deterministic operations.
 
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fmt;
 
 /// KV value types with deterministic operations
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Value {
     /// Null value
     Null,
