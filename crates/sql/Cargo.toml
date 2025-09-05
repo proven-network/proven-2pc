@@ -9,6 +9,7 @@ hex = { workspace = true }
 parking_lot = { workspace = true }
 proven-engine = { path = "../engine" }
 proven-hlc = { workspace = true }
+proven-stream = { path = "../stream" }
 regex = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }

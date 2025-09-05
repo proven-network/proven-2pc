@@ -33,8 +33,6 @@ pub struct TransactionContext {
     pub locks_held: Vec<LockKey>,
     /// Access log for distributed coordination
     pub access_log: Vec<AccessLogEntry>,
-    /// If this transaction has been wounded, tracks who wounded it
-    pub wounded_by: Option<HlcTimestamp>,
 }
 
 /// Access log entry for distributed coordination
@@ -55,7 +53,6 @@ impl TransactionContext {
             state: TransactionState::Active,
             locks_held: Vec::new(),
             access_log: Vec::new(),
-            wounded_by: None,
         }
     }
 
@@ -65,9 +62,9 @@ impl TransactionContext {
     }
 
     /// Prepare the transaction for commit (2PC)
-    /// Returns true if prepared successfully, false if wounded or not active
+    /// Returns true if prepared successfully, false if not active
     pub fn prepare(&mut self) -> bool {
-        if self.state == TransactionState::Active && self.wounded_by.is_none() {
+        if self.state == TransactionState::Active {
             self.state = TransactionState::Preparing;
             true
         } else {

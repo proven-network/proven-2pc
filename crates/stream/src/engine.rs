@@ -18,12 +18,6 @@ pub enum OperationResult<R> {
         blocking_txn: HlcTimestamp,
     },
 
-    /// Transaction was wounded by a younger transaction
-    Wounded {
-        /// Transaction that caused the wound
-        wounded_by: HlcTimestamp,
-    },
-
     /// Operation failed with an error
     Error(String),
 }
@@ -42,7 +36,7 @@ pub trait TransactionEngine: Send + Sync {
 
     /// Apply an operation within a transaction context
     ///
-    /// Returns a result indicating success, blocking, wounding, or error.
+    /// Returns a result indicating success, blocking, or error.
     /// The stream processor will handle control flow based on the result.
     fn apply_operation(
         &mut self,

@@ -265,26 +265,17 @@ impl MockCoordinator {
                                     _ => PrepareVote::Error(format!("Unknown status: {}", status))
                                 }
                             } else if !msg.body.is_empty() {
-                                // Fallback to deserializing body for backward compatibility
-                                // Try SQL response first, then KV response
+                                // Body should be empty for protocol responses
+                                // But check if there's an error response in the body
                                 if let Ok(sql_response) =
                                     serde_json::from_slice::<proven_sql::stream::response::SqlResponse>(
                                         &msg.body,
                                     ) {
                                     match sql_response {
-                                        proven_sql::stream::response::SqlResponse::Prepared => {
-                                            PrepareVote::Prepared
-                                        }
-                                        proven_sql::stream::response::SqlResponse::Wounded {
-                                            wounded_by,
-                                            ..
-                                        } => PrepareVote::Wounded {
-                                            wounded_by: wounded_by.to_string(),
-                                        },
                                         proven_sql::stream::response::SqlResponse::Error(e) => {
                                             PrepareVote::Error(e)
                                         }
-                                        _ => PrepareVote::Error("Unexpected response type".to_string()),
+                                        _ => PrepareVote::Error("Unexpected SQL response type for prepare phase".to_string()),
                                     }
                                 } else if let Ok(kv_response) = serde_json::from_slice::<
                                     proven_kv::stream::response::KvResponse,

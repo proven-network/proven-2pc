@@ -33,8 +33,6 @@ pub struct TransactionContext {
     pub locks_held: Vec<(String, LockMode)>,
     /// Access log for debugging
     pub access_log: Vec<AccessLogEntry>,
-    /// If this transaction has been wounded, tracks who wounded it
-    pub wounded_by: Option<HlcTimestamp>,
 }
 
 /// Access log entry for debugging and coordination
@@ -54,7 +52,6 @@ impl TransactionContext {
             state: TransactionState::Active,
             locks_held: Vec::new(),
             access_log: Vec::new(),
-            wounded_by: None,
         }
     }
 
@@ -70,7 +67,7 @@ impl TransactionContext {
 
     /// Mark transaction as prepared (cannot be wounded after this)
     pub fn prepare(&mut self) -> bool {
-        if self.state == TransactionState::Active && self.wounded_by.is_none() {
+        if self.state == TransactionState::Active {
             self.state = TransactionState::Prepared;
             true
         } else {

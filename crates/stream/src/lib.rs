@@ -26,6 +26,8 @@ pub mod processor;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod wound_wait_tests;
 
 pub use deferred::DeferredOperationsManager;
 pub use engine::{OperationResult, TransactionEngine};

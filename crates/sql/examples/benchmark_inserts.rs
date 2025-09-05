@@ -4,7 +4,7 @@
 //! 1 million rows into a table through the streaming interface.
 
 use proven_engine::{Message, MockClient, MockEngine};
-use proven_sql::stream::{operation::SqlOperation, processor::SqlStreamProcessor};
+use proven_sql::stream::{SqlOperation, SqlStreamProcessor};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;

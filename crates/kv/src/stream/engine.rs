@@ -64,21 +64,9 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holder, .. } => {
-                // Check for wound-wait
-                if txn_id < holder {
-                    // We're older, wound the younger transaction
-                    if let Some(younger_ctx) = self.active_transactions.get_mut(&holder) {
-                        younger_ctx.wounded_by = Some(txn_id);
-                    }
-                    // Still need to wait though
-                    OperationResult::WouldBlock {
-                        blocking_txn: holder,
-                    }
-                } else {
-                    // We're younger, must wait
-                    OperationResult::WouldBlock {
-                        blocking_txn: holder,
-                    }
+                // Just report the conflict - stream processor handles wound-wait
+                OperationResult::WouldBlock {
+                    blocking_txn: holder,
                 }
             }
         }
@@ -114,21 +102,9 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holder, .. } => {
-                // Check for wound-wait
-                if txn_id < holder {
-                    // We're older, wound the younger transaction
-                    if let Some(younger_ctx) = self.active_transactions.get_mut(&holder) {
-                        younger_ctx.wounded_by = Some(txn_id);
-                    }
-                    // Still need to wait though
-                    OperationResult::WouldBlock {
-                        blocking_txn: holder,
-                    }
-                } else {
-                    // We're younger, must wait
-                    OperationResult::WouldBlock {
-                        blocking_txn: holder,
-                    }
+                // Just report the conflict - stream processor handles wound-wait
+                OperationResult::WouldBlock {
+                    blocking_txn: holder,
                 }
             }
         }
@@ -165,21 +141,9 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holder, .. } => {
-                // Check for wound-wait
-                if txn_id < holder {
-                    // We're older, wound the younger transaction
-                    if let Some(younger_ctx) = self.active_transactions.get_mut(&holder) {
-                        younger_ctx.wounded_by = Some(txn_id);
-                    }
-                    // Still need to wait though
-                    OperationResult::WouldBlock {
-                        blocking_txn: holder,
-                    }
-                } else {
-                    // We're younger, must wait
-                    OperationResult::WouldBlock {
-                        blocking_txn: holder,
-                    }
+                // Just report the conflict - stream processor handles wound-wait
+                OperationResult::WouldBlock {
+                    blocking_txn: holder,
                 }
             }
         }

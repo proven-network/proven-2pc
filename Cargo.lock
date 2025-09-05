@@ -558,6 +558,7 @@ dependencies = [
  "parking_lot",
  "proven-engine",
  "proven-hlc",
+ "proven-stream",
  "regex",
  "rust_decimal",
  "serde",

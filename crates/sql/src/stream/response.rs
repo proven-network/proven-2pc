@@ -5,7 +5,6 @@
 
 use crate::execution::ExecutionResult;
 use crate::types::value::Value;
-use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 
 /// Response sent back to coordinator
@@ -26,25 +25,6 @@ pub enum SqlResponse {
 
     /// Error occurred
     Error(String),
-
-    /// Transaction was wounded by an older transaction
-    Wounded {
-        /// Transaction that wounded us
-        wounded_by: HlcTimestamp,
-        /// Reason for wounding
-        reason: String,
-    },
-
-    /// Operation is deferred waiting for locks
-    Deferred {
-        /// Transaction we're waiting for
-        waiting_for: HlcTimestamp,
-        /// Lock that we need
-        lock_key: String,
-    },
-
-    /// Transaction is prepared and ready to commit
-    Prepared,
 }
 
 /// Convert ExecutionResult to SqlResponse

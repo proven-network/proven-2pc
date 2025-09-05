@@ -4,9 +4,7 @@
 //! handles transactions with PCC, and returns results through a response channel.
 
 use proven_engine::{Message, MockClient, MockEngine};
-use proven_sql::stream::{
-    operation::SqlOperation, processor::SqlStreamProcessor, response::SqlResponse,
-};
+use proven_sql::stream::{SqlOperation, SqlStreamProcessor, SqlResponse};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -167,9 +165,6 @@ fn format_response(response: &SqlResponse) -> String {
             }
         }
         SqlResponse::Error(e) => format!("Error: {}", e),
-        SqlResponse::Deferred { .. } => "Transaction deferred".to_string(),
-        SqlResponse::Wounded { .. } => "Transaction wounded".to_string(),
-        SqlResponse::Prepared => "Transaction prepared".to_string(),
     }
 }
 
