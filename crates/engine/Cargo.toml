@@ -4,13 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-futures = "0.3"
+async-stream = { workspace = true }
+futures = { workspace = true }
 parking_lot = { workspace = true }
 proven-hlc = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
-uuid = { version = "1.0", features = ["v4"] }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 proven-kv = { path = "../kv" }

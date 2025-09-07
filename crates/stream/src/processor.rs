@@ -44,7 +44,7 @@ pub struct StreamProcessor<E: TransactionEngine> {
 
     /// Map from transaction ID to coordinator ID (for responses)
     transaction_coordinators: HashMap<HlcTimestamp, String>,
-    
+
     /// Track wounded transactions (txn_id -> wounded_by)
     wounded_transactions: HashMap<HlcTimestamp, HlcTimestamp>,
 
@@ -189,16 +189,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                 if txn_id < blocking_txn {
                     // We're older - wound the younger blocking transaction
                     self.wound_transaction(blocking_txn, txn_id).await;
-                    
+
                     // Retry the operation after wounding
                     match self.engine.apply_operation(operation.clone(), txn_id) {
                         OperationResult::Success(response) => {
                             self.send_response(coordinator_id, txn_id_str, response, request_id);
                             Ok(())
                         }
-                        OperationResult::WouldBlock { blocking_txn: new_blocker } => {
+                        OperationResult::WouldBlock {
+                            blocking_txn: new_blocker,
+                        } => {
                             // Still blocked (shouldn't happen after wounding, but handle it)
-                            self.send_deferred_response(coordinator_id, txn_id_str, new_blocker, request_id.clone());
+                            self.send_deferred_response(
+                                coordinator_id,
+                                txn_id_str,
+                                new_blocker,
+                                request_id.clone(),
+                            );
                             self.deferred_manager.defer_operation(
                                 operation,
                                 txn_id,
@@ -209,13 +216,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                             Ok(())
                         }
                         OperationResult::Error(msg) => {
-                            self.send_error_response(coordinator_id, txn_id_str, msg.clone(), request_id);
+                            self.send_error_response(
+                                coordinator_id,
+                                txn_id_str,
+                                msg.clone(),
+                                request_id,
+                            );
                             Err(ProcessorError::EngineError(msg))
                         }
                     }
                 } else {
                     // We're younger - must wait
-                    self.send_deferred_response(coordinator_id, txn_id_str, blocking_txn, request_id.clone());
+                    self.send_deferred_response(
+                        coordinator_id,
+                        txn_id_str,
+                        blocking_txn,
+                        request_id.clone(),
+                    );
                     self.deferred_manager.defer_operation(
                         operation,
                         txn_id,
@@ -249,7 +266,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             }
             return Ok(());
         }
-        
+
         match self.engine.prepare(txn_id) {
             Ok(()) => {
                 if let Some(coord_id) = coordinator_id {
@@ -281,7 +298,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             }
             return Ok(());
         }
-        
+
         // Try to prepare
         match self.engine.prepare(txn_id) {
             Ok(()) => {
@@ -326,7 +343,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         self.engine
             .commit(txn_id)
             .map_err(ProcessorError::EngineError)?;
-        
+
         // Clean up wounded tracking
         self.wounded_transactions.remove(&txn_id);
 
@@ -345,7 +362,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         self.engine
             .abort(txn_id)
             .map_err(ProcessorError::EngineError)?;
-        
+
         // Clean up wounded tracking
         self.wounded_transactions.remove(&txn_id);
 
@@ -359,7 +376,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     async fn wound_transaction(&mut self, victim: HlcTimestamp, wounded_by: HlcTimestamp) {
         // Track that this transaction was wounded
         self.wounded_transactions.insert(victim, wounded_by);
-        
+
         // Notify the victim's coordinator that it was wounded
         if let Some(victim_coord) = self.transaction_coordinators.get(&victim).cloned() {
             let victim_str = format!(
@@ -368,14 +385,15 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             );
             self.send_wounded_response(&victim_coord, &victim_str, wounded_by, None);
         }
-        
+
         // Abort the victim transaction
         let _ = self.engine.abort(victim);
-        
+
         // Remove victim's deferred operations
         // Note: We already notified the main coordinator above
-        self.deferred_manager.remove_operations_for_transaction(&victim);
-        
+        self.deferred_manager
+            .remove_operations_for_transaction(&victim);
+
         // Remove victim from coordinator tracking
         self.transaction_coordinators.remove(&victim);
     }
@@ -442,7 +460,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         headers.insert("participant".to_string(), self.stream_name.clone());
         headers.insert("engine".to_string(), self.engine.engine_name().to_string());
         headers.insert("status".to_string(), "prepared".to_string());
-        
+
         if let Some(req_id) = request_id {
             headers.insert("request_id".to_string(), req_id);
         }
@@ -470,7 +488,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         headers.insert("engine".to_string(), self.engine.engine_name().to_string());
         headers.insert("status".to_string(), "wounded".to_string());
         headers.insert("wounded_by".to_string(), wounded_by.to_string());
-        
+
         if let Some(req_id) = request_id {
             headers.insert("request_id".to_string(), req_id);
         }
@@ -498,7 +516,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         headers.insert("engine".to_string(), self.engine.engine_name().to_string());
         headers.insert("status".to_string(), "deferred".to_string());
         headers.insert("blocking_txn".to_string(), blocking_txn.to_string());
-        
+
         if let Some(req_id) = request_id {
             headers.insert("request_id".to_string(), req_id);
         }
@@ -526,7 +544,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         headers.insert("engine".to_string(), self.engine.engine_name().to_string());
         headers.insert("status".to_string(), "error".to_string());
         headers.insert("error".to_string(), error);
-        
+
         if let Some(req_id) = request_id {
             headers.insert("request_id".to_string(), req_id);
         }

@@ -3,6 +3,7 @@
 //! This module defines the message format used by the mock engine,
 //! matching the production engine's message structure.
 
+use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -18,8 +19,8 @@ pub struct Message {
     /// Sequence number (for streams)
     pub sequence: Option<u64>,
 
-    /// Timestamp (for ordering)
-    pub timestamp: Option<u64>,
+    /// HLC timestamp (for ordering and deadline comparison)
+    pub timestamp: Option<HlcTimestamp>,
 }
 
 impl Message {
@@ -56,9 +57,14 @@ impl Message {
     }
 
     /// Set timestamp
-    pub fn with_timestamp(mut self, timestamp: u64) -> Self {
+    pub fn with_timestamp(mut self, timestamp: HlcTimestamp) -> Self {
         self.timestamp = Some(timestamp);
         self
+    }
+
+    /// Get HLC timestamp
+    pub fn hlc_timestamp(&self) -> Option<HlcTimestamp> {
+        self.timestamp
     }
 
     /// Get header value

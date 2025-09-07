@@ -3,11 +3,16 @@
 //! This module provides the central mock engine that manages streams,
 //! pub/sub, and coordination between components.
 
-use crate::{Message, MockEngineError, Result, stream::StreamManager};
+use crate::{
+    Message, MockEngineError, Result,
+    stream::{DeadlineStreamItem, StreamManager},
+};
 use parking_lot::Mutex;
+use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
+use tokio_stream::Stream as TokioStream;
 
 /// Mock engine that simulates the production consensus engine
 pub struct MockEngine {
@@ -145,6 +150,17 @@ impl MockEngine {
             // No handler registered
             Err(MockEngineError::NoSubscribers(subject.to_string()))
         }
+    }
+
+    /// Create a stream that reads messages until deadline
+    pub fn create_deadline_stream(
+        &self,
+        stream_name: &str,
+        start_offset: u64,
+        deadline: HlcTimestamp,
+    ) -> Result<impl TokioStream<Item = DeadlineStreamItem>> {
+        self.streams
+            .create_deadline_stream(stream_name, start_offset, deadline)
     }
 
     /// Clean up closed subscriptions

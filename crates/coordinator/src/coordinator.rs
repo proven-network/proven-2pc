@@ -251,47 +251,61 @@ impl MockCoordinator {
                                 match status.as_str() {
                                     "prepared" => PrepareVote::Prepared,
                                     "wounded" => {
-                                        let wounded_by = msg.headers.get("wounded_by")
+                                        let wounded_by = msg
+                                            .headers
+                                            .get("wounded_by")
                                             .map(|s| s.to_string())
                                             .unwrap_or_else(|| "unknown".to_string());
                                         PrepareVote::Wounded { wounded_by }
                                     }
                                     "error" => {
-                                        let error = msg.headers.get("error")
+                                        let error = msg
+                                            .headers
+                                            .get("error")
                                             .map(|s| s.to_string())
                                             .unwrap_or_else(|| "Unknown error".to_string());
                                         PrepareVote::Error(error)
                                     }
-                                    _ => PrepareVote::Error(format!("Unknown status: {}", status))
+                                    _ => PrepareVote::Error(format!("Unknown status: {}", status)),
                                 }
                             } else if !msg.body.is_empty() {
                                 // Body should be empty for protocol responses
                                 // But check if there's an error response in the body
                                 if let Ok(sql_response) =
-                                    serde_json::from_slice::<proven_sql::stream::response::SqlResponse>(
-                                        &msg.body,
-                                    ) {
+                                    serde_json::from_slice::<
+                                        proven_sql::stream::response::SqlResponse,
+                                    >(&msg.body)
+                                {
                                     match sql_response {
                                         proven_sql::stream::response::SqlResponse::Error(e) => {
                                             PrepareVote::Error(e)
                                         }
-                                        _ => PrepareVote::Error("Unexpected SQL response type for prepare phase".to_string()),
+                                        _ => PrepareVote::Error(
+                                            "Unexpected SQL response type for prepare phase"
+                                                .to_string(),
+                                        ),
                                     }
                                 } else if let Ok(kv_response) = serde_json::from_slice::<
                                     proven_kv::stream::response::KvResponse,
-                                >(&msg.body)
-                                {
+                                >(
+                                    &msg.body
+                                ) {
                                     match kv_response {
                                         proven_kv::stream::response::KvResponse::Error(e) => {
                                             PrepareVote::Error(e)
                                         }
-                                        _ => PrepareVote::Error("Unexpected KV response type for prepare phase".to_string()),
+                                        _ => PrepareVote::Error(
+                                            "Unexpected KV response type for prepare phase"
+                                                .to_string(),
+                                        ),
                                     }
                                 } else {
                                     PrepareVote::Error("Failed to deserialize response".to_string())
                                 }
                             } else {
-                                PrepareVote::Error("Empty response with no status header".to_string())
+                                PrepareVote::Error(
+                                    "Empty response with no status header".to_string(),
+                                )
                             };
 
                             // Record vote

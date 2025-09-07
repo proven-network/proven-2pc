@@ -39,20 +39,17 @@ impl KvTransactionEngine {
     }
 
     /// Execute a get operation
-    fn execute_get(
-        &mut self,
-        key: &str,
-        txn_id: HlcTimestamp,
-    ) -> OperationResult<KvResponse> {
+    fn execute_get(&mut self, key: &str, txn_id: HlcTimestamp) -> OperationResult<KvResponse> {
         // Check if we can acquire the lock
         match self.lock_manager.check(txn_id, key, LockMode::Shared) {
             LockAttemptResult::WouldGrant => {
                 // Grant the lock
-                self.lock_manager.grant(txn_id, key.to_string(), LockMode::Shared);
-                
+                self.lock_manager
+                    .grant(txn_id, key.to_string(), LockMode::Shared);
+
                 // Perform the read
                 let value = self.storage.get(key, txn_id);
-                
+
                 // Track lock in transaction context
                 if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
                     tx_ctx.locks_held.push((key.to_string(), LockMode::Shared));
@@ -83,17 +80,21 @@ impl KvTransactionEngine {
         match self.lock_manager.check(txn_id, key, LockMode::Exclusive) {
             LockAttemptResult::WouldGrant => {
                 // Grant the lock
-                self.lock_manager.grant(txn_id, key.to_string(), LockMode::Exclusive);
-                
+                self.lock_manager
+                    .grant(txn_id, key.to_string(), LockMode::Exclusive);
+
                 // Get the previous value for the response
                 let previous = self.storage.get(key, txn_id).cloned();
 
                 // Write to storage
-                self.storage.put(key.to_string(), value.clone(), txn_id, txn_id);
+                self.storage
+                    .put(key.to_string(), value.clone(), txn_id, txn_id);
 
                 // Track lock in transaction context
                 if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-                    tx_ctx.locks_held.push((key.to_string(), LockMode::Exclusive));
+                    tx_ctx
+                        .locks_held
+                        .push((key.to_string(), LockMode::Exclusive));
                 }
 
                 OperationResult::Success(KvResponse::PutResult {
@@ -111,17 +112,14 @@ impl KvTransactionEngine {
     }
 
     /// Execute a delete operation
-    fn execute_delete(
-        &mut self,
-        key: &str,
-        txn_id: HlcTimestamp,
-    ) -> OperationResult<KvResponse> {
+    fn execute_delete(&mut self, key: &str, txn_id: HlcTimestamp) -> OperationResult<KvResponse> {
         // Check if we can acquire the lock
         match self.lock_manager.check(txn_id, key, LockMode::Exclusive) {
             LockAttemptResult::WouldGrant => {
                 // Grant the lock
-                self.lock_manager.grant(txn_id, key.to_string(), LockMode::Exclusive);
-                
+                self.lock_manager
+                    .grant(txn_id, key.to_string(), LockMode::Exclusive);
+
                 // Check if key exists
                 let existed = self.storage.get(key, txn_id).is_some();
 
@@ -132,7 +130,9 @@ impl KvTransactionEngine {
 
                 // Track lock in transaction context
                 if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-                    tx_ctx.locks_held.push((key.to_string(), LockMode::Exclusive));
+                    tx_ctx
+                        .locks_held
+                        .push((key.to_string(), LockMode::Exclusive));
                 }
 
                 OperationResult::Success(KvResponse::DeleteResult {
@@ -161,9 +161,7 @@ impl TransactionEngine for KvTransactionEngine {
     ) -> OperationResult<Self::Response> {
         match operation {
             KvOperation::Get { ref key } => self.execute_get(key, txn_id),
-            KvOperation::Put { ref key, ref value } => {
-                self.execute_put(key, value.clone(), txn_id)
-            }
+            KvOperation::Put { ref key, ref value } => self.execute_put(key, value.clone(), txn_id),
             KvOperation::Delete { ref key } => self.execute_delete(key, txn_id),
         }
     }
@@ -222,10 +220,10 @@ impl TransactionEngine for KvTransactionEngine {
     fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
         // Create new transaction context
         let tx_ctx = TransactionContext::new(txn_id);
-        
+
         // Register with storage
         self.storage.register_transaction(txn_id, txn_id);
-        
+
         // Store context
         self.active_transactions.insert(txn_id, tx_ctx);
     }

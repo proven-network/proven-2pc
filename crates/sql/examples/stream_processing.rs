@@ -4,7 +4,7 @@
 //! handles transactions with PCC, and returns results through a response channel.
 
 use proven_engine::{Message, MockClient, MockEngine};
-use proven_sql::stream::{SqlOperation, SqlStreamProcessor, SqlResponse};
+use proven_sql::stream::{SqlOperation, SqlResponse, SqlStreamProcessor};
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -13,6 +13,7 @@ pub mod stream;
 pub use client::MockClient;
 pub use engine::MockEngine;
 pub use message::Message;
+pub use stream::DeadlineStreamItem;
 
 /// Mock engine errors
 #[derive(Debug, Error)]
@@ -155,6 +156,138 @@ mod tests {
 
         // Should not receive the non-matching message
         assert!(sub.try_recv().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_deadline_read() {
+        use proven_hlc::{HlcTimestamp, NodeId};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        let engine = Arc::new(MockEngine::new());
+        let client = MockClient::new("test-node".to_string(), engine.clone());
+
+        // Create a stream
+        client
+            .create_stream("deadline-stream".to_string())
+            .await
+            .unwrap();
+
+        // Publish some messages
+        let msg1 = Message::with_body(b"message1".to_vec());
+        let msg2 = Message::with_body(b"message2".to_vec());
+        let msg3 = Message::with_body(b"message3".to_vec());
+
+        client
+            .publish_to_stream("deadline-stream".to_string(), vec![msg1, msg2, msg3])
+            .await
+            .unwrap();
+
+        // Set a deadline in the future (so we don't pass it)
+        let future_deadline = HlcTimestamp::new(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64
+                + 1_000_000, // 1 second in future
+            0,
+            NodeId::new(1),
+        );
+
+        // Read all messages until deadline
+        let stream = client
+            .stream_messages_until_deadline("deadline-stream", Some(1), future_deadline)
+            .unwrap();
+        pin!(stream);
+
+        let mut messages = Vec::new();
+        let mut deadline_reached = false;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                DeadlineStreamItem::Message(msg) => messages.push(msg),
+                DeadlineStreamItem::DeadlineReached => {
+                    deadline_reached = true;
+                    break;
+                }
+            }
+        }
+
+        // Should have all 3 messages, no deadline yet
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].body, b"message1");
+        assert_eq!(messages[1].body, b"message2");
+        assert_eq!(messages[2].body, b"message3");
+        assert!(
+            !deadline_reached,
+            "Should not reach deadline - it's in the future"
+        );
+
+        // Now test with a past deadline
+        let past_deadline = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        let stream = client
+            .stream_messages_until_deadline("deadline-stream", Some(1), past_deadline)
+            .unwrap();
+        pin!(stream);
+
+        let mut messages = Vec::new();
+        let mut deadline_reached = false;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                DeadlineStreamItem::Message(msg) => messages.push(msg),
+                DeadlineStreamItem::DeadlineReached => {
+                    deadline_reached = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(deadline_reached, "Should reach deadline - it's in the past");
+        assert_eq!(messages.len(), 0); // No messages before timestamp 1000
+    }
+
+    #[tokio::test]
+    async fn test_timestamp_monotonicity() {
+        let engine = Arc::new(MockEngine::new());
+        let client = MockClient::new("test-node".to_string(), engine.clone());
+
+        // Create a stream
+        client
+            .create_stream("monotonic-stream".to_string())
+            .await
+            .unwrap();
+
+        // Publish multiple messages and verify timestamps are monotonic
+        for i in 0..10 {
+            let msg = Message::with_body(format!("message-{}", i).into_bytes());
+            client
+                .publish_to_stream("monotonic-stream".to_string(), vec![msg])
+                .await
+                .unwrap();
+        }
+
+        // Read all messages and verify monotonicity
+        let mut stream = client
+            .stream_messages("monotonic-stream".to_string(), Some(1))
+            .await
+            .unwrap();
+
+        let mut last_timestamp = None;
+        for _ in 0..10 {
+            let msg = stream.recv().await.unwrap();
+            assert!(msg.timestamp.is_some());
+
+            if let Some(last) = last_timestamp {
+                assert!(
+                    msg.timestamp.unwrap() > last,
+                    "Timestamps must be strictly monotonic"
+                );
+            }
+            last_timestamp = msg.timestamp;
+        }
     }
 
     #[tokio::test]

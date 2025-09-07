@@ -8,10 +8,10 @@
 use proven_coordinator::MockCoordinator;
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::{
-    stream::{operation::KvOperation, KvStreamProcessor},
+    stream::{KvStreamProcessor, operation::KvOperation},
     types::Value as KvValue,
 };
-use proven_sql::stream::{operation::SqlOperation, SqlStreamProcessor};
+use proven_sql::stream::{SqlStreamProcessor, operation::SqlOperation};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

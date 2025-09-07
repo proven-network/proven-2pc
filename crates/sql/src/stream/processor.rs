@@ -31,7 +31,7 @@ impl SqlStreamProcessor {
 
     // TODO: Add these methods once we have accessors on StreamProcessor
     // For now, these testing methods are not available through the wrapper
-    
+
     // /// Get a reference to the storage for testing
     // #[cfg(test)]
     // pub fn storage(&self) -> &crate::storage::mvcc::MvccStorage {

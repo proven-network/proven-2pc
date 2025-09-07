@@ -3,9 +3,11 @@
 //! This module provides a client interface matching the production engine client,
 //! allowing seamless testing of SQL and KV stream processors.
 
-use crate::{Message, Result, engine::MockEngine};
+use crate::{Message, Result, engine::MockEngine, stream::DeadlineStreamItem};
+use proven_hlc::HlcTimestamp;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_stream::Stream;
 
 /// Mock client for interacting with the mock engine
 #[derive(Clone)]
@@ -50,6 +52,18 @@ impl MockClient {
     ) -> Result<MessageStream> {
         let receiver = self.engine.stream_messages(&stream_name, start_sequence)?;
         Ok(MessageStream { receiver })
+    }
+
+    /// Stream messages from a stream until deadline is reached
+    pub fn stream_messages_until_deadline(
+        &self,
+        stream_name: &str,
+        start_sequence: Option<u64>,
+        deadline: HlcTimestamp,
+    ) -> Result<impl Stream<Item = DeadlineStreamItem>> {
+        let start_offset = start_sequence.unwrap_or(1);
+        self.engine
+            .create_deadline_stream(stream_name, start_offset, deadline)
     }
 
     /// Publish messages to a subject

@@ -5,9 +5,12 @@
 
 use crate::{Message, MockEngineError, Result};
 use parking_lot::Mutex;
+use proven_hlc::{HlcTimestamp, NodeId};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+use tokio_stream::Stream as TokioStream;
 
 /// A persistent stream that stores messages
 pub struct Stream {
@@ -23,16 +26,30 @@ pub struct Stream {
 
     /// Active consumers
     consumers: Vec<StreamConsumer>,
+
+    /// Last assigned timestamp (for monotonicity)
+    last_timestamp: Option<HlcTimestamp>,
+
+    /// Node ID for this stream
+    node_id: NodeId,
 }
 
 impl Stream {
     /// Create a new stream
     pub fn new(name: String) -> Self {
+        // Create a unique node ID based on stream name
+        let node_id = NodeId::new(
+            name.bytes()
+                .fold(1u64, |acc: u64, b| acc.wrapping_add(b as u64)),
+        );
+
         Self {
-            name,
+            name: name.clone(),
             messages: Vec::new(),
             next_sequence: 1,
             consumers: Vec::new(),
+            last_timestamp: None,
+            node_id,
         }
     }
 
@@ -40,16 +57,28 @@ impl Stream {
     pub fn append(&mut self, mut messages: Vec<Message>) -> u64 {
         let start_sequence = self.next_sequence;
 
-        // Assign sequences and timestamps
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
         for msg in &mut messages {
+            // Get current physical time in microseconds
+            let physical = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64;
+            let now = HlcTimestamp::new(physical, 0, self.node_id);
+
+            // Ensure monotonic increase
+            let timestamp = match self.last_timestamp {
+                Some(last) if last >= now => {
+                    // Need to increment to maintain monotonicity
+                    HlcTimestamp::new(last.physical, last.logical + 1, last.node_id)
+                }
+                _ => now,
+            };
+
             msg.sequence = Some(self.next_sequence);
             msg.timestamp = Some(timestamp);
+
             self.next_sequence += 1;
+            self.last_timestamp = Some(timestamp);
         }
 
         // Send to all active consumers
@@ -91,6 +120,35 @@ impl Stream {
     pub fn cleanup_consumers(&mut self) {
         self.consumers.retain(|c| !c.sender.is_closed());
     }
+
+    /// Get messages from a specific offset (for deadline reads)
+    pub fn get_messages_from(&self, start_offset: u64) -> Vec<Message> {
+        let start_idx = if start_offset > 0 {
+            (start_offset - 1) as usize
+        } else {
+            0
+        };
+        self.messages[start_idx..].to_vec()
+    }
+
+    /// Check if current time is past deadline
+    pub fn is_past_deadline(&self, deadline: HlcTimestamp) -> bool {
+        let physical = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        let current_time = HlcTimestamp::new(physical, 0, self.node_id);
+        current_time > deadline
+    }
+}
+
+/// Items yielded by deadline-aware stream reader
+#[derive(Debug, Clone)]
+pub enum DeadlineStreamItem {
+    /// A message from the stream
+    Message(Message),
+    /// Deadline has been reached
+    DeadlineReached,
 }
 
 /// An active stream consumer
@@ -155,5 +213,46 @@ impl StreamManager {
     /// Check if a stream exists
     pub fn stream_exists(&self, name: &str) -> bool {
         self.streams.lock().contains_key(name)
+    }
+
+    /// Create a stream that reads messages until deadline
+    pub fn create_deadline_stream(
+        &self,
+        stream_name: &str,
+        start_offset: u64,
+        deadline: HlcTimestamp,
+    ) -> Result<impl TokioStream<Item = DeadlineStreamItem>> {
+        // Extract necessary data while holding the lock
+        let (messages, is_past_deadline) = {
+            let streams = self.streams.lock();
+            let stream = streams
+                .get(stream_name)
+                .ok_or_else(|| MockEngineError::StreamNotFound(stream_name.to_string()))?;
+
+            (
+                stream.get_messages_from(start_offset),
+                stream.is_past_deadline(deadline),
+            )
+        };
+
+        // Create the stream without holding the lock
+        Ok(async_stream::stream! {
+            for msg in messages {
+                // Check if we've passed deadline
+                if let Some(ts) = msg.timestamp {
+                    if ts > deadline {
+                        yield DeadlineStreamItem::DeadlineReached;
+                        return;
+                    }
+                }
+
+                yield DeadlineStreamItem::Message(msg);
+            }
+
+            // Check if current time is past deadline
+            if is_past_deadline {
+                yield DeadlineStreamItem::DeadlineReached;
+            }
+        })
     }
 }

@@ -517,6 +517,7 @@ dependencies = [
 name = "proven-engine"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "futures",
  "parking_lot",
  "proven-hlc",
@@ -525,6 +526,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "uuid",
 ]
 

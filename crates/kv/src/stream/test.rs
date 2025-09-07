@@ -182,7 +182,7 @@ mod tests {
 
         // Get response - should be deferred since txn1 has exclusive lock
         let response = coord_responses.recv().await.unwrap();
-        
+
         // Should get a deferred response
         assert_eq!(
             response.headers.get("status"),
@@ -211,7 +211,10 @@ mod tests {
         // and we should receive its response
         let retried_response = coord_responses.recv().await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&retried_response.body).unwrap();
-        assert_eq!(body["GetResult"]["value"]["String"], "value1", "Deferred operation should see committed value after retry");
+        assert_eq!(
+            body["GetResult"]["value"]["String"], "value1",
+            "Deferred operation should see committed value after retry"
+        );
 
         // Transaction 3: Now read key1 (should see committed value)
         let get_op = KvOperation::Get {

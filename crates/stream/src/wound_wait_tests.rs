@@ -53,7 +53,9 @@ mod tests {
                     if let Some(&holder) = self.locks.get(&resource) {
                         if holder != txn_id {
                             // Just report the conflict - stream processor handles wound-wait
-                            return OperationResult::WouldBlock { blocking_txn: holder };
+                            return OperationResult::WouldBlock {
+                                blocking_txn: holder,
+                            };
                         }
                     }
                     self.locks.insert(resource, txn_id);
@@ -61,11 +63,9 @@ mod tests {
                         message: "Lock acquired".to_string(),
                     })
                 }
-                TestOp::Read { resource } => {
-                    OperationResult::Success(TestResponse::Value {
-                        data: format!("Data from {}", resource),
-                    })
-                }
+                TestOp::Read { resource } => OperationResult::Success(TestResponse::Value {
+                    data: format!("Data from {}", resource),
+                }),
             }
         }
 
@@ -124,7 +124,8 @@ mod tests {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
         let test_engine = TestEngine::new();
-        let mut processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
 
         // Subscribe to responses
         let mut younger_responses = client
@@ -149,7 +150,10 @@ mod tests {
 
         // Younger should succeed
         let younger_msg = younger_responses.recv().await.unwrap();
-        assert!(!younger_msg.body.is_empty(), "Younger should get success response");
+        assert!(
+            !younger_msg.body.is_empty(),
+            "Younger should get success response"
+        );
 
         // Older transaction (2000) tries to acquire same lock
         let msg = create_message(
@@ -172,7 +176,10 @@ mod tests {
 
         // Older should succeed
         let older_msg = older_responses.recv().await.unwrap();
-        assert!(!older_msg.body.is_empty(), "Older should succeed after wounding");
+        assert!(
+            !older_msg.body.is_empty(),
+            "Older should succeed after wounding"
+        );
     }
 
     #[tokio::test]
@@ -180,7 +187,8 @@ mod tests {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
         let test_engine = TestEngine::new();
-        let mut processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
 
         // Subscribe to responses
         let mut older_responses = client
@@ -232,7 +240,10 @@ mod tests {
 
         // Younger should be automatically retried and succeed
         let retry_msg = younger_responses.recv().await.unwrap();
-        assert!(!retry_msg.body.is_empty(), "Younger should succeed after retry");
+        assert!(
+            !retry_msg.body.is_empty(),
+            "Younger should succeed after retry"
+        );
     }
 
     #[tokio::test]
@@ -240,7 +251,8 @@ mod tests {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
         let test_engine = TestEngine::new();
-        let mut processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
 
         // Subscribe to responses
         let mut oldest_responses = client
@@ -283,7 +295,10 @@ mod tests {
 
         // Oldest should succeed
         let oldest_msg = oldest_responses.recv().await.unwrap();
-        assert!(!oldest_msg.body.is_empty(), "Oldest should succeed after wounding");
+        assert!(
+            !oldest_msg.body.is_empty(),
+            "Oldest should succeed after wounding"
+        );
     }
 
     #[tokio::test]
@@ -299,16 +314,8 @@ mod tests {
         );
 
         for (i, (r1, r2)) in results1.iter().zip(results2.iter()).enumerate() {
-            assert_eq!(
-                r1.0, r2.0,
-                "Coordinator mismatch at position {}",
-                i
-            );
-            assert_eq!(
-                r1.1, r2.1,
-                "Status mismatch at position {}",
-                i
-            );
+            assert_eq!(r1.0, r2.0, "Coordinator mismatch at position {}", i);
+            assert_eq!(r1.1, r2.1, "Status mismatch at position {}", i);
         }
     }
 
@@ -316,14 +323,24 @@ mod tests {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
         let test_engine = TestEngine::new();
-        let mut processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
 
         let mut results = Vec::new();
 
         // Subscribe to all coordinators
-        let mut coord1_resp = client.subscribe("coordinator.coord1.response", None).await.unwrap();
-        let mut coord2_resp = client.subscribe("coordinator.coord2.response", None).await.unwrap();
-        let mut coord3_resp = client.subscribe("coordinator.coord3.response", None).await.unwrap();
+        let mut coord1_resp = client
+            .subscribe("coordinator.coord1.response", None)
+            .await
+            .unwrap();
+        let mut coord2_resp = client
+            .subscribe("coordinator.coord2.response", None)
+            .await
+            .unwrap();
+        let mut coord3_resp = client
+            .subscribe("coordinator.coord3.response", None)
+            .await
+            .unwrap();
 
         // Fixed sequence of operations
         let operations = vec![
@@ -388,7 +405,8 @@ mod tests {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
         let test_engine = TestEngine::new();
-        let mut processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
 
         // Subscribe to responses
         let mut younger_responses = client
