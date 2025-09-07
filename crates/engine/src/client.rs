@@ -80,9 +80,9 @@ impl MockClient {
         &self,
         subject_pattern: &str,
         _queue_group: Option<String>, // Ignored in mock for simplicity
-    ) -> Result<MessageStream> {
+    ) -> Result<PubSubMessageStream> {
         let receiver = self.engine.subscribe(subject_pattern);
-        Ok(MessageStream { receiver })
+        Ok(PubSubMessageStream { receiver })
     }
 
     /// Send a request and wait for a reply
@@ -112,10 +112,42 @@ impl MockClient {
 
 /// Stream of messages from a subscription or stream consumer
 pub struct MessageStream {
-    receiver: mpsc::Receiver<Message>,
+    receiver: mpsc::Receiver<(Message, HlcTimestamp, u64)>,
 }
 
 impl MessageStream {
+    /// Receive the next message with timestamp and log index
+    pub async fn recv(&mut self) -> Option<(Message, HlcTimestamp, u64)> {
+        self.receiver.recv().await
+    }
+
+    /// Try to receive without blocking
+    pub fn try_recv(&mut self) -> Option<(Message, HlcTimestamp, u64)> {
+        self.receiver.try_recv().ok()
+    }
+}
+
+// Implement Stream trait for async iteration
+impl futures::Stream for MessageStream {
+    type Item = (Message, HlcTimestamp, u64);
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.receiver.poll_recv(cx)
+    }
+}
+
+// Add futures dependency for Stream trait
+use futures;
+
+/// Stream of messages from pub/sub subscriptions (without timestamps/sequence)
+pub struct PubSubMessageStream {
+    receiver: mpsc::Receiver<Message>,
+}
+
+impl PubSubMessageStream {
     /// Receive the next message
     pub async fn recv(&mut self) -> Option<Message> {
         self.receiver.recv().await
@@ -128,7 +160,7 @@ impl MessageStream {
 }
 
 // Implement Stream trait for async iteration
-impl futures::Stream for MessageStream {
+impl futures::Stream for PubSubMessageStream {
     type Item = Message;
 
     fn poll_next(
@@ -138,6 +170,3 @@ impl futures::Stream for MessageStream {
         self.receiver.poll_recv(cx)
     }
 }
-
-// Add futures dependency for Stream trait
-use futures;

@@ -57,7 +57,7 @@ impl MockEngine {
         &self,
         stream_name: &str,
         start_sequence: Option<u64>,
-    ) -> Result<mpsc::Receiver<Message>> {
+    ) -> Result<mpsc::Receiver<(Message, HlcTimestamp, u64)>> {
         self.streams.create_consumer(stream_name, start_sequence)
     }
 

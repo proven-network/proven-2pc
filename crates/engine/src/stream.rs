@@ -18,8 +18,8 @@ pub struct Stream {
     #[allow(dead_code)]
     name: String,
 
-    /// All messages in the stream
-    messages: Vec<Message>,
+    /// All messages in the stream with their timestamps and sequences
+    messages: Vec<(Message, HlcTimestamp, u64)>,
 
     /// Next sequence number
     next_sequence: u64,
@@ -54,10 +54,13 @@ impl Stream {
     }
 
     /// Append messages to the stream
-    pub fn append(&mut self, mut messages: Vec<Message>) -> u64 {
+    pub fn append(&mut self, messages: Vec<Message>) -> u64 {
         let start_sequence = self.next_sequence;
 
-        for msg in &mut messages {
+        // Track timestamps and sequences for each message
+        let mut message_metadata = Vec::new();
+
+        for msg in &messages {
             // Get current physical time in microseconds
             let physical = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -74,36 +77,39 @@ impl Stream {
                 _ => now,
             };
 
-            msg.sequence = Some(self.next_sequence);
-            msg.timestamp = Some(timestamp);
-
+            message_metadata.push((msg.clone(), timestamp, self.next_sequence));
             self.next_sequence += 1;
             self.last_timestamp = Some(timestamp);
         }
 
         // Send to all active consumers
         for consumer in &self.consumers {
-            for msg in &messages {
-                // Send a clone to each consumer (ignore if channel is closed)
-                let _ = consumer.sender.try_send(msg.clone());
+            for (msg, timestamp, sequence) in &message_metadata {
+                // Send tuple to each consumer (ignore if channel is closed)
+                let _ = consumer
+                    .sender
+                    .try_send((msg.clone(), *timestamp, *sequence));
             }
         }
 
-        // Store messages
-        self.messages.extend(messages);
+        // Store messages with metadata
+        self.messages.extend(message_metadata);
 
         start_sequence
     }
 
     /// Create a new consumer starting from a specific sequence
-    pub fn create_consumer(&mut self, start_sequence: Option<u64>) -> mpsc::Receiver<Message> {
+    pub fn create_consumer(
+        &mut self,
+        start_sequence: Option<u64>,
+    ) -> mpsc::Receiver<(Message, HlcTimestamp, u64)> {
         let (tx, rx) = mpsc::channel(1000);
 
         // Send historical messages
         let start = start_sequence.unwrap_or(1) as usize;
         if start > 0 && start <= self.messages.len() {
-            for msg in &self.messages[start - 1..] {
-                let _ = tx.try_send(msg.clone());
+            for (msg, timestamp, sequence) in &self.messages[start - 1..] {
+                let _ = tx.try_send((msg.clone(), *timestamp, *sequence));
             }
         }
 
@@ -122,7 +128,7 @@ impl Stream {
     }
 
     /// Get messages from a specific offset (for deadline reads)
-    pub fn get_messages_from(&self, start_offset: u64) -> Vec<Message> {
+    pub fn get_messages_from(&self, start_offset: u64) -> Vec<(Message, HlcTimestamp, u64)> {
         let start_idx = if start_offset > 0 {
             (start_offset - 1) as usize
         } else {
@@ -145,15 +151,15 @@ impl Stream {
 /// Items yielded by deadline-aware stream reader
 #[derive(Debug, Clone)]
 pub enum DeadlineStreamItem {
-    /// A message from the stream
-    Message(Message),
+    /// A message from the stream with timestamp and log index
+    Message(Message, HlcTimestamp, u64),
     /// Deadline has been reached
     DeadlineReached,
 }
 
 /// An active stream consumer
 struct StreamConsumer {
-    sender: mpsc::Sender<Message>,
+    sender: mpsc::Sender<(Message, HlcTimestamp, u64)>,
     #[allow(dead_code)]
     current_sequence: u64,
 }
@@ -201,7 +207,7 @@ impl StreamManager {
         &self,
         name: &str,
         start_sequence: Option<u64>,
-    ) -> Result<mpsc::Receiver<Message>> {
+    ) -> Result<mpsc::Receiver<(Message, HlcTimestamp, u64)>> {
         let mut streams = self.streams.lock();
         let stream = streams
             .get_mut(name)
@@ -237,16 +243,14 @@ impl StreamManager {
 
         // Create the stream without holding the lock
         Ok(async_stream::stream! {
-            for msg in messages {
+            for (msg, ts, sequence) in messages {
                 // Check if we've passed deadline
-                if let Some(ts) = msg.timestamp {
-                    if ts > deadline {
-                        yield DeadlineStreamItem::DeadlineReached;
-                        return;
-                    }
+                if ts > deadline {
+                    yield DeadlineStreamItem::DeadlineReached;
+                    return;
                 }
 
-                yield DeadlineStreamItem::Message(msg);
+                yield DeadlineStreamItem::Message(msg, ts, sequence);
             }
 
             // Check if current time is past deadline

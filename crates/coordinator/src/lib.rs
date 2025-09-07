@@ -216,11 +216,11 @@ mod tests {
         });
 
         // First message should be the operation
-        let op_msg = stream_consumer.recv().await.unwrap();
+        let (op_msg, _, _) = stream_consumer.recv().await.unwrap();
         assert_eq!(op_msg.body, b"operation");
 
         // Second message should be prepare_and_commit
-        let commit_msg = stream_consumer.recv().await.unwrap();
+        let (commit_msg, _, _) = stream_consumer.recv().await.unwrap();
         assert_eq!(
             commit_msg.headers.get("txn_phase"),
             Some(&"prepare_and_commit".to_string())
@@ -283,30 +283,30 @@ mod tests {
         });
 
         // Skip operation messages
-        let _ = stream_a_consumer.recv().await.unwrap();
-        let _ = stream_b_consumer.recv().await.unwrap();
+        let (_, _, _) = stream_a_consumer.recv().await.unwrap();
+        let (_, _, _) = stream_b_consumer.recv().await.unwrap();
 
         // Both should receive prepare (not prepare_and_commit)
-        let prepare_a = stream_a_consumer.recv().await.unwrap();
+        let (prepare_a, _, _) = stream_a_consumer.recv().await.unwrap();
         assert_eq!(
             prepare_a.headers.get("txn_phase"),
             Some(&"prepare".to_string())
         );
 
-        let prepare_b = stream_b_consumer.recv().await.unwrap();
+        let (prepare_b, _, _) = stream_b_consumer.recv().await.unwrap();
         assert_eq!(
             prepare_b.headers.get("txn_phase"),
             Some(&"prepare".to_string())
         );
 
         // Then commit messages
-        let commit_a = stream_a_consumer.recv().await.unwrap();
+        let (commit_a, _, _) = stream_a_consumer.recv().await.unwrap();
         assert_eq!(
             commit_a.headers.get("txn_phase"),
             Some(&"commit".to_string())
         );
 
-        let commit_b = stream_b_consumer.recv().await.unwrap();
+        let (commit_b, _, _) = stream_b_consumer.recv().await.unwrap();
         assert_eq!(
             commit_b.headers.get("txn_phase"),
             Some(&"commit".to_string())
@@ -341,7 +341,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_a1 = stream_a_consumer.recv().await.unwrap();
+        let (msg_a1, _, _) = stream_a_consumer.recv().await.unwrap();
         assert_eq!(msg_a1.body, b"op1");
         assert!(msg_a1.headers.get("new_participants").is_none());
 
@@ -351,7 +351,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_b1 = stream_b_consumer.recv().await.unwrap();
+        let (msg_b1, _, _) = stream_b_consumer.recv().await.unwrap();
         assert_eq!(msg_b1.body, b"op2");
 
         // Verify stream-b learns about stream-a with its offset
@@ -367,7 +367,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_c1 = stream_c_consumer.recv().await.unwrap();
+        let (msg_c1, _, _) = stream_c_consumer.recv().await.unwrap();
         assert_eq!(msg_c1.body, b"op3");
 
         let new_participants_c = msg_c1.headers.get("new_participants").unwrap();
@@ -383,7 +383,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_a2 = stream_a_consumer.recv().await.unwrap();
+        let (msg_a2, _, _) = stream_a_consumer.recv().await.unwrap();
         assert_eq!(msg_a2.body, b"op4");
 
         let new_participants_a = msg_a2.headers.get("new_participants").unwrap();
@@ -403,7 +403,7 @@ mod tests {
         });
 
         // Check prepare messages
-        let prepare_a = stream_a_consumer.recv().await.unwrap();
+        let (prepare_a, _, _) = stream_a_consumer.recv().await.unwrap();
         assert_eq!(
             prepare_a.headers.get("txn_phase"),
             Some(&"prepare".to_string())
@@ -411,7 +411,7 @@ mod tests {
         // stream-a already knows about all participants, no new_participants expected
         assert!(prepare_a.headers.get("new_participants").is_none());
 
-        let prepare_b = stream_b_consumer.recv().await.unwrap();
+        let (prepare_b, _, _) = stream_b_consumer.recv().await.unwrap();
         assert_eq!(
             prepare_b.headers.get("txn_phase"),
             Some(&"prepare".to_string())
@@ -424,7 +424,7 @@ mod tests {
             assert!(participants_map.contains_key("stream-c"));
         }
 
-        let prepare_c = stream_c_consumer.recv().await.unwrap();
+        let (prepare_c, _, _) = stream_c_consumer.recv().await.unwrap();
         assert_eq!(
             prepare_c.headers.get("txn_phase"),
             Some(&"prepare".to_string())
@@ -459,7 +459,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_b1 = stream_b_consumer.recv().await.unwrap();
+        let (msg_b1, _, _) = stream_b_consumer.recv().await.unwrap();
         let new_participants = msg_b1.headers.get("new_participants").unwrap();
         let participants_map: std::collections::HashMap<String, u64> =
             serde_json::from_str(new_participants).unwrap();
@@ -472,7 +472,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_b2 = stream_b_consumer.recv().await.unwrap();
+        let (msg_b2, _, _) = stream_b_consumer.recv().await.unwrap();
         assert!(msg_b2.headers.get("new_participants").is_none());
     }
 
@@ -499,9 +499,9 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_a = stream_a_consumer.recv().await.unwrap();
+        let (_msg_a, _, seq_a) = stream_a_consumer.recv().await.unwrap();
         // The first message in stream-a should have sequence 1
-        assert_eq!(msg_a.sequence, Some(1));
+        assert_eq!(seq_a, 1);
 
         // Execute second operation
         coordinator
@@ -509,7 +509,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg_b = stream_b_consumer.recv().await.unwrap();
+        let (msg_b, _, _) = stream_b_consumer.recv().await.unwrap();
 
         // Verify stream-b receives correct offset for stream-a
         let new_participants = msg_b.headers.get("new_participants").unwrap();

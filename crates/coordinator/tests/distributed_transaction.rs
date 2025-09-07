@@ -38,7 +38,7 @@ async fn test_distributed_transaction_sql_and_kv() {
     let sql_txn_id = txn_id.clone();
     tokio::spawn(async move {
         let mut operation_count = 0;
-        while let Some(msg) = sql_consumer.recv().await {
+        while let Some((msg, _, _)) = sql_consumer.recv().await {
             if let Some(msg_txn_id) = msg.headers.get("txn_id") {
                 if msg_txn_id == &sql_txn_id {
                     if let Some(phase) = msg.headers.get("txn_phase") {
@@ -59,7 +59,7 @@ async fn test_distributed_transaction_sql_and_kv() {
     let kv_txn_id = txn_id.clone();
     tokio::spawn(async move {
         let mut operation_count = 0;
-        while let Some(msg) = kv_consumer.recv().await {
+        while let Some((msg, _, _)) = kv_consumer.recv().await {
             if let Some(msg_txn_id) = msg.headers.get("txn_id") {
                 if msg_txn_id == &kv_txn_id {
                     if let Some(phase) = msg.headers.get("txn_phase") {

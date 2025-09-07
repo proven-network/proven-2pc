@@ -3,7 +3,6 @@
 //! This module defines the message format used by the mock engine,
 //! matching the production engine's message structure.
 
-use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -15,23 +14,12 @@ pub struct Message {
 
     /// Headers for metadata
     pub headers: HashMap<String, String>,
-
-    /// Sequence number (for streams)
-    pub sequence: Option<u64>,
-
-    /// HLC timestamp (for ordering and deadline comparison)
-    pub timestamp: Option<HlcTimestamp>,
 }
 
 impl Message {
     /// Create a new message with body and headers
     pub fn new(body: Vec<u8>, headers: HashMap<String, String>) -> Self {
-        Self {
-            body,
-            headers,
-            sequence: None,
-            timestamp: None,
-        }
+        Self { body, headers }
     }
 
     /// Create a message with just body
@@ -39,8 +27,6 @@ impl Message {
         Self {
             body,
             headers: HashMap::new(),
-            sequence: None,
-            timestamp: None,
         }
     }
 
@@ -54,23 +40,6 @@ impl Message {
     pub fn with_txn_deadline(mut self, deadline: String) -> Self {
         self.headers.insert("txn_deadline".to_string(), deadline);
         self
-    }
-
-    /// Set sequence number
-    pub fn with_sequence(mut self, sequence: u64) -> Self {
-        self.sequence = Some(sequence);
-        self
-    }
-
-    /// Set timestamp
-    pub fn with_timestamp(mut self, timestamp: HlcTimestamp) -> Self {
-        self.timestamp = Some(timestamp);
-        self
-    }
-
-    /// Get HLC timestamp
-    pub fn hlc_timestamp(&self) -> Option<HlcTimestamp> {
-        self.timestamp
     }
 
     /// Get header value

@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut processor = sql_processor;
 
-        while let Some(msg) = sql_stream.recv().await {
+        while let Some((msg, _, _)) = sql_stream.recv().await {
             // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {
@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut processor = kv_processor;
 
-        while let Some(msg) = kv_stream.recv().await {
+        while let Some((msg, _, _)) = kv_stream.recv().await {
             // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {

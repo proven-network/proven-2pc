@@ -74,13 +74,13 @@ mod tests {
             .await
             .unwrap();
 
-        let msg1 = stream.recv().await.unwrap();
+        let (msg1, _, seq1) = stream.recv().await.unwrap();
         assert_eq!(msg1.body, b"message1");
-        assert_eq!(msg1.sequence, Some(1));
+        assert_eq!(seq1, 1);
 
-        let msg2 = stream.recv().await.unwrap();
+        let (msg2, _, seq2) = stream.recv().await.unwrap();
         assert_eq!(msg2.body, b"message2");
-        assert_eq!(msg2.sequence, Some(2));
+        assert_eq!(seq2, 2);
     }
 
     #[tokio::test]
@@ -206,7 +206,7 @@ mod tests {
 
         while let Some(item) = stream.next().await {
             match item {
-                DeadlineStreamItem::Message(msg) => messages.push(msg),
+                DeadlineStreamItem::Message(msg, _, _) => messages.push(msg),
                 DeadlineStreamItem::DeadlineReached => {
                     deadline_reached = true;
                     break;
@@ -237,7 +237,7 @@ mod tests {
 
         while let Some(item) = stream.next().await {
             match item {
-                DeadlineStreamItem::Message(msg) => messages.push(msg),
+                DeadlineStreamItem::Message(msg, _, _) => messages.push(msg),
                 DeadlineStreamItem::DeadlineReached => {
                     deadline_reached = true;
                     break;
@@ -277,16 +277,12 @@ mod tests {
 
         let mut last_timestamp = None;
         for _ in 0..10 {
-            let msg = stream.recv().await.unwrap();
-            assert!(msg.timestamp.is_some());
+            let (_msg, timestamp, _) = stream.recv().await.unwrap();
 
             if let Some(last) = last_timestamp {
-                assert!(
-                    msg.timestamp.unwrap() > last,
-                    "Timestamps must be strictly monotonic"
-                );
+                assert!(timestamp > last, "Timestamps must be strictly monotonic");
             }
-            last_timestamp = msg.timestamp;
+            last_timestamp = Some(timestamp);
         }
     }
 
@@ -319,7 +315,7 @@ mod tests {
             .await
             .unwrap();
 
-        let received = stream.recv().await.unwrap();
+        let (received, _, _) = stream.recv().await.unwrap();
         assert_eq!(received.get_header("txn_id"), Some("txn123"));
         assert_eq!(received.get_header("coordinator_id"), Some("coord456"));
     }
