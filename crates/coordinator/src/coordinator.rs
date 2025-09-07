@@ -18,7 +18,7 @@ use crate::error::{CoordinatorError, Result};
 use crate::transaction::{PrepareVote, Transaction, TransactionState};
 use parking_lot::Mutex;
 use proven_engine::{Message, MockClient, MockEngine};
-use proven_hlc::{HlcClock, NodeId};
+use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
 use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -79,19 +79,29 @@ impl MockCoordinator {
         }
     }
 
-    /// Begin a new distributed transaction
+    /// Begin a new distributed transaction with a specified timeout
     ///
     /// Participants will be discovered dynamically as operations are sent to streams
-    pub async fn begin_transaction(&self) -> Result<String> {
+    pub async fn begin_transaction(&self, timeout: Duration) -> Result<String> {
         let timestamp = self.hlc.lock().now();
         let txn_id = format!("{}:{}", self.coordinator_id, timestamp);
+
+        // Calculate deadline as timestamp + timeout (convert duration to microseconds)
+        let timeout_us = timeout.as_micros() as u64;
+        let deadline = HlcTimestamp::new(
+            timestamp.physical + timeout_us,
+            timestamp.logical,
+            timestamp.node_id,
+        );
 
         let transaction = Transaction {
             id: txn_id.clone(),
             state: TransactionState::Active,
             participants: Vec::new(), // Start with empty participants
             timestamp,
+            deadline,
             prepare_votes: HashMap::new(),
+            streams_with_deadline: HashSet::new(),
             participant_awareness: HashMap::new(),
             participant_offsets: HashMap::new(),
         };
@@ -112,8 +122,8 @@ impl MockCoordinator {
         stream: &str,
         operation: Vec<u8>,
     ) -> Result<()> {
-        // Check transaction exists and is active, add participant if new, get unknown participants
-        let (is_new_participant, new_participant_offsets) = {
+        // Check transaction exists and is active, add participant if new, get unknown participants, check deadline
+        let (is_new_participant, new_participant_offsets, deadline_str) = {
             let mut txns = self.transactions.lock();
             let txn = txns
                 .get_mut(txn_id)
@@ -134,6 +144,15 @@ impl MockCoordinator {
                     .insert(stream.to_string(), HashSet::new());
                 // We'll set the actual offset after we publish the message
             }
+
+            // Check if this stream needs the deadline
+            let needs_deadline = !txn.streams_with_deadline.contains(stream);
+            let deadline_str = if needs_deadline {
+                txn.streams_with_deadline.insert(stream.to_string());
+                Some(txn.deadline.to_string())
+            } else {
+                None
+            };
 
             // Build map of participants this stream doesn't know about yet
             let mut new_participants = HashMap::new();
@@ -163,7 +182,7 @@ impl MockCoordinator {
                 }
             }
 
-            (is_new_participant, new_participants)
+            (is_new_participant, new_participants, deadline_str)
         };
 
         // Create message with transaction headers and unique request ID
@@ -180,6 +199,11 @@ impl MockCoordinator {
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
         headers.insert("request_id".to_string(), request_id);
+
+        // Include deadline if this is first contact with stream
+        if let Some(deadline) = deadline_str {
+            headers.insert("txn_deadline".to_string(), deadline);
+        }
 
         // Include new participants if there are any
         if !new_participant_offsets.is_empty() {

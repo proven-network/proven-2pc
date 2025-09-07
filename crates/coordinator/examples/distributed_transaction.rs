@@ -14,6 +14,7 @@ use proven_kv::{
 use proven_sql::stream::{SqlStreamProcessor, operation::SqlOperation};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -121,7 +122,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 9. Begin a distributed transaction (participants discovered dynamically)
     println!("=== Starting Distributed Transaction ===");
-    let txn_id = coordinator.begin_transaction().await?;
+    let txn_id = coordinator
+        .begin_transaction(Duration::from_secs(30))
+        .await?;
     println!("✓ Transaction started: {}", txn_id);
     println!("  (Participants will be discovered as operations are sent)\n");
 
@@ -208,7 +211,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 14. Demonstrate abort scenario
     println!("=== Demonstrating Transaction Abort ===");
-    let abort_txn_id = coordinator.begin_transaction().await?;
+    let abort_txn_id = coordinator
+        .begin_transaction(Duration::from_secs(30))
+        .await?;
     println!("✓ Started new transaction: {}", abort_txn_id);
 
     // Execute some operations

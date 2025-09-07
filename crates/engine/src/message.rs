@@ -50,6 +50,12 @@ impl Message {
         self
     }
 
+    /// Set transaction deadline header
+    pub fn with_txn_deadline(mut self, deadline: String) -> Self {
+        self.headers.insert("txn_deadline".to_string(), deadline);
+        self
+    }
+
     /// Set sequence number
     pub fn with_sequence(mut self, sequence: u64) -> Self {
         self.sequence = Some(sequence);
@@ -75,6 +81,11 @@ impl Message {
     /// Get transaction ID from headers
     pub fn txn_id(&self) -> Option<&str> {
         self.get_header("txn_id")
+    }
+
+    /// Get transaction deadline from headers
+    pub fn txn_deadline(&self) -> Option<&str> {
+        self.get_header("txn_deadline")
     }
 
     /// Get coordinator ID from headers

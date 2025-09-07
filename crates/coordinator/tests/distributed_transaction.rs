@@ -5,6 +5,7 @@ use proven_engine::MockEngine;
 use proven_kv::stream::operation::KvOperation;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::test]
 async fn test_distributed_transaction_sql_and_kv() {
@@ -26,7 +27,10 @@ async fn test_distributed_transaction_sql_and_kv() {
     ));
 
     // Begin a distributed transaction (participants discovered dynamically)
-    let txn_id = coordinator.begin_transaction().await.unwrap();
+    let txn_id = coordinator
+        .begin_transaction(Duration::from_secs(30))
+        .await
+        .unwrap();
 
     println!("Started distributed transaction: {}", txn_id);
 
@@ -149,7 +153,10 @@ async fn test_distributed_transaction_abort() {
     ));
 
     // Begin transaction
-    let txn_id = coordinator.begin_transaction().await.unwrap();
+    let txn_id = coordinator
+        .begin_transaction(Duration::from_secs(30))
+        .await
+        .unwrap();
 
     // Execute some operations
     let sql_op = b"INSERT INTO test VALUES (1)".to_vec();
@@ -192,7 +199,10 @@ async fn test_coordinator_lifecycle() {
     let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
     // Begin a transaction
-    let txn_id = coordinator.begin_transaction().await.unwrap();
+    let txn_id = coordinator
+        .begin_transaction(Duration::from_secs(30))
+        .await
+        .unwrap();
 
     // Verify initial state is Active
     assert!(matches!(

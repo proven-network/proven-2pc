@@ -45,8 +45,14 @@ pub struct Transaction {
     /// HLC timestamp for the transaction
     pub timestamp: HlcTimestamp,
 
+    /// Transaction deadline (timestamp + timeout)
+    pub deadline: HlcTimestamp,
+
     /// Prepare votes collected from participants
     pub prepare_votes: HashMap<String, PrepareVote>,
+
+    /// Track which streams have received the deadline
+    pub streams_with_deadline: HashSet<String>,
 
     /// Track which participants each stream knows about
     /// Key: stream name, Value: set of other participants it has been told about

@@ -40,14 +40,15 @@
 //! use proven_coordinator::MockCoordinator;
 //! use proven_engine::MockEngine;
 //! use std::sync::Arc;
+//! use std::time::Duration;
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     let engine = Arc::new(MockEngine::new());
 //!     let coordinator = MockCoordinator::new("coord-1".to_string(), engine);
 //!     
-//!     // Begin transaction (participants discovered dynamically)
-//!     let txn_id = coordinator.begin_transaction().await.unwrap();
+//!     // Begin transaction with 30 second timeout (participants discovered dynamically)
+//!     let txn_id = coordinator.begin_transaction(Duration::from_secs(30)).await.unwrap();
 //!     
 //!     // Execute operations
 //!     coordinator.execute_operation(&txn_id, "sql-stream", b"INSERT...".to_vec()).await.unwrap();
@@ -71,6 +72,7 @@ mod tests {
     use super::*;
     use proven_engine::MockEngine;
     use std::sync::Arc;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_coordinator_transaction_lifecycle() {
@@ -83,7 +85,10 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin a transaction (participants discovered dynamically)
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Verify transaction is active
         assert!(matches!(
@@ -124,7 +129,10 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin and then abort a transaction
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Abort the transaction
         coordinator.abort_transaction(&txn_id).await.unwrap();
@@ -148,7 +156,10 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin transaction with no participants
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Execute operations on different streams (participants added dynamically)
         coordinator
@@ -185,7 +196,10 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin transaction with no participants
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Execute operation on single stream
         coordinator
@@ -220,7 +234,10 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin transaction with no participants
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Commit with no operations (0 participants)
         coordinator.commit_transaction(&txn_id).await.unwrap();
@@ -241,7 +258,10 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin transaction
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Execute operations on two streams
         coordinator
@@ -305,7 +325,10 @@ mod tests {
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
 
         // Begin transaction
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Subscribe to streams to verify awareness updates
         let mut stream_a_consumer = engine.stream_messages("stream-a", None).unwrap();
@@ -418,7 +441,10 @@ mod tests {
         engine.create_stream("stream-b".to_string()).unwrap();
 
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         let mut stream_b_consumer = engine.stream_messages("stream-b", None).unwrap();
 
@@ -458,7 +484,10 @@ mod tests {
         engine.create_stream("stream-b".to_string()).unwrap();
 
         let coordinator = MockCoordinator::new("coord-1".to_string(), engine.clone());
-        let txn_id = coordinator.begin_transaction().await.unwrap();
+        let txn_id = coordinator
+            .begin_transaction(Duration::from_secs(30))
+            .await
+            .unwrap();
 
         // Subscribe to get actual offsets
         let mut stream_a_consumer = engine.stream_messages("stream-a", None).unwrap();
