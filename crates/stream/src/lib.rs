@@ -23,6 +23,7 @@
 pub mod deferred;
 pub mod engine;
 pub mod processor;
+pub mod recovery;
 
 #[cfg(test)]
 mod test;
@@ -32,3 +33,4 @@ mod wound_wait_tests;
 pub use deferred::DeferredOperationsManager;
 pub use engine::{OperationResult, TransactionEngine};
 pub use processor::{ProcessorError, StreamProcessor};
+pub use recovery::{RecoveryManager, RecoveryState, TransactionDecision};

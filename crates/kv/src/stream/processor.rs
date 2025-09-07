@@ -4,6 +4,7 @@
 //! the KvTransactionEngine for KV-specific operations.
 
 use proven_engine::{Message, MockClient};
+use proven_hlc::HlcTimestamp;
 use proven_stream::StreamProcessor;
 use std::sync::Arc;
 
@@ -24,9 +25,13 @@ impl KvStreamProcessor {
     }
 
     /// Process a message from the stream
-    pub async fn process_message(&mut self, message: Message) -> Result<(), String> {
+    pub async fn process_message(
+        &mut self,
+        message: Message,
+        msg_timestamp: HlcTimestamp,
+    ) -> Result<(), String> {
         self.processor
-            .process_message(message)
+            .process_message(message, msg_timestamp)
             .await
             .map_err(|e| e.to_string())
     }

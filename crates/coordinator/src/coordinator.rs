@@ -84,7 +84,7 @@ impl MockCoordinator {
     /// Participants will be discovered dynamically as operations are sent to streams
     pub async fn begin_transaction(&self, timeout: Duration) -> Result<String> {
         let timestamp = self.hlc.lock().now();
-        let txn_id = format!("{}:{}", self.coordinator_id, timestamp);
+        let txn_id = timestamp.to_string();
 
         // Calculate deadline as timestamp + timeout (convert duration to microseconds)
         let timeout_us = timeout.as_micros() as u64;

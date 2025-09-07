@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut processor = sql_processor;
 
-        while let Some((msg, _, _)) = sql_stream.recv().await {
+        while let Some((msg, timestamp, _sequence)) = sql_stream.recv().await {
             // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Process the message directly - no conversion needed
-            if let Err(e) = processor.process_message(msg).await {
+            if let Err(e) = processor.process_message(msg, timestamp).await {
                 println!("  [SQL] Error processing message: {}", e);
             }
         }
@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut processor = kv_processor;
 
-        while let Some((msg, _, _)) = kv_stream.recv().await {
+        while let Some((msg, timestamp, _sequence)) = kv_stream.recv().await {
             // Log what we're processing
             if let Some(txn_id) = msg.headers.get("txn_id") {
                 if let Some(phase) = msg.headers.get("txn_phase") {
@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Process the message
-            if let Err(e) = processor.process_message(msg).await {
+            if let Err(e) = processor.process_message(msg, timestamp).await {
                 println!("  [KV] Error processing message: {}", e);
             }
         }
@@ -264,13 +264,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ✓ Created coordinator
 //
 // === Starting Distributed Transaction ===
-// ✓ Transaction started: coordinator-1:1_0_0000000000000123
+// ✓ Transaction started: 1_0_0000000000000123
 //
 // === Executing SQL Operations ===
-//   [SQL] Processing operation for transaction coordinator-1:1_0_0000000000000123
+//   [SQL] Processing operation for transaction 1_0_0000000000000123
 //   [SQL] Query: CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)
 // → Sent CREATE TABLE command
-//   [SQL] Processing operation for transaction coordinator-1:1_0_0000000000000123
+//   [SQL] Processing operation for transaction 1_0_0000000000000123
 //   [SQL] Query: INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')
 // → Sent INSERT command
 //
@@ -283,10 +283,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // → Stored session data
 //
 // === Committing Distributed Transaction ===
-//   [SQL] Received prepare phase for transaction coordinator-1:1_0_0000000000000123
-//   [KV] Received prepare phase for transaction coordinator-1:1_0_0000000000000123
-//   [SQL] Received commit phase for transaction coordinator-1:1_0_0000000000000123
-//   [KV] Received commit phase for transaction coordinator-1:1_0_0000000000000123
+//   [SQL] Received prepare phase for transaction 1_0_0000000000000123
+//   [KV] Received prepare phase for transaction 1_0_0000000000000123
+//   [SQL] Received commit phase for transaction 1_0_0000000000000123
+//   [KV] Received commit phase for transaction 1_0_0000000000000123
 // ✓ Transaction committed successfully!
 //
 // Transaction state: Some(Committed)

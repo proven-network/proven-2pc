@@ -9,6 +9,21 @@ mod tests {
     use serde_json;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Helper to generate test timestamps
+    fn test_timestamp() -> HlcTimestamp {
+        let physical = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        HlcTimestamp::new(physical, 0, NodeId::new(1))
+    }
+
+    /// Helper to generate transaction ID strings in HLC format
+    fn txn_id(physical: u64, logical: u32) -> String {
+        HlcTimestamp::new(physical, logical, NodeId::new(1)).to_string()
+    }
 
     fn create_message(
         operation: Option<KvOperation>,
@@ -19,6 +34,17 @@ mod tests {
     ) -> Message {
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
+
+        // Add deadline for new transactions (1 hour from now)
+        if operation.is_some() {
+            let now_micros = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64;
+            let deadline_micros = now_micros + 3600_000_000; // Add 1 hour in microseconds
+            let deadline = HlcTimestamp::new(deadline_micros, 0, NodeId::new(1));
+            headers.insert("txn_deadline".to_string(), deadline.to_string());
+        }
 
         // Always include coordinator_id for operations (not needed for commit/abort)
         if operation.is_some() || txn_phase.is_some() {
@@ -65,15 +91,29 @@ mod tests {
         };
         let msg = create_message(
             Some(put_op),
-            "txn_runtime1_1000000001", // Valid HLC timestamp format
+            &txn_id(1000000001, 0),
             "coord1",
             true, // auto-commit
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
-        // Get the response
-        let response = coord1_responses.recv().await.unwrap();
+        // Give async task time to publish
+        tokio::task::yield_now().await;
+
+        // Get response - use timeout to avoid hanging forever
+        let response =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), coord1_responses.recv())
+                .await;
+
+        let response = match response {
+            Ok(Some(r)) => r,
+            Ok(None) => panic!("Channel closed"),
+            Err(_) => panic!("Timeout waiting for response - response was not sent"),
+        };
         let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
 
         // Check it's a PutResult
@@ -86,12 +126,18 @@ mod tests {
         };
         let msg = create_message(
             Some(get_op),
-            "txn_runtime1_2000000002", // Different transaction
+            &txn_id(2000000002, 0), // Different transaction
             "coord1",
             true,
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
+
+        // Give async task time to publish
+        tokio::task::yield_now().await;
 
         // Get the response
         let response = coord1_responses.recv().await.unwrap();
@@ -107,12 +153,18 @@ mod tests {
         };
         let msg = create_message(
             Some(delete_op),
-            "txn_runtime1_3000000003",
+            &txn_id(3000000003, 0),
             "coord1",
             true,
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
+
+        // Give async task time to publish
+        tokio::task::yield_now().await;
 
         // Get the response
         let response = coord1_responses.recv().await.unwrap();
@@ -144,12 +196,15 @@ mod tests {
         };
         let msg = create_message(
             Some(put_op),
-            "txn_runtime1_1000000001",
+            &txn_id(1000000001, 0),
             "coord1",
             false, // Not auto-commit
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Give async task time to publish
         tokio::task::yield_now().await;
@@ -170,12 +225,15 @@ mod tests {
         };
         let msg = create_message(
             Some(get_op),
-            "txn_runtime1_2000000002",
+            &txn_id(2000000002, 0),
             "coord1",
             true, // Auto-commit this one
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Give async task time to publish
         tokio::task::yield_now().await;
@@ -193,12 +251,15 @@ mod tests {
         // Commit transaction 1 using prepare_and_commit
         let msg = create_message(
             None,
-            "txn_runtime1_1000000001",
+            &txn_id(1000000001, 0),
             "coord1",
             false,
             Some("prepare_and_commit"),
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Should get a prepared response (now in headers, not body)
         let response = coord_responses.recv().await.unwrap();
@@ -220,14 +281,11 @@ mod tests {
         let get_op = KvOperation::Get {
             key: "key1".to_string(),
         };
-        let msg = create_message(
-            Some(get_op),
-            "txn_runtime1_3000000003",
-            "coord1",
-            true,
-            None,
-        );
-        processor.process_message(msg).await.unwrap();
+        let msg = create_message(Some(get_op), &txn_id(3000000003, 0), "coord1", true, None);
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Get response - should now see the committed value
         let response = coord_responses.recv().await.unwrap();
@@ -255,21 +313,48 @@ mod tests {
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("coordinator_id".to_string(), coord_id.to_string());
 
+        // Add deadline for the transaction (1 hour from now)
+        let now_micros = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        let deadline_micros = now_micros + 3600_000_000; // Add 1 hour in microseconds
+        let deadline = HlcTimestamp::new(deadline_micros, 0, NodeId::new(1));
+        headers.insert("txn_deadline".to_string(), deadline.to_string());
+
         let put_msg = Message::new(serde_json::to_vec(&put_op).unwrap(), headers.clone());
-        assert!(processor.process_message(put_msg).await.is_ok());
+        assert!(
+            processor
+                .process_message(put_msg, test_timestamp())
+                .await
+                .is_ok()
+        );
 
         // Test GET operation
         let get_op = KvOperation::Get {
             key: "key1".to_string(),
         };
 
+        // Remove deadline from headers for subsequent operations (already set in the processor)
+        headers.remove("txn_deadline");
+
         let get_msg = Message::new(serde_json::to_vec(&get_op).unwrap(), headers.clone());
-        assert!(processor.process_message(get_msg).await.is_ok());
+        assert!(
+            processor
+                .process_message(get_msg, test_timestamp())
+                .await
+                .is_ok()
+        );
 
         // Test COMMIT
         headers.insert("txn_phase".to_string(), "prepare_and_commit".to_string());
         let commit_msg = Message::new(Vec::new(), headers);
-        assert!(processor.process_message(commit_msg).await.is_ok());
+        assert!(
+            processor
+                .process_message(commit_msg, test_timestamp())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -294,7 +379,12 @@ mod tests {
         headers2.insert("coordinator_id".to_string(), "coord2".to_string());
 
         let msg2 = Message::new(serde_json::to_vec(&put_op).unwrap(), headers2);
-        assert!(processor.process_message(msg2).await.is_ok());
+        assert!(
+            processor
+                .process_message(msg2, test_timestamp())
+                .await
+                .is_ok()
+        );
 
         // Transaction 1 tries to get exclusive lock - should be deferred
         // (in the old system it would wound txn2, but now it just waits)
@@ -309,7 +399,12 @@ mod tests {
 
         let msg1 = Message::new(serde_json::to_vec(&put_op2).unwrap(), headers1);
         // This should succeed (operation is deferred internally)
-        assert!(processor.process_message(msg1).await.is_ok());
+        assert!(
+            processor
+                .process_message(msg1, test_timestamp())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -323,12 +418,15 @@ mod tests {
         };
         let msg = create_message(
             Some(put_op),
-            "txn_runtime1_1000000001",
+            &txn_id(1000000001, 0),
             "coord1",
             true, // auto-commit
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Multiple concurrent reads should all succeed (shared locks)
         let get_op = KvOperation::Get {
@@ -338,41 +436,53 @@ mod tests {
         // Transaction 2 reads
         let msg2 = create_message(
             Some(get_op.clone()),
-            "txn_runtime1_2000000002",
+            &txn_id(2000000002, 0),
             "coord2",
             false,
             None,
         );
-        processor.process_message(msg2).await.unwrap();
+        processor
+            .process_message(msg2, test_timestamp())
+            .await
+            .unwrap();
 
         // Transaction 3 reads (should also succeed)
         let msg3 = create_message(
             Some(get_op.clone()),
-            "txn_runtime1_3000000003",
+            &txn_id(3000000003, 0),
             "coord3",
             false,
             None,
         );
-        processor.process_message(msg3).await.unwrap();
+        processor
+            .process_message(msg3, test_timestamp())
+            .await
+            .unwrap();
 
         // Both transactions should be able to commit
         let commit2 = create_message(
             None,
-            "txn_runtime1_2000000002",
+            &txn_id(2000000002, 0),
             "coord2",
             false,
             Some("prepare_and_commit"),
         );
-        processor.process_message(commit2).await.unwrap();
+        processor
+            .process_message(commit2, test_timestamp())
+            .await
+            .unwrap();
 
         let commit3 = create_message(
             None,
-            "txn_runtime1_3000000003",
+            &txn_id(3000000003, 0),
             "coord3",
             false,
             Some("prepare_and_commit"),
         );
-        processor.process_message(commit3).await.unwrap();
+        processor
+            .process_message(commit3, test_timestamp())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -382,8 +492,8 @@ mod tests {
         let _test_client = MockClient::new("test-observer".to_string(), _engine.clone());
 
         // Older transaction tries to write after younger one has lock
-        let txn_old = "txn_runtime1_1000000001"; // Older
-        let txn_young = "txn_runtime1_2000000002"; // Younger
+        let txn_old = &txn_id(1000000001, 0); // Older
+        let txn_young = &txn_id(2000000002, 0); // Younger
 
         // Younger transaction gets exclusive lock first
         let put_young = KvOperation::Put {
@@ -391,7 +501,10 @@ mod tests {
             value: Value::String("young_value".to_string()),
         };
         let msg_young = create_message(Some(put_young), txn_young, "coord_young", false, None);
-        processor.process_message(msg_young).await.unwrap();
+        processor
+            .process_message(msg_young, test_timestamp())
+            .await
+            .unwrap();
 
         // Older transaction tries to write - should be deferred and wound the younger
         let put_old = KvOperation::Put {
@@ -399,7 +512,10 @@ mod tests {
             value: Value::String("old_value".to_string()),
         };
         let msg_old = create_message(Some(put_old.clone()), txn_old, "coord_old", false, None);
-        processor.process_message(msg_old).await.unwrap();
+        processor
+            .process_message(msg_old, test_timestamp())
+            .await
+            .unwrap();
 
         // Younger transaction should fail to commit because it was wounded
         let commit_young = create_message(
@@ -410,11 +526,17 @@ mod tests {
             Some("prepare_and_commit"),
         );
         // Process returns Ok but transaction gets wounded response (not an error)
-        processor.process_message(commit_young).await.unwrap();
+        processor
+            .process_message(commit_young, test_timestamp())
+            .await
+            .unwrap();
 
         // Abort the younger transaction
         let abort_young = create_message(None, txn_young, "coord_young", false, Some("abort"));
-        processor.process_message(abort_young).await.unwrap();
+        processor
+            .process_message(abort_young, test_timestamp())
+            .await
+            .unwrap();
 
         // Now the older transaction's deferred operation should succeed
         // and it should be able to commit
@@ -425,6 +547,9 @@ mod tests {
             false,
             Some("prepare_and_commit"),
         );
-        processor.process_message(commit_old).await.unwrap();
+        processor
+            .process_message(commit_old, test_timestamp())
+            .await
+            .unwrap();
     }
 }

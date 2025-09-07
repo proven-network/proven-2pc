@@ -22,9 +22,13 @@ impl SqlStreamProcessor {
     }
 
     /// Process a message from the stream
-    pub async fn process_message(&mut self, message: Message) -> crate::error::Result<()> {
+    pub async fn process_message(
+        &mut self,
+        message: Message,
+        msg_timestamp: proven_hlc::HlcTimestamp,
+    ) -> crate::error::Result<()> {
         self.inner
-            .process_message(message)
+            .process_message(message, msg_timestamp)
             .await
             .map_err(|e| crate::error::Error::InvalidValue(format!("{:?}", e)))
     }

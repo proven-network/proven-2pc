@@ -9,6 +9,16 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Helper to generate test timestamps
+    fn test_timestamp() -> HlcTimestamp {
+        let physical = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        HlcTimestamp::new(physical, 0, NodeId::new(1))
+    }
 
     /// Simple test operation
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +125,7 @@ mod tests {
         let message = Message::new(serde_json::to_vec(&operation).unwrap(), headers);
 
         // Process the message
-        let result = processor.process_message(message).await;
+        let result = processor.process_message(message, test_timestamp()).await;
         assert!(result.is_ok());
     }
 
@@ -146,16 +156,31 @@ mod tests {
         headers.insert("coordinator_id".to_string(), coord_id.to_string());
 
         let message = Message::new(serde_json::to_vec(&operation).unwrap(), headers.clone());
-        assert!(processor.process_message(message).await.is_ok());
+        assert!(
+            processor
+                .process_message(message, test_timestamp())
+                .await
+                .is_ok()
+        );
 
         // Prepare the transaction
         headers.insert("txn_phase".to_string(), "prepare".to_string());
         let prepare_msg = Message::new(Vec::new(), headers.clone());
-        assert!(processor.process_message(prepare_msg).await.is_ok());
+        assert!(
+            processor
+                .process_message(prepare_msg, test_timestamp())
+                .await
+                .is_ok()
+        );
 
         // Commit the transaction
         headers.insert("txn_phase".to_string(), "commit".to_string());
         let commit_msg = Message::new(Vec::new(), headers);
-        assert!(processor.process_message(commit_msg).await.is_ok());
+        assert!(
+            processor
+                .process_message(commit_msg, test_timestamp())
+                .await
+                .is_ok()
+        );
     }
 }

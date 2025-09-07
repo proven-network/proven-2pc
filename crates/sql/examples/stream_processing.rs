@@ -4,9 +4,20 @@
 //! handles transactions with PCC, and returns results through a response channel.
 
 use proven_engine::{Message, MockClient, MockEngine};
+use proven_hlc::{HlcTimestamp, NodeId};
 use proven_sql::stream::{SqlOperation, SqlResponse, SqlStreamProcessor};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Helper to generate test timestamps
+fn test_timestamp() -> HlcTimestamp {
+    let physical = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64;
+    HlcTimestamp::new(physical, 0, NodeId::new(1))
+}
 
 #[tokio::main]
 async fn main() {
@@ -113,7 +124,7 @@ async fn main() {
 
         println!("  Type: {}", description);
 
-        if let Err(e) = processor.process_message(message).await {
+        if let Err(e) = processor.process_message(message, test_timestamp()).await {
             eprintln!("  Error: {:?}", e);
         }
 

@@ -7,6 +7,7 @@
 
 use crate::deferred::DeferredOperationsManager;
 use crate::engine::{OperationResult, TransactionEngine};
+use crate::recovery::RecoveryManager;
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
 use serde::Serialize;
@@ -48,6 +49,15 @@ pub struct StreamProcessor<E: TransactionEngine> {
     /// Track wounded transactions (txn_id -> wounded_by)
     wounded_transactions: HashMap<HlcTimestamp, HlcTimestamp>,
 
+    /// Track transaction deadlines (txn_id -> deadline)
+    transaction_deadlines: HashMap<HlcTimestamp, HlcTimestamp>,
+
+    /// Track transaction participants (txn_id -> (participant -> offset))
+    transaction_participants: HashMap<HlcTimestamp, HashMap<String, u64>>,
+
+    /// Recovery manager for handling coordinator failures
+    recovery_manager: RecoveryManager<E>,
+
     /// Engine client for sending responses
     client: Arc<MockClient>,
 
@@ -63,13 +73,20 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             deferred_manager: DeferredOperationsManager::new(),
             transaction_coordinators: HashMap::new(),
             wounded_transactions: HashMap::new(),
+            transaction_deadlines: HashMap::new(),
+            transaction_participants: HashMap::new(),
+            recovery_manager: RecoveryManager::new(client.clone(), stream_name.clone()),
             client,
             stream_name,
         }
     }
 
     /// Process a message from the stream
-    pub async fn process_message(&mut self, message: Message) -> Result<()> {
+    pub async fn process_message(
+        &mut self,
+        message: Message,
+        msg_timestamp: HlcTimestamp,
+    ) -> Result<()> {
         // Extract transaction ID
         let txn_id_str = message
             .txn_id()
@@ -79,10 +96,49 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         let txn_id = HlcTimestamp::parse(&txn_id_str)
             .map_err(|e| ProcessorError::InvalidTransactionId(e))?;
 
+        // Extract and store deadline if present (first message for this transaction)
+        if let Some(deadline_str) = message.txn_deadline() {
+            if !self.transaction_deadlines.contains_key(&txn_id) {
+                if let Ok(deadline) = HlcTimestamp::parse(deadline_str) {
+                    self.transaction_deadlines.insert(txn_id, deadline);
+                }
+            }
+        }
+
+        // Extract and update participants if present
+        if let Some(new_participants_str) = message.get_header("new_participants") {
+            if let Ok(new_participants) =
+                serde_json::from_str::<HashMap<String, u64>>(new_participants_str)
+            {
+                let participants = self
+                    .transaction_participants
+                    .entry(txn_id)
+                    .or_insert_with(HashMap::new);
+                participants.extend(new_participants);
+            }
+        }
+
+        // Check if we're past the deadline
+        if let Some(&deadline) = self.transaction_deadlines.get(&txn_id) {
+            if msg_timestamp > deadline {
+                // Past deadline - reject the operation
+                if let Some(coordinator_id) = message.coordinator_id() {
+                    let request_id = message.request_id().map(|s| s.to_string());
+                    self.send_error_response(
+                        coordinator_id,
+                        &txn_id_str,
+                        "Transaction deadline exceeded".to_string(),
+                        request_id,
+                    );
+                }
+                return Ok(());
+            }
+        }
+
         // Handle transaction control messages (empty body)
         if message.is_transaction_control() {
             return self
-                .handle_control_message(message, txn_id, &txn_id_str)
+                .handle_control_message(message, txn_id, &txn_id_str, msg_timestamp)
                 .await;
         }
 
@@ -97,6 +153,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         message: Message,
         txn_id: HlcTimestamp,
         txn_id_str: &str,
+        msg_timestamp: HlcTimestamp,
     ) -> Result<()> {
         let phase = message
             .txn_phase()
@@ -107,12 +164,24 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
         match phase {
             "prepare" => {
-                self.handle_prepare(txn_id, txn_id_str, coordinator_id, request_id)
-                    .await
+                self.handle_prepare(
+                    txn_id,
+                    txn_id_str,
+                    coordinator_id,
+                    request_id,
+                    msg_timestamp,
+                )
+                .await
             }
             "prepare_and_commit" => {
-                self.handle_prepare_and_commit(txn_id, txn_id_str, coordinator_id, request_id)
-                    .await
+                self.handle_prepare_and_commit(
+                    txn_id,
+                    txn_id_str,
+                    coordinator_id,
+                    request_id,
+                    msg_timestamp,
+                )
+                .await
             }
             "commit" => {
                 self.handle_commit(txn_id, txn_id_str, coordinator_id, request_id)
@@ -145,8 +214,35 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
         let request_id = message.request_id().map(|s| s.to_string());
 
-        // Ensure transaction exists
+        // Ensure transaction exists and has a deadline
         if !self.engine.is_transaction_active(&txn_id) {
+            // For new transactions, deadline must be present
+            if !self.transaction_deadlines.contains_key(&txn_id) {
+                // Try to extract deadline from message
+                if let Some(deadline_str) = message.txn_deadline() {
+                    if let Ok(deadline) = HlcTimestamp::parse(deadline_str) {
+                        self.transaction_deadlines.insert(txn_id, deadline);
+                    } else {
+                        // Invalid deadline format
+                        self.send_error_response(
+                            coordinator_id,
+                            txn_id_str,
+                            "Invalid transaction deadline format".to_string(),
+                            request_id,
+                        );
+                        return Ok(());
+                    }
+                } else {
+                    // No deadline provided for new transaction
+                    self.send_error_response(
+                        coordinator_id,
+                        txn_id_str,
+                        "Transaction deadline required".to_string(),
+                        request_id,
+                    );
+                    return Ok(());
+                }
+            }
             self.engine.begin_transaction(txn_id);
         }
 
@@ -258,7 +354,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         txn_id_str: &str,
         coordinator_id: Option<&str>,
         request_id: Option<String>,
+        msg_timestamp: HlcTimestamp,
     ) -> Result<()> {
+        // Check if prepare message arrived after deadline
+        if let Some(&deadline) = self.transaction_deadlines.get(&txn_id) {
+            if msg_timestamp > deadline {
+                // Past deadline - don't vote prepared
+                if let Some(coord_id) = coordinator_id {
+                    self.send_error_response(
+                        coord_id,
+                        txn_id_str,
+                        "Prepare received after deadline".to_string(),
+                        request_id,
+                    );
+                }
+                return Ok(());
+            }
+        }
         // Check if transaction was wounded
         if let Some(wounded_by) = self.wounded_transactions.get(&txn_id) {
             if let Some(coord_id) = coordinator_id {
@@ -269,6 +381,17 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
         match self.engine.prepare(txn_id) {
             Ok(()) => {
+                // Schedule recovery after deadline
+                if let Some(&deadline) = self.transaction_deadlines.get(&txn_id) {
+                    let participants = self
+                        .transaction_participants
+                        .get(&txn_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.recovery_manager
+                        .schedule_recovery(txn_id, deadline, participants);
+                }
+
                 if let Some(coord_id) = coordinator_id {
                     self.send_prepared_response(coord_id, txn_id_str, request_id);
                 }
@@ -290,7 +413,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         txn_id_str: &str,
         coordinator_id: Option<&str>,
         request_id: Option<String>,
+        msg_timestamp: HlcTimestamp,
     ) -> Result<()> {
+        // Check if prepare_and_commit message arrived after deadline
+        if let Some(&deadline) = self.transaction_deadlines.get(&txn_id) {
+            if msg_timestamp > deadline {
+                // Past deadline - don't vote prepared
+                if let Some(coord_id) = coordinator_id {
+                    self.send_error_response(
+                        coord_id,
+                        txn_id_str,
+                        "Prepare received after deadline".to_string(),
+                        request_id,
+                    );
+                }
+                return Ok(());
+            }
+        }
         // Check if transaction was wounded
         if let Some(wounded_by) = self.wounded_transactions.get(&txn_id) {
             if let Some(coord_id) = coordinator_id {
@@ -379,10 +518,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
         // Notify the victim's coordinator that it was wounded
         if let Some(victim_coord) = self.transaction_coordinators.get(&victim).cloned() {
-            let victim_str = format!(
-                "txn_runtime1_{:010}",
-                victim.physical * 1_000_000_000 + victim.logical as u64
-            );
+            let victim_str = victim.to_string();
             self.send_wounded_response(&victim_coord, &victim_str, wounded_by, None);
         }
 

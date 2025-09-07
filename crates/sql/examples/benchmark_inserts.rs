@@ -4,11 +4,21 @@
 //! 1 million rows into a table through the streaming interface.
 
 use proven_engine::{Message, MockClient, MockEngine};
+use proven_hlc::{HlcTimestamp, NodeId};
 use proven_sql::stream::{SqlOperation, SqlStreamProcessor};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// Helper to generate test timestamps
+fn test_timestamp() -> HlcTimestamp {
+    let physical = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64;
+    HlcTimestamp::new(physical, 0, NodeId::new(1))
+}
 
 #[tokio::main]
 async fn main() {
@@ -40,7 +50,7 @@ async fn main() {
     );
 
     processor
-        .process_message(create_table)
+        .process_message(create_table, test_timestamp())
         .await
         .expect("Failed to create table");
 
@@ -77,7 +87,7 @@ async fn main() {
         );
 
         // Process the message
-        if let Err(e) = processor.process_message(insert).await {
+        if let Err(e) = processor.process_message(insert, test_timestamp()).await {
             eprintln!("\nError at insert {}: {:?}", i, e);
             break;
         }
@@ -128,7 +138,7 @@ async fn main() {
     );
 
     processor
-        .process_message(count_query)
+        .process_message(count_query, test_timestamp())
         .await
         .expect("Failed to query count");
 

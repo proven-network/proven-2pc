@@ -93,40 +93,27 @@ impl HlcTimestamp {
         self.physical * 1_000 + self.logical as u64
     }
 
-    /// Parse from string representation (format: `physical_logical_nodeid`).
-    pub fn from_string(s: &str) -> Option<Self> {
+    /// Parse from string format: "physical_logical_nodeid"
+    /// Returns Result for better error reporting.
+    pub fn parse(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split('_').collect();
         if parts.len() != 3 {
-            return None;
+            return Err(format!(
+                "Invalid HLC timestamp format: {} (expected physical_logical_nodeid)",
+                s
+            ));
         }
 
-        let physical = parts[0].parse().ok()?;
-        let logical = parts[1].parse().ok()?;
-        let node_id = NodeId::from_hex(parts[2]).ok()?;
-
-        Some(Self::new(physical, logical, node_id))
-    }
-
-    /// Parse from transaction ID format (e.g., `txn_runtime1_NNNNNNNNNN`).
-    /// Returns Result for better error reporting.
-    pub fn parse(txn_id: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = txn_id.split('_').collect();
-        if parts.len() < 3 {
-            return Err(format!("Invalid transaction ID format: {}", txn_id));
-        }
-
-        // Skip the prefix parts and get the timestamp
-        let timestamp_str = parts[2];
-        let timestamp_nanos: u64 = timestamp_str
+        let physical = parts[0]
             .parse()
-            .map_err(|_| format!("Invalid timestamp in transaction ID: {}", txn_id))?;
+            .map_err(|_| format!("Invalid physical component: {}", parts[0]))?;
+        let logical = parts[1]
+            .parse()
+            .map_err(|_| format!("Invalid logical component: {}", parts[1]))?;
+        let node_id =
+            NodeId::from_hex(parts[2]).map_err(|_| format!("Invalid node ID: {}", parts[2]))?;
 
-        // Convert nanoseconds to microseconds for physical time
-        let physical = timestamp_nanos / 1_000_000_000;
-        let logical = (timestamp_nanos % 1_000_000_000) as u32;
-
-        // Use NodeId 1 as default for now (could parse from parts[1] if needed)
-        Ok(Self::new(physical, logical, NodeId::new(1)))
+        Ok(Self::new(physical, logical, node_id))
     }
 }
 
@@ -263,7 +250,7 @@ mod tests {
         let ts = HlcTimestamp::new(123_456_789, 10, node);
 
         let s = ts.to_string();
-        let parsed = HlcTimestamp::from_string(&s).unwrap();
+        let parsed = HlcTimestamp::parse(&s).unwrap();
 
         assert_eq!(ts, parsed);
     }

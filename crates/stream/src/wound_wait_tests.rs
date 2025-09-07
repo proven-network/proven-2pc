@@ -8,10 +8,25 @@ mod tests {
     use crate::engine::{OperationResult, TransactionEngine};
     use crate::processor::StreamProcessor;
     use proven_engine::{Message, MockClient, MockEngine};
-    use proven_hlc::HlcTimestamp;
+    use proven_hlc::{HlcTimestamp, NodeId};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Helper to generate test timestamps
+    fn test_timestamp() -> HlcTimestamp {
+        let physical = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        HlcTimestamp::new(physical, 0, NodeId::new(1))
+    }
+
+    /// Helper to generate transaction ID strings in HLC format
+    fn txn_id(physical: u64, logical: u32) -> String {
+        HlcTimestamp::new(physical, logical, NodeId::new(1)).to_string()
+    }
 
     // Test operation and response types
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,11 +157,14 @@ mod tests {
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_3000000000",
+            &txn_id(3000000000, 0),
             "younger",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Younger should succeed
         let younger_msg = younger_responses.recv().await.unwrap();
@@ -160,11 +178,14 @@ mod tests {
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_2000000000",
+            &txn_id(2000000000, 0),
             "older",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Check that younger gets wounded notification (via header)
         let wounded_msg = younger_responses.recv().await.unwrap();
@@ -205,11 +226,14 @@ mod tests {
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_2000000000",
+            &txn_id(2000000000, 0),
             "older",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Older should succeed
         let older_msg = older_responses.recv().await.unwrap();
@@ -220,11 +244,14 @@ mod tests {
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_3000000000",
+            &txn_id(3000000000, 0),
             "younger",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Younger should get deferred response (via header)
         let deferred_msg = younger_responses.recv().await.unwrap();
@@ -235,8 +262,11 @@ mod tests {
         );
 
         // Commit older to release lock
-        let msg = create_message(None, "txn_runtime1_2000000000", "older", Some("commit"));
-        processor.process_message(msg).await.unwrap();
+        let msg = create_message(None, &txn_id(2000000000, 0), "older", Some("commit"));
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Younger should be automatically retried and succeed
         let retry_msg = younger_responses.recv().await.unwrap();
@@ -265,33 +295,42 @@ mod tests {
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_4000000000",
+            &txn_id(4000000000, 0),
             "youngest",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Middle (3000) tries - should defer
         let msg = create_message(
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_3000000000",
+            &txn_id(3000000000, 0),
             "middle",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Oldest (2000) tries - should wound youngest
         let msg = create_message(
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_2000000000",
+            &txn_id(2000000000, 0),
             "oldest",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Oldest should succeed
         let oldest_msg = oldest_responses.recv().await.unwrap();
@@ -344,21 +383,24 @@ mod tests {
 
         // Fixed sequence of operations
         let operations = vec![
-            ("txn_runtime1_3000000000", "coord3", "resource1"),
-            ("txn_runtime1_2000000000", "coord2", "resource1"),
-            ("txn_runtime1_4000000000", "coord1", "resource1"),
+            (txn_id(3000000000, 0), "coord3", "resource1"),
+            (txn_id(2000000000, 0), "coord2", "resource1"),
+            (txn_id(4000000000, 0), "coord1", "resource1"),
         ];
 
-        for (txn_id, coord_id, resource) in operations {
+        for (txn_id_str, coord_id, resource) in operations {
             let msg = create_message(
                 Some(TestOp::Lock {
                     resource: resource.to_string(),
                 }),
-                txn_id,
+                &txn_id_str,
                 coord_id,
                 None,
             );
-            processor.process_message(msg).await.unwrap();
+            processor
+                .process_message(msg, test_timestamp())
+                .await
+                .unwrap();
 
             // Collect responses
             let responses = match coord_id {
@@ -419,11 +461,14 @@ mod tests {
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_3000000000",
+            &txn_id(3000000000, 0),
             "younger",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Younger should succeed
         let _younger_msg = younger_responses.recv().await.unwrap();
@@ -433,18 +478,24 @@ mod tests {
             Some(TestOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            "txn_runtime1_2000000000",
+            &txn_id(2000000000, 0),
             "older",
             None,
         );
-        processor.process_message(msg).await.unwrap();
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Younger should be wounded
         let _wounded_msg = younger_responses.recv().await.unwrap();
 
         // Try to prepare younger transaction - should fail
-        let msg = create_message(None, "txn_runtime1_3000000000", "younger", Some("prepare"));
-        processor.process_message(msg).await.unwrap();
+        let msg = create_message(None, &txn_id(3000000000, 0), "younger", Some("prepare"));
+        processor
+            .process_message(msg, test_timestamp())
+            .await
+            .unwrap();
 
         // Should get error response
         let prepare_response = younger_responses.recv().await.unwrap();
