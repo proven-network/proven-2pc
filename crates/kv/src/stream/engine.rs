@@ -4,7 +4,7 @@
 //! operation execution while delegating message handling to the generic processor.
 
 use proven_hlc::HlcTimestamp;
-use proven_stream::{OperationResult, TransactionEngine};
+use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
@@ -60,10 +60,19 @@ impl KvTransactionEngine {
                     value: value.cloned(),
                 })
             }
-            LockAttemptResult::Conflict { holder, .. } => {
-                // Just report the conflict - stream processor handles wound-wait
+            LockAttemptResult::Conflict { holder, mode } => {
+                // Determine retry timing based on conflict type
+                let retry_on = if mode == LockMode::Shared {
+                    // Blocked by another reader - shouldn't happen for shared locks
+                    RetryOn::CommitOrAbort
+                } else {
+                    // Blocked by a writer - must wait for commit/abort
+                    RetryOn::CommitOrAbort
+                };
+                
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
+                    retry_on,
                 }
             }
         }
@@ -102,10 +111,19 @@ impl KvTransactionEngine {
                     previous,
                 })
             }
-            LockAttemptResult::Conflict { holder, .. } => {
-                // Just report the conflict - stream processor handles wound-wait
+            LockAttemptResult::Conflict { holder, mode } => {
+                // Determine retry timing based on conflict type
+                let retry_on = if mode == LockMode::Shared {
+                    // Blocked by a reader - can retry after prepare
+                    RetryOn::Prepare
+                } else {
+                    // Blocked by another writer - must wait for commit/abort
+                    RetryOn::CommitOrAbort
+                };
+                
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
+                    retry_on,
                 }
             }
         }
@@ -140,10 +158,19 @@ impl KvTransactionEngine {
                     deleted: existed,
                 })
             }
-            LockAttemptResult::Conflict { holder, .. } => {
-                // Just report the conflict - stream processor handles wound-wait
+            LockAttemptResult::Conflict { holder, mode } => {
+                // Determine retry timing based on conflict type
+                let retry_on = if mode == LockMode::Shared {
+                    // Blocked by a reader - can retry after prepare
+                    RetryOn::Prepare
+                } else {
+                    // Blocked by another writer - must wait for commit/abort
+                    RetryOn::CommitOrAbort
+                };
+                
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
+                    retry_on,
                 }
             }
         }
@@ -174,11 +201,32 @@ impl TransactionEngine for KvTransactionEngine {
             .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
 
         // Try to prepare the transaction
-        if tx_ctx.prepare() {
-            Ok(())
-        } else {
-            Err("Transaction cannot be prepared (may be wounded or aborted)".to_string())
+        if !tx_ctx.prepare() {
+            return Err("Transaction cannot be prepared (may be wounded or aborted)".to_string());
         }
+
+        // Release read locks (keep write locks)
+        let locks_to_release: Vec<String> = tx_ctx
+            .locks_held
+            .iter()
+            .filter_map(|(key, mode)| {
+                if *mode == LockMode::Shared {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Release the read locks from lock manager
+        for key in locks_to_release {
+            self.lock_manager.release(txn_id, &key);
+            
+            // Remove from transaction's held locks
+            tx_ctx.locks_held.retain(|(k, m)| !(k == &key && *m == LockMode::Shared));
+        }
+
+        Ok(())
     }
 
     fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {

@@ -6,7 +6,8 @@
 use crate::stream::transaction::QueueTransactionManager;
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
-use proven_stream::engine::{OperationResult, TransactionEngine};
+use crate::storage::lock::LockMode;
+use proven_stream::engine::{OperationResult, RetryOn, TransactionEngine};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -53,9 +54,29 @@ impl TransactionEngine for QueueEngine {
 
         match manager.execute_operation(txn_id, &operation, txn_id) {
             Ok(response) => OperationResult::Success(response),
-            Err(crate::stream::transaction::TransactionError::LockConflict { holder }) => {
+            Err(crate::stream::transaction::TransactionError::LockConflict { holder, mode }) => {
+                // Check what operation we're trying to do
+                let our_mode = match &operation {
+                    QueueOperation::Enqueue { .. } 
+                    | QueueOperation::Dequeue { .. } 
+                    | QueueOperation::Clear { .. } => LockMode::Exclusive,
+                    QueueOperation::Peek { .. } 
+                    | QueueOperation::Size { .. } 
+                    | QueueOperation::IsEmpty { .. } => LockMode::Shared,
+                };
+                
+                // Determine retry timing based on conflict type
+                let retry_on = if our_mode == LockMode::Exclusive && mode == LockMode::Shared {
+                    // Write blocked by read - can retry after prepare
+                    RetryOn::Prepare
+                } else {
+                    // All other conflicts need commit/abort
+                    RetryOn::CommitOrAbort
+                };
+                
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
+                    retry_on,
                 }
             }
             Err(err) => OperationResult::Error(format!("{:?}", err)),
@@ -63,11 +84,13 @@ impl TransactionEngine for QueueEngine {
     }
 
     fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
-        // For queue operations, prepare is a no-op since we don't have
-        // distributed consensus requirements at this level
         if !self.is_transaction_active(&txn_id) {
             return Err(format!("Transaction {} not active", txn_id));
         }
+        
+        // Release read locks on prepare
+        let mut manager = self.manager.lock().unwrap();
+        manager.prepare_transaction(txn_id)?;
         Ok(())
     }
 

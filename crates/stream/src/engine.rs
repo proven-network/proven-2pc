@@ -6,16 +6,27 @@
 use proven_hlc::HlcTimestamp;
 use serde::{Serialize, de::DeserializeOwned};
 
+/// When a blocked operation can be retried
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryOn {
+    /// Can retry after blocking transaction prepares (releases read locks)
+    Prepare,
+    /// Must wait until blocking transaction commits or aborts (releases all locks)
+    CommitOrAbort,
+}
+
 /// Result of attempting to apply an operation
 #[derive(Debug, Clone)]
 pub enum OperationResult<R> {
     /// Operation completed successfully
     Success(R),
 
-    /// Operation would block - defer and retry when lock is released
+    /// Operation would block - defer and retry when appropriate
     WouldBlock {
         /// Transaction holding the lock that would cause blocking
         blocking_txn: HlcTimestamp,
+        /// When this operation can be retried
+        retry_on: RetryOn,
     },
 
     /// Operation failed with an error

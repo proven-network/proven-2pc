@@ -359,7 +359,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                 Ok(())
             }
 
-            OperationResult::WouldBlock { blocking_txn } => {
+            OperationResult::WouldBlock { blocking_txn, retry_on } => {
                 // Decide: wound or wait based on transaction ages
                 if txn_id < blocking_txn {
                     // We're older - wound the younger blocking transaction
@@ -373,6 +373,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                         }
                         OperationResult::WouldBlock {
                             blocking_txn: new_blocker,
+                            retry_on: new_retry_on,
                         } => {
                             // Still blocked (shouldn't happen after wounding, but handle it)
                             self.send_deferred_response(
@@ -385,6 +386,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                                 operation,
                                 txn_id,
                                 new_blocker,
+                                new_retry_on,
                                 coordinator_id.to_string(),
                                 request_id,
                             );
@@ -412,6 +414,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                         operation,
                         txn_id,
                         blocking_txn,
+                        retry_on,
                         coordinator_id.to_string(),
                         request_id,
                     );
@@ -471,9 +474,14 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                         .schedule_recovery(txn_id, deadline, participants);
                 }
 
+                // Send prepare vote response BEFORE retrying operations
                 if let Some(coord_id) = coordinator_id {
                     self.send_prepared_response(coord_id, txn_id_str, request_id);
                 }
+
+                // Now retry operations that were waiting on prepare
+                self.retry_prepare_waiting_operations(txn_id).await;
+
                 Ok(())
             }
             Err(e) => {
@@ -520,12 +528,16 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         // Try to prepare
         match self.engine.prepare(txn_id) {
             Ok(()) => {
-                // Prepare succeeded, try to commit
+                // Prepare succeeded, now try to commit
                 match self.engine.commit(txn_id) {
                     Ok(()) => {
+                        // Send response BEFORE retrying operations
                         if let Some(coord_id) = coordinator_id {
                             self.send_prepared_response(coord_id, txn_id_str, request_id);
                         }
+                        
+                        // Now retry operations in order: prepare waiters first, then commit waiters
+                        self.retry_prepare_waiting_operations(txn_id).await;
                         self.retry_deferred_operations(txn_id).await;
                         Ok(())
                     }
@@ -673,11 +685,30 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         self.transaction_coordinators.remove(&victim);
     }
 
-    /// Retry operations that were deferred waiting on this transaction
+    /// Retry operations that were deferred waiting on this transaction to commit/abort
     async fn retry_deferred_operations(&mut self, completed_txn: HlcTimestamp) {
         let waiting_ops = self
             .deferred_manager
-            .take_waiting_operations(&completed_txn);
+            .take_commit_waiting_operations(&completed_txn);
+
+        for deferred in waiting_ops {
+            let _ = self
+                .execute_operation(
+                    deferred.operation,
+                    deferred.txn_id,
+                    &deferred.txn_id.to_string(),
+                    &deferred.coordinator_id,
+                    deferred.request_id,
+                )
+                .await;
+        }
+    }
+
+    /// Retry operations that were waiting on this transaction to prepare
+    async fn retry_prepare_waiting_operations(&mut self, prepared_txn: HlcTimestamp) {
+        let waiting_ops = self
+            .deferred_manager
+            .take_prepare_waiting_operations(&prepared_txn);
 
         for deferred in waiting_ops {
             let _ = self

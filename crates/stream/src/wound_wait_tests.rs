@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::{OperationResult, TransactionEngine};
+    use crate::engine::{OperationResult, RetryOn, TransactionEngine};
     use crate::processor::StreamProcessor;
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_hlc::{HlcTimestamp, NodeId};
@@ -72,6 +72,7 @@ mod tests {
                         // Just report the conflict - stream processor handles wound-wait
                         return OperationResult::WouldBlock {
                             blocking_txn: holder,
+                            retry_on: RetryOn::CommitOrAbort,
                         };
                     }
                     self.locks.insert(resource, txn_id);

@@ -15,7 +15,10 @@ pub enum TransactionError {
     /// Transaction was aborted
     Aborted(HlcTimestamp),
     /// Lock conflict with another transaction
-    LockConflict { holder: HlcTimestamp },
+    LockConflict { 
+        holder: HlcTimestamp,
+        mode: LockMode,
+    },
     /// Other error
     Other(String),
 }
@@ -122,8 +125,8 @@ impl QueueTransactionManager {
                         .acquired_locks
                         .insert(queue_name.clone());
                 }
-                LockAttemptResult::Conflict { holder, .. } => {
-                    return Err(TransactionError::LockConflict { holder });
+                LockAttemptResult::Conflict { holder, mode } => {
+                    return Err(TransactionError::LockConflict { holder, mode });
                 }
             }
         }
@@ -156,6 +159,32 @@ impl QueueTransactionManager {
                 Ok(QueueResponse::Cleared)
             }
         }
+    }
+
+    /// Prepare a transaction - releases read locks
+    pub fn prepare_transaction(&mut self, tx_id: HlcTimestamp) -> Result<(), String> {
+        let tx = self
+            .transactions
+            .get_mut(&tx_id)
+            .ok_or_else(|| format!("Transaction {} not found", tx_id))?;
+
+        if tx.aborted {
+            return Err(format!("Cannot prepare aborted transaction {}", tx_id));
+        }
+
+        // Get all locks held by this transaction
+        let held_locks = self.lock_manager.locks_held_by(tx_id);
+        
+        // Release only the read locks
+        for (queue_name, mode) in held_locks {
+            if mode == LockMode::Shared {
+                self.lock_manager.release(tx_id, &queue_name);
+                // Remove from transaction's acquired locks
+                tx.acquired_locks.remove(&queue_name);
+            }
+        }
+
+        Ok(())
     }
 
     /// Commit a transaction

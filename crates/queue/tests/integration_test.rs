@@ -3,6 +3,7 @@
 use proven_hlc::{HlcTimestamp, NodeId};
 use proven_queue::stream::{QueueEngine, QueueOperation, QueueResponse};
 use proven_queue::types::QueueValue;
+use proven_stream::RetryOn;
 use proven_stream::engine::{OperationResult, TransactionEngine};
 
 fn create_timestamp(seconds: u64) -> HlcTimestamp {
@@ -452,4 +453,107 @@ fn test_various_value_types() {
     }
 
     assert!(engine.commit(tx).is_ok());
+}
+
+#[test]
+fn test_read_lock_released_on_prepare() {
+    let mut engine = QueueEngine::new();
+    let tx1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+    let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+
+    // Begin both transactions
+    engine.begin_transaction(tx1);
+    engine.begin_transaction(tx2);
+
+    // TX1: Peek queue1 (acquires shared lock)
+    let peek_op = QueueOperation::Peek {
+        queue_name: "queue1".to_string(),
+    };
+    let result = engine.apply_operation(peek_op, tx1);
+    assert!(matches!(result, OperationResult::Success(_)));
+
+    // TX2: Try to enqueue to queue1 (should be blocked)
+    let enqueue_op = QueueOperation::Enqueue {
+        queue_name: "queue1".to_string(),
+        value: QueueValue::String("value2".to_string()),
+    };
+    let result = engine.apply_operation(enqueue_op.clone(), tx2);
+
+    match result {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
+            assert_eq!(blocking_txn, tx1);
+            assert_eq!(retry_on, RetryOn::Prepare); // Can retry after prepare
+        }
+        _ => panic!("Expected WouldBlock, got {:?}", result),
+    }
+
+    // TX1: Prepare (should release read lock)
+    engine.prepare(tx1).expect("Prepare should succeed");
+
+    // TX2: Retry enqueue (should now succeed)
+    let result = engine.apply_operation(enqueue_op, tx2);
+    assert!(matches!(result, OperationResult::Success(_)));
+}
+
+#[test]
+fn test_write_lock_not_released_on_prepare() {
+    let mut engine = QueueEngine::new();
+    let tx1 = HlcTimestamp::new(100, 0, NodeId::new(1));
+    let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
+
+    // Begin both transactions
+    engine.begin_transaction(tx1);
+    engine.begin_transaction(tx2);
+
+    // TX1: Enqueue to queue1 (acquires exclusive lock)
+    let enqueue_op = QueueOperation::Enqueue {
+        queue_name: "queue1".to_string(),
+        value: QueueValue::String("value1".to_string()),
+    };
+    let result = engine.apply_operation(enqueue_op, tx1);
+    assert!(matches!(result, OperationResult::Success(_)));
+
+    // TX2: Try to peek queue1 (should be blocked)
+    let peek_op = QueueOperation::Peek {
+        queue_name: "queue1".to_string(),
+    };
+    let result = engine.apply_operation(peek_op.clone(), tx2);
+
+    match result {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
+            assert_eq!(blocking_txn, tx1);
+            assert_eq!(retry_on, RetryOn::CommitOrAbort); // Must wait for commit/abort
+        }
+        _ => panic!("Expected WouldBlock, got {:?}", result),
+    }
+
+    // TX1: Prepare (write lock should NOT be released)
+    engine.prepare(tx1).expect("Prepare should succeed");
+
+    // TX2: Retry peek (should still be blocked)
+    let result = engine.apply_operation(peek_op.clone(), tx2);
+
+    match result {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
+            assert_eq!(blocking_txn, tx1);
+            assert_eq!(retry_on, RetryOn::CommitOrAbort);
+        }
+        _ => panic!("Expected WouldBlock after prepare, got {:?}", result),
+    }
+
+    // TX1: Commit (should release write lock)
+    engine.commit(tx1).expect("Commit should succeed");
+
+    // TX2: Retry peek (should now succeed)
+    let result = engine.apply_operation(peek_op, tx2);
+    assert!(matches!(result, OperationResult::Success(_)));
 }

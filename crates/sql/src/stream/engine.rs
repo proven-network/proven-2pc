@@ -4,7 +4,7 @@
 //! eliminating the need for row-level locks.
 
 use proven_hlc::HlcTimestamp;
-use proven_stream::{OperationResult, TransactionEngine};
+use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution::Executor;
 use crate::planning::planner::Planner;
@@ -72,9 +72,21 @@ impl SqlTransactionEngine {
             }
 
             // Check if our predicates conflict with theirs
-            if let Some(_conflict) = plan_predicates.conflicts_with(&other_tx.predicates) {
+            if let Some(conflict) = plan_predicates.conflicts_with(&other_tx.predicates) {
+                // Determine when we can retry based on the conflict type
+                use crate::planning::predicate::ConflictInfo;
+                let retry_on = match conflict {
+                    // If they're reading and we want to write, we can retry after they prepare
+                    ConflictInfo::WriteRead { .. } => RetryOn::Prepare,
+                    // For all other conflicts, we must wait until commit/abort
+                    ConflictInfo::ReadWrite { .. } 
+                    | ConflictInfo::WriteWrite { .. } 
+                    | ConflictInfo::InsertInsert { .. } => RetryOn::CommitOrAbort,
+                };
+                
                 return OperationResult::WouldBlock {
                     blocking_txn: *other_tx_id,
+                    retry_on,
                 };
             }
         }

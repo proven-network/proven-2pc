@@ -100,6 +100,16 @@ impl LockManager {
         self.locks.entry(key).or_default().push(lock_info);
     }
 
+    /// Release a specific lock held by a transaction
+    pub fn release(&mut self, tx_id: TxId, key: &str) {
+        if let Some(holders) = self.locks.get_mut(key) {
+            holders.retain(|lock| lock.holder != tx_id);
+            if holders.is_empty() {
+                self.locks.remove(key);
+            }
+        }
+    }
+
     /// Release all locks held by a transaction
     pub fn release_all(&mut self, tx_id: TxId) {
         // Remove all locks held by this transaction
