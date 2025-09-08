@@ -273,7 +273,7 @@ impl<E: TransactionEngine> RecoveryManager<E> {
         decisions: HashMap<String, TransactionDecision>,
     ) -> TransactionDecision {
         // If any participant committed, we must commit
-        for (_, decision) in &decisions {
+        for decision in decisions.values() {
             if *decision == TransactionDecision::Commit {
                 return TransactionDecision::Commit;
             }

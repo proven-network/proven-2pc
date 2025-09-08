@@ -123,7 +123,7 @@ impl NestedLoopJoiner {
                 {
                     self.right_matched = true;
                     let mut row = left.to_vec();
-                    row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+                    row.extend(std::iter::repeat_n(Value::Null, self.right_columns));
                     return Ok(Some(Arc::new(row)));
                 }
 
@@ -235,7 +235,7 @@ impl HashJoiner {
         let mut right_hash: HashMap<Value, Vec<RowRef>> = HashMap::new();
         let mut right_rows = Vec::new();
 
-        for (_idx, row) in right.enumerate() {
+        for row in right {
             let row = row?;
             let key_value = row
                 .get(right_column)
@@ -339,7 +339,7 @@ impl HashJoiner {
                     self.match_index = 0;
 
                     let mut row = left.to_vec();
-                    row.extend(std::iter::repeat(Value::Null).take(self.right_columns));
+                    row.extend(std::iter::repeat_n(Value::Null, self.right_columns));
                     return Ok(Some(Arc::new(row)));
                 }
 
@@ -425,7 +425,6 @@ pub fn execute_hash_join<'a>(
     left_columns: usize,
     right_columns: usize,
     join_type: JoinType,
-    _storage: &MvccStorage,
 ) -> Result<Rows<'a>> {
     let joiner = HashJoiner::new(
         left,

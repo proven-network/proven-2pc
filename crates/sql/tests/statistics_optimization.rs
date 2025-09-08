@@ -1,8 +1,8 @@
 use proven_sql::execution::ExecutionResult;
 use proven_sql::execution::Executor;
 use proven_sql::hlc::{HlcTimestamp, NodeId};
-use proven_sql::parser::Parser;
-use proven_sql::planner::planner::Planner;
+use proven_sql::parsing::Parser;
+use proven_sql::planning::planner::Planner;
 use proven_sql::storage::lock::LockManager;
 use proven_sql::storage::mvcc::MvccStorage;
 use proven_sql::stream::TransactionContext;
@@ -135,7 +135,7 @@ fn test_statistics_based_index_selection() -> proven_sql::Result<()> {
     match result {
         ExecutionResult::Select { rows, .. } => {
             // Should find the specific orders
-            assert!(rows.len() > 0);
+            assert!(!rows.is_empty());
         }
         _ => panic!("Expected Select result"),
     }
@@ -251,7 +251,7 @@ fn test_composite_index_statistics() -> proven_sql::Result<()> {
     match result {
         ExecutionResult::Select { rows, .. } => {
             // Should find specific orders for customer 5 with pending status
-            assert!(rows.len() > 0);
+            assert!(!rows.is_empty());
             for row in &rows {
                 assert_eq!(row.get(1), Some(&Value::Integer(5))); // customer_id = 5
                 assert_eq!(row.get(3), Some(&Value::String("pending".to_string())));

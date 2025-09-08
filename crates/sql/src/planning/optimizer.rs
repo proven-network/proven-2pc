@@ -48,12 +48,11 @@ impl Optimizer {
         Ok(match node {
             Node::Filter { source, predicate } => {
                 // Try to push filter down to scan and convert to index scan
-                if let Node::Scan { table, alias } = source.as_ref() {
-                    if let Some(index_scan) =
+                if let Node::Scan { table, alias } = source.as_ref()
+                    && let Some(index_scan) =
                         self.try_convert_to_index_scan(table.clone(), alias.clone(), &predicate)
-                    {
-                        return Ok(index_scan);
-                    }
+                {
+                    return Ok(index_scan);
                 }
                 Node::Filter {
                     source: Box::new(self.optimize_node(*source)?),
@@ -130,40 +129,34 @@ impl Optimizer {
         // Look for simple equality predicates like column = value
         if let Expression::Equal(left, right) = predicate {
             // Check if left is a column and right is a constant
-            if let (Expression::Column(col_idx), value_expr) = (&**left, &**right) {
-                if let Some(schema) = self.schemas.get(&table) {
-                    if *col_idx < schema.columns.len() {
-                        let column = &schema.columns[*col_idx];
-                        // Check if this column actually has an index
-                        if column.index || column.primary_key {
-                            if Self::is_constant_expr(value_expr) {
-                                return Some(Node::IndexScan {
-                                    table,
-                                    alias,
-                                    index_name: column.name.clone(),
-                                    values: vec![value_expr.clone()],
-                                });
-                            }
-                        }
-                    }
+            if let (Expression::Column(col_idx), value_expr) = (&**left, &**right)
+                && let Some(schema) = self.schemas.get(&table)
+                && *col_idx < schema.columns.len()
+            {
+                let column = &schema.columns[*col_idx];
+                // Check if this column actually has an index
+                if (column.index || column.primary_key) && Self::is_constant_expr(value_expr) {
+                    return Some(Node::IndexScan {
+                        table,
+                        alias,
+                        index_name: column.name.clone(),
+                        values: vec![value_expr.clone()],
+                    });
                 }
             }
             // Also check if right is column and left is constant (commutative)
-            if let (value_expr, Expression::Column(col_idx)) = (&**left, &**right) {
-                if let Some(schema) = self.schemas.get(&table) {
-                    if *col_idx < schema.columns.len() {
-                        let column = &schema.columns[*col_idx];
-                        if column.index || column.primary_key {
-                            if Self::is_constant_expr(value_expr) {
-                                return Some(Node::IndexScan {
-                                    table,
-                                    alias,
-                                    index_name: column.name.clone(),
-                                    values: vec![value_expr.clone()],
-                                });
-                            }
-                        }
-                    }
+            if let (value_expr, Expression::Column(col_idx)) = (&**left, &**right)
+                && let Some(schema) = self.schemas.get(&table)
+                && *col_idx < schema.columns.len()
+            {
+                let column = &schema.columns[*col_idx];
+                if (column.index || column.primary_key) && Self::is_constant_expr(value_expr) {
+                    return Some(Node::IndexScan {
+                        table,
+                        alias,
+                        index_name: column.name.clone(),
+                        values: vec![value_expr.clone()],
+                    });
                 }
             }
         }

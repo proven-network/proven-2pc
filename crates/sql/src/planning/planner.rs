@@ -6,7 +6,7 @@
 use super::optimizer::Optimizer;
 use super::plan::{AggregateFunc, Direction, JoinType, Node, Plan};
 use crate::error::{Error, Result};
-use crate::parser::ast;
+use crate::parsing::ast;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use crate::types::statistics::DatabaseStatistics;
@@ -67,7 +67,7 @@ impl Planner {
     pub fn add_index(&mut self, index: IndexInfo) {
         self.indexes
             .entry(index.table.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(index);
     }
 
@@ -84,18 +84,21 @@ impl Planner {
     /// Plan a statement
     pub fn plan(&self, statement: ast::Statement) -> Result<Plan> {
         match statement {
-            ast::Statement::Select {
-                select,
-                from,
-                r#where,
-                group_by,
-                having,
-                order_by,
-                offset,
-                limit,
-            } => self.plan_select(
-                select, from, r#where, group_by, having, order_by, offset, limit,
-            ),
+            ast::Statement::Select(select_stmt) => {
+                let ast::SelectStatement {
+                    select,
+                    from,
+                    r#where,
+                    group_by,
+                    having,
+                    order_by,
+                    offset,
+                    limit,
+                } = *select_stmt;
+                self.plan_select(
+                    select, from, r#where, group_by, having, order_by, offset, limit,
+                )
+            }
 
             ast::Statement::Insert {
                 table,
@@ -155,6 +158,7 @@ impl Planner {
     }
 
     /// Plan a SELECT query
+    #[allow(clippy::too_many_arguments)]
     fn plan_select(
         &self,
         select: Vec<(ast::Expression, Option<String>)>,
@@ -212,16 +216,16 @@ impl Planner {
             let mut can_use_index = false;
 
             // Check if ORDER BY matches an existing index
-            if let Node::Scan { ref table, .. } = node {
-                if let Some(table_indexes) = self.indexes.get(table) {
-                    for index in table_indexes {
-                        // Check if ORDER BY columns match index columns (in order)
-                        if self.order_by_matches_index(&order_by, &index.columns, table, &context) {
-                            // TODO: Transform node to use IndexScan with the matching index
-                            // For now, we'll mark that we could use it
-                            can_use_index = true;
-                            break;
-                        }
+            if let Node::Scan { ref table, .. } = node
+                && let Some(table_indexes) = self.indexes.get(table)
+            {
+                for index in table_indexes {
+                    // Check if ORDER BY columns match index columns (in order)
+                    if self.order_by_matches_index(&order_by, &index.columns, table, &context) {
+                        // TODO: Transform node to use IndexScan with the matching index
+                        // For now, we'll mark that we could use it
+                        can_use_index = true;
+                        break;
                     }
                 }
             }
@@ -490,7 +494,7 @@ impl Planner {
                     .columns
                     .iter()
                     .position(|c| c.name == col)
-                    .ok_or_else(|| Error::ColumnNotFound(col))?;
+                    .ok_or(Error::ColumnNotFound(col))?;
 
                 let value = if let Some(e) = expr {
                     context.resolve_expression(e)?
@@ -705,11 +709,9 @@ impl Planner {
             ref table,
             ref alias,
         } = source
+            && let Some(index_scan) = self.try_create_index_scan(&where_expr, table, alias, context)
         {
-            if let Some(index_scan) = self.try_create_index_scan(&where_expr, table, alias, context)
-            {
-                return Ok(index_scan);
-            }
+            return Ok(index_scan);
         }
 
         // Fall back to regular filter
@@ -722,7 +724,6 @@ impl Planner {
 
     /// Extract equality conditions from a WHERE expression (handles AND chains)
     fn extract_equality_conditions(
-        &self,
         expr: &ast::Expression,
         table_name: &str,
         alias: &Option<String>,
@@ -732,8 +733,8 @@ impl Planner {
         match expr {
             // Handle AND expressions recursively
             ast::Expression::Operator(ast::Operator::And(left, right)) => {
-                conditions.extend(self.extract_equality_conditions(left, table_name, alias));
-                conditions.extend(self.extract_equality_conditions(right, table_name, alias));
+                conditions.extend(Self::extract_equality_conditions(left, table_name, alias));
+                conditions.extend(Self::extract_equality_conditions(right, table_name, alias));
             }
             // Handle equality conditions
             ast::Expression::Operator(ast::Operator::Equal(left, right)) => {
@@ -747,13 +748,12 @@ impl Planner {
                     }
                 }
                 // Also check if right is a column (value = column)
-                else if let ast::Expression::Column(ref table_ref, ref column_name) = **right {
-                    if table_ref.is_none()
+                else if let ast::Expression::Column(ref table_ref, ref column_name) = **right
+                    && (table_ref.is_none()
                         || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
-                        || table_ref == alias
-                    {
-                        conditions.push((column_name.clone(), (**left).clone()));
-                    }
+                        || table_ref == alias)
+                {
+                    conditions.push((column_name.clone(), (**left).clone()));
                 }
             }
             _ => {}
@@ -770,61 +770,59 @@ impl Planner {
         conditions: &[(String, ast::Expression)],
     ) -> f64 {
         // Get table statistics if available
-        if let Some(db_stats) = &self.statistics {
-            if let Some(table_stats) = db_stats.tables.get(table_name) {
-                let mut combined_selectivity = 1.0;
+        if let Some(db_stats) = &self.statistics
+            && let Some(table_stats) = db_stats.tables.get(table_name)
+        {
+            let mut combined_selectivity = 1.0;
 
-                // Use column-level statistics for more accurate selectivity
-                for (col_name, expr) in conditions {
-                    if let Some(col_stats) = table_stats.columns.get(col_name) {
-                        // Check if the value is in most common values
-                        if let ast::Expression::Literal(ast::Literal::Integer(i)) = expr {
-                            let value = crate::types::value::Value::Integer(*i);
+            // Use column-level statistics for more accurate selectivity
+            for (col_name, expr) in conditions {
+                if let Some(col_stats) = table_stats.columns.get(col_name) {
+                    // Check if the value is in most common values
+                    if let ast::Expression::Literal(ast::Literal::Integer(i)) = expr {
+                        let value = crate::types::value::Value::Integer(*i);
 
-                            // Check most common values first
-                            let mut found_selectivity = None;
-                            for (common_val, freq) in &col_stats.most_common_values {
-                                if common_val == &value {
-                                    found_selectivity =
-                                        Some(*freq as f64 / table_stats.row_count.max(1) as f64);
-                                    break;
-                                }
+                        // Check most common values first
+                        let mut found_selectivity = None;
+                        for (common_val, freq) in &col_stats.most_common_values {
+                            if common_val == &value {
+                                found_selectivity =
+                                    Some(*freq as f64 / table_stats.row_count.max(1) as f64);
+                                break;
                             }
+                        }
 
-                            if let Some(sel) = found_selectivity {
-                                combined_selectivity *= sel;
-                            } else if col_stats.distinct_count > 0 {
-                                // Use 1/distinct_count for non-common values
-                                combined_selectivity *= 1.0 / col_stats.distinct_count as f64;
-                            } else {
-                                combined_selectivity *= 0.1; // Default
-                            }
+                        if let Some(sel) = found_selectivity {
+                            combined_selectivity *= sel;
                         } else if col_stats.distinct_count > 0 {
-                            // For non-literal expressions, use 1/distinct_count
+                            // Use 1/distinct_count for non-common values
                             combined_selectivity *= 1.0 / col_stats.distinct_count as f64;
                         } else {
                             combined_selectivity *= 0.1; // Default
                         }
-                    } else if let Some(index_stats) = table_stats.indexes.get(index_name) {
-                        // Fall back to index statistics if column stats not available
-                        if let Some(col_idx) =
-                            index_stats.columns.iter().position(|c| c == col_name)
-                        {
-                            if col_idx < index_stats.selectivity.len() {
-                                combined_selectivity *= index_stats.selectivity[col_idx];
-                            } else {
-                                combined_selectivity *= 0.1;
-                            }
+                    } else if col_stats.distinct_count > 0 {
+                        // For non-literal expressions, use 1/distinct_count
+                        combined_selectivity *= 1.0 / col_stats.distinct_count as f64;
+                    } else {
+                        combined_selectivity *= 0.1; // Default
+                    }
+                } else if let Some(index_stats) = table_stats.indexes.get(index_name) {
+                    // Fall back to index statistics if column stats not available
+                    if let Some(col_idx) = index_stats.columns.iter().position(|c| c == col_name) {
+                        if col_idx < index_stats.selectivity.len() {
+                            combined_selectivity *= index_stats.selectivity[col_idx];
                         } else {
                             combined_selectivity *= 0.1;
                         }
                     } else {
-                        combined_selectivity *= 0.1; // Default
+                        combined_selectivity *= 0.1;
                     }
+                } else {
+                    combined_selectivity *= 0.1; // Default
                 }
-
-                return combined_selectivity;
             }
+
+            return combined_selectivity;
         }
 
         // Default: assume 10% selectivity per condition if no stats available
@@ -846,7 +844,7 @@ impl Planner {
         }
 
         // Extract all equality conditions from the WHERE clause
-        let conditions = self.extract_equality_conditions(where_expr, table_name, alias);
+        let conditions = Self::extract_equality_conditions(where_expr, table_name, alias);
 
         // Try to find the best matching index using statistics
         if let Some(table_indexes) = self.indexes.get(table_name) {
@@ -893,15 +891,15 @@ impl Planner {
             }
 
             // Use the best index if selectivity is good enough (< 30%)
-            if let Some(index) = best_index {
-                if best_selectivity < 0.3 {
-                    return Some(Node::IndexScan {
-                        table: table_name.to_string(),
-                        alias: alias.clone(),
-                        index_name: index.name.clone(),
-                        values: best_matched_values,
-                    });
-                }
+            if let Some(index) = best_index
+                && best_selectivity < 0.3
+            {
+                return Some(Node::IndexScan {
+                    table: table_name.to_string(),
+                    alias: alias.clone(),
+                    index_name: index.name.clone(),
+                    values: best_matched_values,
+                });
             }
         }
 
@@ -915,46 +913,38 @@ impl Planner {
                     || table_ref == alias
                 {
                     // Check if this column has an index
-                    if let Some(schema) = self.schemas.get(table_name) {
-                        if let Some((_col_idx, column)) = schema.get_column(column_name) {
-                            // Check if column is indexed (primary key, unique, or has index)
-                            if column.primary_key || column.unique || column.index {
-                                // Create IndexScan node using the column name as index name
-                                // (for single-column indexes, the index name is the column name)
-                                return Some(Node::IndexScan {
-                                    table: table_name.to_string(),
-                                    alias: alias.clone(),
-                                    index_name: column_name.to_string(),
-                                    values: vec![
-                                        context.resolve_expression((**right).clone()).ok()?,
-                                    ],
-                                });
-                            }
+                    if let Some(schema) = self.schemas.get(table_name)
+                        && let Some((_col_idx, column)) = schema.get_column(column_name)
+                    {
+                        // Check if column is indexed (primary key, unique, or has index)
+                        if column.primary_key || column.unique || column.index {
+                            // Create IndexScan node using the column name as index name
+                            // (for single-column indexes, the index name is the column name)
+                            return Some(Node::IndexScan {
+                                table: table_name.to_string(),
+                                alias: alias.clone(),
+                                index_name: column_name.to_string(),
+                                values: vec![context.resolve_expression((**right).clone()).ok()?],
+                            });
                         }
                     }
                 }
             }
             // Also check if right side is a column (value = column)
-            else if let ast::Expression::Column(ref table_ref, ref column_name) = **right {
-                if table_ref.is_none()
+            else if let ast::Expression::Column(ref table_ref, ref column_name) = **right
+                && (table_ref.is_none()
                     || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
-                    || table_ref == alias
-                {
-                    if let Some(schema) = self.schemas.get(table_name) {
-                        if let Some((_col_idx, column)) = schema.get_column(column_name) {
-                            if column.primary_key || column.unique || column.index {
-                                return Some(Node::IndexScan {
-                                    table: table_name.to_string(),
-                                    alias: alias.clone(),
-                                    index_name: column_name.to_string(),
-                                    values: vec![
-                                        context.resolve_expression((**left).clone()).ok()?,
-                                    ],
-                                });
-                            }
-                        }
-                    }
-                }
+                    || table_ref == alias)
+                && let Some(schema) = self.schemas.get(table_name)
+                && let Some((_col_idx, column)) = schema.get_column(column_name)
+                && (column.primary_key || column.unique || column.index)
+            {
+                return Some(Node::IndexScan {
+                    table: table_name.to_string(),
+                    alias: alias.clone(),
+                    index_name: column_name.to_string(),
+                    values: vec![context.resolve_expression((**left).clone()).ok()?],
+                });
             }
         }
 
@@ -1005,83 +995,66 @@ impl Planner {
         context: &PlanContext,
     ) -> Option<Node> {
         // Check for single comparison operators (>, <, >=, <=)
-        match where_expr {
-            ast::Expression::Operator(op) => {
-                match op {
-                    ast::Operator::GreaterThan(left, right)
-                    | ast::Operator::GreaterThanOrEqual(left, right)
-                    | ast::Operator::LessThan(left, right)
-                    | ast::Operator::LessThanOrEqual(left, right) => {
-                        // Check if one side is an indexed column
-                        if let ast::Expression::Column(ref table_ref, ref column_name) = **left {
-                            if table_ref.is_none()
-                                || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
-                                || table_ref == alias
-                            {
-                                if let Some(schema) = self.schemas.get(table_name) {
-                                    if let Some((_, column)) = schema.get_column(column_name) {
-                                        if column.primary_key || column.unique || column.index {
-                                            // Create range scan based on operator
-                                            let value = context
-                                                .resolve_expression((**right).clone())
-                                                .ok()?;
-                                            return Some(match op {
-                                                ast::Operator::GreaterThan(..) => {
-                                                    Node::IndexRangeScan {
-                                                        table: table_name.to_string(),
-                                                        alias: alias.clone(),
-                                                        index_name: column_name.to_string(),
-                                                        start: Some(vec![value]),
-                                                        start_inclusive: false,
-                                                        end: None,
-                                                        end_inclusive: false,
-                                                    }
-                                                }
-                                                ast::Operator::GreaterThanOrEqual(..) => {
-                                                    Node::IndexRangeScan {
-                                                        table: table_name.to_string(),
-                                                        alias: alias.clone(),
-                                                        index_name: column_name.to_string(),
-                                                        start: Some(vec![value]),
-                                                        start_inclusive: true,
-                                                        end: None,
-                                                        end_inclusive: false,
-                                                    }
-                                                }
-                                                ast::Operator::LessThan(..) => {
-                                                    Node::IndexRangeScan {
-                                                        table: table_name.to_string(),
-                                                        alias: alias.clone(),
-                                                        index_name: column_name.to_string(),
-                                                        start: None,
-                                                        start_inclusive: false,
-                                                        end: Some(vec![value]),
-                                                        end_inclusive: false,
-                                                    }
-                                                }
-                                                ast::Operator::LessThanOrEqual(..) => {
-                                                    Node::IndexRangeScan {
-                                                        table: table_name.to_string(),
-                                                        alias: alias.clone(),
-                                                        index_name: column_name.to_string(),
-                                                        start: None,
-                                                        start_inclusive: false,
-                                                        end: Some(vec![value]),
-                                                        end_inclusive: true,
-                                                    }
-                                                }
-                                                _ => unreachable!(),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
+        if let ast::Expression::Operator(op) = where_expr {
+            match op {
+                ast::Operator::GreaterThan(left, right)
+                | ast::Operator::GreaterThanOrEqual(left, right)
+                | ast::Operator::LessThan(left, right)
+                | ast::Operator::LessThanOrEqual(left, right) => {
+                    // Check if one side is an indexed column
+                    if let ast::Expression::Column(ref table_ref, ref column_name) = **left
+                        && (table_ref.is_none()
+                            || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
+                            || table_ref == alias)
+                        && let Some(schema) = self.schemas.get(table_name)
+                        && let Some((_, column)) = schema.get_column(column_name)
+                        && (column.primary_key || column.unique || column.index)
+                    {
+                        // Create range scan based on operator
+                        let value = context.resolve_expression((**right).clone()).ok()?;
+                        return Some(match op {
+                            ast::Operator::GreaterThan(..) => Node::IndexRangeScan {
+                                table: table_name.to_string(),
+                                alias: alias.clone(),
+                                index_name: column_name.to_string(),
+                                start: Some(vec![value]),
+                                start_inclusive: false,
+                                end: None,
+                                end_inclusive: false,
+                            },
+                            ast::Operator::GreaterThanOrEqual(..) => Node::IndexRangeScan {
+                                table: table_name.to_string(),
+                                alias: alias.clone(),
+                                index_name: column_name.to_string(),
+                                start: Some(vec![value]),
+                                start_inclusive: true,
+                                end: None,
+                                end_inclusive: false,
+                            },
+                            ast::Operator::LessThan(..) => Node::IndexRangeScan {
+                                table: table_name.to_string(),
+                                alias: alias.clone(),
+                                index_name: column_name.to_string(),
+                                start: None,
+                                start_inclusive: false,
+                                end: Some(vec![value]),
+                                end_inclusive: false,
+                            },
+                            ast::Operator::LessThanOrEqual(..) => Node::IndexRangeScan {
+                                table: table_name.to_string(),
+                                alias: alias.clone(),
+                                index_name: column_name.to_string(),
+                                start: None,
+                                start_inclusive: false,
+                                end: Some(vec![value]),
+                                end_inclusive: true,
+                            },
+                            _ => unreachable!(),
+                        });
                     }
-                    _ => {}
                 }
+                _ => {}
             }
-            _ => {}
         }
 
         None
@@ -1220,10 +1193,10 @@ impl<'a> PlanContext<'a> {
                 } else {
                     // Try to find column in any table
                     for table in &self.tables {
-                        if let Some(schema) = self.schemas.get(&table.name) {
-                            if schema.columns.iter().any(|c| c.name == column_name) {
-                                return self.resolve_column_in_table(table, &column_name);
-                            }
+                        if let Some(schema) = self.schemas.get(&table.name)
+                            && schema.columns.iter().any(|c| c.name == column_name)
+                        {
+                            return self.resolve_column_in_table(table, &column_name);
                         }
                     }
                     return Err(Error::ColumnNotFound(column_name));

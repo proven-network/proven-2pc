@@ -33,7 +33,7 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_micros() as u64;
-            let deadline_micros = now_micros + 3600_000_000; // Add 1 hour in microseconds
+            let deadline_micros = now_micros + 3_600_000_000; // Add 1 hour in microseconds
             let deadline = HlcTimestamp::new(deadline_micros, 0, NodeId::new(1));
             headers.insert("txn_deadline".to_string(), deadline.to_string());
         }
@@ -380,7 +380,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64;
-        let deadline_micros = now_micros + 3600_000_000; // Add 1 hour in microseconds
+        let deadline_micros = now_micros + 3_600_000_000; // Add 1 hour in microseconds
         let deadline = HlcTimestamp::new(deadline_micros, 0, NodeId::new(1));
         headers.insert("txn_deadline".to_string(), deadline.to_string());
 

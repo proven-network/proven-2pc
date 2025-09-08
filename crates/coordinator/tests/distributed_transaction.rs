@@ -39,17 +39,17 @@ async fn test_distributed_transaction_sql_and_kv() {
     tokio::spawn(async move {
         let mut operation_count = 0;
         while let Some((msg, _, _)) = sql_consumer.recv().await {
-            if let Some(msg_txn_id) = msg.headers.get("txn_id") {
-                if msg_txn_id == &sql_txn_id {
-                    if let Some(phase) = msg.headers.get("txn_phase") {
-                        println!("SQL received {} phase for txn {}", phase, msg_txn_id);
-                    } else if !msg.body.is_empty() {
-                        operation_count += 1;
-                        println!(
-                            "SQL received operation {} for txn {}",
-                            operation_count, msg_txn_id
-                        );
-                    }
+            if let Some(msg_txn_id) = msg.headers.get("txn_id")
+                && msg_txn_id == &sql_txn_id
+            {
+                if let Some(phase) = msg.headers.get("txn_phase") {
+                    println!("SQL received {} phase for txn {}", phase, msg_txn_id);
+                } else if !msg.body.is_empty() {
+                    operation_count += 1;
+                    println!(
+                        "SQL received operation {} for txn {}",
+                        operation_count, msg_txn_id
+                    );
                 }
             }
         }
@@ -60,16 +60,16 @@ async fn test_distributed_transaction_sql_and_kv() {
     tokio::spawn(async move {
         let mut operation_count = 0;
         while let Some((msg, _, _)) = kv_consumer.recv().await {
-            if let Some(msg_txn_id) = msg.headers.get("txn_id") {
-                if msg_txn_id == &kv_txn_id {
-                    if let Some(phase) = msg.headers.get("txn_phase") {
-                        println!("KV received {} phase for txn {}", phase, msg_txn_id);
-                    } else if !msg.body.is_empty() {
-                        operation_count += 1;
-                        // Try to decode as KV operation
-                        if let Ok(op) = serde_json::from_slice::<KvOperation>(&msg.body) {
-                            println!("KV received operation {}: {:?}", operation_count, op);
-                        }
+            if let Some(msg_txn_id) = msg.headers.get("txn_id")
+                && msg_txn_id == &kv_txn_id
+            {
+                if let Some(phase) = msg.headers.get("txn_phase") {
+                    println!("KV received {} phase for txn {}", phase, msg_txn_id);
+                } else if !msg.body.is_empty() {
+                    operation_count += 1;
+                    // Try to decode as KV operation
+                    if let Ok(op) = serde_json::from_slice::<KvOperation>(&msg.body) {
+                        println!("KV received operation {}: {:?}", operation_count, op);
                     }
                 }
             }

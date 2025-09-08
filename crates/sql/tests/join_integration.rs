@@ -1,8 +1,8 @@
 use proven_sql::execution::ExecutionResult;
 use proven_sql::execution::Executor;
 use proven_sql::hlc::{HlcTimestamp, NodeId};
-use proven_sql::parser::Parser;
-use proven_sql::planner::planner::Planner;
+use proven_sql::parsing::Parser;
+use proven_sql::planning::planner::Planner;
 use proven_sql::storage::lock::LockManager;
 use proven_sql::storage::mvcc::MvccStorage;
 use proven_sql::stream::TransactionContext;
@@ -194,11 +194,11 @@ fn test_left_join() -> proven_sql::Result<()> {
             // Check that Charlie appears with NULL amount
             let mut found_charlie_null = false;
             for row in &rows {
-                if let Value::String(name) = &row[0] {
-                    if name == "Charlie" {
-                        assert_eq!(row[1], Value::Null, "Charlie should have NULL amount");
-                        found_charlie_null = true;
-                    }
+                if let Value::String(name) = &row[0]
+                    && name == "Charlie"
+                {
+                    assert_eq!(row[1], Value::Null, "Charlie should have NULL amount");
+                    found_charlie_null = true;
                 }
             }
 
@@ -337,11 +337,11 @@ fn test_right_join() -> proven_sql::Result<()> {
             // Check that the orphan order appears with NULL user name
             let mut found_orphan = false;
             for row in &rows {
-                if let Value::Integer(amount) = &row[1] {
-                    if *amount == 300 {
-                        assert_eq!(row[0], Value::Null, "Orphan order should have NULL user");
-                        found_orphan = true;
-                    }
+                if let Value::Integer(amount) = &row[1]
+                    && *amount == 300
+                {
+                    assert_eq!(row[0], Value::Null, "Orphan order should have NULL user");
+                    found_orphan = true;
                 }
             }
 

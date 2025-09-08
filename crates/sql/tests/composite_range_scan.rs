@@ -1,8 +1,8 @@
 use proven_sql::execution::ExecutionResult;
 use proven_sql::execution::Executor;
 use proven_sql::hlc::{HlcTimestamp, NodeId};
-use proven_sql::parser::Parser;
-use proven_sql::planner::planner::Planner;
+use proven_sql::parsing::Parser;
+use proven_sql::planning::planner::Planner;
 use proven_sql::storage::lock::LockManager;
 use proven_sql::storage::mvcc::MvccStorage;
 use proven_sql::stream::TransactionContext;
@@ -112,7 +112,7 @@ fn test_composite_index_range_scan() -> proven_sql::Result<()> {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].get(0), Some(&Value::Integer(2))); // id = 2
+            assert_eq!(rows[0].first(), Some(&Value::Integer(2))); // id = 2
             assert_eq!(rows[0].get(2), Some(&Value::Integer(1100))); // timestamp = 1100
         }
         _ => panic!("Expected Select result"),
@@ -164,7 +164,7 @@ fn test_composite_index_with_nulls() -> proven_sql::Result<()> {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].get(0), Some(&Value::Integer(1)));
+            assert_eq!(rows[0].first(), Some(&Value::Integer(1)));
         }
         _ => panic!("Expected Select result"),
     }
@@ -222,10 +222,10 @@ fn test_composite_index_ordering() -> proven_sql::Result<()> {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 4);
             // Should be ordered: (100,1000), (100,2000), (101,1000), (101,2000)
-            assert_eq!(rows[0].get(0), Some(&Value::Integer(1)));
-            assert_eq!(rows[1].get(0), Some(&Value::Integer(2)));
-            assert_eq!(rows[2].get(0), Some(&Value::Integer(3)));
-            assert_eq!(rows[3].get(0), Some(&Value::Integer(4)));
+            assert_eq!(rows[0].first(), Some(&Value::Integer(1)));
+            assert_eq!(rows[1].first(), Some(&Value::Integer(2)));
+            assert_eq!(rows[2].first(), Some(&Value::Integer(3)));
+            assert_eq!(rows[3].first(), Some(&Value::Integer(4)));
         }
         _ => panic!("Expected Select result"),
     }
@@ -276,7 +276,7 @@ fn test_mixed_type_composite_index() -> proven_sql::Result<()> {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].get(0), Some(&Value::Integer(2)));
+            assert_eq!(rows[0].first(), Some(&Value::Integer(2)));
             assert_eq!(rows[0].get(3), Some(&Value::String("beta".to_string())));
         }
         _ => panic!("Expected Select result"),

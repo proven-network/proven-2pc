@@ -55,10 +55,10 @@ impl StatisticsCache {
         }
 
         // Check age threshold
-        if let Some(last_update) = self.last_update {
-            if last_update.elapsed() > self.max_age {
-                return true;
-            }
+        if let Some(last_update) = self.last_update
+            && last_update.elapsed() > self.max_age
+        {
+            return true;
         }
 
         false

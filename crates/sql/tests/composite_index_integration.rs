@@ -1,8 +1,8 @@
 use proven_sql::execution::ExecutionResult;
 use proven_sql::execution::Executor;
 use proven_sql::hlc::{HlcTimestamp, NodeId};
-use proven_sql::parser::Parser;
-use proven_sql::planner::planner::Planner;
+use proven_sql::parsing::Parser;
+use proven_sql::planning::planner::Planner;
 use proven_sql::storage::lock::LockManager;
 use proven_sql::storage::mvcc::MvccStorage;
 use proven_sql::stream::TransactionContext;
@@ -153,7 +153,7 @@ fn test_composite_index_with_data() -> proven_sql::Result<()> {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].get(0), Some(&Value::Integer(1))); // id = 1
+            assert_eq!(rows[0].first(), Some(&Value::Integer(1))); // id = 1
             assert_eq!(rows[0].get(1), Some(&Value::Integer(101))); // customer_id
             assert_eq!(rows[0].get(2), Some(&Value::String("pending".to_string())));
         }
@@ -209,7 +209,7 @@ fn test_composite_index_prefix_match() -> proven_sql::Result<()> {
             let ids: Vec<i64> = rows
                 .iter()
                 .filter_map(|row| {
-                    if let Some(Value::Integer(id)) = row.get(0) {
+                    if let Some(Value::Integer(id)) = row.first() {
                         Some(*id)
                     } else {
                         None

@@ -1,8 +1,8 @@
 use proven_sql::execution::ExecutionResult;
 use proven_sql::execution::Executor;
 use proven_sql::hlc::{HlcTimestamp, NodeId};
-use proven_sql::parser::Parser;
-use proven_sql::planner::planner::Planner;
+use proven_sql::parsing::Parser;
+use proven_sql::planning::planner::Planner;
 use proven_sql::storage::lock::LockManager;
 use proven_sql::storage::mvcc::MvccStorage;
 use proven_sql::stream::TransactionContext;
@@ -152,7 +152,7 @@ fn test_covering_index_with_data() -> proven_sql::Result<()> {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].get(0), Some(&Value::String("Mouse".to_string())));
+            assert_eq!(rows[0].first(), Some(&Value::String("Mouse".to_string())));
             assert_eq!(rows[0].get(1), Some(&Value::Integer(50)));
         }
         _ => panic!("Expected Select result"),

@@ -5,7 +5,7 @@
 
 use super::{aggregator::Aggregator, join};
 use crate::error::{Error, Result};
-use crate::planner::plan::{Node, Plan};
+use crate::planning::plan::{Node, Plan};
 use crate::storage::lock::LockManager;
 use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
@@ -33,6 +33,7 @@ pub enum ExecutionResult {
 /// The executor is now stateless - it gets all necessary information
 /// from storage or as parameters. This makes it simpler and eliminates
 /// synchronization issues.
+#[derive(Default)]
 pub struct Executor;
 
 impl Executor {
@@ -180,7 +181,7 @@ impl Executor {
             for (row_id, row) in iter {
                 let matches = match &source {
                     Node::Filter { predicate, .. } => self
-                        .evaluate_expression(predicate, Some(&row), &tx_ctx)?
+                        .evaluate_expression(predicate, Some(&row), tx_ctx)?
                         .to_bool()
                         .unwrap_or(false),
                     Node::Scan { .. } => true,
@@ -199,7 +200,7 @@ impl Executor {
         for (row_id, current) in rows_to_update {
             let mut updated = current.to_vec();
             for &(col_idx, ref expr) in &assignments {
-                updated[col_idx] = self.evaluate_expression(expr, Some(&current), &tx_ctx)?;
+                updated[col_idx] = self.evaluate_expression(expr, Some(&current), tx_ctx)?;
             }
 
             write_ops::update(storage, lock_manager, tx_ctx, &table, row_id, updated)?;
@@ -226,7 +227,7 @@ impl Executor {
             for (row_id, row) in iter {
                 let matches = match &source {
                     Node::Filter { predicate, .. } => self
-                        .evaluate_expression(predicate, Some(&row), &tx_ctx)?
+                        .evaluate_expression(predicate, Some(&row), tx_ctx)?
                         .to_bool()
                         .unwrap_or(false),
                     Node::Scan { .. } => true,
@@ -261,8 +262,7 @@ impl Executor {
         match node {
             Node::Scan { table, .. } => {
                 // True streaming with immutable storage!
-                let iter =
-                    read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(|row| Ok(row));
+                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
 
                 Ok(Box::new(iter))
             }
@@ -276,7 +276,7 @@ impl Executor {
                 // Evaluate the lookup values
                 let mut filter_values = Vec::new();
                 for value_expr in &values {
-                    filter_values.push(self.evaluate_expression(value_expr, None, &tx_ctx)?);
+                    filter_values.push(self.evaluate_expression(value_expr, None, tx_ctx)?);
                 }
 
                 // Try to use index lookup first
@@ -324,8 +324,8 @@ impl Executor {
                             col_indices.push(idx);
                         } else {
                             // Column not found, can't filter
-                            let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
-                                .map(|row| Ok(row));
+                            let iter =
+                                read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
                             return Ok(Box::new(iter));
                         }
                     }
@@ -347,8 +347,7 @@ impl Executor {
                 }
 
                 // Can't determine columns, fall back to full scan
-                let iter =
-                    read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(|row| Ok(row));
+                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
                 Ok(Box::new(iter))
             }
 
@@ -367,7 +366,7 @@ impl Executor {
                     .map(|exprs| {
                         exprs
                             .iter()
-                            .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                            .map(|e| self.evaluate_expression(e, None, tx_ctx))
                             .collect::<Result<Vec<_>>>()
                     })
                     .transpose()?;
@@ -376,29 +375,29 @@ impl Executor {
                     .map(|exprs| {
                         exprs
                             .iter()
-                            .map(|e| self.evaluate_expression(e, None, &tx_ctx))
+                            .map(|e| self.evaluate_expression(e, None, tx_ctx))
                             .collect::<Result<Vec<_>>>()
                     })
                     .transpose()?;
 
                 // Try to use index range lookup
-                if let Some(versioned_table) = storage.tables.get(&table) {
-                    if versioned_table.index_columns.contains_key(&index_name) {
-                        // Use index range lookup for O(log n) performance
-                        let rows = versioned_table.index_range_lookup(
-                            &index_name,
-                            start_values,
-                            start_inclusive,
-                            end_values,
-                            end_inclusive,
-                            tx_ctx.id,
-                            tx_ctx.timestamp,
-                        );
+                if let Some(versioned_table) = storage.tables.get(&table)
+                    && versioned_table.index_columns.contains_key(&index_name)
+                {
+                    // Use index range lookup for O(log n) performance
+                    let rows = versioned_table.index_range_lookup(
+                        &index_name,
+                        start_values,
+                        start_inclusive,
+                        end_values,
+                        end_inclusive,
+                        tx_ctx.id,
+                        tx_ctx.timestamp,
+                    );
 
-                        // Convert to iterator format
-                        let iter = rows.into_iter().map(|row| Ok(Arc::new(row.values.clone())));
-                        return Ok(Box::new(iter));
-                    }
+                    // Convert to iterator format
+                    let iter = rows.into_iter().map(|row| Ok(Arc::new(row.values.clone())));
+                    return Ok(Box::new(iter));
                 }
 
                 // Fall back to filtered range scan if no index exists
@@ -427,8 +426,8 @@ impl Executor {
                             col_indices.push(idx);
                         } else {
                             // Column not found, can't filter
-                            let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
-                                .map(|row| Ok(row));
+                            let iter =
+                                read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
                             return Ok(Box::new(iter));
                         }
                     }
@@ -475,8 +474,7 @@ impl Executor {
                 }
 
                 // Can't determine columns, fall back to full scan
-                let iter =
-                    read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(|row| Ok(row));
+                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
                 Ok(Box::new(iter))
             }
 
@@ -572,7 +570,7 @@ impl Executor {
                 for row in rows {
                     let row = row?;
                     // Use the transaction context for the aggregator
-                    aggregator.add(&row, tx_ctx, &storage)?;
+                    aggregator.add(&row, tx_ctx, storage)?;
                 }
 
                 // Get aggregated results
@@ -605,7 +603,6 @@ impl Executor {
                     left_columns,
                     right_columns,
                     join_type,
-                    storage,
                 )
             }
 
@@ -658,8 +655,8 @@ impl Executor {
                             .unwrap_or(std::cmp::Ordering::Equal);
                         if cmp != std::cmp::Ordering::Equal {
                             return match direction {
-                                crate::planner::plan::Direction::Ascending => cmp,
-                                crate::planner::plan::Direction::Descending => cmp.reverse(),
+                                crate::planning::plan::Direction::Ascending => cmp,
+                                crate::planning::plan::Direction::Descending => cmp.reverse(),
                             };
                         }
                     }
@@ -678,7 +675,15 @@ impl Executor {
         &self,
         expr: &Expression,
         row: Option<&Arc<Vec<Value>>>,
-        context: &TransactionContext,
+        _context: &TransactionContext,
+    ) -> Result<Value> {
+        Self::evaluate_expression_static(expr, row)
+    }
+
+    /// Static helper for evaluating expressions
+    fn evaluate_expression_static(
+        expr: &Expression,
+        row: Option<&Arc<Vec<Value>>>,
     ) -> Result<Value> {
         match expr {
             Expression::Constant(v) => Ok(v.clone()),
@@ -688,84 +693,84 @@ impl Executor {
                 .ok_or_else(|| Error::InvalidValue(format!("Column {} not found", idx))),
 
             Expression::Equal(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 Ok(Value::Boolean(l == r))
             }
 
             Expression::NotEqual(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 Ok(Value::Boolean(l != r))
             }
 
             Expression::LessThan(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 Ok(Value::Boolean(l < r))
             }
 
             Expression::LessThanOrEqual(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 Ok(Value::Boolean(l <= r))
             }
 
             Expression::GreaterThan(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 Ok(Value::Boolean(l > r))
             }
 
             Expression::GreaterThanOrEqual(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 Ok(Value::Boolean(l >= r))
             }
 
             Expression::And(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 l.and(&r)
             }
 
             Expression::Or(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 l.or(&r)
             }
 
             Expression::Not(inner) => {
-                let v = self.evaluate_expression(inner, row, context)?;
+                let v = Self::evaluate_expression_static(inner, row)?;
                 v.not()
             }
 
             Expression::Is(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
                 Ok(Value::Boolean(l == *right))
             }
 
             Expression::Add(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 l.add(&r)
             }
 
             Expression::Subtract(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 l.subtract(&r)
             }
 
             Expression::Multiply(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 l.multiply(&r)
             }
 
             Expression::Divide(left, right) => {
-                let l = self.evaluate_expression(left, row, context)?;
-                let r = self.evaluate_expression(right, row, context)?;
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
                 l.divide(&r)
             }
 

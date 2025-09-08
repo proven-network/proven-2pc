@@ -97,10 +97,7 @@ impl LockManager {
             mode,
         };
 
-        self.locks
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(lock_info);
+        self.locks.entry(key).or_default().push(lock_info);
     }
 
     /// Release all locks held by a transaction

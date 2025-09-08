@@ -165,6 +165,7 @@ struct StreamConsumer {
 }
 
 /// Stream manager that handles multiple streams
+#[derive(Default)]
 pub struct StreamManager {
     streams: Arc<Mutex<HashMap<String, Stream>>>,
 }

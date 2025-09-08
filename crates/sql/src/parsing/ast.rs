@@ -77,24 +77,28 @@ pub enum Statement {
         r#where: Option<Expression>,
     },
     /// SELECT: selects rows, possibly from a table.
-    Select {
-        /// Expressions to select, with an optional column alias.
-        select: Vec<(Expression, Option<String>)>,
-        /// FROM: tables to select from.
-        from: Vec<FromClause>,
-        /// WHERE: optional condition to filter rows.
-        r#where: Option<Expression>,
-        /// GROUP BY: expressions to group and aggregate by.
-        group_by: Vec<Expression>,
-        /// HAVING: expression to filter groups by.
-        having: Option<Expression>,
-        /// ORDER BY: expressions to sort by, with direction.
-        order_by: Vec<(Expression, Direction)>,
-        /// OFFSET: row offset to start from.
-        offset: Option<Expression>,
-        /// LIMIT: maximum number of rows to return.
-        limit: Option<Expression>,
-    },
+    Select(Box<SelectStatement>),
+}
+
+/// SELECT statement structure
+#[derive(Debug, Clone)]
+pub struct SelectStatement {
+    /// Expressions to select, with an optional column alias.
+    pub select: Vec<(Expression, Option<String>)>,
+    /// FROM: tables to select from.
+    pub from: Vec<FromClause>,
+    /// WHERE: optional condition to filter rows.
+    pub r#where: Option<Expression>,
+    /// GROUP BY: expressions to group and aggregate by.
+    pub group_by: Vec<Expression>,
+    /// HAVING: expression to filter groups by.
+    pub having: Option<Expression>,
+    /// ORDER BY: expressions to sort by, with direction.
+    pub order_by: Vec<(Expression, Direction)>,
+    /// OFFSET: row offset to start from.
+    pub offset: Option<Expression>,
+    /// LIMIT: maximum number of rows to return.
+    pub limit: Option<Expression>,
 }
 
 /// A FROM item.

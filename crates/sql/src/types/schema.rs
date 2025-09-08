@@ -83,7 +83,7 @@ impl Table {
             )));
         }
 
-        for (_i, (column, value)) in self.columns.iter().zip(row.iter()).enumerate() {
+        for (column, value) in self.columns.iter().zip(row.iter()) {
             // Check nullability
             if value.is_null() && !column.nullable {
                 return Err(Error::NullConstraintViolation(column.name.clone()));

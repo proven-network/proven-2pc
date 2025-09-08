@@ -19,7 +19,6 @@ use crate::transaction::{PrepareVote, Transaction, TransactionState};
 use parking_lot::Mutex;
 use proven_engine::{Message, MockClient, MockEngine};
 use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
-use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,7 +157,7 @@ impl MockCoordinator {
             let mut new_participants = HashMap::new();
             let stream_awareness = txn
                 .participant_awareness
-                .get(&stream.to_string())
+                .get(stream)
                 .cloned()
                 .unwrap_or_default();
 
@@ -266,7 +265,7 @@ impl MockCoordinator {
                     {
                         let resp_request_id = msg.headers.get("request_id");
                         // Only process if this response is for our current prepare request
-                        if resp_request_id.map(String::as_str) == Some(&request_id[..])
+                        if resp_request_id.map(String::as_str) == Some(request_id)
                             && resp_txn_id == txn_id
                             && pending_participants.contains(participant)
                         {

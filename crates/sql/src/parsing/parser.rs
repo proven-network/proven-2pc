@@ -426,7 +426,7 @@ impl Parser<'_> {
 
     /// Parses a SELECT statement.
     fn parse_select(&mut self) -> Result<ast::Statement> {
-        Ok(ast::Statement::Select {
+        Ok(ast::Statement::Select(Box::new(ast::SelectStatement {
             select: self.parse_select_clause()?,
             from: self.parse_from_clause()?,
             r#where: self.parse_where_clause()?,
@@ -435,7 +435,7 @@ impl Parser<'_> {
             order_by: self.parse_order_by_clause()?,
             limit: self.parse_limit_clause()?,
             offset: self.parse_offset_clause()?,
-        })
+        })))
     }
 
     /// Parses a SELECT clause, if present.

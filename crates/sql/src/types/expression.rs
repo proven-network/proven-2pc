@@ -213,7 +213,7 @@ impl Expression {
             Factorial(expr) => {
                 let value = expr.evaluate(row, context)?;
                 match value {
-                    Value::Integer(n) if n >= 0 && n <= 20 => {
+                    Value::Integer(n) if (0..=20).contains(&n) => {
                         let mut result = 1i64;
                         for i in 2..=n {
                             result = result.saturating_mul(i);

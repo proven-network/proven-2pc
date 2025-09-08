@@ -4,7 +4,7 @@
 //! ensuring all expression evaluation respects transaction visibility rules.
 
 use crate::error::{Error, Result};
-use crate::planner::plan::AggregateFunc;
+use crate::planning::plan::AggregateFunc;
 use crate::storage::MvccStorage;
 use crate::stream::transaction::TransactionContext;
 use crate::types::expression::Expression;
@@ -243,10 +243,10 @@ impl Accumulator for MinAccumulator {
     ) -> Result<()> {
         if let AggregateFunc::Min(expr) = agg {
             let val = evaluate_expression(expr, Some(row), context, storage)?;
-            if val != Value::Null {
-                if self.min == Value::Null || val.compare(&self.min)? == std::cmp::Ordering::Less {
-                    self.min = val;
-                }
+            if val != Value::Null
+                && (self.min == Value::Null || val.compare(&self.min)? == std::cmp::Ordering::Less)
+            {
+                self.min = val;
             }
         }
         Ok(())
@@ -272,11 +272,11 @@ impl Accumulator for MaxAccumulator {
     ) -> Result<()> {
         if let AggregateFunc::Max(expr) = agg {
             let val = evaluate_expression(expr, Some(row), context, storage)?;
-            if val != Value::Null {
-                if self.max == Value::Null || val.compare(&self.max)? == std::cmp::Ordering::Greater
-                {
-                    self.max = val;
-                }
+            if val != Value::Null
+                && (self.max == Value::Null
+                    || val.compare(&self.max)? == std::cmp::Ordering::Greater)
+            {
+                self.max = val;
             }
         }
         Ok(())

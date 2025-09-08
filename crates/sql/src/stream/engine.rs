@@ -7,7 +7,7 @@ use proven_hlc::HlcTimestamp;
 use proven_stream::{OperationResult, TransactionEngine};
 
 use crate::execution::Executor;
-use crate::planner::planner::Planner;
+use crate::planning::planner::Planner;
 use crate::storage::lock::LockManager;
 use crate::storage::mvcc::MvccStorage;
 
@@ -57,7 +57,7 @@ impl SqlTransactionEngine {
         // Transaction wound checking is now handled by stream processor
 
         // Parse SQL
-        let statement = match crate::parser::parse_sql(sql) {
+        let statement = match crate::parsing::parse_sql(sql) {
             Ok(stmt) => stmt,
             Err(e) => return OperationResult::Error(format!("Parse error: {:?}", e)),
         };

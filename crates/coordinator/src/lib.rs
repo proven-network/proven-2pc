@@ -343,7 +343,7 @@ mod tests {
 
         let (msg_a1, _, _) = stream_a_consumer.recv().await.unwrap();
         assert_eq!(msg_a1.body, b"op1");
-        assert!(msg_a1.headers.get("new_participants").is_none());
+        assert!(!msg_a1.headers.contains_key("new_participants"));
 
         // Second operation on stream-b (should learn about stream-a)
         coordinator
@@ -409,7 +409,7 @@ mod tests {
             Some(&"prepare".to_string())
         );
         // stream-a already knows about all participants, no new_participants expected
-        assert!(prepare_a.headers.get("new_participants").is_none());
+        assert!(!prepare_a.headers.contains_key("new_participants"));
 
         let (prepare_b, _, _) = stream_b_consumer.recv().await.unwrap();
         assert_eq!(
@@ -430,7 +430,7 @@ mod tests {
             Some(&"prepare".to_string())
         );
         // stream-c already knows about all participants
-        assert!(prepare_c.headers.get("new_participants").is_none());
+        assert!(!prepare_c.headers.contains_key("new_participants"));
     }
 
     #[tokio::test]
@@ -473,7 +473,7 @@ mod tests {
             .unwrap();
 
         let (msg_b2, _, _) = stream_b_consumer.recv().await.unwrap();
-        assert!(msg_b2.headers.get("new_participants").is_none());
+        assert!(!msg_b2.headers.contains_key("new_participants"));
     }
 
     #[tokio::test]

@@ -371,7 +371,7 @@ impl fmt::Display for Value {
 
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.compare(other).ok()
+        Some(self.cmp(other))
     }
 }
 

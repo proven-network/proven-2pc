@@ -10,8 +10,8 @@
 
 pub mod error;
 pub mod execution;
-pub mod parser;
-pub mod planner;
+pub mod parsing;
+pub mod planning;
 pub mod storage;
 pub mod stream;
 pub mod types;
@@ -21,8 +21,8 @@ pub use proven_hlc as hlc;
 
 pub use error::{Error, Result};
 pub use execution::{ExecutionResult, Executor};
-pub use parser::Parser;
-pub use planner::planner::Planner;
+pub use parsing::Parser;
+pub use planning::planner::Planner;
 pub use storage::lock::LockManager;
 pub use storage::mvcc::MvccStorage;
 pub use types::schema::{Column, Table};

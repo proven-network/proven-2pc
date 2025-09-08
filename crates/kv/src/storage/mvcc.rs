@@ -131,10 +131,7 @@ impl MvccStorage {
             deleted_by: None,
         };
 
-        self.versions
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(new_version);
+        self.versions.entry(key).or_default().push(new_version);
     }
 
     /// Delete a key
@@ -213,12 +210,11 @@ impl MvccStorage {
         tx_start: HlcTimestamp,
     ) -> Option<&'a VersionedValue> {
         // Iterate backwards to find the latest visible version
-        for version in versions.iter().rev() {
-            if self.is_version_visible(version, tx_id, tx_start) {
-                return Some(version);
-            }
-        }
-        None
+        versions
+            .iter()
+            .rev()
+            .find(|&version| self.is_version_visible(version, tx_id, tx_start))
+            .map(|v| v as _)
     }
 
     /// Check if a version is visible to a transaction

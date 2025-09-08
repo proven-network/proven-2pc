@@ -14,6 +14,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::Stream as TokioStream;
 
+/// Type alias for request handler channels
+type RequestHandler = mpsc::Sender<(Message, oneshot::Sender<Message>)>;
+
 /// Mock engine that simulates the production consensus engine
 pub struct MockEngine {
     /// Stream manager for ordered message streams
@@ -23,8 +26,7 @@ pub struct MockEngine {
     subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>>,
 
     /// Request/reply handlers
-    request_handlers:
-        Arc<Mutex<HashMap<String, mpsc::Sender<(Message, oneshot::Sender<Message>)>>>>,
+    request_handlers: Arc<Mutex<HashMap<String, RequestHandler>>>,
 }
 
 impl MockEngine {
@@ -103,7 +105,7 @@ impl MockEngine {
 
         let mut subs = self.subscriptions.lock();
         subs.entry(subject_pattern.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(tx);
 
         rx
@@ -130,15 +132,22 @@ impl MockEngine {
         timeout_ms: u64,
     ) -> Result<Message> {
         // Check if there's a handler for this subject
-        let handlers = self.request_handlers.lock();
-        if let Some(handler) = handlers.get(subject) {
-            let (reply_tx, reply_rx) = oneshot::channel();
+        let reply_rx = {
+            let handlers = self.request_handlers.lock();
+            if let Some(handler) = handlers.get(subject) {
+                let (reply_tx, reply_rx) = oneshot::channel();
 
-            // Send the request to the handler
-            if handler.try_send((message, reply_tx)).is_err() {
-                return Err(MockEngineError::ChannelClosed);
+                // Send the request to the handler
+                if handler.try_send((message, reply_tx)).is_err() {
+                    return Err(MockEngineError::ChannelClosed);
+                }
+                Some(reply_rx)
+            } else {
+                None
             }
+        };
 
+        if let Some(reply_rx) = reply_rx {
             // Wait for reply with timeout
             match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), reply_rx).await
             {

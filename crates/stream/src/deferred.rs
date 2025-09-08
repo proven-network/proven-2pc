@@ -55,7 +55,7 @@ impl<O: Clone> DeferredOperationsManager<O> {
 
         self.waiting_on
             .entry(blocking_txn)
-            .or_insert_with(VecDeque::new)
+            .or_default()
             .push_back(deferred);
     }
 

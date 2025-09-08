@@ -66,13 +66,13 @@ mod tests {
         ) -> OperationResult<Self::Response> {
             match operation {
                 TestOp::Lock { resource } => {
-                    if let Some(&holder) = self.locks.get(&resource) {
-                        if holder != txn_id {
-                            // Just report the conflict - stream processor handles wound-wait
-                            return OperationResult::WouldBlock {
-                                blocking_txn: holder,
-                            };
-                        }
+                    if let Some(&holder) = self.locks.get(&resource)
+                        && holder != txn_id
+                    {
+                        // Just report the conflict - stream processor handles wound-wait
+                        return OperationResult::WouldBlock {
+                            blocking_txn: holder,
+                        };
                     }
                     self.locks.insert(resource, txn_id);
                     OperationResult::Success(TestResponse::Success {

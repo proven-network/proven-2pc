@@ -119,10 +119,10 @@ async fn main() {
     // Process the responses
     for _ in 0..5 {
         // Check for responses (non-blocking)
-        if let Some(response_msg) = coord_responses.recv().await {
-            if let Ok(response) = serde_json::from_slice::<SqlResponse>(&response_msg.body) {
-                println!("  Response: {}", format_response(&response));
-            }
+        if let Some(response_msg) = coord_responses.recv().await
+            && let Ok(response) = serde_json::from_slice::<SqlResponse>(&response_msg.body)
+        {
+            println!("  Response: {}", format_response(&response));
         }
     }
 

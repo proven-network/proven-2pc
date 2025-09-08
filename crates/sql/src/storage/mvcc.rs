@@ -169,55 +169,52 @@ impl VersionedTable {
                     .any(|c| c.name == *col_name && (c.unique || c.primary_key))
             });
 
-            if is_unique {
-                if let Some(index) = self.indexes.get(index_name) {
-                    // Build composite key from values
-                    let mut key_values = Vec::new();
-                    let mut has_null = false;
-                    for col_name in column_names {
-                        if let Some(col_idx) =
-                            self.schema.columns.iter().position(|c| c.name == *col_name)
-                        {
-                            let value = &values[col_idx];
-                            if value.is_null() {
-                                has_null = true;
-                                break;
-                            }
-                            key_values.push(value.clone());
+            if is_unique && let Some(index) = self.indexes.get(index_name) {
+                // Build composite key from values
+                let mut key_values = Vec::new();
+                let mut has_null = false;
+                for col_name in column_names {
+                    if let Some(col_idx) =
+                        self.schema.columns.iter().position(|c| c.name == *col_name)
+                    {
+                        let value = &values[col_idx];
+                        if value.is_null() {
+                            has_null = true;
+                            break;
                         }
+                        key_values.push(value.clone());
                     }
+                }
 
-                    if !has_null {
-                        let key = CompositeKey::from_values(key_values);
-                        if let Some(entries) = index.get(&key) {
-                            // Check if any entry is visible to this transaction
-                            for entry in entries {
-                                // Entry is visible if added by committed txn and not removed
-                                let is_visible = if entry.added_by == txn_id {
-                                    entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
-                                } else if self.committed_transactions.contains(&entry.added_by) {
-                                    entry.removed_by.is_none()
-                                        || (entry.removed_by != Some(txn_id)
-                                            && !self
-                                                .committed_transactions
-                                                .contains(&entry.removed_by.unwrap_or(txn_id)))
-                                } else {
-                                    false
-                                };
+                if !has_null {
+                    let key = CompositeKey::from_values(key_values);
+                    if let Some(entries) = index.get(&key) {
+                        // Check if any entry is visible to this transaction
+                        for entry in entries {
+                            // Entry is visible if added by committed txn and not removed
+                            let is_visible = if entry.added_by == txn_id {
+                                entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
+                            } else if self.committed_transactions.contains(&entry.added_by) {
+                                entry.removed_by.is_none()
+                                    || (entry.removed_by != Some(txn_id)
+                                        && !self
+                                            .committed_transactions
+                                            .contains(&entry.removed_by.unwrap_or(txn_id)))
+                            } else {
+                                false
+                            };
 
-                                if is_visible {
-                                    // Verify the row still exists and is visible
-                                    if let Some(versions) = self.versions.get(&entry.row_id) {
-                                        if self
-                                            .find_visible_version(versions, txn_id, txn_timestamp)
-                                            .is_some()
-                                        {
-                                            return Err(Error::InvalidValue(format!(
-                                                "Unique constraint violation on index '{}'",
-                                                index_name
-                                            )));
-                                        }
-                                    }
+                            if is_visible {
+                                // Verify the row still exists and is visible
+                                if let Some(versions) = self.versions.get(&entry.row_id)
+                                    && self
+                                        .find_visible_version(versions, txn_id, txn_timestamp)
+                                        .is_some()
+                                {
+                                    return Err(Error::InvalidValue(format!(
+                                        "Unique constraint violation on index '{}'",
+                                        index_name
+                                    )));
                                 }
                             }
                         }
@@ -317,73 +314,69 @@ impl VersionedTable {
                     .any(|c| c.name == *col_name && (c.unique || c.primary_key))
             });
 
-            if is_unique {
-                if let Some(index) = self.indexes.get(index_name) {
-                    // Build composite keys from old and new values
-                    let mut old_key_values = Vec::new();
-                    let mut new_key_values = Vec::new();
-                    let mut new_has_null = false;
-                    let mut values_changed = false;
+            if is_unique && let Some(index) = self.indexes.get(index_name) {
+                // Build composite keys from old and new values
+                let mut old_key_values = Vec::new();
+                let mut new_key_values = Vec::new();
+                let mut new_has_null = false;
+                let mut values_changed = false;
 
-                    for col_name in column_names {
-                        if let Some(col_idx) =
-                            self.schema.columns.iter().position(|c| c.name == *col_name)
-                        {
-                            let old_value = &old_values[col_idx];
-                            let new_value = &values[col_idx];
+                for col_name in column_names {
+                    if let Some(col_idx) =
+                        self.schema.columns.iter().position(|c| c.name == *col_name)
+                    {
+                        let old_value = &old_values[col_idx];
+                        let new_value = &values[col_idx];
 
-                            if !old_value.is_null() {
-                                old_key_values.push(old_value.clone());
-                            }
+                        if !old_value.is_null() {
+                            old_key_values.push(old_value.clone());
+                        }
 
-                            if new_value.is_null() {
-                                new_has_null = true;
-                            } else {
-                                new_key_values.push(new_value.clone());
-                            }
+                        if new_value.is_null() {
+                            new_has_null = true;
+                        } else {
+                            new_key_values.push(new_value.clone());
+                        }
 
-                            if old_value != new_value {
-                                values_changed = true;
-                            }
+                        if old_value != new_value {
+                            values_changed = true;
                         }
                     }
+                }
 
-                    // Only check if value is changing and new value is not null
-                    if values_changed && !new_has_null {
-                        let new_key = CompositeKey::from_values(new_key_values);
-                        if let Some(entries) = index.get(&new_key) {
-                            for entry in entries {
-                                // Skip self
-                                if entry.row_id == row_id {
-                                    continue;
-                                }
+                // Only check if value is changing and new value is not null
+                if values_changed && !new_has_null {
+                    let new_key = CompositeKey::from_values(new_key_values);
+                    if let Some(entries) = index.get(&new_key) {
+                        for entry in entries {
+                            // Skip self
+                            if entry.row_id == row_id {
+                                continue;
+                            }
 
-                                // Check if entry is visible
-                                let is_visible = if entry.added_by == txn_id {
-                                    entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
-                                } else if self.committed_transactions.contains(&entry.added_by) {
-                                    entry.removed_by.is_none()
-                                        || (entry.removed_by != Some(txn_id)
-                                            && !self
-                                                .committed_transactions
-                                                .contains(&entry.removed_by.unwrap_or(txn_id)))
-                                } else {
-                                    false
-                                };
+                            // Check if entry is visible
+                            let is_visible = if entry.added_by == txn_id {
+                                entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
+                            } else if self.committed_transactions.contains(&entry.added_by) {
+                                entry.removed_by.is_none()
+                                    || (entry.removed_by != Some(txn_id)
+                                        && !self
+                                            .committed_transactions
+                                            .contains(&entry.removed_by.unwrap_or(txn_id)))
+                            } else {
+                                false
+                            };
 
-                                if is_visible {
-                                    if let Some(versions) = self.versions.get(&entry.row_id) {
-                                        if self
-                                            .find_visible_version(versions, txn_id, txn_timestamp)
-                                            .is_some()
-                                        {
-                                            return Err(Error::InvalidValue(format!(
-                                                "Unique constraint violation on index '{}'",
-                                                index_name
-                                            )));
-                                        }
-                                    }
-                                }
+                            if is_visible
+                                && let Some(versions) = self.versions.get(&entry.row_id)
+                                && self
+                                    .find_visible_version(versions, txn_id, txn_timestamp)
+                                    .is_some()
+                            {
+                                return Err(Error::InvalidValue(format!(
+                                    "Unique constraint violation on index '{}'",
+                                    index_name
+                                )));
                             }
                         }
                     }
@@ -482,10 +475,10 @@ impl VersionedTable {
                 .unwrap();
 
             // If this transaction created the visible version, we can update in place
-            !(visible_version.created_by == txn_id
-                && !self
+            visible_version.created_by != txn_id
+                || self
                     .committed_transactions
-                    .contains(&visible_version.created_by))
+                    .contains(&visible_version.created_by)
         };
 
         let versions = self.versions.get_mut(&row_id).unwrap();
@@ -815,7 +808,7 @@ impl VersionedTable {
                         removed_by: None,
                         included_values,
                     };
-                    index.entry(key).or_insert_with(Vec::new).push(entry);
+                    index.entry(key).or_default().push(entry);
                 }
             }
         }
@@ -861,15 +854,14 @@ impl VersionedTable {
                 // Only count the latest committed version
                 if let Some(version) = versions.iter().rev().find(|v| {
                     self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
-                }) {
-                    if col_idx < version.row.values.len() {
-                        let value = &version.row.values[col_idx];
-                        if value.is_null() {
-                            col_stats.null_count += 1;
-                        } else {
-                            all_values.push(value.clone());
-                            *value_counts.entry(value.clone()).or_insert(0) += 1;
-                        }
+                }) && col_idx < version.row.values.len()
+                {
+                    let value = &version.row.values[col_idx];
+                    if value.is_null() {
+                        col_stats.null_count += 1;
+                    } else {
+                        all_values.push(value.clone());
+                        *value_counts.entry(value.clone()).or_insert(0) += 1;
                     }
                 }
             }
@@ -910,14 +902,15 @@ impl VersionedTable {
             // Sample rows evenly across the table
             let step = stats.row_count.max(1) / sample_size;
             for (i, versions) in self.versions.values().enumerate() {
-                if i % step == 0 && count < sample_size {
-                    if let Some(version) = versions.iter().rev().find(|v| {
+                if i % step == 0
+                    && count < sample_size
+                    && let Some(version) = versions.iter().rev().find(|v| {
                         self.committed_transactions.contains(&v.created_by)
                             && v.deleted_by.is_none()
-                    }) {
-                        sampled_rows.push(&version.row.values);
-                        count += 1;
-                    }
+                    })
+                {
+                    sampled_rows.push(&version.row.values);
+                    count += 1;
                 }
             }
 
@@ -1133,6 +1126,7 @@ impl VersionedTable {
     }
 
     /// Lookup rows by index range - supports composite indexes
+    #[allow(clippy::too_many_arguments)]
     pub fn index_range_lookup(
         &self,
         index_name: &str,
@@ -1338,7 +1332,7 @@ impl<'a> Iterator for MvccRowIterator<'a> {
     type Item = Arc<Vec<Value>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((_, versions)) = self.position.next() {
+        for (_, versions) in self.position.by_ref() {
             if let Some(visible_version) =
                 self.table
                     .find_visible_version(versions, self.tx_id, self.tx_timestamp)
@@ -1373,7 +1367,7 @@ impl<'a> Iterator for MvccRowWithIdIterator<'a> {
     type Item = (u64, Arc<Vec<Value>>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((&row_id, versions)) = self.position.next() {
+        for (&row_id, versions) in self.position.by_ref() {
             if let Some(visible_version) =
                 self.table
                     .find_visible_version(versions, self.tx_id, self.tx_timestamp)
@@ -1419,6 +1413,7 @@ pub struct IndexMetadata {
 /// Since operations are processed sequentially by the state machine,
 /// we don't need RwLock for the tables - only one operation executes at a time.
 /// However, we'll keep it for now until Phase 4 of the refactor.
+#[derive(Default)]
 pub struct MvccStorage {
     /// Tables with versioned data
     pub tables: HashMap<String, VersionedTable>,
@@ -1465,8 +1460,8 @@ impl MvccStorage {
 
     /// Execute a DDL operation directly in storage
     /// This centralizes all DDL operations in storage where they belong
-    pub fn execute_ddl(&mut self, plan: &crate::planner::plan::Plan) -> Result<String> {
-        use crate::planner::plan::Plan;
+    pub fn execute_ddl(&mut self, plan: &crate::planning::plan::Plan) -> Result<String> {
+        use crate::planning::plan::Plan;
 
         match plan {
             Plan::CreateTable { name, schema } => {
