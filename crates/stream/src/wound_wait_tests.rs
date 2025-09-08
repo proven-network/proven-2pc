@@ -15,6 +15,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Helper to generate test timestamps
+    #[allow(dead_code)]
     fn test_timestamp() -> HlcTimestamp {
         let physical = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -138,9 +139,12 @@ mod tests {
     async fn test_older_wounds_younger() {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
-        let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        // Create stream
+        client
+            .create_stream("test-stream".to_string())
+            .await
+            .unwrap();
 
         // Subscribe to responses
         let mut younger_responses = client
@@ -152,6 +156,21 @@ mod tests {
             .await
             .unwrap();
 
+        // Start processor first
+        let test_engine = TestEngine::new();
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         // Younger transaction (3000) acquires lock first
         let msg = create_message(
             Some(TestOp::Lock {
@@ -161,17 +180,10 @@ mod tests {
             "younger",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
-
-        // Younger should succeed
-        let younger_msg = younger_responses.recv().await.unwrap();
-        assert!(
-            !younger_msg.body.is_empty(),
-            "Younger should get success response"
-        );
 
         // Older transaction (2000) tries to acquire same lock
         let msg = create_message(
@@ -182,10 +194,17 @@ mod tests {
             "older",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
+
+        // Younger should succeed
+        let younger_msg = younger_responses.recv().await.unwrap();
+        assert!(
+            !younger_msg.body.is_empty(),
+            "Younger should get success response"
+        );
 
         // Check that younger gets wounded notification (via header)
         let wounded_msg = younger_responses.recv().await.unwrap();
@@ -201,15 +220,20 @@ mod tests {
             !older_msg.body.is_empty(),
             "Older should succeed after wounding"
         );
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
     async fn test_younger_defers_to_older() {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
-        let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        // Create stream
+        client
+            .create_stream("test-stream".to_string())
+            .await
+            .unwrap();
 
         // Subscribe to responses
         let mut older_responses = client
@@ -221,6 +245,21 @@ mod tests {
             .await
             .unwrap();
 
+        // Start processor first
+        let test_engine = TestEngine::new();
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
         // Older transaction (2000) acquires lock first
         let msg = create_message(
             Some(TestOp::Lock {
@@ -230,14 +269,10 @@ mod tests {
             "older",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
-
-        // Older should succeed
-        let older_msg = older_responses.recv().await.unwrap();
-        assert!(!older_msg.body.is_empty(), "Older should acquire lock");
 
         // Younger transaction (3000) tries - should defer
         let msg = create_message(
@@ -248,10 +283,21 @@ mod tests {
             "younger",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
+
+        // Commit older to release lock
+        let msg = create_message(None, &txn_id(2000000000, 0), "older", Some("commit"));
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
+            .await
+            .unwrap();
+
+        // Older should succeed
+        let older_msg = older_responses.recv().await.unwrap();
+        assert!(!older_msg.body.is_empty(), "Older should acquire lock");
 
         // Younger should get deferred response (via header)
         let deferred_msg = younger_responses.recv().await.unwrap();
@@ -261,34 +307,47 @@ mod tests {
             "Younger should be deferred"
         );
 
-        // Commit older to release lock
-        let msg = create_message(None, &txn_id(2000000000, 0), "older", Some("commit"));
-        processor
-            .process_message(msg, test_timestamp(), 0)
-            .await
-            .unwrap();
-
         // Younger should be automatically retried and succeed
         let retry_msg = younger_responses.recv().await.unwrap();
         assert!(
             !retry_msg.body.is_empty(),
             "Younger should succeed after retry"
         );
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
     async fn test_multi_level_wound_chain() {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
-        let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        // Create stream
+        client
+            .create_stream("test-stream".to_string())
+            .await
+            .unwrap();
 
         // Subscribe to responses
         let mut oldest_responses = client
             .subscribe("coordinator.oldest.response", None)
             .await
             .unwrap();
+
+        // Start processor first
+        let test_engine = TestEngine::new();
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Youngest (4000) gets lock
         let msg = create_message(
@@ -299,8 +358,8 @@ mod tests {
             "youngest",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -313,8 +372,8 @@ mod tests {
             "middle",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -327,8 +386,8 @@ mod tests {
             "oldest",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -338,6 +397,8 @@ mod tests {
             !oldest_msg.body.is_empty(),
             "Oldest should succeed after wounding"
         );
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
@@ -361,9 +422,12 @@ mod tests {
     async fn run_wound_sequence() -> Vec<(String, String)> {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
-        let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        // Create stream
+        client
+            .create_stream("test-stream".to_string())
+            .await
+            .unwrap();
 
         let mut results = Vec::new();
 
@@ -388,20 +452,36 @@ mod tests {
             (txn_id(4000000000, 0), "coord1", "resource1"),
         ];
 
-        for (txn_id_str, coord_id, resource) in operations {
+        // Publish all operations to stream
+        for (txn_id_str, coord_id, resource) in &operations {
             let msg = create_message(
                 Some(TestOp::Lock {
                     resource: resource.to_string(),
                 }),
-                &txn_id_str,
+                txn_id_str,
                 coord_id,
                 None,
             );
-            processor
-                .process_message(msg, test_timestamp(), 0)
+            client
+                .publish_to_stream("test-stream".to_string(), vec![msg])
                 .await
                 .unwrap();
+        }
 
+        // Start processor
+        let test_engine = TestEngine::new();
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)) => Ok(())
+            }
+        });
+
+        // Process responses
+        for (_txn_id_str, coord_id, _resource) in operations {
             // Collect responses
             let responses = match coord_id {
                 "coord1" => &mut coord1_resp,
@@ -439,6 +519,7 @@ mod tests {
             }
         }
 
+        let _ = processor_handle.await;
         results
     }
 
@@ -446,15 +527,33 @@ mod tests {
     async fn test_prepare_phase_with_wound() {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test".to_string(), engine.clone()));
-        let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        // Create stream
+        client
+            .create_stream("test-stream".to_string())
+            .await
+            .unwrap();
 
         // Subscribe to responses
         let mut younger_responses = client
             .subscribe("coordinator.younger.response", None)
             .await
             .unwrap();
+
+        // Start processor first
+        let test_engine = TestEngine::new();
+        let mut processor =
+            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Younger transaction acquires lock
         let msg = create_message(
@@ -465,13 +564,10 @@ mod tests {
             "younger",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
-
-        // Younger should succeed
-        let _younger_msg = younger_responses.recv().await.unwrap();
 
         // Older transaction wounds younger
         let msg = create_message(
@@ -482,20 +578,23 @@ mod tests {
             "older",
             None,
         );
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
-
-        // Younger should be wounded
-        let _wounded_msg = younger_responses.recv().await.unwrap();
 
         // Try to prepare younger transaction - should fail
         let msg = create_message(None, &txn_id(3000000000, 0), "younger", Some("prepare"));
-        processor
-            .process_message(msg, test_timestamp(), 0)
+        client
+            .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
             .unwrap();
+
+        // Younger should succeed
+        let _younger_msg = younger_responses.recv().await.unwrap();
+
+        // Younger should be wounded
+        let _wounded_msg = younger_responses.recv().await.unwrap();
 
         // Should get error response
         let prepare_response = younger_responses.recv().await.unwrap();
@@ -504,5 +603,7 @@ mod tests {
             Some(&"wounded".to_string()),
             "Wounded transaction should not be able to prepare"
         );
+
+        let _ = processor_handle.await;
     }
 }

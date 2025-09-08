@@ -2,7 +2,6 @@
 
 pub mod engine;
 pub mod operation;
-pub mod processor;
 pub mod response;
 pub mod transaction;
 
@@ -11,6 +10,5 @@ mod test;
 
 pub use engine::KvTransactionEngine;
 pub use operation::KvOperation;
-pub use processor::KvStreamProcessor;
 pub use response::KvResponse;
 pub use transaction::TransactionContext;

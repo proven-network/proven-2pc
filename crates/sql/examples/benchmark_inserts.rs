@@ -4,21 +4,12 @@
 //! 1 million rows into a table through the streaming interface.
 
 use proven_engine::{Message, MockClient, MockEngine};
-use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::stream::{SqlOperation, SqlStreamProcessor};
+use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
+use proven_stream::StreamProcessor;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-
-/// Helper to generate test timestamps
-fn test_timestamp() -> HlcTimestamp {
-    let physical = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as u64;
-    HlcTimestamp::new(physical, 0, NodeId::new(1))
-}
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() {
@@ -28,8 +19,21 @@ async fn main() {
     let engine = Arc::new(MockEngine::new());
     let client = Arc::new(MockClient::new("benchmark".to_string(), engine.clone()));
 
-    // Create stream processor
-    let mut processor = SqlStreamProcessor::new(client.clone(), "sql-stream".to_string());
+    // Create stream
+    client
+        .create_stream("sql-stream".to_string())
+        .await
+        .unwrap();
+
+    // Create stream processor and start it
+    let sql_engine = SqlTransactionEngine::new();
+    let mut processor = StreamProcessor::new(sql_engine, client.clone(), "sql-stream".to_string());
+
+    // Start processor in background
+    let processor_handle = tokio::spawn(async move { processor.run().await });
+
+    // Give processor time to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Create table
     println!("Creating table...");
@@ -49,10 +53,13 @@ async fn main() {
         None,
     );
 
-    processor
-        .process_message(create_table, test_timestamp())
+    client
+        .publish_to_stream("sql-stream".to_string(), vec![create_table])
         .await
-        .expect("Failed to create table");
+        .expect("Failed to publish create table");
+
+    // Give time for table creation
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Benchmark configuration
     const NUM_INSERTS: usize = 1_000_000;
@@ -86,8 +93,11 @@ async fn main() {
             None,
         );
 
-        // Process the message
-        if let Err(e) = processor.process_message(insert, test_timestamp()).await {
+        // Publish message to stream
+        if let Err(e) = client
+            .publish_to_stream("sql-stream".to_string(), vec![insert])
+            .await
+        {
             eprintln!("\nError at insert {}: {:?}", i, e);
             break;
         }
@@ -137,10 +147,13 @@ async fn main() {
         None,
     );
 
-    processor
-        .process_message(count_query, test_timestamp())
+    client
+        .publish_to_stream("sql-stream".to_string(), vec![count_query])
         .await
-        .expect("Failed to query count");
+        .expect("Failed to publish count query");
+
+    // Give time for query to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Note: In a real system, we would subscribe to responses to verify the count
     // For this benchmark, we'll just report timing
@@ -156,8 +169,11 @@ async fn main() {
     );
 
     println!("\nMemory usage and detailed statistics:");
-    println!("- Messages processed: {}", NUM_INSERTS + 2); // +2 for create table and count
+    println!("- Messages published: {}", NUM_INSERTS + 2); // +2 for create table and count
     println!("\n✓ Benchmark complete!");
+
+    // Cancel the processor
+    processor_handle.abort();
 }
 
 /// Helper function to create a stream message

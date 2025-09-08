@@ -19,7 +19,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub enum ProcessorPhase {
     /// Replaying historical messages to rebuild state
-    Replay { target_offset: u64 },
+    Replay,
     /// Checking for and executing recovery
     Recovery,
     /// Normal live processing
@@ -56,14 +56,14 @@ pub struct StreamProcessor<E: TransactionEngine> {
     stream_name: String,
 
     /// Current processing phase
-    pub phase: ProcessorPhase,
+    phase: ProcessorPhase,
 
     /// Current stream offset (for phase transitions)
     current_offset: u64,
 }
 
 impl<E: TransactionEngine> StreamProcessor<E> {
-    /// Create a new stream processor
+    /// Create a new stream processor (starts in replay mode)
     pub fn new(engine: E, client: Arc<MockClient>, stream_name: String) -> Self {
         Self {
             engine,
@@ -75,25 +75,18 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             recovery_manager: RecoveryManager::new(client.clone(), stream_name.clone()),
             client,
             stream_name,
-            phase: ProcessorPhase::Live, // Default to live for backward compatibility
+            phase: ProcessorPhase::Replay,
             current_offset: 0,
         }
     }
 
-    /// Create a new stream processor in replay mode
-    pub fn new_with_replay(
-        engine: E,
-        client: Arc<MockClient>,
-        stream_name: String,
-        target_offset: u64,
-    ) -> Self {
-        let mut processor = Self::new(engine, client, stream_name);
-        processor.phase = ProcessorPhase::Replay { target_offset };
-        processor
+    /// Get the current processing phase
+    pub fn phase(&self) -> &ProcessorPhase {
+        &self.phase
     }
 
     /// Process a message from the stream with phase awareness
-    pub async fn process_message(
+    async fn process_message(
         &mut self,
         message: Message,
         msg_timestamp: HlcTimestamp,
@@ -105,14 +98,9 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         self.track_transaction_state(&message, msg_timestamp)?;
 
         match self.phase.clone() {
-            ProcessorPhase::Replay { target_offset } => {
+            ProcessorPhase::Replay => {
                 // Just rebuild state, no responses or side effects
-                if msg_offset >= target_offset {
-                    // Transition to recovery phase
-                    self.phase = ProcessorPhase::Recovery;
-                    self.run_recovery_check(msg_timestamp).await?;
-                    self.phase = ProcessorPhase::Live;
-                }
+                // Transitions are handled by run() method
                 Ok(())
             }
             ProcessorPhase::Recovery => {
@@ -843,5 +831,77 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         tokio::spawn(async move {
             let _ = client.publish(&subject, vec![message]).await;
         });
+    }
+
+    /// Run the processor, consuming messages from its stream
+    pub async fn run(&mut self) -> Result<()> {
+        use proven_engine::DeadlineStreamItem;
+        use proven_hlc::NodeId;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio_stream::StreamExt;
+
+        let mut last_offset = 0u64;
+
+        // Phase 1: Replay historical messages up to current time
+        if matches!(self.phase, ProcessorPhase::Replay) {
+            // Get current time as HLC timestamp
+            let physical = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64;
+            let current_time = HlcTimestamp::new(physical, 0, NodeId::new(1));
+
+            // Clone what we need to avoid borrow issues
+            let client = self.client.clone();
+            let stream_name = self.stream_name.clone();
+
+            // Stream messages until we reach current time
+            let replay_stream = client
+                .stream_messages_until_deadline(&stream_name, Some(0), current_time)
+                .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
+
+            tokio::pin!(replay_stream);
+
+            while let Some(item) = replay_stream.next().await {
+                match item {
+                    DeadlineStreamItem::Message(message, timestamp, offset) => {
+                        last_offset = offset;
+                        if let Err(e) = self.process_message(message, timestamp, offset).await {
+                            tracing::error!("Error during replay at offset {}: {:?}", offset, e);
+                        }
+                    }
+                    DeadlineStreamItem::DeadlineReached => {
+                        // Replay complete, transition to recovery then live
+                        self.phase = ProcessorPhase::Recovery;
+                        self.run_recovery_check(current_time).await?;
+                        self.phase = ProcessorPhase::Live;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Continue with live processing
+        let start_offset = if last_offset > 0 {
+            Some(last_offset + 1)
+        } else {
+            Some(self.current_offset)
+        };
+
+        let mut live_stream = self
+            .client
+            .stream_messages(self.stream_name.clone(), start_offset)
+            .await
+            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
+
+        // Process live messages continuously
+        while let Some((message, timestamp, offset)) = live_stream.recv().await {
+            if let Err(e) = self.process_message(message, timestamp, offset).await {
+                // Log error but continue processing
+                tracing::error!("Error processing message at offset {}: {:?}", offset, e);
+            }
+        }
+
+        Ok(())
     }
 }

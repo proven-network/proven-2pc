@@ -4,20 +4,12 @@
 //! handles transactions with PCC, and returns results through a response channel.
 
 use proven_engine::{Message, MockClient, MockEngine};
-use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::stream::{SqlOperation, SqlResponse, SqlStreamProcessor};
+use proven_sql::stream::{
+    engine::SqlTransactionEngine, operation::SqlOperation, response::SqlResponse,
+};
+use proven_stream::StreamProcessor;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Helper to generate test timestamps
-fn test_timestamp() -> HlcTimestamp {
-    let physical = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as u64;
-    HlcTimestamp::new(physical, 0, NodeId::new(1))
-}
 
 #[tokio::main]
 async fn main() {
@@ -28,7 +20,8 @@ async fn main() {
     let client = Arc::new(MockClient::new("sql-example".to_string(), engine.clone()));
 
     // Create stream processor
-    let mut processor = SqlStreamProcessor::new(client.clone(), "sql-stream".to_string());
+    let sql_engine = SqlTransactionEngine::new();
+    let mut processor = StreamProcessor::new(sql_engine, client.clone(), "sql-stream".to_string());
 
     // Create a test client to subscribe to coordinator responses
     let test_client = MockClient::new("demo-observer".to_string(), engine.clone());
@@ -108,28 +101,25 @@ async fn main() {
         ),
     ];
 
-    // Process the stream
-    println!("Processing {} messages...\n", messages.len());
-    for (i, message) in messages.into_iter().enumerate() {
-        println!("Message {}: Processing...", i + 1);
+    // Publish messages to the stream
+    println!("Publishing {} messages to stream...\n", messages.len());
+    for message in messages {
+        client
+            .publish_to_stream("sql-stream".to_string(), vec![message])
+            .await
+            .unwrap();
+    }
 
-        // Get description from the message
-        let description = if let Some(phase) = message.headers.get("txn_phase") {
-            format!("{} phase", phase)
-        } else if message.body.is_empty() {
-            "Empty message".to_string()
-        } else {
-            "SQL operation".to_string()
-        };
+    // Spawn processor to consume from stream
+    tokio::spawn(async move { processor.run().await });
 
-        println!("  Type: {}", description);
+    // Give processor time to process messages
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        if let Err(e) = processor.process_message(message, test_timestamp()).await {
-            eprintln!("  Error: {:?}", e);
-        }
-
+    // Process the responses
+    for _ in 0..5 {
         // Check for responses (non-blocking)
-        while let Some(response_msg) = coord_responses.try_recv() {
+        if let Some(response_msg) = coord_responses.recv().await {
             if let Ok(response) = serde_json::from_slice::<SqlResponse>(&response_msg.body) {
                 println!("  Response: {}", format_response(&response));
             }

@@ -507,6 +507,7 @@ dependencies = [
  "proven-hlc",
  "proven-kv",
  "proven-sql",
+ "proven-stream",
  "serde",
  "serde_json",
  "thiserror",

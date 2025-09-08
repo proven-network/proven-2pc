@@ -2,23 +2,15 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::stream::{KvOperation, KvStreamProcessor};
+    use crate::stream::{engine::KvTransactionEngine, operation::KvOperation};
     use crate::types::Value;
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_stream::StreamProcessor;
     use serde_json;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    /// Helper to generate test timestamps
-    fn test_timestamp() -> HlcTimestamp {
-        let physical = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u64;
-        HlcTimestamp::new(physical, 0, NodeId::new(1))
-    }
 
     /// Helper to generate transaction ID strings in HLC format
     fn txn_id(physical: u64, logical: u32) -> String {
@@ -70,7 +62,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_operations() {
-        let (mut processor, engine) = KvStreamProcessor::new_for_testing();
+        let engine = Arc::new(MockEngine::new());
+        let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
+
+        // Create stream
+        client.create_stream("kv-stream".to_string()).await.unwrap();
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Create a test client to subscribe to coordinator responses
         let test_client = MockClient::new("test-observer".to_string(), engine.clone());
@@ -96,8 +106,8 @@ mod tests {
             true, // auto-commit
             None,
         );
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -131,8 +141,8 @@ mod tests {
             true,
             None,
         );
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -158,8 +168,8 @@ mod tests {
             true,
             None,
         );
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -173,11 +183,31 @@ mod tests {
         // Check it's a DeleteResult
         assert_eq!(body["DeleteResult"]["key"], "key1");
         assert_eq!(body["DeleteResult"]["deleted"], true);
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
     async fn test_transaction_isolation() {
-        let (mut processor, engine) = KvStreamProcessor::new_for_testing();
+        let engine = Arc::new(MockEngine::new());
+        let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
+
+        // Create stream
+        client.create_stream("kv-stream".to_string()).await.unwrap();
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Create test client for responses
         let test_client = MockClient::new("test-observer".to_string(), engine.clone());
@@ -201,8 +231,8 @@ mod tests {
             false, // Not auto-commit
             None,
         );
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -230,8 +260,8 @@ mod tests {
             true, // Auto-commit this one
             None,
         );
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -256,8 +286,8 @@ mod tests {
             false,
             Some("prepare_and_commit"),
         );
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -282,8 +312,8 @@ mod tests {
             key: "key1".to_string(),
         };
         let msg = create_message(Some(get_op), &txn_id(3000000003, 0), "coord1", true, None);
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -291,6 +321,8 @@ mod tests {
         let response = coord_responses.recv().await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(body["GetResult"]["value"]["String"], "value1");
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
@@ -298,7 +330,37 @@ mod tests {
         // Create engine and processor
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test-node".to_string(), engine.clone()));
-        let mut processor = KvStreamProcessor::new(client, "kv-stream".to_string());
+
+        // Create stream
+        client.create_stream("kv-stream".to_string()).await.unwrap();
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let txn_id = HlcTimestamp::new(1, 0, NodeId::new(1));
         let coord_id = "test-coord";
@@ -323,12 +385,10 @@ mod tests {
         headers.insert("txn_deadline".to_string(), deadline.to_string());
 
         let put_msg = Message::new(serde_json::to_vec(&put_op).unwrap(), headers.clone());
-        assert!(
-            processor
-                .process_message(put_msg, test_timestamp())
-                .await
-                .is_ok()
-        );
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![put_msg])
+            .await
+            .unwrap();
 
         // Test GET operation
         let get_op = KvOperation::Get {
@@ -339,29 +399,57 @@ mod tests {
         headers.remove("txn_deadline");
 
         let get_msg = Message::new(serde_json::to_vec(&get_op).unwrap(), headers.clone());
-        assert!(
-            processor
-                .process_message(get_msg, test_timestamp())
-                .await
-                .is_ok()
-        );
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![get_msg])
+            .await
+            .unwrap();
 
         // Test COMMIT
         headers.insert("txn_phase".to_string(), "prepare_and_commit".to_string());
         let commit_msg = Message::new(Vec::new(), headers);
-        assert!(
-            processor
-                .process_message(commit_msg, test_timestamp())
-                .await
-                .is_ok()
-        );
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![commit_msg])
+            .await
+            .unwrap();
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
     async fn test_wound_wait_with_new_processor() {
         let engine = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new("test-node".to_string(), engine.clone()));
-        let mut processor = KvStreamProcessor::new(client, "kv-stream".to_string());
+
+        // Create stream
+        client.create_stream("kv-stream".to_string()).await.unwrap();
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Older transaction
         let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
@@ -379,12 +467,10 @@ mod tests {
         headers2.insert("coordinator_id".to_string(), "coord2".to_string());
 
         let msg2 = Message::new(serde_json::to_vec(&put_op).unwrap(), headers2);
-        assert!(
-            processor
-                .process_message(msg2, test_timestamp())
-                .await
-                .is_ok()
-        );
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg2])
+            .await
+            .unwrap();
 
         // Transaction 1 tries to get exclusive lock - should be deferred
         // (in the old system it would wound txn2, but now it just waits)
@@ -399,17 +485,35 @@ mod tests {
 
         let msg1 = Message::new(serde_json::to_vec(&put_op2).unwrap(), headers1);
         // This should succeed (operation is deferred internally)
-        assert!(
-            processor
-                .process_message(msg1, test_timestamp())
-                .await
-                .is_ok()
-        );
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg1])
+            .await
+            .unwrap();
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
     async fn test_concurrent_reads() {
-        let (mut processor, _engine) = KvStreamProcessor::new_for_testing();
+        let engine = Arc::new(MockEngine::new());
+        let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
+
+        // Create stream
+        client.create_stream("kv-stream".to_string()).await.unwrap();
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Put a value first
         let put_op = KvOperation::Put {
@@ -423,8 +527,8 @@ mod tests {
             true, // auto-commit
             None,
         );
-        processor
-            .process_message(msg, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg])
             .await
             .unwrap();
 
@@ -441,8 +545,8 @@ mod tests {
             false,
             None,
         );
-        processor
-            .process_message(msg2, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg2])
             .await
             .unwrap();
 
@@ -454,8 +558,8 @@ mod tests {
             false,
             None,
         );
-        processor
-            .process_message(msg3, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg3])
             .await
             .unwrap();
 
@@ -467,8 +571,8 @@ mod tests {
             false,
             Some("prepare_and_commit"),
         );
-        processor
-            .process_message(commit2, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![commit2])
             .await
             .unwrap();
 
@@ -479,17 +583,37 @@ mod tests {
             false,
             Some("prepare_and_commit"),
         );
-        processor
-            .process_message(commit3, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![commit3])
             .await
             .unwrap();
+
+        let _ = processor_handle.await;
     }
 
     #[tokio::test]
     async fn test_write_conflict_resolution() {
-        let (mut processor, _engine) = KvStreamProcessor::new_for_testing();
+        let engine = Arc::new(MockEngine::new());
+        let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
 
-        let _test_client = MockClient::new("test-observer".to_string(), _engine.clone());
+        // Create stream
+        client.create_stream("kv-stream".to_string()).await.unwrap();
+
+        // Start processor
+        let kv_engine = KvTransactionEngine::new();
+        let mut processor =
+            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
+            }
+        });
+
+        // Give processor time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let _test_client = MockClient::new("test-observer".to_string(), engine.clone());
 
         // Older transaction tries to write after younger one has lock
         let txn_old = &txn_id(1000000001, 0); // Older
@@ -501,8 +625,8 @@ mod tests {
             value: Value::String("young_value".to_string()),
         };
         let msg_young = create_message(Some(put_young), txn_young, "coord_young", false, None);
-        processor
-            .process_message(msg_young, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg_young])
             .await
             .unwrap();
 
@@ -512,8 +636,8 @@ mod tests {
             value: Value::String("old_value".to_string()),
         };
         let msg_old = create_message(Some(put_old.clone()), txn_old, "coord_old", false, None);
-        processor
-            .process_message(msg_old, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![msg_old])
             .await
             .unwrap();
 
@@ -526,15 +650,15 @@ mod tests {
             Some("prepare_and_commit"),
         );
         // Process returns Ok but transaction gets wounded response (not an error)
-        processor
-            .process_message(commit_young, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![commit_young])
             .await
             .unwrap();
 
         // Abort the younger transaction
         let abort_young = create_message(None, txn_young, "coord_young", false, Some("abort"));
-        processor
-            .process_message(abort_young, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![abort_young])
             .await
             .unwrap();
 
@@ -547,9 +671,11 @@ mod tests {
             false,
             Some("prepare_and_commit"),
         );
-        processor
-            .process_message(commit_old, test_timestamp())
+        client
+            .publish_to_stream("kv-stream".to_string(), vec![commit_old])
             .await
             .unwrap();
+
+        let _ = processor_handle.await;
     }
 }

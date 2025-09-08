@@ -8,10 +8,11 @@
 use proven_coordinator::MockCoordinator;
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::{
-    stream::{KvStreamProcessor, operation::KvOperation},
+    stream::{engine::KvTransactionEngine, operation::KvOperation},
     types::Value as KvValue,
 };
-use proven_sql::stream::{SqlStreamProcessor, operation::SqlOperation};
+use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
+use proven_stream::StreamProcessor;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,10 +36,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Created processor clients");
 
     // 4. Create SQL processor with its client
-    let sql_processor = SqlStreamProcessor::new(sql_client.clone(), "sql-stream".to_string());
+    let sql_engine = SqlTransactionEngine::new();
+    let mut sql_processor =
+        StreamProcessor::new(sql_engine, sql_client.clone(), "sql-stream".to_string());
 
     // 5. Create KV processor with its client
-    let kv_processor = KvStreamProcessor::new(kv_client.clone(), "kv-stream".to_string());
+    let kv_engine = KvTransactionEngine::new();
+    let mut kv_processor =
+        StreamProcessor::new(kv_engine, kv_client.clone(), "kv-stream".to_string());
 
     println!("✓ Initialized SQL and KV processors");
 
@@ -46,31 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         println!("  [SQL] Processor started");
 
-        // SQL processor consumes messages directly from its stream via the client
-        let mut sql_stream = sql_client
-            .stream_messages("sql-stream".to_string(), None)
-            .await
-            .expect("Failed to create SQL stream consumer");
-
-        let mut processor = sql_processor;
-
-        while let Some((msg, timestamp, _sequence)) = sql_stream.recv().await {
-            // Log what we're processing
-            if let Some(txn_id) = msg.headers.get("txn_id") {
-                if let Some(phase) = msg.headers.get("txn_phase") {
-                    println!(
-                        "  [SQL] Received {} phase for transaction {}",
-                        phase, txn_id
-                    );
-                } else if !msg.body.is_empty() {
-                    println!("  [SQL] Processing operation for transaction {}", txn_id);
-                }
-            }
-
-            // Process the message directly - no conversion needed
-            if let Err(e) = processor.process_message(msg, timestamp).await {
-                println!("  [SQL] Error processing message: {}", e);
-            }
+        // SQL processor now manages its own stream consumption
+        if let Err(e) = sql_processor.run().await {
+            println!("  [SQL] Processor error: {:?}", e);
         }
 
         println!("  [SQL] Processor stopped");
@@ -80,34 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         println!("  [KV] Processor started");
 
-        // KV processor consumes messages directly from its stream via the client
-        let mut kv_stream = kv_client
-            .stream_messages("kv-stream".to_string(), None)
-            .await
-            .expect("Failed to create KV stream consumer");
-
-        let mut processor = kv_processor;
-
-        while let Some((msg, timestamp, _sequence)) = kv_stream.recv().await {
-            // Log what we're processing
-            if let Some(txn_id) = msg.headers.get("txn_id") {
-                if let Some(phase) = msg.headers.get("txn_phase") {
-                    println!("  [KV] Received {} phase for transaction {}", phase, txn_id);
-                } else if !msg.body.is_empty() {
-                    // Try to decode the KV operation
-                    if let Ok(op) = serde_json::from_slice::<KvOperation>(&msg.body) {
-                        println!(
-                            "  [KV] Processing operation for transaction {}: {:?}",
-                            txn_id, op
-                        );
-                    }
-                }
-            }
-
-            // Process the message
-            if let Err(e) = processor.process_message(msg, timestamp).await {
-                println!("  [KV] Error processing message: {}", e);
-            }
+        // KV processor now manages its own stream consumption
+        if let Err(e) = kv_processor.run().await {
+            println!("  [KV] Processor error: {:?}", e);
         }
 
         println!("  [KV] Processor stopped");

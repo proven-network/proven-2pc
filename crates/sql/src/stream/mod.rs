@@ -9,11 +9,7 @@ pub mod response;
 pub mod stats_cache;
 pub mod transaction;
 
-// Wrapper around generic processor
-mod processor;
-
 // Re-export commonly used types
 pub use operation::SqlOperation;
-pub use processor::SqlStreamProcessor;
 pub use response::SqlResponse;
 pub use transaction::{AccessLogEntry, TransactionContext, TransactionState};
