@@ -8,8 +8,10 @@
 pub mod optimizer;
 pub mod plan;
 pub mod planner;
+pub mod predicate;
 
 // Re-export main types
 pub use optimizer::Optimizer;
 pub use plan::{AggregateFunc, Direction, JoinType, Node, Plan};
 pub use planner::Planner;
+pub use predicate::{ConflictInfo, Predicate, PredicateCondition, QueryPredicates};

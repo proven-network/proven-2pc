@@ -1,6 +1,5 @@
 //! Error types for the SQL engine
 
-use crate::storage::lock::LockMode;
 use proven_hlc::HlcTimestamp;
 use thiserror::Error;
 
@@ -31,15 +30,14 @@ pub enum Error {
     #[error("NULL constraint violation on column: {0}")]
     NullConstraintViolation(String),
 
-    // Lock errors
-    #[error("Lock conflict: held by transaction {holder} in mode {mode:?}")]
-    LockConflict {
-        holder: HlcTimestamp,
-        mode: LockMode,
-    },
-
     #[error("Operation would block")]
     WouldBlock,
+
+    #[error("Predicate conflict with transaction {holder}: {reason}")]
+    PredicateConflict {
+        holder: HlcTimestamp,
+        reason: String,
+    },
 
     #[error("Deadlock detected")]
     DeadlockDetected,

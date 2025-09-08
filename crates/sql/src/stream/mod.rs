@@ -12,4 +12,4 @@ pub mod transaction;
 // Re-export commonly used types
 pub use operation::SqlOperation;
 pub use response::SqlResponse;
-pub use transaction::{AccessLogEntry, TransactionContext, TransactionState};
+pub use transaction::{TransactionContext, TransactionState};

@@ -5,12 +5,14 @@
 
 use super::optimizer::Optimizer;
 use super::plan::{AggregateFunc, Direction, JoinType, Node, Plan};
+use super::predicate::{Predicate, PredicateCondition, QueryPredicates};
 use crate::error::{Error, Result};
 use crate::parsing::ast;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use crate::types::statistics::DatabaseStatistics;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
 
 /// Index metadata for planning
 #[derive(Debug, Clone)]
@@ -1313,5 +1315,325 @@ impl<'a> PlanContext<'a> {
                 Box::new(self.resolve_expression(*r)?),
             ),
         })
+    }
+}
+
+impl Planner {
+    /// Extract predicates from a plan for conflict detection
+    pub fn extract_predicates(&self, plan: &Plan) -> QueryPredicates {
+        match plan {
+            Plan::Select(node) => self.extract_node_predicates(node),
+
+            Plan::Insert { table, source, .. } => {
+                // Get source predicates to find what values we're inserting
+                let source_predicates = self.extract_node_predicates(source);
+
+                // For now, assume we're inserting to the whole table
+                // A better implementation would extract specific PKs from the source
+                QueryPredicates {
+                    reads: source_predicates.reads,
+                    writes: vec![],
+                    inserts: vec![Predicate::full_table(table.clone())],
+                }
+            }
+
+            Plan::Update { table, source, .. } => {
+                // UPDATE reads via source, then writes the same predicates
+                let source_predicates = self.extract_node_predicates(source);
+
+                // Find predicates for the table being updated
+                let table_predicates: Vec<Predicate> = source_predicates
+                    .reads
+                    .iter()
+                    .filter(|p| p.table == *table)
+                    .cloned()
+                    .collect();
+
+                QueryPredicates {
+                    reads: source_predicates.reads,
+                    writes: table_predicates,
+                    inserts: vec![],
+                }
+            }
+
+            Plan::Delete { table, source } => {
+                // DELETE reads via source, then writes (deletes) the same predicates
+                let source_predicates = self.extract_node_predicates(source);
+
+                // Find predicates for the table being deleted from
+                let table_predicates: Vec<Predicate> = source_predicates
+                    .reads
+                    .iter()
+                    .filter(|p| p.table == *table)
+                    .cloned()
+                    .collect();
+
+                QueryPredicates {
+                    reads: source_predicates.reads,
+                    writes: table_predicates,
+                    inserts: vec![],
+                }
+            }
+
+            Plan::CreateTable { .. } | Plan::CreateIndex { .. } => {
+                // DDL doesn't have predicates in our model
+                QueryPredicates::default()
+            }
+
+            Plan::DropTable { name, .. } => {
+                // Dropping a table is like writing to the entire table
+                QueryPredicates {
+                    reads: vec![],
+                    writes: vec![Predicate::full_table(name.clone())],
+                    inserts: vec![],
+                }
+            }
+
+            Plan::DropIndex { .. } => {
+                // Index operations don't have predicates
+                QueryPredicates::default()
+            }
+        }
+    }
+
+    /// Extract predicates from a node
+    fn extract_node_predicates(&self, node: &Node) -> QueryPredicates {
+        match node {
+            Node::Scan { table, .. } => {
+                // Full table scan - will be refined by Filter if present
+                QueryPredicates {
+                    reads: vec![Predicate::full_table(table.clone())],
+                    writes: vec![],
+                    inserts: vec![],
+                }
+            }
+
+            Node::IndexScan { table, values, .. } => {
+                // Index scan with specific values - assume primary key lookup
+                let predicate = match values.first() {
+                    Some(Expression::Constant(val)) => {
+                        Predicate::primary_key(table.clone(), val.clone())
+                    }
+                    Some(_) | None => Predicate::full_table(table.clone()),
+                };
+
+                QueryPredicates {
+                    reads: vec![predicate],
+                    writes: vec![],
+                    inserts: vec![],
+                }
+            }
+
+            Node::IndexRangeScan {
+                table, start, end, ..
+            } => {
+                // Range scan
+                let start_bound = start
+                    .as_ref()
+                    .and_then(|exprs| exprs.first())
+                    .and_then(|expr| {
+                        if let Expression::Constant(val) = expr {
+                            Some(Bound::Included(val.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(Bound::Unbounded);
+
+                let end_bound = end
+                    .as_ref()
+                    .and_then(|exprs| exprs.first())
+                    .and_then(|expr| {
+                        if let Expression::Constant(val) = expr {
+                            Some(Bound::Included(val.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(Bound::Unbounded);
+
+                let predicate = Predicate {
+                    table: table.clone(),
+                    condition: PredicateCondition::Range {
+                        column: "id".to_string(), // Assume primary key for now
+                        start: start_bound,
+                        end: end_bound,
+                    },
+                };
+
+                QueryPredicates {
+                    reads: vec![predicate],
+                    writes: vec![],
+                    inserts: vec![],
+                }
+            }
+
+            Node::Values { .. } => {
+                // VALUES clause doesn't read anything
+                QueryPredicates::default()
+            }
+
+            Node::Filter { source, predicate } => {
+                // Get the table name from the source
+                let table_name = Self::get_table_from_node(source);
+
+                // If we can determine the table, use filter predicates
+                if let Some(table) = table_name {
+                    let filter_predicate =
+                        self.filter_to_predicate(&table, &Some(predicate.clone()));
+                    QueryPredicates {
+                        reads: vec![filter_predicate],
+                        writes: vec![],
+                        inserts: vec![],
+                    }
+                } else {
+                    // Fall back to source predicates
+                    self.extract_node_predicates(source)
+                }
+            }
+
+            Node::Projection { source, .. }
+            | Node::Order { source, .. }
+            | Node::Limit { source, .. }
+            | Node::Offset { source, .. } => {
+                // Pass-through nodes
+                self.extract_node_predicates(source)
+            }
+
+            Node::Aggregate { source, .. } => {
+                // Aggregation reads all the source data
+                self.extract_node_predicates(source)
+            }
+
+            Node::HashJoin { left, right, .. } | Node::NestedLoopJoin { left, right, .. } => {
+                // Combine predicates from both sides
+                let left_predicates = self.extract_node_predicates(left);
+                let right_predicates = self.extract_node_predicates(right);
+
+                QueryPredicates {
+                    reads: [left_predicates.reads, right_predicates.reads].concat(),
+                    writes: [left_predicates.writes, right_predicates.writes].concat(),
+                    inserts: [left_predicates.inserts, right_predicates.inserts].concat(),
+                }
+            }
+
+            Node::Nothing => {
+                // Nothing produces no data, no predicates
+                QueryPredicates::default()
+            }
+        }
+    }
+
+    /// Get the table name from a node if it's a scan
+    fn get_table_from_node(node: &Node) -> Option<String> {
+        match node {
+            Node::Scan { table, .. }
+            | Node::IndexScan { table, .. }
+            | Node::IndexRangeScan { table, .. } => Some(table.clone()),
+            Node::Filter { source, .. }
+            | Node::Projection { source, .. }
+            | Node::Order { source, .. }
+            | Node::Limit { source, .. }
+            | Node::Offset { source, .. }
+            | Node::Aggregate { source, .. } => Self::get_table_from_node(source),
+            _ => None,
+        }
+    }
+
+    /// Convert a filter expression to a predicate
+    fn filter_to_predicate(&self, table: &str, filter: &Option<Expression>) -> Predicate {
+        let condition = match filter {
+            None => PredicateCondition::All,
+
+            Some(Expression::Equal(left, right)) => {
+                // Check if this is a primary key or column comparison
+                if let (Expression::Column(idx), Expression::Constant(val)) = (&**left, &**right) {
+                    if *idx == 0 {
+                        // Assume column 0 is primary key
+                        PredicateCondition::PrimaryKey(val.clone())
+                    } else {
+                        // Get column name from schema
+                        let column_name = self
+                            .schemas
+                            .get(table)
+                            .and_then(|schema| schema.columns.get(*idx))
+                            .map(|col| col.name.clone())
+                            .unwrap_or_else(|| format!("col{}", idx));
+
+                        PredicateCondition::Equals {
+                            column: column_name,
+                            value: val.clone(),
+                        }
+                    }
+                } else {
+                    // Complex expression, fall back to generic
+                    PredicateCondition::Expression(filter.as_ref().unwrap().clone())
+                }
+            }
+
+            Some(Expression::GreaterThan(left, right))
+            | Some(Expression::GreaterThanOrEqual(left, right)) => {
+                if let (Expression::Column(idx), Expression::Constant(val)) = (&**left, &**right) {
+                    let column_name = self
+                        .schemas
+                        .get(table)
+                        .and_then(|schema| schema.columns.get(*idx))
+                        .map(|col| col.name.clone())
+                        .unwrap_or_else(|| format!("col{}", idx));
+
+                    PredicateCondition::Range {
+                        column: column_name,
+                        start: Bound::Included(val.clone()),
+                        end: Bound::Unbounded,
+                    }
+                } else {
+                    PredicateCondition::Expression(filter.as_ref().unwrap().clone())
+                }
+            }
+
+            Some(Expression::LessThan(left, right))
+            | Some(Expression::LessThanOrEqual(left, right)) => {
+                if let (Expression::Column(idx), Expression::Constant(val)) = (&**left, &**right) {
+                    let column_name = self
+                        .schemas
+                        .get(table)
+                        .and_then(|schema| schema.columns.get(*idx))
+                        .map(|col| col.name.clone())
+                        .unwrap_or_else(|| format!("col{}", idx));
+
+                    PredicateCondition::Range {
+                        column: column_name,
+                        start: Bound::Unbounded,
+                        end: Bound::Included(val.clone()),
+                    }
+                } else {
+                    PredicateCondition::Expression(filter.as_ref().unwrap().clone())
+                }
+            }
+
+            Some(Expression::And(left, right)) => {
+                let left_pred = self.filter_to_predicate(table, &Some((**left).clone()));
+                let right_pred = self.filter_to_predicate(table, &Some((**right).clone()));
+
+                PredicateCondition::And(vec![left_pred.condition, right_pred.condition])
+            }
+
+            Some(Expression::Or(left, right)) => {
+                let left_pred = self.filter_to_predicate(table, &Some((**left).clone()));
+                let right_pred = self.filter_to_predicate(table, &Some((**right).clone()));
+
+                PredicateCondition::Or(vec![left_pred.condition, right_pred.condition])
+            }
+
+            Some(expr) => {
+                // For any other expression, use generic expression predicate
+                PredicateCondition::Expression(expr.clone())
+            }
+        };
+
+        Predicate {
+            table: table.to_string(),
+            condition,
+        }
     }
 }

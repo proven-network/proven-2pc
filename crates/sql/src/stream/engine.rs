@@ -1,39 +1,32 @@
-//! SQL Transaction Engine implementation for the generic stream processor
+//! SQL Engine with predicate-based conflict detection
 //!
-//! This module implements the TransactionEngine trait, providing SQL-specific
-//! operation execution while delegating message handling to the generic processor.
+//! This engine uses predicates for conflict detection at planning time,
+//! eliminating the need for row-level locks.
 
 use proven_hlc::HlcTimestamp;
 use proven_stream::{OperationResult, TransactionEngine};
 
 use crate::execution::Executor;
 use crate::planning::planner::Planner;
-use crate::storage::lock::LockManager;
 use crate::storage::mvcc::MvccStorage;
-
-use super::operation::SqlOperation;
-use super::response::{SqlResponse, convert_execution_result};
-use super::stats_cache::StatisticsCache;
-use super::transaction::{TransactionContext, TransactionState};
+use crate::stream::{
+    operation::SqlOperation,
+    response::{SqlResponse, convert_execution_result},
+    transaction::TransactionContext,
+};
 
 use std::collections::HashMap;
 
-/// SQL-specific transaction engine
+/// SQL transaction engine with predicate-based conflict detection
 pub struct SqlTransactionEngine {
     /// MVCC storage for versioned data
     pub storage: MvccStorage,
 
-    /// Lock manager for pessimistic concurrency control
-    pub lock_manager: LockManager,
-
-    /// Active transaction contexts
+    /// Active transactions with their predicates
     active_transactions: HashMap<HlcTimestamp, TransactionContext>,
 
     /// SQL executor (stateless)
     executor: Executor,
-
-    /// Statistics cache for query optimization
-    stats_cache: StatisticsCache,
 
     /// Current migration version
     migration_version: u32,
@@ -44,67 +37,63 @@ impl SqlTransactionEngine {
     pub fn new() -> Self {
         Self {
             storage: MvccStorage::new(),
-            lock_manager: LockManager::new(),
             active_transactions: HashMap::new(),
             executor: Executor::new(),
-            stats_cache: StatisticsCache::new(100), // Update stats every 100 commits
             migration_version: 0,
         }
     }
 
-    /// Execute SQL and handle lock conflicts
+    /// Execute SQL with predicate-based conflict detection
     fn execute_sql(&mut self, sql: &str, txn_id: HlcTimestamp) -> OperationResult<SqlResponse> {
-        // Transaction wound checking is now handled by stream processor
+        // Verify transaction exists
+        if !self.active_transactions.contains_key(&txn_id) {
+            return OperationResult::Error(format!("Transaction {:?} not found", txn_id));
+        }
 
-        // Parse SQL
+        // Phase 1: Parse SQL
         let statement = match crate::parsing::parse_sql(sql) {
             Ok(stmt) => stmt,
             Err(e) => return OperationResult::Error(format!("Parse error: {:?}", e)),
         };
 
-        // Get schemas for planning
-        let schemas = self.storage.get_schemas();
-
-        // Create a stateless planner for this query
-        let mut planner = Planner::new(schemas);
-
-        // Add cached statistics if available for optimization
-        if let Some(stats) = self.stats_cache.get() {
-            planner.update_statistics(stats.clone());
-        }
-
-        // Plan the query
+        // Phase 2: Plan and extract predicates
+        let planner = Planner::new(self.storage.get_schemas());
         let plan = match planner.plan(statement) {
             Ok(p) => p,
             Err(e) => return OperationResult::Error(format!("Planning error: {:?}", e)),
         };
 
-        // Get transaction context
-        let tx_ctx = match self.active_transactions.get_mut(&txn_id) {
-            Some(ctx) => ctx,
-            None => return OperationResult::Error(format!("Transaction {:?} not found", txn_id)),
-        };
+        // Phase 3: Extract predicates from the plan
+        let plan_predicates = planner.extract_predicates(&plan);
 
-        // Execute with direct references to storage and lock manager
-        // This is where lock conflicts will be discovered during execution
-        match self.executor.execute(
-            plan.clone(),
-            &mut self.storage,
-            &mut self.lock_manager,
-            tx_ctx,
-        ) {
+        for (other_tx_id, other_tx) in &self.active_transactions {
+            if other_tx_id == &txn_id {
+                continue; // Skip self
+            }
+
+            // Check if our predicates conflict with theirs
+            if let Some(_conflict) = plan_predicates.conflicts_with(&other_tx.predicates) {
+                return OperationResult::WouldBlock {
+                    blocking_txn: *other_tx_id,
+                };
+            }
+        }
+
+        // Phase 4: Add predicates to transaction context
+        let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
+        tx_ctx.add_predicates(plan_predicates);
+
+        // Phase 5: Execute
+        match self
+            .executor
+            .execute(plan.clone(), &mut self.storage, tx_ctx)
+        {
             Ok(result) => {
-                // After successful DDL operations, invalidate statistics cache
+                // Update schema cache if DDL operation
                 if plan.is_ddl() {
-                    self.stats_cache.invalidate();
+                    // Schema updates are handled internally by storage
                 }
                 OperationResult::Success(convert_execution_result(result))
-            }
-            Err(crate::error::Error::LockConflict { holder, mode: _ }) => {
-                // Just report the conflict - stream processor handles wound-wait
-                OperationResult::WouldBlock {
-                    blocking_txn: holder,
-                }
             }
             Err(e) => OperationResult::Error(format!("Execution error: {:?}", e)),
         }
@@ -121,22 +110,21 @@ impl TransactionEngine for SqlTransactionEngine {
         txn_id: HlcTimestamp,
     ) -> OperationResult<Self::Response> {
         match operation {
-            SqlOperation::Execute { sql } => self.execute_sql(&sql, txn_id),
             SqlOperation::Query { sql } => self.execute_sql(&sql, txn_id),
+            SqlOperation::Execute { sql } => self.execute_sql(&sql, txn_id),
             SqlOperation::Migrate { version, sql } => {
                 // Check if migration is needed
                 if version <= self.migration_version {
                     return OperationResult::Success(SqlResponse::ExecuteResult {
-                        result_type: "migration_skip".to_string(),
-                        rows_affected: None,
-                        message: Some(format!("Migration {} already applied", version)),
+                        result_type: "migration".to_string(),
+                        rows_affected: Some(0),
+                        message: Some("Migration already applied".to_string()),
                     });
                 }
 
-                // Execute the migration
+                // Execute migration
                 match self.execute_sql(&sql, txn_id) {
                     OperationResult::Success(response) => {
-                        // Update migration version on success
                         self.migration_version = version;
                         OperationResult::Success(response)
                     }
@@ -147,75 +135,45 @@ impl TransactionEngine for SqlTransactionEngine {
     }
 
     fn prepare(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
-        // Get transaction context
+        // Get transaction and release read predicates
         let tx_ctx = self
             .active_transactions
             .get_mut(&txn_id)
             .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
 
-        // Try to prepare the transaction
-        if tx_ctx.prepare() {
-            Ok(())
-        } else {
-            Err("Transaction cannot be prepared".to_string())
+        // Prepare the transaction (releases read predicates)
+        if !tx_ctx.prepare() {
+            return Err(format!("Transaction {} is not in active state", txn_id));
         }
+
+        Ok(())
     }
 
     fn commit(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
-        // Remove transaction context
-        let tx_ctx = self
-            .active_transactions
+        // Remove transaction
+        self.active_transactions
             .remove(&txn_id)
             .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
 
-        // For auto-commit, we don't require prepare
-        if tx_ctx.state == TransactionState::Active || tx_ctx.state == TransactionState::Preparing {
-            // Commit to storage
-            self.storage
-                .commit_transaction(txn_id)
-                .map_err(|e| format!("Storage commit error: {:?}", e))?;
+        // Commit in storage (MVCC handles this)
+        // The storage layer already has the transaction registered
 
-            // Record the commit for statistics tracking
-            self.stats_cache.record_commit();
-
-            // Update statistics if needed
-            let active_count = self.active_transactions.len();
-            self.stats_cache.maybe_update(&self.storage, active_count);
-
-            // Release all locks held by this transaction
-            self.lock_manager
-                .release_all(txn_id)
-                .map_err(|e| format!("Lock release error: {:?}", e))?;
-
-            Ok(())
-        } else {
-            Err("Transaction is not in a committable state".to_string())
-        }
+        Ok(())
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
-        // Remove transaction context
+        // Remove transaction
         self.active_transactions.remove(&txn_id);
 
-        // Abort in storage
-        self.storage
-            .abort_transaction(txn_id)
-            .map_err(|e| format!("Storage abort error: {:?}", e))?;
-
-        // Release all locks
-        self.lock_manager
-            .release_all(txn_id)
-            .map_err(|e| format!("Lock release error: {:?}", e))?;
+        // Abort in storage (MVCC handles rollback)
 
         Ok(())
     }
 
     fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
-        // Create new transaction context
-        let tx_ctx = TransactionContext::new(txn_id);
-
-        // Store context
-        self.active_transactions.insert(txn_id, tx_ctx);
+        // Create transaction context
+        self.active_transactions
+            .insert(txn_id, TransactionContext::new(txn_id));
     }
 
     fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
@@ -223,7 +181,7 @@ impl TransactionEngine for SqlTransactionEngine {
     }
 
     fn engine_name(&self) -> &str {
-        "sql"
+        "sql-newer"
     }
 }
 

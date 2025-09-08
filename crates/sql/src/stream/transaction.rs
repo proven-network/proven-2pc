@@ -3,7 +3,7 @@
 //! This module contains transaction state management and context
 //! for executing SQL operations within the stream processor.
 
-use crate::storage::lock::LockKey;
+use crate::planning::predicate::QueryPredicates;
 use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 
@@ -29,19 +29,8 @@ pub struct TransactionContext {
     pub timestamp: HlcTimestamp,
     /// Current state of the transaction
     pub state: TransactionState,
-    /// Locks currently held by this transaction
-    pub locks_held: Vec<LockKey>,
-    /// Access log for distributed coordination
-    pub access_log: Vec<AccessLogEntry>,
-}
-
-/// Access log entry for distributed coordination
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccessLogEntry {
-    pub operation: String,
-    pub table: String,
-    pub keys: Vec<u64>,
-    pub lock_mode: crate::storage::lock::LockMode,
+    /// Predicates for conflict detection
+    pub predicates: QueryPredicates,
 }
 
 impl TransactionContext {
@@ -51,25 +40,30 @@ impl TransactionContext {
             id: hlc_timestamp,
             timestamp: hlc_timestamp,
             state: TransactionState::Active,
-            locks_held: Vec::new(),
-            access_log: Vec::new(),
+            predicates: QueryPredicates::new(),
+        }
+    }
+
+    /// Add predicates from a query to this transaction
+    pub fn add_predicates(&mut self, predicates: QueryPredicates) {
+        self.predicates.merge(predicates);
+    }
+
+    /// Prepare the transaction (releases read predicates)
+    pub fn prepare(&mut self) -> bool {
+        if self.state == TransactionState::Active {
+            self.state = TransactionState::Preparing;
+            // At PREPARE, we can release read predicates
+            self.predicates.release_reads();
+            true
+        } else {
+            false
         }
     }
 
     /// Get the timestamp for deterministic SQL functions
     pub fn timestamp(&self) -> &HlcTimestamp {
         &self.timestamp
-    }
-
-    /// Prepare the transaction for commit (2PC)
-    /// Returns true if prepared successfully, false if not active
-    pub fn prepare(&mut self) -> bool {
-        if self.state == TransactionState::Active {
-            self.state = TransactionState::Preparing;
-            true
-        } else {
-            false
-        }
     }
 
     /// Generate a deterministic UUID based on transaction ID and a sequence

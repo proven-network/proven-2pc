@@ -6,7 +6,6 @@
 use super::{aggregator::Aggregator, join};
 use crate::error::{Error, Result};
 use crate::planning::plan::{Node, Plan};
-use crate::storage::lock::LockManager;
 use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
 use crate::types::expression::Expression;
@@ -47,13 +46,12 @@ impl Executor {
         &self,
         plan: Plan,
         storage: &mut MvccStorage,
-        lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<ExecutionResult> {
         match plan {
             Plan::Select(node) => {
                 // SELECT uses immutable storage reference
-                self.execute_select(*node, storage, lock_manager, tx_ctx)
+                self.execute_select(*node, storage, tx_ctx)
             }
 
             Plan::Insert {
@@ -62,7 +60,7 @@ impl Executor {
                 source,
             } => {
                 // INSERT uses write execution with phased approach
-                self.execute_insert(table, columns, *source, storage, lock_manager, tx_ctx)
+                self.execute_insert(table, columns, *source, storage, tx_ctx)
             }
             Plan::Update {
                 table,
@@ -70,12 +68,12 @@ impl Executor {
                 source,
             } => {
                 // UPDATE uses write execution with phased approach
-                self.execute_update(table, assignments, *source, storage, lock_manager, tx_ctx)
+                self.execute_update(table, assignments, *source, storage, tx_ctx)
             }
 
             Plan::Delete { table, source } => {
                 // DELETE uses write execution with phased approach
-                self.execute_delete(table, *source, storage, lock_manager, tx_ctx)
+                self.execute_delete(table, *source, storage, tx_ctx)
             }
 
             // DDL operations are delegated to storage
@@ -94,7 +92,6 @@ impl Executor {
         &self,
         node: Node,
         storage: &MvccStorage,
-        lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<ExecutionResult> {
         // Get schemas from storage
@@ -104,7 +101,7 @@ impl Executor {
         let columns = node.get_column_names(&schemas);
 
         // Execute using read-only node execution
-        let rows = self.execute_node_read(node, storage, lock_manager, tx_ctx)?;
+        let rows = self.execute_node_read(node, storage, tx_ctx)?;
         let mut collected = Vec::new();
         for row in rows {
             collected.push(row?);
@@ -123,7 +120,6 @@ impl Executor {
         columns: Option<Vec<usize>>,
         source: Node,
         storage: &mut MvccStorage,
-        lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<ExecutionResult> {
         // Get schema from storage
@@ -136,7 +132,7 @@ impl Executor {
         let rows_to_insert = {
             // Use immutable reference for reading
             let storage_ref = &*storage;
-            let rows = self.execute_node_read(source, storage_ref, lock_manager, tx_ctx)?;
+            let rows = self.execute_node_read(source, storage_ref, tx_ctx)?;
             rows.collect::<Result<Vec<_>>>()?
         }; // Immutable borrow ends here
 
@@ -156,7 +152,7 @@ impl Executor {
                 row.to_vec()
             };
 
-            write_ops::insert(storage, lock_manager, tx_ctx, &table, final_row)?;
+            write_ops::insert(storage, tx_ctx, &table, final_row)?;
             count += 1;
         }
 
@@ -170,12 +166,11 @@ impl Executor {
         assignments: Vec<(usize, Expression)>,
         source: Node,
         storage: &mut MvccStorage,
-        lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<ExecutionResult> {
         // Phase 1: Read rows with IDs that match the WHERE clause
         let rows_to_update = {
-            let iter = read_ops::scan_iter_with_ids(storage, lock_manager, tx_ctx, &table, true)?;
+            let iter = read_ops::scan_iter_with_ids(storage, tx_ctx, &table)?;
             let mut to_update = Vec::new();
 
             for (row_id, row) in iter {
@@ -203,7 +198,7 @@ impl Executor {
                 updated[col_idx] = self.evaluate_expression(expr, Some(&current), tx_ctx)?;
             }
 
-            write_ops::update(storage, lock_manager, tx_ctx, &table, row_id, updated)?;
+            write_ops::update(storage, tx_ctx, &table, row_id, updated)?;
             count += 1;
         }
 
@@ -216,12 +211,11 @@ impl Executor {
         table: String,
         source: Node,
         storage: &mut MvccStorage,
-        lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<ExecutionResult> {
         // Phase 1: Read rows with IDs that match the WHERE clause
         let rows_to_delete = {
-            let iter = read_ops::scan_iter_with_ids(storage, lock_manager, tx_ctx, &table, true)?;
+            let iter = read_ops::scan_iter_with_ids(storage, tx_ctx, &table)?;
             let mut to_delete = Vec::new();
 
             for (row_id, row) in iter {
@@ -244,7 +238,7 @@ impl Executor {
         // Phase 2: Delete rows (mutable borrow)
         let mut count = 0;
         for row_id in rows_to_delete {
-            write_ops::delete(storage, lock_manager, tx_ctx, &table, row_id)?;
+            write_ops::delete(storage, tx_ctx, &table, row_id)?;
             count += 1;
         }
 
@@ -256,13 +250,12 @@ impl Executor {
         &self,
         node: Node,
         storage: &'a MvccStorage,
-        lock_manager: &mut LockManager,
         tx_ctx: &mut TransactionContext,
     ) -> Result<Rows<'a>> {
         match node {
             Node::Scan { table, .. } => {
                 // True streaming with immutable storage!
-                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
+                let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
 
                 Ok(Box::new(iter))
             }
@@ -324,16 +317,15 @@ impl Executor {
                             col_indices.push(idx);
                         } else {
                             // Column not found, can't filter
-                            let iter =
-                                read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
+                            let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
                             return Ok(Box::new(iter));
                         }
                     }
 
                     // Filter by checking all column values match
                     if col_indices.len() == filter_values.len() {
-                        let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
-                            .filter_map(move |row| {
+                        let iter =
+                            read_ops::scan_iter(storage, tx_ctx, &table)?.filter_map(move |row| {
                                 // Check if all indexed columns match the filter values
                                 for (idx, expected_val) in col_indices.iter().zip(&filter_values) {
                                     if row.get(*idx) != Some(expected_val) {
@@ -347,7 +339,7 @@ impl Executor {
                 }
 
                 // Can't determine columns, fall back to full scan
-                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
+                let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
                 Ok(Box::new(iter))
             }
 
@@ -426,8 +418,7 @@ impl Executor {
                             col_indices.push(idx);
                         } else {
                             // Column not found, can't filter
-                            let iter =
-                                read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
+                            let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
                             return Ok(Box::new(iter));
                         }
                     }
@@ -438,8 +429,8 @@ impl Executor {
                     let start_incl = start_inclusive;
                     let end_incl = end_inclusive;
 
-                    let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?
-                        .filter_map(move |row| {
+                    let iter =
+                        read_ops::scan_iter(storage, tx_ctx, &table)?.filter_map(move |row| {
                             // Extract values for the indexed columns
                             let mut row_values = Vec::new();
                             for &idx in &col_indices {
@@ -474,12 +465,12 @@ impl Executor {
                 }
 
                 // Can't determine columns, fall back to full scan
-                let iter = read_ops::scan_iter(storage, lock_manager, tx_ctx, &table)?.map(Ok);
+                let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
                 Ok(Box::new(iter))
             }
 
             Node::Filter { source, predicate } => {
-                let source_rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
+                let source_rows = self.execute_node_read(*source, storage, tx_ctx)?;
 
                 // Clone transaction context for use in closure
                 let tx_ctx_clone = tx_ctx.clone();
@@ -521,7 +512,7 @@ impl Executor {
                 expressions,
                 ..
             } => {
-                let source_rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
+                let source_rows = self.execute_node_read(*source, storage, tx_ctx)?;
 
                 // Clone transaction context for use in closure
                 let tx_ctx_clone = tx_ctx.clone();
@@ -547,12 +538,12 @@ impl Executor {
 
             // Limit and Offset are trivial with iterators
             Node::Limit { source, limit } => {
-                let rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
+                let rows = self.execute_node_read(*source, storage, tx_ctx)?;
                 Ok(Box::new(rows.take(limit)))
             }
 
             Node::Offset { source, offset } => {
-                let rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
+                let rows = self.execute_node_read(*source, storage, tx_ctx)?;
                 Ok(Box::new(rows.skip(offset)))
             }
 
@@ -566,7 +557,7 @@ impl Executor {
                 let mut aggregator = Aggregator::new(group_by, aggregates);
 
                 // Process all source rows
-                let rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
+                let rows = self.execute_node_read(*source, storage, tx_ctx)?;
                 for row in rows {
                     let row = row?;
                     // Use the transaction context for the aggregator
@@ -592,8 +583,8 @@ impl Executor {
                 let right_columns = right.column_count(&schemas);
 
                 // Both can borrow storage immutably!
-                let left_rows = self.execute_node_read(*left, storage, lock_manager, tx_ctx)?;
-                let right_rows = self.execute_node_read(*right, storage, lock_manager, tx_ctx)?;
+                let left_rows = self.execute_node_read(*left, storage, tx_ctx)?;
+                let right_rows = self.execute_node_read(*right, storage, tx_ctx)?;
 
                 join::execute_hash_join(
                     left_rows,
@@ -618,8 +609,8 @@ impl Executor {
                 let left_columns = left.column_count(&schemas);
                 let right_columns = right.column_count(&schemas);
 
-                let left_rows = self.execute_node_read(*left, storage, lock_manager, tx_ctx)?;
-                let right_rows = self.execute_node_read(*right, storage, lock_manager, tx_ctx)?;
+                let left_rows = self.execute_node_read(*left, storage, tx_ctx)?;
+                let right_rows = self.execute_node_read(*right, storage, tx_ctx)?;
 
                 // Use the standalone function for nested loop join
                 join::execute_nested_loop_join(
@@ -635,7 +626,7 @@ impl Executor {
 
             // Order By requires full materialization to sort
             Node::Order { source, order_by } => {
-                let rows = self.execute_node_read(*source, storage, lock_manager, tx_ctx)?;
+                let rows = self.execute_node_read(*source, storage, tx_ctx)?;
 
                 // Must materialize to sort
                 let mut collected: Vec<_> = rows.collect::<Result<Vec<_>>>()?;

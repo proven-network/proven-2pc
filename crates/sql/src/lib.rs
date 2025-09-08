@@ -16,14 +16,7 @@ pub mod storage;
 pub mod stream;
 pub mod types;
 
-// Re-export HLC types from proven-hlc
-pub use proven_hlc as hlc;
-
 pub use error::{Error, Result};
-pub use execution::{ExecutionResult, Executor};
-pub use parsing::Parser;
-pub use planning::planner::Planner;
-pub use storage::lock::LockManager;
-pub use storage::mvcc::MvccStorage;
-pub use types::schema::{Column, Table};
-pub use types::value::{DataType, Value};
+pub use stream::engine::SqlTransactionEngine;
+pub use stream::operation::SqlOperation;
+pub use stream::response::SqlResponse;
