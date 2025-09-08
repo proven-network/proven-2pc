@@ -93,6 +93,56 @@ impl<E: TransactionEngine> RecoveryManager<E> {
         }
     }
 
+    /// Execute recovery for a transaction (called by processor)
+    pub async fn execute_recovery(
+        &mut self,
+        txn_id: HlcTimestamp,
+        participants: HashMap<String, u64>,
+        current_time: HlcTimestamp,
+    ) -> TransactionDecision {
+        let txn_id_str = txn_id.to_string();
+
+        // Read each participant stream to find decision
+        for (stream_name, start_offset) in participants {
+            // Skip our own stream
+            if stream_name == self.stream_name {
+                continue;
+            }
+
+            // Read from participant stream until current time (acting as deadline)
+            let decision = match self.client.stream_messages_until_deadline(
+                &stream_name,
+                Some(start_offset),
+                current_time,
+            ) {
+                Ok(stream) => self.scan_stream_for_decision(stream, &txn_id_str).await,
+                Err(_) => {
+                    // Failed to read stream - treat as unknown
+                    TransactionDecision::Unknown
+                }
+            };
+
+            match decision {
+                TransactionDecision::Commit => {
+                    // If any participant committed, all must commit
+                    return TransactionDecision::Commit;
+                }
+                TransactionDecision::Abort => {
+                    // If any participant aborted, all must abort
+                    return TransactionDecision::Abort;
+                }
+                TransactionDecision::Unknown => {
+                    // Continue checking other participants
+                    continue;
+                }
+            }
+        }
+
+        // No decision found from participants
+        // If we're past the deadline and all were prepared, abort
+        TransactionDecision::Abort
+    }
+
     /// Start recovery for a transaction
     pub async fn start_recovery(&mut self, txn_id: HlcTimestamp) -> TransactionDecision {
         // Get the recovery state

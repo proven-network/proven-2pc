@@ -27,8 +27,9 @@ impl SqlStreamProcessor {
         message: Message,
         msg_timestamp: proven_hlc::HlcTimestamp,
     ) -> crate::error::Result<()> {
+        // TODO: Accept offset as parameter when SQL processor tracks offsets
         self.inner
-            .process_message(message, msg_timestamp)
+            .process_message(message, msg_timestamp, 0)
             .await
             .map_err(|e| crate::error::Error::InvalidValue(format!("{:?}", e)))
     }

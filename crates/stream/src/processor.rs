@@ -7,33 +7,24 @@
 
 use crate::deferred::DeferredOperationsManager;
 use crate::engine::{OperationResult, TransactionEngine};
-use crate::recovery::RecoveryManager;
+use crate::error::{ProcessorError, Result};
+use crate::recovery::{RecoveryManager, TransactionDecision};
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum ProcessorError {
-    #[error("Missing required header: {0}")]
-    MissingHeader(&'static str),
-
-    #[error("Invalid transaction ID: {0}")]
-    InvalidTransactionId(String),
-
-    #[error("Invalid operation: {0}")]
-    InvalidOperation(String),
-
-    #[error("Unknown transaction phase: {0}")]
-    UnknownPhase(String),
-
-    #[error("Engine error: {0}")]
-    EngineError(String),
+/// Processing phase for the stream processor
+#[derive(Debug, Clone)]
+pub enum ProcessorPhase {
+    /// Replaying historical messages to rebuild state
+    Replay { target_offset: u64 },
+    /// Checking for and executing recovery
+    Recovery,
+    /// Normal live processing
+    Live,
 }
-
-type Result<T> = std::result::Result<T, ProcessorError>;
 
 /// Generic stream processor that works with any TransactionEngine
 pub struct StreamProcessor<E: TransactionEngine> {
@@ -63,6 +54,12 @@ pub struct StreamProcessor<E: TransactionEngine> {
 
     /// Name of this stream for identification
     stream_name: String,
+
+    /// Current processing phase
+    pub phase: ProcessorPhase,
+
+    /// Current stream offset (for phase transitions)
+    current_offset: u64,
 }
 
 impl<E: TransactionEngine> StreamProcessor<E> {
@@ -78,11 +75,125 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             recovery_manager: RecoveryManager::new(client.clone(), stream_name.clone()),
             client,
             stream_name,
+            phase: ProcessorPhase::Live, // Default to live for backward compatibility
+            current_offset: 0,
         }
     }
 
-    /// Process a message from the stream
+    /// Create a new stream processor in replay mode
+    pub fn new_with_replay(
+        engine: E,
+        client: Arc<MockClient>,
+        stream_name: String,
+        target_offset: u64,
+    ) -> Self {
+        let mut processor = Self::new(engine, client, stream_name);
+        processor.phase = ProcessorPhase::Replay { target_offset };
+        processor
+    }
+
+    /// Process a message from the stream with phase awareness
     pub async fn process_message(
+        &mut self,
+        message: Message,
+        msg_timestamp: HlcTimestamp,
+        msg_offset: u64,
+    ) -> Result<()> {
+        self.current_offset = msg_offset;
+
+        // Always track state regardless of phase
+        self.track_transaction_state(&message, msg_timestamp)?;
+
+        match self.phase.clone() {
+            ProcessorPhase::Replay { target_offset } => {
+                // Just rebuild state, no responses or side effects
+                if msg_offset >= target_offset {
+                    // Transition to recovery phase
+                    self.phase = ProcessorPhase::Recovery;
+                    self.run_recovery_check(msg_timestamp).await?;
+                    self.phase = ProcessorPhase::Live;
+                }
+                Ok(())
+            }
+            ProcessorPhase::Recovery => {
+                // Should not receive messages in this phase
+                unreachable!("Should not process messages during recovery phase")
+            }
+            ProcessorPhase::Live => {
+                // Normal processing
+                self.process_message_live(message, msg_timestamp).await
+            }
+        }
+    }
+
+    /// Track transaction state without side effects (for replay phase)
+    fn track_transaction_state(
+        &mut self,
+        message: &Message,
+        _timestamp: HlcTimestamp,
+    ) -> Result<()> {
+        let txn_id_str = message
+            .txn_id()
+            .ok_or(ProcessorError::MissingHeader("txn_id"))?
+            .to_string();
+        let txn_id = HlcTimestamp::parse(&txn_id_str)
+            .map_err(|e| ProcessorError::InvalidTransactionId(e))?;
+
+        // Track deadline
+        if let Some(deadline_str) = message.txn_deadline() {
+            if !self.transaction_deadlines.contains_key(&txn_id) {
+                if let Ok(deadline) = HlcTimestamp::parse(deadline_str) {
+                    self.transaction_deadlines.insert(txn_id, deadline);
+                }
+            }
+        }
+
+        // Track coordinator
+        if let Some(coord_id) = message.coordinator_id() {
+            self.transaction_coordinators
+                .insert(txn_id, coord_id.to_string());
+        }
+
+        // Track participants
+        if let Some(participants_str) = message.get_header("new_participants") {
+            if let Ok(participants) = serde_json::from_str::<HashMap<String, u64>>(participants_str)
+            {
+                self.transaction_participants
+                    .entry(txn_id)
+                    .or_insert_with(HashMap::new)
+                    .extend(participants);
+            }
+        }
+
+        // Track transaction phases for recovery
+        if let Some(phase) = message.txn_phase() {
+            match phase {
+                "prepare" | "prepare_and_commit" => {
+                    // Transaction is in prepared state
+                    // We could track this explicitly if needed
+                }
+                "commit" => {
+                    // Transaction committed, remove from tracking
+                    self.transaction_coordinators.remove(&txn_id);
+                    self.transaction_deadlines.remove(&txn_id);
+                    self.transaction_participants.remove(&txn_id);
+                }
+                "abort" => {
+                    // Transaction aborted, remove from tracking
+                    self.transaction_coordinators.remove(&txn_id);
+                    self.transaction_deadlines.remove(&txn_id);
+                    self.transaction_participants.remove(&txn_id);
+                    self.wounded_transactions.remove(&txn_id);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process a message normally (live phase)
+    async fn process_message_live(
         &mut self,
         message: Message,
         msg_timestamp: HlcTimestamp,
@@ -96,27 +207,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         let txn_id = HlcTimestamp::parse(&txn_id_str)
             .map_err(|e| ProcessorError::InvalidTransactionId(e))?;
 
-        // Extract and store deadline if present (first message for this transaction)
-        if let Some(deadline_str) = message.txn_deadline() {
-            if !self.transaction_deadlines.contains_key(&txn_id) {
-                if let Ok(deadline) = HlcTimestamp::parse(deadline_str) {
-                    self.transaction_deadlines.insert(txn_id, deadline);
-                }
-            }
-        }
-
-        // Extract and update participants if present
-        if let Some(new_participants_str) = message.get_header("new_participants") {
-            if let Ok(new_participants) =
-                serde_json::from_str::<HashMap<String, u64>>(new_participants_str)
-            {
-                let participants = self
-                    .transaction_participants
-                    .entry(txn_id)
-                    .or_insert_with(HashMap::new);
-                participants.extend(new_participants);
-            }
-        }
+        // State tracking is already done in track_transaction_state()
 
         // Check if we're past the deadline
         if let Some(&deadline) = self.transaction_deadlines.get(&txn_id) {
@@ -508,6 +599,66 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         self.deferred_manager
             .remove_operations_for_transaction(&txn_id);
         self.retry_deferred_operations(txn_id).await;
+        Ok(())
+    }
+
+    /// Run recovery check for transactions past their deadline
+    async fn run_recovery_check(&mut self, current_time: HlcTimestamp) -> Result<()> {
+        // Find all transactions past deadline that are in prepared state
+        let mut transactions_to_recover = Vec::new();
+
+        for (txn_id, deadline) in &self.transaction_deadlines {
+            if current_time > *deadline {
+                // Check if transaction is in prepared state
+                // For now, we'll check if it has a coordinator (meaning it was active)
+                // and is not wounded (wounded transactions abort themselves)
+                if self.transaction_coordinators.contains_key(txn_id)
+                    && !self.wounded_transactions.contains_key(txn_id)
+                {
+                    transactions_to_recover.push(*txn_id);
+                }
+            }
+        }
+
+        // Execute recovery for each transaction
+        for txn_id in transactions_to_recover {
+            let participants = self
+                .transaction_participants
+                .get(&txn_id)
+                .cloned()
+                .unwrap_or_default();
+
+            // Use recovery manager to determine outcome
+            let decision = self
+                .recovery_manager
+                .execute_recovery(txn_id, participants, current_time)
+                .await;
+
+            // Apply the decision locally
+            match decision {
+                TransactionDecision::Commit => {
+                    // Apply commit locally
+                    let _ = self.engine.commit(txn_id);
+                    // Clean up state
+                    self.transaction_coordinators.remove(&txn_id);
+                    self.transaction_deadlines.remove(&txn_id);
+                    self.transaction_participants.remove(&txn_id);
+                }
+                TransactionDecision::Abort => {
+                    // Apply abort locally
+                    let _ = self.engine.abort(txn_id);
+                    // Clean up state
+                    self.transaction_coordinators.remove(&txn_id);
+                    self.transaction_deadlines.remove(&txn_id);
+                    self.transaction_participants.remove(&txn_id);
+                    self.wounded_transactions.remove(&txn_id);
+                }
+                TransactionDecision::Unknown => {
+                    // No decision could be made, leave for future recovery
+                }
+            }
+        }
+
         Ok(())
     }
 

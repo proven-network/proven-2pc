@@ -162,7 +162,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -183,7 +183,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -231,7 +231,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -249,7 +249,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -264,7 +264,7 @@ mod tests {
         // Commit older to release lock
         let msg = create_message(None, &txn_id(2000000000, 0), "older", Some("commit"));
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -300,7 +300,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -314,7 +314,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -328,7 +328,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -398,7 +398,7 @@ mod tests {
                 None,
             );
             processor
-                .process_message(msg, test_timestamp())
+                .process_message(msg, test_timestamp(), 0)
                 .await
                 .unwrap();
 
@@ -466,7 +466,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -483,7 +483,7 @@ mod tests {
             None,
         );
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 
@@ -493,7 +493,7 @@ mod tests {
         // Try to prepare younger transaction - should fail
         let msg = create_message(None, &txn_id(3000000000, 0), "younger", Some("prepare"));
         processor
-            .process_message(msg, test_timestamp())
+            .process_message(msg, test_timestamp(), 0)
             .await
             .unwrap();
 

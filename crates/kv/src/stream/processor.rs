@@ -30,8 +30,9 @@ impl KvStreamProcessor {
         message: Message,
         msg_timestamp: HlcTimestamp,
     ) -> Result<(), String> {
+        // TODO: Accept offset as parameter when KV processor tracks offsets
         self.processor
-            .process_message(message, msg_timestamp)
+            .process_message(message, msg_timestamp, 0)
             .await
             .map_err(|e| e.to_string())
     }
