@@ -506,6 +506,7 @@ dependencies = [
  "proven-engine",
  "proven-hlc",
  "proven-kv",
+ "proven-queue",
  "proven-sql",
  "proven-stream",
  "serde",

@@ -1,7 +1,7 @@
-//! Example demonstrating distributed transactions across SQL and KV systems
+//! Example demonstrating distributed transactions across SQL, KV, and Queue systems
 //!
 //! This example shows how a coordinator orchestrates a distributed transaction
-//! that spans both SQL and KV storage systems, using two-phase commit.
+//! that spans SQL, KV, and Queue storage systems, using two-phase commit.
 //!
 //! Run with: cargo run --example distributed_transaction
 
@@ -10,6 +10,10 @@ use proven_engine::{MockClient, MockEngine};
 use proven_kv::{
     stream::{engine::KvTransactionEngine, operation::KvOperation},
     types::Value as KvValue,
+};
+use proven_queue::{
+    stream::{QueueEngine, QueueOperation},
+    types::QueueValue,
 };
 use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
 use proven_stream::StreamProcessor;
@@ -25,14 +29,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = Arc::new(MockEngine::new());
     println!("✓ Created mock consensus engine");
 
-    // 2. Create streams for SQL and KV systems
+    // 2. Create streams for SQL, KV, and Queue systems
     engine.create_stream("sql-stream".to_string())?;
     engine.create_stream("kv-stream".to_string())?;
-    println!("✓ Created SQL and KV streams");
+    engine.create_stream("queue-stream".to_string())?;
+    println!("✓ Created SQL, KV, and Queue streams");
 
-    // 3. Create clients for SQL and KV processors
+    // 3. Create clients for SQL, KV, and Queue processors
     let sql_client = Arc::new(MockClient::new("sql-processor".to_string(), engine.clone()));
     let kv_client = Arc::new(MockClient::new("kv-processor".to_string(), engine.clone()));
+    let queue_client = Arc::new(MockClient::new(
+        "queue-processor".to_string(),
+        engine.clone(),
+    ));
     println!("✓ Created processor clients");
 
     // 4. Create SQL processor with its client
@@ -45,9 +54,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut kv_processor =
         StreamProcessor::new(kv_engine, kv_client.clone(), "kv-stream".to_string());
 
-    println!("✓ Initialized SQL and KV processors");
+    // 6. Create Queue processor with its client
+    let queue_engine = QueueEngine::new();
+    let mut queue_processor = StreamProcessor::new(
+        queue_engine,
+        queue_client.clone(),
+        "queue-stream".to_string(),
+    );
 
-    // 6. Spawn SQL processor task
+    println!("✓ Initialized SQL, KV, and Queue processors");
+
+    // 7. Spawn SQL processor task
     tokio::spawn(async move {
         println!("  [SQL] Processor started");
 
@@ -59,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  [SQL] Processor stopped");
     });
 
-    // 7. Spawn KV processor task
+    // 8. Spawn KV processor task
     tokio::spawn(async move {
         println!("  [KV] Processor started");
 
@@ -71,14 +88,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  [KV] Processor stopped");
     });
 
-    // 8. Create the coordinator with prepare vote collection enabled
+    // 9. Spawn Queue processor task
+    tokio::spawn(async move {
+        println!("  [Queue] Processor started");
+
+        // Queue processor now manages its own stream consumption
+        if let Err(e) = queue_processor.run().await {
+            println!("  [Queue] Processor error: {:?}", e);
+        }
+
+        println!("  [Queue] Processor stopped");
+    });
+
+    // 10. Create the coordinator with prepare vote collection enabled
     let coordinator = Arc::new(MockCoordinator::new_with_prepare_votes(
         "coordinator-1".to_string(),
         engine.clone(),
     ));
     println!("✓ Created coordinator\n");
 
-    // 9. Begin a distributed transaction (participants discovered dynamically)
+    // 11. Begin a distributed transaction (participants discovered dynamically)
     println!("=== Starting Distributed Transaction ===");
     let txn_id = coordinator
         .begin_transaction(Duration::from_secs(30))
@@ -86,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Transaction started: {}", txn_id);
     println!("  (Participants will be discovered as operations are sent)\n");
 
-    // 10. Execute SQL operations
+    // 12. Execute SQL operations
     println!("=== Executing SQL Operations ===");
 
     // Create table
@@ -110,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("→ Sent INSERT command\n");
 
-    // 11. Execute KV operations
+    // 13. Execute KV operations
     println!("=== Executing KV Operations ===");
 
     // Store user metadata in KV
@@ -155,7 +184,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("→ Stored session data\n");
 
-    // 12. Commit the distributed transaction
+    // 14. Execute Queue operations
+    println!("=== Executing Queue Operations ===");
+
+    // Enqueue notification tasks
+    let notification_queue = QueueOperation::Enqueue {
+        queue_name: "notifications".to_string(),
+        value: QueueValue::Json(serde_json::json!({
+            "type": "welcome",
+            "user_id": 1,
+            "email": "alice@example.com",
+            "template": "welcome_email"
+        })),
+    };
+    let notification_bytes = serde_json::to_vec(&notification_queue)?;
+    coordinator
+        .execute_operation(&txn_id, "queue-stream", notification_bytes)
+        .await?;
+    println!("→ Enqueued welcome notification");
+
+    // Enqueue audit log event
+    let audit_event = QueueOperation::Enqueue {
+        queue_name: "audit_log".to_string(),
+        value: QueueValue::Json(serde_json::json!({
+            "event": "user_created",
+            "user_id": 1,
+            "timestamp": "2024-01-01T00:00:00Z",
+            "ip": "192.168.1.1"
+        })),
+    };
+    let audit_bytes = serde_json::to_vec(&audit_event)?;
+    coordinator
+        .execute_operation(&txn_id, "queue-stream", audit_bytes)
+        .await?;
+    println!("→ Enqueued audit log event");
+
+    // Enqueue background job
+    let background_job = QueueOperation::Enqueue {
+        queue_name: "background_jobs".to_string(),
+        value: QueueValue::Json(serde_json::json!({
+            "job": "sync_user_data",
+            "user_id": 1,
+            "priority": "low",
+            "retry_count": 0,
+            "max_retries": 3
+        })),
+    };
+    let job_bytes = serde_json::to_vec(&background_job)?;
+    coordinator
+        .execute_operation(&txn_id, "queue-stream", job_bytes)
+        .await?;
+    println!("→ Enqueued background sync job\n");
+
+    // 15. Commit the distributed transaction
     println!("=== Committing Distributed Transaction ===");
     coordinator.commit_transaction(&txn_id).await?;
     println!("✓ Transaction committed successfully!\n");
@@ -193,6 +274,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("→ Sent DELETE command");
 
+    // Try to dequeue from notifications (this will be rolled back)
+    let dequeue_op = QueueOperation::Dequeue {
+        queue_name: "notifications".to_string(),
+    };
+    let dequeue_bytes = serde_json::to_vec(&dequeue_op)?;
+    coordinator
+        .execute_operation(&abort_txn_id, "queue-stream", dequeue_bytes)
+        .await?;
+    println!("→ Sent DEQUEUE command");
+
     // Abort the transaction
     println!("\n! Aborting transaction...");
     coordinator.abort_transaction(&abort_txn_id).await?;
@@ -211,40 +302,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
-// Example output:
-//
-// === Distributed Transaction Example ===
-//
-// ✓ Created mock consensus engine
-// ✓ Created SQL and KV streams
-// ✓ Initialized SQL and KV processors
-// ✓ Created coordinator
-//
-// === Starting Distributed Transaction ===
-// ✓ Transaction started: 1_0_0000000000000123
-//
-// === Executing SQL Operations ===
-//   [SQL] Processing operation for transaction 1_0_0000000000000123
-//   [SQL] Query: CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)
-// → Sent CREATE TABLE command
-//   [SQL] Processing operation for transaction 1_0_0000000000000123
-//   [SQL] Query: INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')
-// → Sent INSERT command
-//
-// === Executing KV Operations ===
-//   [KV] Processing operation: Put { key: "user:1:metadata", value: String("created_at:2024-01-01T00:00:00Z") }
-// → Stored user metadata
-//   [KV] Processing operation: Put { key: "user:1:preferences", value: Map({...}) }
-// → Stored user preferences
-//   [KV] Processing operation: Put { key: "session:abc123", value: Map({...}) }
-// → Stored session data
-//
-// === Committing Distributed Transaction ===
-//   [SQL] Received prepare phase for transaction 1_0_0000000000000123
-//   [KV] Received prepare phase for transaction 1_0_0000000000000123
-//   [SQL] Received commit phase for transaction 1_0_0000000000000123
-//   [KV] Received commit phase for transaction 1_0_0000000000000123
-// ✓ Transaction committed successfully!
-//
-// Transaction state: Some(Committed)
