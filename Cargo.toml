@@ -4,6 +4,7 @@ members = [
     "crates/engine",
     "crates/hlc",
     "crates/kv",
+    "crates/queue",
     "crates/sql",
     "crates/stream",
 ]
@@ -37,5 +38,6 @@ proven-coordinator = { path = "crates/coordinator" }
 proven-engine = { path = "crates/engine" }
 proven-hlc = { path = "crates/hlc" }
 proven-kv = { path = "crates/kv" }
+proven-queue = { path = "crates/queue" }
 proven-sql = { path = "crates/sql" }
 proven-stream = { path = "crates/stream" }

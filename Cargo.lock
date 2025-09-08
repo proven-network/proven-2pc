@@ -553,6 +553,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "proven-queue"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "proven-engine",
+ "proven-hlc",
+ "proven-stream",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "proven-sql"
 version = "0.1.0"
 dependencies = [

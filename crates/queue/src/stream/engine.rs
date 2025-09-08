@@ -1,0 +1,188 @@
+//! Queue engine implementation for stream processing
+//!
+//! Integrates with the proven-stream processor to handle distributed
+//! queue operations with MVCC and eager locking.
+
+use crate::stream::transaction::QueueTransactionManager;
+use crate::stream::{QueueOperation, QueueResponse};
+use proven_hlc::HlcTimestamp;
+use proven_stream::engine::{OperationResult, TransactionEngine};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+/// Queue engine that implements the TransactionEngine trait
+pub struct QueueEngine {
+    /// Transaction manager handles MVCC and locking
+    manager: Arc<Mutex<QueueTransactionManager>>,
+    /// Track active transactions
+    active_transactions: Arc<Mutex<HashSet<HlcTimestamp>>>,
+}
+
+impl QueueEngine {
+    /// Create a new queue engine
+    pub fn new() -> Self {
+        Self {
+            manager: Arc::new(Mutex::new(QueueTransactionManager::new())),
+            active_transactions: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+}
+
+impl Default for QueueEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TransactionEngine for QueueEngine {
+    type Operation = QueueOperation;
+    type Response = QueueResponse;
+
+    fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
+        let mut manager = self.manager.lock().unwrap();
+        manager.begin_transaction(txn_id, txn_id);
+        self.active_transactions.lock().unwrap().insert(txn_id);
+    }
+
+    fn apply_operation(
+        &mut self,
+        operation: Self::Operation,
+        txn_id: HlcTimestamp,
+    ) -> OperationResult<Self::Response> {
+        let mut manager = self.manager.lock().unwrap();
+
+        match manager.execute_operation(txn_id, &operation, txn_id) {
+            Ok(response) => OperationResult::Success(response),
+            Err(crate::stream::transaction::TransactionError::LockConflict { holder }) => {
+                OperationResult::WouldBlock {
+                    blocking_txn: holder,
+                }
+            }
+            Err(err) => OperationResult::Error(format!("{:?}", err)),
+        }
+    }
+
+    fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        // For queue operations, prepare is a no-op since we don't have
+        // distributed consensus requirements at this level
+        if !self.is_transaction_active(&txn_id) {
+            return Err(format!("Transaction {} not active", txn_id));
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        let mut manager = self.manager.lock().unwrap();
+        let result = manager.commit_transaction(txn_id);
+        self.active_transactions.lock().unwrap().remove(&txn_id);
+        result
+    }
+
+    fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        let mut manager = self.manager.lock().unwrap();
+        let result = manager.abort_transaction(txn_id);
+        self.active_transactions.lock().unwrap().remove(&txn_id);
+        result
+    }
+
+    fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
+        self.active_transactions.lock().unwrap().contains(txn_id)
+    }
+
+    fn engine_name(&self) -> &str {
+        "queue"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::QueueValue;
+    use proven_hlc::NodeId;
+
+    fn create_timestamp(seconds: u64) -> HlcTimestamp {
+        HlcTimestamp::new(seconds, 0, NodeId::new(1))
+    }
+
+    #[test]
+    fn test_engine_basic_operations() {
+        let mut engine = QueueEngine::new();
+        let tx1 = create_timestamp(100);
+
+        engine.begin_transaction(tx1);
+
+        // Test enqueue
+        let enqueue_op = QueueOperation::Enqueue {
+            queue_name: "test_queue".to_string(),
+            value: QueueValue::Integer(42),
+        };
+
+        let result = engine.apply_operation(enqueue_op, tx1);
+        assert!(matches!(
+            result,
+            OperationResult::Success(QueueResponse::Enqueued)
+        ));
+
+        // Test peek
+        let peek_op = QueueOperation::Peek {
+            queue_name: "test_queue".to_string(),
+        };
+
+        let result = engine.apply_operation(peek_op, tx1);
+        assert!(matches!(
+            result,
+            OperationResult::Success(QueueResponse::Peeked(Some(QueueValue::Integer(42))))
+        ));
+
+        // Test commit
+        assert!(engine.commit(tx1).is_ok());
+    }
+
+    #[test]
+    fn test_engine_blocking() {
+        let mut engine = QueueEngine::new();
+        let tx1 = create_timestamp(100);
+        let tx2 = create_timestamp(200);
+
+        engine.begin_transaction(tx1);
+        engine.begin_transaction(tx2);
+
+        // tx1 gets exclusive lock
+        let enqueue_op = QueueOperation::Enqueue {
+            queue_name: "test_queue".to_string(),
+            value: QueueValue::String("tx1".to_string()),
+        };
+
+        let result = engine.apply_operation(enqueue_op, tx1);
+        assert!(matches!(result, OperationResult::Success(_)));
+
+        // tx2 should be blocked
+        let dequeue_op = QueueOperation::Dequeue {
+            queue_name: "test_queue".to_string(),
+        };
+
+        let result = engine.apply_operation(dequeue_op, tx2);
+        assert!(matches!(result, OperationResult::WouldBlock { .. }));
+    }
+
+    #[test]
+    fn test_engine_abort() {
+        let mut engine = QueueEngine::new();
+        let tx1 = create_timestamp(100);
+
+        engine.begin_transaction(tx1);
+
+        // Execute operation
+        let enqueue_op = QueueOperation::Enqueue {
+            queue_name: "test_queue".to_string(),
+            value: QueueValue::Boolean(true),
+        };
+
+        engine.apply_operation(enqueue_op, tx1);
+        assert!(engine.is_transaction_active(&tx1));
+
+        // Abort
+        assert!(engine.abort(tx1).is_ok());
+        assert!(!engine.is_transaction_active(&tx1));
+    }
+}
