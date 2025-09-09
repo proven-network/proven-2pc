@@ -211,7 +211,7 @@ fn test_different_value_types() {
 #[test]
 fn test_concurrent_reads_with_shared_locks() {
     let mut engine = KvTransactionEngine::new();
-    
+
     // First, create some data
     let tx_setup = timestamp(50);
     engine.begin_transaction(tx_setup);
@@ -274,7 +274,10 @@ fn test_write_write_conflict() {
     };
     let result = engine.apply_operation(put_op.clone(), tx2);
     match result {
-        OperationResult::WouldBlock { blocking_txn, retry_on } => {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
             assert_eq!(blocking_txn, tx1);
             assert_eq!(retry_on, RetryOn::CommitOrAbort);
         }
@@ -345,9 +348,12 @@ fn test_read_lock_released_on_prepare() {
         },
         tx2,
     );
-    
+
     match result {
-        OperationResult::WouldBlock { blocking_txn, retry_on } => {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
             assert_eq!(blocking_txn, tx1);
             assert_eq!(retry_on, RetryOn::Prepare); // Can retry after prepare
         }
@@ -395,9 +401,12 @@ fn test_write_lock_not_released_on_prepare() {
         },
         tx2,
     );
-    
+
     match result {
-        OperationResult::WouldBlock { blocking_txn, retry_on } => {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
             assert_eq!(blocking_txn, tx1);
             assert_eq!(retry_on, RetryOn::CommitOrAbort); // Must wait for commit/abort
         }
@@ -414,9 +423,12 @@ fn test_write_lock_not_released_on_prepare() {
         },
         tx2,
     );
-    
+
     match result {
-        OperationResult::WouldBlock { blocking_txn, retry_on } => {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
             assert_eq!(blocking_txn, tx1);
             assert_eq!(retry_on, RetryOn::CommitOrAbort);
         }
@@ -433,7 +445,7 @@ fn test_write_lock_not_released_on_prepare() {
         },
         tx2,
     );
-    
+
     match result {
         OperationResult::Success(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "key1");
@@ -472,9 +484,12 @@ fn test_multiple_reads_released_on_prepare() {
         },
         tx2,
     );
-    
+
     match result {
-        OperationResult::WouldBlock { blocking_txn, retry_on } => {
+        OperationResult::WouldBlock {
+            blocking_txn,
+            retry_on,
+        } => {
             assert_eq!(blocking_txn, tx1);
             assert_eq!(retry_on, RetryOn::Prepare);
         }
@@ -550,7 +565,13 @@ fn test_mixed_locks_partial_release() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::WouldBlock { retry_on: RetryOn::Prepare, .. }));
+    assert!(matches!(
+        result,
+        OperationResult::WouldBlock {
+            retry_on: RetryOn::Prepare,
+            ..
+        }
+    ));
 
     // TX2: Try to read key2 (blocked by write lock)
     let result = engine.apply_operation(
@@ -559,7 +580,13 @@ fn test_mixed_locks_partial_release() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::WouldBlock { retry_on: RetryOn::CommitOrAbort, .. }));
+    assert!(matches!(
+        result,
+        OperationResult::WouldBlock {
+            retry_on: RetryOn::CommitOrAbort,
+            ..
+        }
+    ));
 
     // TX1: Prepare (releases read locks on key1 and key3, keeps write lock on key2)
     engine.prepare(tx1).expect("Prepare should succeed");
@@ -591,5 +618,11 @@ fn test_mixed_locks_partial_release() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::WouldBlock { retry_on: RetryOn::CommitOrAbort, .. }));
+    assert!(matches!(
+        result,
+        OperationResult::WouldBlock {
+            retry_on: RetryOn::CommitOrAbort,
+            ..
+        }
+    ));
 }

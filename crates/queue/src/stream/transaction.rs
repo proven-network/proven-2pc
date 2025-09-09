@@ -15,7 +15,7 @@ pub enum TransactionError {
     /// Transaction was aborted
     Aborted(HlcTimestamp),
     /// Lock conflict with another transaction
-    LockConflict { 
+    LockConflict {
         holder: HlcTimestamp,
         mode: LockMode,
     },
@@ -174,7 +174,7 @@ impl QueueTransactionManager {
 
         // Get all locks held by this transaction
         let held_locks = self.lock_manager.locks_held_by(tx_id);
-        
+
         // Release only the read locks
         for (queue_name, mode) in held_locks {
             if mode == LockMode::Shared {

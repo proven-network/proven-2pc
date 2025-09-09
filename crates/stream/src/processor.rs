@@ -359,7 +359,10 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                 Ok(())
             }
 
-            OperationResult::WouldBlock { blocking_txn, retry_on } => {
+            OperationResult::WouldBlock {
+                blocking_txn,
+                retry_on,
+            } => {
                 // Decide: wound or wait based on transaction ages
                 if txn_id < blocking_txn {
                     // We're older - wound the younger blocking transaction
@@ -535,7 +538,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                         if let Some(coord_id) = coordinator_id {
                             self.send_prepared_response(coord_id, txn_id_str, request_id);
                         }
-                        
+
                         // Now retry operations in order: prepare waiters first, then commit waiters
                         self.retry_prepare_waiting_operations(txn_id).await;
                         self.retry_deferred_operations(txn_id).await;

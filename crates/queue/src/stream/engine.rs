@@ -3,10 +3,10 @@
 //! Integrates with the proven-stream processor to handle distributed
 //! queue operations with MVCC and eager locking.
 
+use crate::storage::lock::LockMode;
 use crate::stream::transaction::QueueTransactionManager;
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
-use crate::storage::lock::LockMode;
 use proven_stream::engine::{OperationResult, RetryOn, TransactionEngine};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -57,14 +57,14 @@ impl TransactionEngine for QueueEngine {
             Err(crate::stream::transaction::TransactionError::LockConflict { holder, mode }) => {
                 // Check what operation we're trying to do
                 let our_mode = match &operation {
-                    QueueOperation::Enqueue { .. } 
-                    | QueueOperation::Dequeue { .. } 
+                    QueueOperation::Enqueue { .. }
+                    | QueueOperation::Dequeue { .. }
                     | QueueOperation::Clear { .. } => LockMode::Exclusive,
-                    QueueOperation::Peek { .. } 
-                    | QueueOperation::Size { .. } 
+                    QueueOperation::Peek { .. }
+                    | QueueOperation::Size { .. }
                     | QueueOperation::IsEmpty { .. } => LockMode::Shared,
                 };
-                
+
                 // Determine retry timing based on conflict type
                 let retry_on = if our_mode == LockMode::Exclusive && mode == LockMode::Shared {
                     // Write blocked by read - can retry after prepare
@@ -73,7 +73,7 @@ impl TransactionEngine for QueueEngine {
                     // All other conflicts need commit/abort
                     RetryOn::CommitOrAbort
                 };
-                
+
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
                     retry_on,
@@ -87,7 +87,7 @@ impl TransactionEngine for QueueEngine {
         if !self.is_transaction_active(&txn_id) {
             return Err(format!("Transaction {} not active", txn_id));
         }
-        
+
         // Release read locks on prepare
         let mut manager = self.manager.lock().unwrap();
         manager.prepare_transaction(txn_id)?;

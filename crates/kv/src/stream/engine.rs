@@ -69,7 +69,7 @@ impl KvTransactionEngine {
                     // Blocked by a writer - must wait for commit/abort
                     RetryOn::CommitOrAbort
                 };
-                
+
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
                     retry_on,
@@ -120,7 +120,7 @@ impl KvTransactionEngine {
                     // Blocked by another writer - must wait for commit/abort
                     RetryOn::CommitOrAbort
                 };
-                
+
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
                     retry_on,
@@ -167,7 +167,7 @@ impl KvTransactionEngine {
                     // Blocked by another writer - must wait for commit/abort
                     RetryOn::CommitOrAbort
                 };
-                
+
                 OperationResult::WouldBlock {
                     blocking_txn: holder,
                     retry_on,
@@ -221,9 +221,11 @@ impl TransactionEngine for KvTransactionEngine {
         // Release the read locks from lock manager
         for key in locks_to_release {
             self.lock_manager.release(txn_id, &key);
-            
+
             // Remove from transaction's held locks
-            tx_ctx.locks_held.retain(|(k, m)| !(k == &key && *m == LockMode::Shared));
+            tx_ctx
+                .locks_held
+                .retain(|(k, m)| !(k == &key && *m == LockMode::Shared));
         }
 
         Ok(())

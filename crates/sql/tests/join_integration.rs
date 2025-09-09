@@ -241,11 +241,11 @@ fn test_join_with_aggregation() {
     );
 
     assert_eq!(results.len(), 2);
-    
+
     // Results should be ordered by name (Alice, Bob)
     assert_eq!(results[0][0], "String(\"Alice\")");
     assert_eq!(results[0][1], "Integer(300)"); // 100 + 200
-    assert_eq!(results[1][0], "String(\"Bob\")");  
+    assert_eq!(results[1][0], "String(\"Bob\")");
     assert_eq!(results[1][1], "Integer(400)"); // 150 + 250
 
     engine.commit(tx).unwrap();

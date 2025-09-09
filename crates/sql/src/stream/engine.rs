@@ -79,11 +79,11 @@ impl SqlTransactionEngine {
                     // If they're reading and we want to write, we can retry after they prepare
                     ConflictInfo::WriteRead { .. } => RetryOn::Prepare,
                     // For all other conflicts, we must wait until commit/abort
-                    ConflictInfo::ReadWrite { .. } 
-                    | ConflictInfo::WriteWrite { .. } 
+                    ConflictInfo::ReadWrite { .. }
+                    | ConflictInfo::WriteWrite { .. }
                     | ConflictInfo::InsertInsert { .. } => RetryOn::CommitOrAbort,
                 };
-                
+
                 return OperationResult::WouldBlock {
                     blocking_txn: *other_tx_id,
                     retry_on,
@@ -193,7 +193,7 @@ impl TransactionEngine for SqlTransactionEngine {
     }
 
     fn engine_name(&self) -> &str {
-        "sql-newer"
+        "sql"
     }
 }
 
