@@ -1,149 +1,176 @@
-# Proven SQL
+# Proven 2PC
 
-A distributed SQL engine with Pessimistic Concurrency Control (PCC) designed for integration with Raft consensus.
+A distributed storage system implementing multiple data models (SQL, KV, Queue, Resource) with ACID transactions, two-phase commit, and streaming support.
 
 ## Overview
 
-This crate provides the foundational components for a distributed SQL engine that:
+Proven SQL is a monorepo containing a suite of storage engines that work together to provide:
 
-- Uses **pessimistic locking** instead of MVCC for simpler distributed coordination
-- Implements **wound-wait deadlock prevention** to guarantee no deadlocks
-- Provides **full lock visibility** for debugging and monitoring
-- Ensures **deterministic execution** for Raft consensus
-- Operates on **in-memory storage** with single-version data
+- **Multiple Data Models**: SQL, Key-Value, Queue, and Resource (token/fungible asset) storage
+- **Distributed Transactions**: Coordinated transactions across different storage types
+- **Two-Phase Commit**: Full 2PC support with prepare/commit/abort phases
+- **Streaming Architecture**: Event-driven processing with deterministic replay
+- **MVCC & Locking**: Different concurrency control strategies optimized for each storage type
+
+## Crates
+
+### Core Infrastructure
+
+#### `proven-coordinator` - Transaction Coordinator
+Orchestrates distributed transactions across multiple storage engines using two-phase commit.
+
+#### `proven-stream` - Stream Processing Framework
+Generic transaction engine trait and stream processing infrastructure used by all storage engines.
+
+#### `proven-engine` - Mock Consensus Engine
+Test implementation simulating a consensus/streaming layer for development and testing.
+
+#### `proven-hlc` - Hybrid Logical Clocks
+Provides distributed timestamp generation combining physical time with logical counters for causal ordering.
+
+### Storage Engines
+
+#### `proven-sql` - SQL Storage Engine
+- Full SQL query execution with parser and planner
+- Predicate-based locking for transaction isolation
+- Table management with schemas and indexes
+- Support for basic SQL operations (CREATE, INSERT, SELECT, UPDATE, DELETE)
+
+#### `proven-kv` - Key-Value Storage Engine
+- Simple key-value operations (Get, Put, Delete)
+- Multiple value types (String, Integer, Float, Boolean, Map, List)
+- MVCC for concurrent reads
+- Shared/Exclusive locking for consistency
+
+#### `proven-queue` - Queue Storage Engine
+- Named queues with FIFO semantics
+- Enqueue/Dequeue operations
+- Peek functionality
+- Transaction support for reliable message processing
+
+#### `proven-resource` - Resource/Token Storage Engine
+- Fungible resource management (like ERC20 tokens)
+- Mint, burn, and transfer operations
+- Configurable decimals for precision
+- Reservation-based concurrency for high throughput
+- Balance tracking with MVCC
 
 ## Architecture
 
-See [LAYERS.md](LAYERS.md) for detailed architecture documentation.
-
-### Core Components
-
-1. **Lock Manager** (`src/lock.rs`)
-   - Wound-wait deadlock prevention algorithm
-   - Hierarchical locking (row, range, table, schema)
-   - Lock compatibility matrix (S, X, IS, IX modes)
-   - Full visibility into lock state
-
-2. **Storage Engine** (`src/storage.rs`)
-   - Single-version in-memory tables
-   - B-tree based row storage for efficient scans
-   - Secondary indexes
-   - Deterministic ID generation
-   - Soft deletes
-
-3. **Transaction Manager** (`src/transaction.rs`)
-   - Automatic lock acquisition before data access
-   - Two-phase commit support
-   - Access logging for distributed coordination
-   - Automatic lock release on commit/abort
-
-4. **Type System** (`src/types.rs`)
-   - Deterministic value types (using `rust_decimal` instead of floats)
-   - SQL-compatible operations
-   - Logical timestamps
-   - Null handling
-
-5. **Raft Integration** (TODO: `src/raft.rs`)
-   - Will apply consensus-ordered SQL operations
-   - Sequential execution with PCC isolation
-   - See LAYERS.md for planned architecture
-
-## Key Design Decisions
-
-### Why PCC over MVCC?
-
-- **Simpler distributed coordination**: Lock state is explicit and visible
-- **Predictable behavior**: Conflicts detected immediately, not at commit time
-- **Easier debugging**: Can query lock state at any time
-- **Natural fit for consensus**: Operations on inputs rather than outputs
-
-### Wound-Wait Algorithm
-
-Transactions are assigned priorities based on their start time (earlier = higher priority):
-
-- Higher priority transactions can "wound" (abort) lower priority holders
-- Lower priority transactions must wait for higher priority holders
-- Guarantees no deadlocks while allowing high concurrency
-
-## Usage Example
-
-```rust
-use proven_sql::{
-    Storage, 
-    LockManager, 
-    TransactionManager,
-    storage::{Schema, Column},
-    types::{DataType, Value},
-};
-use std::sync::Arc;
-
-// Set up the engine
-let storage = Arc::new(Storage::new());
-let lock_manager = Arc::new(LockManager::new());
-let tx_manager = TransactionManager::new(lock_manager, storage.clone());
-
-// Create a table
-let schema = Schema::new(vec![
-    Column::new("id".into(), DataType::Integer).primary_key(),
-    Column::new("name".into(), DataType::String),
-    Column::new("balance".into(), DataType::Integer),
-])?;
-storage.create_table("accounts".into(), schema)?;
-
-// Start a transaction
-let tx = tx_manager.begin()?;
-
-// Insert data (automatically acquires locks)
-tx.insert("accounts", vec![
-    Value::Integer(1),
-    Value::String("Alice".into()),
-    Value::Integer(1000),
-])?;
-
-// Commit (releases all locks)
-tx.commit()?;
+```
+┌───────────────────────────────────────────────────────┐
+│                  Client Applications                  │
+└───────────────────────────────────────────────────────┘
+                            ↕
+┌───────────────────────────────────────────────────────┐
+│                 Transaction Coordinator               │◄─┐
+│                    (2PC Protocol)                     │  │
+└───────────────────────────────────────────────────────┘  │
+                            ↓                              │
+┌───────────────────────────────────────────────────────┐  │
+│                 Consensus/Log Layer                   │  │
+│                 (Raft, Kafka, etc.)                   │  │
+└───────────────────────────────────────────────────────┘  │
+                            ↓                              │
+┌───────────────────────────────────────────────────────┐  │
+│                   Stream Processor                    │  │
+│              (TransactionEngine trait)                │  │
+└───────────────────────────────────────────────────────┘  │
+                            ↓                              │
+┌─────────────┬─────────────┬─────────────┬─────────────┐  │
+│     SQL     │     KV      │    Queue    │  Resource   │  │
+│    Engine   │   Engine    │   Engine    │   Engine    ├──┘
+└─────────────┴─────────────┴─────────────┴─────────────┘
 ```
 
-## Running the Demo
+## Key Features
+
+### Transaction Support
+All storage engines implement the `TransactionEngine` trait providing:
+- `begin_transaction` - Start a new transaction
+- `apply_operation` - Execute operations within a transaction
+- `prepare` - Phase 1 of 2PC, validate and prepare to commit
+- `commit` - Phase 2 of 2PC, make changes permanent
+- `abort` - Rollback all changes
+
+### Concurrency Control
+- **SQL**: Predicate-based locking with retry on conflicts
+- **KV**: Shared/Exclusive locks with MVCC for reads
+- **Queue**: Queue-level locking
+- **Resource**: Reservation-based system for better throughput
+
+### Two-Phase Commit
+The coordinator ensures atomicity across storage engines:
+1. **Prepare Phase**: All participants validate and lock resources
+2. **Commit Phase**: All participants make changes permanent
+3. **Abort**: Any participant can cause global rollback
+
+## Examples
+
+### Running the Distributed Transaction Example
 
 ```bash
-cargo run
+cargo run --example distributed_transaction
 ```
 
-This runs a comprehensive demo showing:
-1. Basic storage operations
-2. Lock manager with wound-wait
-3. Concurrent transactions
-4. Raft state machine integration
+This demonstrates a transaction that:
+- Creates a SQL table and inserts user data
+- Stores user metadata in KV storage
+- Enqueues notifications and audit events
+- Manages loyalty points in the Resource engine
 
-## Running Tests
+### Basic Usage
 
+```rust
+use proven_kv::stream::{KvTransactionEngine, KvOperation};
+use proven_stream::TransactionEngine;
+
+// Create a KV engine
+let mut engine = KvTransactionEngine::new();
+
+// Begin a transaction
+let txn_id = HlcTimestamp::new(100, 0, NodeId::new(1));
+engine.begin_transaction(txn_id);
+
+// Put a value
+let op = KvOperation::Put {
+    key: "user:123".to_string(),
+    value: KvValue::String("Alice".to_string()),
+};
+let result = engine.apply_operation(op, txn_id);
+
+// Commit the transaction
+engine.prepare(txn_id)?;
+engine.commit(txn_id)?;
+```
+
+## Testing
+
+Run all tests:
 ```bash
 cargo test
 ```
 
-## Project Status
+Run tests for a specific crate:
+```bash
+cargo test -p proven-kv
+cargo test -p proven-resource
+```
 
-This is a proof-of-concept implementation demonstrating the core data structures for a PCC-based SQL engine. Current features:
+## Development Status
 
-✅ Lock manager with wound-wait  
-✅ Single-version storage  
-✅ Transaction management  
-✅ Deterministic types  
-✅ Basic tests and demos  
-📝 Architecture documentation (LAYERS.md)  
+### Production Ready
+- ✅ HLC timestamps
+- ✅ Stream processing framework
+- ✅ KV storage engine
+- ✅ Queue storage engine
+- ✅ Resource storage engine
+- ✅ Two-phase commit coordinator
 
-## Next Steps
-
-To build a production system, the following would be needed:
-
-1. **SQL Parser Integration**: Adapt toydb's parser for SQL parsing
-2. **Query Planning**: Add lock analysis phase before execution  
-3. **Query Execution**: Implement operators (scan, filter, join, aggregate)
-4. **Raft State Machine**: Implement correct consensus-ordered SQL application
-5. **Client API**: Add streaming result delivery
-6. **Optimization**: Consider Arc-wrapping for efficient result sharing
-
-## Design Document
-
-See [DESIGN.md](DESIGN.md) for the full system design and architecture details.
+### In Development
+- 🚧 Snapshots for efficient point-in-time restoration
+- 🚧 SQL engine (basic functionality complete, optimization ongoing)
+- 🚧 Production consensus integration (monorepo using a mock version of engine)
+- 🚧 Client libraries and runtime integration
+- 🚧 Performance optimizations
+- 🚧 More integration/fuzz/chaos tests
