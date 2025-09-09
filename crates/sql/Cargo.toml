@@ -7,6 +7,7 @@ edition.workspace = true
 bytes = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
+proven-coordinator = { workspace = true }
 proven-engine = { path = "../engine" }
 proven-hlc = { workspace = true }
 proven-stream = { path = "../stream" }

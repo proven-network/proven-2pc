@@ -1,33 +1,49 @@
-//! Error types for the coordinator module
-//!
-//! This module defines the error types that can occur during
-//! distributed transaction coordination.
+//! Error types for the coordinator
 
 use thiserror::Error;
 
-/// Coordinator errors that can occur during distributed transaction processing
-#[derive(Debug, Error)]
+/// Coordinator error types
+#[derive(Error, Debug)]
 pub enum CoordinatorError {
-    /// Transaction not found in coordinator's state
     #[error("Transaction not found: {0}")]
     TransactionNotFound(String),
 
-    /// Invalid transaction state for the requested operation
     #[error("Invalid transaction state: {0}")]
     InvalidState(String),
 
-    /// Error from the underlying engine
     #[error("Engine error: {0}")]
-    EngineError(#[from] proven_engine::MockEngineError),
+    EngineError(String),
 
-    /// Transaction prepare phase failed
-    #[error("Transaction prepare failed: {0}")]
+    #[error("Prepare phase failed: {0}")]
     PrepareFailed(String),
 
-    /// Timeout waiting for prepare votes from participants
-    #[error("Timeout waiting for prepare votes")]
+    #[error("Prepare phase timed out")]
     PrepareTimeout,
+
+    #[error("Response timeout")]
+    ResponseTimeout,
+
+    #[error("Response channel closed")]
+    ResponseChannelClosed,
+
+    #[error("Transaction deadline exceeded")]
+    DeadlineExceeded,
+
+    #[error("Transaction was wounded by {wounded_by}")]
+    TransactionWounded { wounded_by: String },
+
+    #[error("Operation failed: {0}")]
+    OperationFailed(String),
+
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] serde_json::Error),
+
+    #[error("HLC timestamp parse error: {0}")]
+    TimestampParseError(String),
+
+    #[error("Other error: {0}")]
+    Other(String),
 }
 
-/// Result type alias for coordinator operations
+/// Result type for coordinator operations
 pub type Result<T> = std::result::Result<T, CoordinatorError>;

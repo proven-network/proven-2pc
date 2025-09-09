@@ -10,6 +10,7 @@
 //! - Balance tracking with MVCC
 //! - Reservation-based concurrency control for high throughput
 
+pub mod coordinator;
 pub mod storage;
 pub mod stream;
 pub mod types;

@@ -9,6 +9,17 @@ members = [
     "crates/sql",
     "crates/stream",
 ]
+default-members = [
+    ".",  # Include root package for examples
+    "crates/coordinator",
+    "crates/engine",
+    "crates/hlc",
+    "crates/kv",
+    "crates/queue",
+    "crates/resource",
+    "crates/sql",
+    "crates/stream",
+]
 resolver = "2"
 
 [workspace.package]
@@ -43,3 +54,24 @@ proven-queue = { path = "crates/queue" }
 proven-resource = { path = "crates/resource" }
 proven-sql = { path = "crates/sql" }
 proven-stream = { path = "crates/stream" }
+
+[package]
+name = "proven-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+proven-coordinator = { workspace = true }
+proven-engine = { workspace = true }
+proven-hlc = { workspace = true }
+proven-kv = { workspace = true }
+proven-queue = { workspace = true }
+proven-resource = { workspace = true }
+proven-sql = { workspace = true }
+proven-stream = { workspace = true }
+tokio = { workspace = true }
+
+[[example]]
+name = "distributed_transaction"
+path = "examples/distributed_transaction.rs"

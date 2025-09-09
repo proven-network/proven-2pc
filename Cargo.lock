@@ -505,15 +505,11 @@ dependencies = [
  "parking_lot",
  "proven-engine",
  "proven-hlc",
- "proven-kv",
- "proven-queue",
- "proven-resource",
- "proven-sql",
- "proven-stream",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -534,6 +530,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "proven-examples"
+version = "0.1.0"
+dependencies = [
+ "proven-coordinator",
+ "proven-engine",
+ "proven-hlc",
+ "proven-kv",
+ "proven-queue",
+ "proven-resource",
+ "proven-sql",
+ "proven-stream",
+ "tokio",
+]
+
+[[package]]
 name = "proven-hlc"
 version = "0.1.0"
 dependencies = [
@@ -545,6 +556,7 @@ name = "proven-kv"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "proven-coordinator",
  "proven-engine",
  "proven-hlc",
  "proven-stream",
@@ -559,6 +571,7 @@ name = "proven-queue"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "proven-coordinator",
  "proven-engine",
  "proven-hlc",
  "proven-stream",
@@ -572,11 +585,13 @@ dependencies = [
 name = "proven-resource"
 version = "0.1.0"
 dependencies = [
+ "proven-coordinator",
  "proven-hlc",
  "proven-stream",
  "rust_decimal",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tokio-test",
 ]
@@ -588,6 +603,7 @@ dependencies = [
  "bytes",
  "hex",
  "parking_lot",
+ "proven-coordinator",
  "proven-engine",
  "proven-hlc",
  "proven-stream",
