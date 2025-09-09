@@ -1,0 +1,558 @@
+//! Integration tests for resource engine
+
+use proven_hlc::{HlcTimestamp, NodeId};
+use proven_resource::stream::{ResourceEngine, ResourceOperation, ResourceResponse};
+use proven_resource::types::Amount;
+use proven_stream::{OperationResult, TransactionEngine};
+
+fn make_timestamp(n: u64) -> HlcTimestamp {
+    HlcTimestamp::new(n, 0, NodeId::new(0))
+}
+
+#[test]
+fn test_resource_lifecycle() {
+    let mut engine = ResourceEngine::new();
+
+    // Initialize resource
+    let tx1 = make_timestamp(100);
+    engine.begin_transaction(tx1);
+
+    let init_op = ResourceOperation::Initialize {
+        name: "Test Token".to_string(),
+        symbol: "TEST".to_string(),
+        decimals: 18,
+    };
+
+    let result = engine.apply_operation(init_op, tx1);
+    match result {
+        OperationResult::Success(ResourceResponse::Initialized {
+            name,
+            symbol,
+            decimals,
+        }) => {
+            assert_eq!(name, "Test Token");
+            assert_eq!(symbol, "TEST");
+            assert_eq!(decimals, 18);
+        }
+        _ => panic!("Expected Initialized response"),
+    }
+
+    engine.prepare(tx1).unwrap();
+    engine.commit(tx1).unwrap();
+
+    // Cannot initialize twice
+    let tx2 = make_timestamp(200);
+    engine.begin_transaction(tx2);
+
+    let init_op = ResourceOperation::Initialize {
+        name: "Another Token".to_string(),
+        symbol: "OTHER".to_string(),
+        decimals: 8,
+    };
+
+    let result = engine.apply_operation(init_op, tx2);
+    assert!(matches!(result, OperationResult::Error(_)));
+
+    engine.abort(tx2).unwrap();
+}
+
+#[test]
+fn test_mint_and_burn() {
+    let mut engine = ResourceEngine::new();
+
+    // Initialize
+    let tx1 = make_timestamp(100);
+    engine.begin_transaction(tx1);
+
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+
+    // Mint tokens to alice
+    let mint_op = ResourceOperation::Mint {
+        to: "alice".to_string(),
+        amount: Amount::from_integer(1000, 8),
+        memo: Some("Initial mint".to_string()),
+    };
+
+    let result = engine.apply_operation(mint_op, tx1);
+    match result {
+        OperationResult::Success(ResourceResponse::Minted {
+            to,
+            amount,
+            new_balance,
+            total_supply,
+        }) => {
+            assert_eq!(to, "alice");
+            assert_eq!(amount, Amount::from_integer(1000, 8));
+            assert_eq!(new_balance, Amount::from_integer(1000, 8));
+            assert_eq!(total_supply, Amount::from_integer(1000, 8));
+        }
+        _ => panic!("Expected Minted response"),
+    }
+
+    engine.prepare(tx1).unwrap();
+    engine.commit(tx1).unwrap();
+
+    // Burn tokens from alice
+    let tx2 = make_timestamp(200);
+    engine.begin_transaction(tx2);
+
+    let burn_op = ResourceOperation::Burn {
+        from: "alice".to_string(),
+        amount: Amount::from_integer(300, 8),
+        memo: Some("Burn tokens".to_string()),
+    };
+
+    let result = engine.apply_operation(burn_op, tx2);
+    match result {
+        OperationResult::Success(ResourceResponse::Burned {
+            from,
+            amount,
+            new_balance,
+            total_supply,
+        }) => {
+            assert_eq!(from, "alice");
+            assert_eq!(amount, Amount::from_integer(300, 8));
+            assert_eq!(new_balance, Amount::from_integer(700, 8));
+            assert_eq!(total_supply, Amount::from_integer(700, 8));
+        }
+        _ => panic!("Expected Burned response"),
+    }
+
+    engine.prepare(tx2).unwrap();
+    engine.commit(tx2).unwrap();
+
+    // Check final balance and total supply
+    let tx3 = make_timestamp(300);
+    engine.begin_transaction(tx3);
+
+    let balance_op = ResourceOperation::GetBalance {
+        account: "alice".to_string(),
+    };
+
+    let result = engine.apply_operation(balance_op, tx3);
+    match result {
+        OperationResult::Success(ResourceResponse::Balance { account, amount }) => {
+            assert_eq!(account, "alice");
+            assert_eq!(amount, Amount::from_integer(700, 8));
+        }
+        _ => panic!("Expected Balance response"),
+    }
+
+    // Check total supply after mint and burn
+    let result = engine.apply_operation(ResourceOperation::GetTotalSupply, tx3);
+    match result {
+        OperationResult::Success(ResourceResponse::TotalSupply { amount }) => {
+            assert_eq!(amount, Amount::from_integer(700, 8)); // 1000 minted - 300 burned
+        }
+        _ => panic!("Expected TotalSupply response"),
+    }
+}
+
+#[test]
+fn test_transfer() {
+    let mut engine = ResourceEngine::new();
+
+    // Initialize and mint
+    let tx1 = make_timestamp(100);
+    engine.begin_transaction(tx1);
+
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 6,
+        },
+        tx1,
+    );
+
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 6),
+            memo: None,
+        },
+        tx1,
+    );
+
+    engine.prepare(tx1).unwrap();
+    engine.commit(tx1).unwrap();
+
+    // Transfer from alice to bob
+    let tx2 = make_timestamp(200);
+    engine.begin_transaction(tx2);
+
+    let transfer_op = ResourceOperation::Transfer {
+        from: "alice".to_string(),
+        to: "bob".to_string(),
+        amount: Amount::from_integer(250, 6),
+        memo: Some("Payment".to_string()),
+    };
+
+    let result = engine.apply_operation(transfer_op, tx2);
+    match result {
+        OperationResult::Success(ResourceResponse::Transferred {
+            from,
+            to,
+            amount,
+            from_balance,
+            to_balance,
+        }) => {
+            assert_eq!(from, "alice");
+            assert_eq!(to, "bob");
+            assert_eq!(amount, Amount::from_integer(250, 6));
+            assert_eq!(from_balance, Amount::from_integer(750, 6));
+            assert_eq!(to_balance, Amount::from_integer(250, 6));
+        }
+        _ => panic!("Expected Transferred response"),
+    }
+
+    engine.prepare(tx2).unwrap();
+    engine.commit(tx2).unwrap();
+
+    // Check balances
+    let tx3 = make_timestamp(300);
+    engine.begin_transaction(tx3);
+
+    let alice_balance = engine.apply_operation(
+        ResourceOperation::GetBalance {
+            account: "alice".to_string(),
+        },
+        tx3,
+    );
+
+    let bob_balance = engine.apply_operation(
+        ResourceOperation::GetBalance {
+            account: "bob".to_string(),
+        },
+        tx3,
+    );
+
+    match alice_balance {
+        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+            assert_eq!(amount, Amount::from_integer(750, 6));
+        }
+        _ => panic!("Expected Balance response"),
+    }
+
+    match bob_balance {
+        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+            assert_eq!(amount, Amount::from_integer(250, 6));
+        }
+        _ => panic!("Expected Balance response"),
+    }
+}
+
+#[test]
+fn test_insufficient_balance() {
+    let mut engine = ResourceEngine::new();
+
+    // Initialize and mint small amount
+    let tx1 = make_timestamp(100);
+    engine.begin_transaction(tx1);
+
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 0,
+        },
+        tx1,
+    );
+
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(100, 0),
+            memo: None,
+        },
+        tx1,
+    );
+
+    engine.prepare(tx1).unwrap();
+    engine.commit(tx1).unwrap();
+
+    // Try to transfer more than balance
+    let tx2 = make_timestamp(200);
+    engine.begin_transaction(tx2);
+
+    let transfer_op = ResourceOperation::Transfer {
+        from: "alice".to_string(),
+        to: "bob".to_string(),
+        amount: Amount::from_integer(150, 0),
+        memo: None,
+    };
+
+    let result = engine.apply_operation(transfer_op, tx2);
+    assert!(matches!(result, OperationResult::Error(_)));
+
+    engine.abort(tx2).unwrap();
+
+    // Try to burn more than balance
+    let tx3 = make_timestamp(300);
+    engine.begin_transaction(tx3);
+
+    let burn_op = ResourceOperation::Burn {
+        from: "alice".to_string(),
+        amount: Amount::from_integer(150, 0),
+        memo: None,
+    };
+
+    let result = engine.apply_operation(burn_op, tx3);
+    assert!(matches!(result, OperationResult::Error(_)));
+
+    engine.abort(tx3).unwrap();
+}
+
+#[test]
+fn test_concurrent_transfers_with_reservations() {
+    let mut engine = ResourceEngine::new();
+
+    // Initialize and mint
+    let tx1 = make_timestamp(100);
+    engine.begin_transaction(tx1);
+
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 0,
+        },
+        tx1,
+    );
+
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(100, 0),
+            memo: None,
+        },
+        tx1,
+    );
+
+    engine.prepare(tx1).unwrap();
+    engine.commit(tx1).unwrap();
+
+    // Start two concurrent transactions
+    let tx2 = make_timestamp(200);
+    let tx3 = make_timestamp(201);
+
+    engine.begin_transaction(tx2);
+    engine.begin_transaction(tx3);
+
+    // First transfer: alice -> bob 60
+    let transfer1 = ResourceOperation::Transfer {
+        from: "alice".to_string(),
+        to: "bob".to_string(),
+        amount: Amount::from_integer(60, 0),
+        memo: None,
+    };
+
+    let result1 = engine.apply_operation(transfer1, tx2);
+    assert!(matches!(result1, OperationResult::Success(_)));
+
+    // Second transfer: alice -> charlie 50 (should block due to insufficient balance after reservation)
+    let transfer2 = ResourceOperation::Transfer {
+        from: "alice".to_string(),
+        to: "charlie".to_string(),
+        amount: Amount::from_integer(50, 0),
+        memo: None,
+    };
+
+    let result2 = engine.apply_operation(transfer2, tx3);
+    // Should block due to insufficient balance after tx2's reservation
+    assert!(
+        matches!(result2, OperationResult::WouldBlock { .. })
+            || matches!(result2, OperationResult::Error(_))
+    );
+
+    // Commit first transaction
+    engine.prepare(tx2).unwrap();
+    engine.commit(tx2).unwrap();
+
+    // Abort second transaction
+    engine.abort(tx3).unwrap();
+
+    // Now the second transfer should work
+    let tx4 = make_timestamp(300);
+    engine.begin_transaction(tx4);
+
+    let transfer3 = ResourceOperation::Transfer {
+        from: "alice".to_string(),
+        to: "charlie".to_string(),
+        amount: Amount::from_integer(40, 0), // Reduced amount
+        memo: None,
+    };
+
+    let result3 = engine.apply_operation(transfer3, tx4);
+    assert!(matches!(result3, OperationResult::Success(_)));
+
+    engine.prepare(tx4).unwrap();
+    engine.commit(tx4).unwrap();
+}
+
+#[test]
+fn test_metadata_update() {
+    let mut engine = ResourceEngine::new();
+
+    // Initialize
+    let tx1 = make_timestamp(100);
+    engine.begin_transaction(tx1);
+
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+
+    engine.prepare(tx1).unwrap();
+    engine.commit(tx1).unwrap();
+
+    // Update metadata
+    let tx2 = make_timestamp(200);
+    engine.begin_transaction(tx2);
+
+    let update_op = ResourceOperation::UpdateMetadata {
+        name: Some("Updated Token".to_string()),
+        symbol: None,
+    };
+
+    let result = engine.apply_operation(update_op, tx2);
+    match result {
+        OperationResult::Success(ResourceResponse::MetadataUpdated { name, symbol }) => {
+            assert_eq!(name, Some("Updated Token".to_string()));
+            assert_eq!(symbol, None);
+        }
+        _ => panic!("Expected MetadataUpdated response"),
+    }
+
+    engine.prepare(tx2).unwrap();
+    engine.commit(tx2).unwrap();
+
+    // Check metadata
+    let tx3 = make_timestamp(300);
+    engine.begin_transaction(tx3);
+
+    let result = engine.apply_operation(ResourceOperation::GetMetadata, tx3);
+    match result {
+        OperationResult::Success(ResourceResponse::Metadata {
+            name,
+            symbol,
+            decimals,
+            ..
+        }) => {
+            assert_eq!(name, "Updated Token");
+            assert_eq!(symbol, "TEST");
+            assert_eq!(decimals, 8);
+        }
+        _ => panic!("Expected Metadata response"),
+    }
+
+    // Also test GetTotalSupply
+    let result = engine.apply_operation(ResourceOperation::GetTotalSupply, tx3);
+    match result {
+        OperationResult::Success(ResourceResponse::TotalSupply { amount }) => {
+            assert_eq!(amount, Amount::zero()); // No mints in this test
+        }
+        _ => panic!("Expected TotalSupply response"),
+    }
+}
+
+#[test]
+fn test_transaction_rollback() {
+    let mut engine = ResourceEngine::new();
+
+    // Initialize and mint
+    let tx1 = make_timestamp(100);
+    engine.begin_transaction(tx1);
+
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 0,
+        },
+        tx1,
+    );
+
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 0),
+            memo: None,
+        },
+        tx1,
+    );
+
+    engine.prepare(tx1).unwrap();
+    engine.commit(tx1).unwrap();
+
+    // Start transaction with multiple operations
+    let tx2 = make_timestamp(200);
+    engine.begin_transaction(tx2);
+
+    // Transfer to bob
+    engine.apply_operation(
+        ResourceOperation::Transfer {
+            from: "alice".to_string(),
+            to: "bob".to_string(),
+            amount: Amount::from_integer(500, 0),
+            memo: None,
+        },
+        tx2,
+    );
+
+    // Burn from alice
+    engine.apply_operation(
+        ResourceOperation::Burn {
+            from: "alice".to_string(),
+            amount: Amount::from_integer(200, 0),
+            memo: None,
+        },
+        tx2,
+    );
+
+    // Abort the transaction
+    engine.abort(tx2).unwrap();
+
+    // Check that balances are unchanged
+    let tx3 = make_timestamp(300);
+    engine.begin_transaction(tx3);
+
+    let alice_balance = engine.apply_operation(
+        ResourceOperation::GetBalance {
+            account: "alice".to_string(),
+        },
+        tx3,
+    );
+
+    let bob_balance = engine.apply_operation(
+        ResourceOperation::GetBalance {
+            account: "bob".to_string(),
+        },
+        tx3,
+    );
+
+    match alice_balance {
+        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+            assert_eq!(amount, Amount::from_integer(1000, 0));
+        }
+        _ => panic!("Expected Balance response"),
+    }
+
+    match bob_balance {
+        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+            assert_eq!(amount, Amount::from_integer(0, 0));
+        }
+        _ => panic!("Expected Balance response"),
+    }
+}
