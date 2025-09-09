@@ -9,6 +9,7 @@ proven-engine = { path = "../engine" }
 proven-hlc = { workspace = true }
 proven-kv = { path = "../kv" }
 proven-queue = { path = "../queue" }
+proven-resource = { path = "../resource" }
 proven-sql = { path = "../sql" }
 proven-stream = { path = "../stream" }
 serde = { workspace = true }

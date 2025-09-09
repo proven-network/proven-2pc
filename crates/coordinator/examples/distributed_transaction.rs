@@ -1,7 +1,7 @@
-//! Example demonstrating distributed transactions across SQL, KV, and Queue systems
+//! Example demonstrating distributed transactions across SQL, KV, Queue, and Resource systems
 //!
 //! This example shows how a coordinator orchestrates a distributed transaction
-//! that spans SQL, KV, and Queue storage systems, using two-phase commit.
+//! that spans SQL, KV, Queue, and Resource storage systems, using two-phase commit.
 //!
 //! Run with: cargo run --example distributed_transaction
 
@@ -14,6 +14,10 @@ use proven_kv::{
 use proven_queue::{
     stream::{QueueEngine, QueueOperation},
     types::QueueValue,
+};
+use proven_resource::{
+    stream::{ResourceEngine, ResourceOperation},
+    types::Amount,
 };
 use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
 use proven_stream::StreamProcessor;
@@ -29,17 +33,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = Arc::new(MockEngine::new());
     println!("✓ Created mock consensus engine");
 
-    // 2. Create streams for SQL, KV, and Queue systems
+    // 2. Create streams for SQL, KV, Queue, and Resource systems
     engine.create_stream("sql-stream".to_string())?;
     engine.create_stream("kv-stream".to_string())?;
     engine.create_stream("queue-stream".to_string())?;
-    println!("✓ Created SQL, KV, and Queue streams");
+    engine.create_stream("resource-stream".to_string())?;
+    println!("✓ Created SQL, KV, Queue, and Resource streams");
 
-    // 3. Create clients for SQL, KV, and Queue processors
+    // 3. Create clients for SQL, KV, Queue, and Resource processors
     let sql_client = Arc::new(MockClient::new("sql-processor".to_string(), engine.clone()));
     let kv_client = Arc::new(MockClient::new("kv-processor".to_string(), engine.clone()));
     let queue_client = Arc::new(MockClient::new(
         "queue-processor".to_string(),
+        engine.clone(),
+    ));
+    let resource_client = Arc::new(MockClient::new(
+        "resource-processor".to_string(),
         engine.clone(),
     ));
     println!("✓ Created processor clients");
@@ -62,9 +71,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "queue-stream".to_string(),
     );
 
-    println!("✓ Initialized SQL, KV, and Queue processors");
+    // 7. Create Resource processor with its client
+    let resource_engine = ResourceEngine::new();
+    let mut resource_processor = StreamProcessor::new(
+        resource_engine,
+        resource_client.clone(),
+        "resource-stream".to_string(),
+    );
 
-    // 7. Spawn SQL processor task
+    println!("✓ Initialized SQL, KV, Queue, and Resource processors");
+
+    // 8. Spawn SQL processor task
     tokio::spawn(async move {
         println!("  [SQL] Processor started");
 
@@ -76,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  [SQL] Processor stopped");
     });
 
-    // 8. Spawn KV processor task
+    // 9. Spawn KV processor task
     tokio::spawn(async move {
         println!("  [KV] Processor started");
 
@@ -88,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  [KV] Processor stopped");
     });
 
-    // 9. Spawn Queue processor task
+    // 10. Spawn Queue processor task
     tokio::spawn(async move {
         println!("  [Queue] Processor started");
 
@@ -100,14 +117,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  [Queue] Processor stopped");
     });
 
-    // 10. Create the coordinator with prepare vote collection enabled
+    // 11. Spawn Resource processor task
+    tokio::spawn(async move {
+        println!("  [Resource] Processor started");
+
+        // Resource processor now manages its own stream consumption
+        if let Err(e) = resource_processor.run().await {
+            println!("  [Resource] Processor error: {:?}", e);
+        }
+
+        println!("  [Resource] Processor stopped");
+    });
+
+    // 12. Create the coordinator with prepare vote collection enabled
     let coordinator = Arc::new(MockCoordinator::new_with_prepare_votes(
         "coordinator-1".to_string(),
         engine.clone(),
     ));
     println!("✓ Created coordinator\n");
 
-    // 11. Begin a distributed transaction (participants discovered dynamically)
+    // 13. Begin a distributed transaction (participants discovered dynamically)
     println!("=== Starting Distributed Transaction ===");
     let txn_id = coordinator
         .begin_transaction(Duration::from_secs(30))
@@ -115,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Transaction started: {}", txn_id);
     println!("  (Participants will be discovered as operations are sent)\n");
 
-    // 12. Execute SQL operations
+    // 14. Execute SQL operations
     println!("=== Executing SQL Operations ===");
 
     // Create table
@@ -139,7 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("→ Sent INSERT command\n");
 
-    // 13. Execute KV operations
+    // 15. Execute KV operations
     println!("=== Executing KV Operations ===");
 
     // Store user metadata in KV
@@ -184,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("→ Stored session data\n");
 
-    // 14. Execute Queue operations
+    // 16. Execute Queue operations
     println!("=== Executing Queue Operations ===");
 
     // Enqueue notification tasks
@@ -236,19 +265,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("→ Enqueued background sync job\n");
 
-    // 15. Commit the distributed transaction
+    // 17. Execute Resource operations
+    println!("=== Executing Resource Operations ===");
+
+    // Initialize a loyalty points resource
+    let init_resource = ResourceOperation::Initialize {
+        name: "Loyalty Points".to_string(),
+        symbol: "LP".to_string(),
+        decimals: 2,
+    };
+    let init_bytes = serde_json::to_vec(&init_resource)?;
+    coordinator
+        .execute_operation(&txn_id, "resource-stream", init_bytes)
+        .await?;
+    println!("→ Initialized Loyalty Points resource");
+
+    // Mint initial points for the new user
+    let mint_points = ResourceOperation::Mint {
+        to: "user:1".to_string(),
+        amount: Amount::from_integer(10000, 2), // 100.00 LP
+        memo: Some("Welcome bonus".to_string()),
+    };
+    let mint_bytes = serde_json::to_vec(&mint_points)?;
+    coordinator
+        .execute_operation(&txn_id, "resource-stream", mint_bytes)
+        .await?;
+    println!("→ Minted 100.00 LP welcome bonus to user:1");
+
+    // Transfer some points to a referrer
+    let transfer_points = ResourceOperation::Transfer {
+        from: "user:1".to_string(),
+        to: "user:referrer".to_string(),
+        amount: Amount::from_integer(1000, 2), // 10.00 LP
+        memo: Some("Referral reward".to_string()),
+    };
+    let transfer_bytes = serde_json::to_vec(&transfer_points)?;
+    coordinator
+        .execute_operation(&txn_id, "resource-stream", transfer_bytes)
+        .await?;
+    println!("→ Transferred 10.00 LP referral reward\n");
+
+    // 18. Commit the distributed transaction
     println!("=== Committing Distributed Transaction ===");
     coordinator.commit_transaction(&txn_id).await?;
     println!("✓ Transaction committed successfully!\n");
 
-    // 13. Verify transaction state
+    // 19. Verify transaction state
     let state = coordinator.get_transaction_state(&txn_id);
     println!("Transaction state: {:?}\n", state);
 
     // Give processors time to finish processing
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // 14. Demonstrate abort scenario
+    // 20. Demonstrate abort scenario
     println!("=== Demonstrating Transaction Abort ===");
     let abort_txn_id = coordinator
         .begin_transaction(Duration::from_secs(30))
@@ -283,6 +352,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute_operation(&abort_txn_id, "queue-stream", dequeue_bytes)
         .await?;
     println!("→ Sent DEQUEUE command");
+
+    // Try to burn points (this will be rolled back)
+    let burn_op = ResourceOperation::Burn {
+        from: "user:1".to_string(),
+        amount: Amount::from_integer(5000, 2), // 50.00 LP
+        memo: Some("Redemption attempt".to_string()),
+    };
+    let burn_bytes = serde_json::to_vec(&burn_op)?;
+    coordinator
+        .execute_operation(&abort_txn_id, "resource-stream", burn_bytes)
+        .await?;
+    println!("→ Sent BURN command");
 
     // Abort the transaction
     println!("\n! Aborting transaction...");
