@@ -264,6 +264,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     abort_txn.abort().await?;
     println!("  ✓ Transaction aborted");
 
+    // Verify the aborted data is not visible
+    println!("\n--- Verify Aborted Data Not Visible ---");
+    let check_txn = coordinator.begin(Duration::from_secs(60)).await?;
+    let kv_check = KvClient::new(check_txn.clone());
+    
+    match kv_check.get("kv_stream", "temp:data").await? {
+        None => println!("  ✓ Aborted data not visible (temp:data = None)"),
+        Some(value) => println!("  ❌ Unexpected: Found aborted data: {:?}", value),
+    }
+    
+    check_txn.commit().await?;
+
     // Clean up
     println!("\n--- Cleanup ---");
     coordinator.stop().await;
