@@ -505,6 +505,7 @@ dependencies = [
  "parking_lot",
  "proven-engine",
  "proven-hlc",
+ "proven-runner",
  "serde",
  "serde_json",
  "thiserror",
@@ -537,9 +538,14 @@ dependencies = [
  "proven-engine",
  "proven-hlc",
  "proven-kv",
+ "proven-kv-client",
  "proven-queue",
+ "proven-queue-client",
  "proven-resource",
+ "proven-resource-client",
+ "proven-runner",
  "proven-sql",
+ "proven-sql-client",
  "proven-stream",
  "tokio",
 ]
@@ -556,7 +562,6 @@ name = "proven-kv"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
- "proven-coordinator",
  "proven-engine",
  "proven-hlc",
  "proven-stream",
@@ -564,6 +569,16 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "proven-kv-client"
+version = "0.1.0"
+dependencies = [
+ "proven-coordinator",
+ "proven-kv",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -571,7 +586,6 @@ name = "proven-queue"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
- "proven-coordinator",
  "proven-engine",
  "proven-hlc",
  "proven-stream",
@@ -582,10 +596,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "proven-resource"
+name = "proven-queue-client"
 version = "0.1.0"
 dependencies = [
  "proven-coordinator",
+ "proven-queue",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "proven-resource"
+version = "0.1.0"
+dependencies = [
  "proven-hlc",
  "proven-stream",
  "rust_decimal",
@@ -597,13 +620,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "proven-resource-client"
+version = "0.1.0"
+dependencies = [
+ "proven-coordinator",
+ "proven-resource",
+ "rust_decimal",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "proven-runner"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "proven-engine",
+ "proven-hlc",
+ "proven-kv",
+ "proven-queue",
+ "proven-resource",
+ "proven-sql",
+ "proven-stream",
+ "rand",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "proven-sql"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "hex",
  "parking_lot",
- "proven-coordinator",
  "proven-engine",
  "proven-hlc",
  "proven-stream",
@@ -614,6 +668,16 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "proven-sql-client"
+version = "0.1.0"
+dependencies = [
+ "proven-coordinator",
+ "proven-sql",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

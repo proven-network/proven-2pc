@@ -11,7 +11,7 @@ pub mod message;
 pub mod stream;
 
 pub use client::MockClient;
-pub use engine::MockEngine;
+pub use engine::{ConsensusGroupId, GroupInfo, MockEngine, StreamInfo, StreamPlacement};
 pub use message::Message;
 pub use stream::DeadlineStreamItem;
 
@@ -52,7 +52,7 @@ mod tests {
 
         // Create a stream
         client
-            .create_stream("test-stream".to_string())
+            .create_group_stream("test-stream".to_string())
             .await
             .unwrap();
 
@@ -170,7 +170,7 @@ mod tests {
 
         // Create a stream
         client
-            .create_stream("deadline-stream".to_string())
+            .create_group_stream("deadline-stream".to_string())
             .await
             .unwrap();
 
@@ -256,7 +256,7 @@ mod tests {
 
         // Create a stream
         client
-            .create_stream("monotonic-stream".to_string())
+            .create_group_stream("monotonic-stream".to_string())
             .await
             .unwrap();
 
@@ -293,7 +293,7 @@ mod tests {
 
         // Create a stream
         client
-            .create_stream("txn-stream".to_string())
+            .create_group_stream("txn-stream".to_string())
             .await
             .unwrap();
 

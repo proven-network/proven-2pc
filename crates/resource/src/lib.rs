@@ -10,7 +10,6 @@
 //! - Balance tracking with MVCC
 //! - Reservation-based concurrency control for high throughput
 
-pub mod coordinator;
 pub mod storage;
 pub mod stream;
 pub mod types;
@@ -19,5 +18,5 @@ pub mod types;
 pub use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
 
 // Re-export main types
-pub use stream::{ResourceEngine, ResourceOperation, ResourceResponse};
+pub use stream::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
 pub use types::Amount;

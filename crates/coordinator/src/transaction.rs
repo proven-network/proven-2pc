@@ -5,6 +5,7 @@ use crate::responses::{ResponseCollector, ResponseStatus};
 use parking_lot::Mutex;
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
+use proven_runner::Runner;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -84,6 +85,9 @@ pub struct Transaction {
 
     /// Coordinator ID for routing
     coordinator_id: String,
+
+    /// Runner for ensuring processors are running
+    runner: Arc<Runner>,
 }
 
 impl Transaction {
@@ -95,6 +99,7 @@ impl Transaction {
         client: Arc<MockClient>,
         response_collector: Arc<ResponseCollector>,
         coordinator_id: String,
+        runner: Arc<Runner>,
     ) -> Self {
         Self {
             id,
@@ -102,6 +107,7 @@ impl Transaction {
             client,
             response_collector,
             coordinator_id,
+            runner,
         }
     }
 
@@ -193,6 +199,15 @@ impl Transaction {
         if let Some(deadline) = deadline_str {
             headers.insert("txn_deadline".to_string(), deadline);
         }
+
+        // Ensure processor is running for this stream
+        // Use the transaction timeout as the minimum duration for the processor
+        self.runner
+            .ensure_processor(&stream, timeout)
+            .await
+            .map_err(|e| {
+                CoordinatorError::EngineError(format!("Failed to ensure processor: {}", e))
+            })?;
 
         // Send operation to stream
         let message = Message::new(operation, headers);

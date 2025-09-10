@@ -3,7 +3,11 @@
 //! This module provides a client interface matching the production engine client,
 //! allowing seamless testing of SQL and KV stream processors.
 
-use crate::{Message, Result, engine::MockEngine, stream::DeadlineStreamItem};
+use crate::{
+    Message, Result,
+    engine::{ConsensusGroupId, GroupInfo, MockEngine, StreamInfo},
+    stream::DeadlineStreamItem,
+};
 use proven_hlc::HlcTimestamp;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -31,7 +35,7 @@ impl MockClient {
     }
 
     /// Create a new stream
-    pub async fn create_stream(&self, name: String) -> Result<()> {
+    pub async fn create_group_stream(&self, name: String) -> Result<()> {
         self.engine.create_stream(name)
     }
 
@@ -107,6 +111,21 @@ impl MockClient {
             // For simplicity, assume pub/sub subjects always have potential responders
             Ok(true)
         }
+    }
+
+    /// Get information about a stream including its group placement
+    pub async fn get_stream_info(&self, stream_name: &str) -> Result<Option<StreamInfo>> {
+        self.engine.get_stream_info(stream_name)
+    }
+
+    /// Get all consensus groups this node is a member of
+    pub async fn node_groups(&self) -> Result<Vec<ConsensusGroupId>> {
+        self.engine.node_groups(&self.node_id)
+    }
+
+    /// Get information about a specific consensus group
+    pub async fn get_group_info(&self, group_id: ConsensusGroupId) -> Result<Option<GroupInfo>> {
+        self.engine.get_group_info(group_id)
     }
 }
 

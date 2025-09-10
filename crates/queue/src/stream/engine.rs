@@ -12,14 +12,14 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 /// Queue engine that implements the TransactionEngine trait
-pub struct QueueEngine {
+pub struct QueueTransactionEngine {
     /// Transaction manager handles MVCC and locking
     manager: Arc<Mutex<QueueTransactionManager>>,
     /// Track active transactions
     active_transactions: Arc<Mutex<HashSet<HlcTimestamp>>>,
 }
 
-impl QueueEngine {
+impl QueueTransactionEngine {
     /// Create a new queue engine
     pub fn new() -> Self {
         Self {
@@ -29,13 +29,13 @@ impl QueueEngine {
     }
 }
 
-impl Default for QueueEngine {
+impl Default for QueueTransactionEngine {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TransactionEngine for QueueEngine {
+impl TransactionEngine for QueueTransactionEngine {
     type Operation = QueueOperation;
     type Response = QueueResponse;
 
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn test_engine_basic_operations() {
-        let mut engine = QueueEngine::new();
+        let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp(100);
 
         engine.begin_transaction(tx1);
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_engine_blocking() {
-        let mut engine = QueueEngine::new();
+        let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp(100);
         let tx2 = create_timestamp(200);
 
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_engine_abort() {
-        let mut engine = QueueEngine::new();
+        let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp(100);
 
         engine.begin_transaction(tx1);

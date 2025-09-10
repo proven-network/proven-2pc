@@ -1,9 +1,9 @@
 //! Queue client for coordinator-based transactions
 
-use crate::stream::operation::QueueOperation;
-use crate::stream::response::QueueResponse;
-use crate::types::QueueValue;
 use proven_coordinator::Transaction;
+use proven_queue::stream::operation::QueueOperation;
+use proven_queue::stream::response::QueueResponse;
+use proven_queue::types::QueueValue;
 
 /// Queue client that works with coordinator transactions
 #[derive(Clone)]

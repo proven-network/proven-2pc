@@ -1,9 +1,7 @@
 //! KV client for coordinator-based transactions
 
-use crate::stream::operation::KvOperation;
-use crate::stream::response::KvResponse;
-use crate::types::Value;
 use proven_coordinator::Transaction;
+use proven_kv::{stream::operation::KvOperation, stream::response::KvResponse, types::Value};
 
 /// KV client that works with coordinator transactions
 #[derive(Clone)]

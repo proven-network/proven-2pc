@@ -1,0 +1,10 @@
+[package]
+name = "proven-kv-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+proven-coordinator.workspace = true
+proven-kv.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

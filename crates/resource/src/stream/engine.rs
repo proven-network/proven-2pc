@@ -8,7 +8,7 @@ use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 use std::collections::HashMap;
 
 /// Resource engine for processing resource operations
-pub struct ResourceEngine {
+pub struct ResourceTransactionEngine {
     /// Resource storage
     storage: ResourceStorage,
 
@@ -19,7 +19,7 @@ pub struct ResourceEngine {
     transactions: HashMap<HlcTimestamp, TransactionContext>,
 }
 
-impl ResourceEngine {
+impl ResourceTransactionEngine {
     pub fn new() -> Self {
         Self {
             storage: ResourceStorage::new(),
@@ -248,7 +248,7 @@ impl ResourceEngine {
     }
 }
 
-impl TransactionEngine for ResourceEngine {
+impl TransactionEngine for ResourceTransactionEngine {
     type Operation = ResourceOperation;
     type Response = ResourceResponse;
 
@@ -332,7 +332,7 @@ impl TransactionEngine for ResourceEngine {
     }
 }
 
-impl Default for ResourceEngine {
+impl Default for ResourceTransactionEngine {
     fn default() -> Self {
         Self::new()
     }
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_basic_operations() {
-        let mut engine = ResourceEngine::new();
+        let mut engine = ResourceTransactionEngine::new();
         let tx1 = make_timestamp(100);
 
         // Begin transaction

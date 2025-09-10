@@ -19,6 +19,9 @@ Proven SQL is a monorepo containing a suite of storage engines that work togethe
 #### `proven-coordinator` - Transaction Coordinator
 Orchestrates distributed transactions across multiple storage engines using two-phase commit.
 
+#### `proven-runner` - Stream Processor Manager
+Manages the lifecycle, placement, and health of stream processors across the cluster.
+
 #### `proven-stream` - Stream Processing Framework
 Generic transaction engine trait and stream processing infrastructure used by all storage engines.
 
@@ -55,31 +58,53 @@ Provides distributed timestamp generation combining physical time with logical c
 - Reservation-based concurrency for high throughput
 - Balance tracking with MVCC
 
+### Client Libraries
+
+Each storage engine has a corresponding client library that provides a high-level API:
+
+#### `proven-sql-client`
+SQL client for executing queries within distributed transactions.
+
+#### `proven-kv-client`
+Key-value client with typed operations for common data types.
+
+#### `proven-queue-client`
+Queue client for reliable message enqueue/dequeue operations.
+
+#### `proven-resource-client`
+Resource client for token management operations.
+
 ## Architecture
 
 ```
 ┌───────────────────────────────────────────────────────┐
 │                  Client Applications                  │
+│         (using SQL/KV/Queue/Resource clients)         │
 └───────────────────────────────────────────────────────┘
                             ↕
 ┌───────────────────────────────────────────────────────┐
-│                 Transaction Coordinator               │◄─┐
-│                    (2PC Protocol)                     │  │
-└───────────────────────────────────────────────────────┘  │
-                            ↓                              │
-┌───────────────────────────────────────────────────────┐  │
-│                 Consensus/Log Layer                   │  │
-│                 (Raft, Kafka, etc.)                   │  │
-└───────────────────────────────────────────────────────┘  │
-                            ↓                              │
-┌───────────────────────────────────────────────────────┐  │
-│                   Stream Processor                    │  │
-│              (TransactionEngine trait)                │  │
-└───────────────────────────────────────────────────────┘  │
-                            ↓                              │
-┌─────────────┬─────────────┬─────────────┬─────────────┐  │
-│     SQL     │     KV      │    Queue    │  Resource   │  │
-│    Engine   │   Engine    │   Engine    │   Engine    ├──┘
+│                 Transaction Coordinator               │
+│                    (2PC Protocol)                     │
+└───────────────────────────────────────────────────────┘
+                            ↕
+┌───────────────────────────────────────────────────────┐
+│                      Runner                           │
+│            (Processor Lifecycle Manager)              │
+└───────────────────────────────────────────────────────┘
+                            ↓
+┌───────────────────────────────────────────────────────┐
+│                 Consensus/Log Layer                   │
+│                 (Raft, Kafka, etc.)                   │
+└───────────────────────────────────────────────────────┘
+                            ↓
+┌───────────────────────────────────────────────────────┐
+│                Stream Processors                      │
+│              (TransactionEngine trait)                │
+└───────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────┬─────────────┬─────────────┬─────────────┐
+│     SQL     │     KV      │    Queue    │  Resource   │
+│    Engine   │   Engine    │   Engine    │   Engine    │
 └─────────────┴─────────────┴─────────────┴─────────────┘
 ```
 

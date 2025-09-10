@@ -1,7 +1,7 @@
 //! Integration tests for resource engine
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_resource::stream::{ResourceEngine, ResourceOperation, ResourceResponse};
+use proven_resource::stream::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
 use proven_resource::types::Amount;
 use proven_stream::{OperationResult, TransactionEngine};
 
@@ -11,7 +11,7 @@ fn make_timestamp(n: u64) -> HlcTimestamp {
 
 #[test]
 fn test_resource_lifecycle() {
-    let mut engine = ResourceEngine::new();
+    let mut engine = ResourceTransactionEngine::new();
 
     // Initialize resource
     let tx1 = make_timestamp(100);
@@ -58,7 +58,7 @@ fn test_resource_lifecycle() {
 
 #[test]
 fn test_mint_and_burn() {
-    let mut engine = ResourceEngine::new();
+    let mut engine = ResourceTransactionEngine::new();
 
     // Initialize
     let tx1 = make_timestamp(100);
@@ -157,7 +157,7 @@ fn test_mint_and_burn() {
 
 #[test]
 fn test_transfer() {
-    let mut engine = ResourceEngine::new();
+    let mut engine = ResourceTransactionEngine::new();
 
     // Initialize and mint
     let tx1 = make_timestamp(100);
@@ -251,7 +251,7 @@ fn test_transfer() {
 
 #[test]
 fn test_insufficient_balance() {
-    let mut engine = ResourceEngine::new();
+    let mut engine = ResourceTransactionEngine::new();
 
     // Initialize and mint small amount
     let tx1 = make_timestamp(100);
@@ -312,7 +312,7 @@ fn test_insufficient_balance() {
 
 #[test]
 fn test_concurrent_transfers_with_reservations() {
-    let mut engine = ResourceEngine::new();
+    let mut engine = ResourceTransactionEngine::new();
 
     // Initialize and mint
     let tx1 = make_timestamp(100);
@@ -399,7 +399,7 @@ fn test_concurrent_transfers_with_reservations() {
 
 #[test]
 fn test_metadata_update() {
-    let mut engine = ResourceEngine::new();
+    let mut engine = ResourceTransactionEngine::new();
 
     // Initialize
     let tx1 = make_timestamp(100);
@@ -469,7 +469,7 @@ fn test_metadata_update() {
 
 #[test]
 fn test_transaction_rollback() {
-    let mut engine = ResourceEngine::new();
+    let mut engine = ResourceTransactionEngine::new();
 
     // Initialize and mint
     let tx1 = make_timestamp(100);

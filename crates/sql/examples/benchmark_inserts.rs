@@ -21,7 +21,7 @@ async fn main() {
 
     // Create stream
     client
-        .create_stream("sql-stream".to_string())
+        .create_group_stream("sql-stream".to_string())
         .await
         .unwrap();
 

@@ -143,7 +143,7 @@ mod tests {
 
         // Create stream
         client
-            .create_stream("test-stream".to_string())
+            .create_group_stream("test-stream".to_string())
             .await
             .unwrap();
 
@@ -232,7 +232,7 @@ mod tests {
 
         // Create stream
         client
-            .create_stream("test-stream".to_string())
+            .create_group_stream("test-stream".to_string())
             .await
             .unwrap();
 
@@ -325,7 +325,7 @@ mod tests {
 
         // Create stream
         client
-            .create_stream("test-stream".to_string())
+            .create_group_stream("test-stream".to_string())
             .await
             .unwrap();
 
@@ -426,7 +426,7 @@ mod tests {
 
         // Create stream
         client
-            .create_stream("test-stream".to_string())
+            .create_group_stream("test-stream".to_string())
             .await
             .unwrap();
 
@@ -531,7 +531,7 @@ mod tests {
 
         // Create stream
         client
-            .create_stream("test-stream".to_string())
+            .create_group_stream("test-stream".to_string())
             .await
             .unwrap();
 

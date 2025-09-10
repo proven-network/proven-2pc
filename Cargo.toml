@@ -4,9 +4,14 @@ members = [
     "crates/engine",
     "crates/hlc",
     "crates/kv",
+    "crates/kv-client",
     "crates/queue",
+    "crates/queue-client",
     "crates/resource",
+    "crates/resource-client",
+    "crates/runner",
     "crates/sql",
+    "crates/sql-client",
     "crates/stream",
 ]
 default-members = [
@@ -15,9 +20,14 @@ default-members = [
     "crates/engine",
     "crates/hlc",
     "crates/kv",
+    "crates/kv-client",
     "crates/queue",
+    "crates/queue-client",
     "crates/resource",
+    "crates/resource-client",
+    "crates/runner",
     "crates/sql",
+    "crates/sql-client",
     "crates/stream",
 ]
 resolver = "2"
@@ -50,9 +60,14 @@ proven-coordinator = { path = "crates/coordinator" }
 proven-engine = { path = "crates/engine" }
 proven-hlc = { path = "crates/hlc" }
 proven-kv = { path = "crates/kv" }
+proven-kv-client = { path = "crates/kv-client" }
 proven-queue = { path = "crates/queue" }
+proven-queue-client = { path = "crates/queue-client" }
 proven-resource = { path = "crates/resource" }
+proven-resource-client = { path = "crates/resource-client" }
+proven-runner = { path = "crates/runner" }
 proven-sql = { path = "crates/sql" }
+proven-sql-client = { path = "crates/sql-client" }
 proven-stream = { path = "crates/stream" }
 
 [package]
@@ -62,15 +77,20 @@ edition = "2021"
 publish = false
 
 [dependencies]
-proven-coordinator = { workspace = true }
-proven-engine = { workspace = true }
-proven-hlc = { workspace = true }
-proven-kv = { workspace = true }
-proven-queue = { workspace = true }
-proven-resource = { workspace = true }
-proven-sql = { workspace = true }
-proven-stream = { workspace = true }
-tokio = { workspace = true }
+proven-coordinator.workspace = true
+proven-engine.workspace = true
+proven-hlc.workspace = true
+proven-kv.workspace = true
+proven-kv-client.workspace = true
+proven-queue.workspace = true
+proven-queue-client.workspace = true
+proven-resource.workspace = true
+proven-resource-client.workspace = true
+proven-runner.workspace = true
+proven-sql.workspace = true
+proven-sql-client.workspace = true
+proven-stream.workspace = true
+tokio.workspace = true
 
 [[example]]
 name = "distributed_transaction"

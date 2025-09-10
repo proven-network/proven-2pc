@@ -1,8 +1,8 @@
 //! Resource client for coordinator-based transactions
 
-use crate::types::Amount;
-use crate::{ResourceOperation, ResourceResponse};
 use proven_coordinator::Transaction;
+use proven_resource::types::Amount;
+use proven_resource::{ResourceOperation, ResourceResponse};
 
 /// Resource client that works with coordinator transactions
 #[derive(Clone)]

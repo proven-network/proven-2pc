@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-proven-coordinator = { path = "../coordinator" }
 proven-hlc = { path = "../hlc" }
 proven-stream = { path = "../stream" }
 rust_decimal = { version = "1.33", features = ["serde-with-str"] }

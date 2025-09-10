@@ -6,6 +6,7 @@ use crate::transaction::Transaction;
 use parking_lot::Mutex;
 use proven_engine::MockClient;
 use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
+use proven_runner::Runner;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,11 +24,14 @@ pub struct Coordinator {
 
     /// Client for sending messages
     client: Arc<MockClient>,
+
+    /// Runner for managing stream processors
+    runner: Arc<Runner>,
 }
 
 impl Coordinator {
-    /// Create a new coordinator
-    pub fn new(coordinator_id: String, client: Arc<MockClient>) -> Self {
+    /// Create a new coordinator with a runner for managing processors
+    pub fn new(coordinator_id: String, client: Arc<MockClient>, runner: Arc<Runner>) -> Self {
         // Create HLC clock with node ID based on coordinator ID hash
         let seed = coordinator_id
             .bytes()
@@ -47,6 +51,7 @@ impl Coordinator {
             hlc,
             response_collector,
             client,
+            runner,
         }
     }
 
@@ -70,6 +75,7 @@ impl Coordinator {
             self.client.clone(),
             self.response_collector.clone(),
             self.coordinator_id.clone(),
+            self.runner.clone(),
         ))
     }
 

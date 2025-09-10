@@ -1,0 +1,10 @@
+[package]
+name = "proven-sql-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+proven-coordinator.workspace = true
+proven-sql.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

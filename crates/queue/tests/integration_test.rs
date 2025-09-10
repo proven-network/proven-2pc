@@ -1,7 +1,7 @@
 //! Integration tests for the queue crate
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_queue::stream::{QueueEngine, QueueOperation, QueueResponse};
+use proven_queue::stream::{QueueOperation, QueueResponse, QueueTransactionEngine};
 use proven_queue::types::QueueValue;
 use proven_stream::RetryOn;
 use proven_stream::engine::{OperationResult, TransactionEngine};
@@ -12,7 +12,7 @@ fn create_timestamp(seconds: u64) -> HlcTimestamp {
 
 #[test]
 fn test_basic_queue_operations() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
     engine.begin_transaction(tx);
@@ -80,7 +80,7 @@ fn test_basic_queue_operations() {
 
 #[test]
 fn test_transaction_isolation() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx1 = create_timestamp(100);
     let tx2 = create_timestamp(200);
 
@@ -134,7 +134,7 @@ fn test_transaction_isolation() {
 
 #[test]
 fn test_concurrent_access_with_locking() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx1 = create_timestamp(100);
     let tx2 = create_timestamp(200);
 
@@ -173,7 +173,7 @@ fn test_concurrent_access_with_locking() {
 
 #[test]
 fn test_abort_rollback() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx1 = create_timestamp(100);
 
     engine.begin_transaction(tx1);
@@ -216,7 +216,7 @@ fn test_abort_rollback() {
 
 #[test]
 fn test_multiple_queues() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
     engine.begin_transaction(tx);
@@ -250,7 +250,7 @@ fn test_multiple_queues() {
 
 #[test]
 fn test_peek_operation() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
     engine.begin_transaction(tx);
@@ -297,7 +297,7 @@ fn test_peek_operation() {
 
 #[test]
 fn test_clear_operation() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
     engine.begin_transaction(tx);
@@ -355,7 +355,7 @@ fn test_clear_operation() {
 
 #[test]
 fn test_shared_locks_for_reads() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx1 = create_timestamp(100);
     let tx2 = create_timestamp(200);
     let tx3 = create_timestamp(300);
@@ -413,7 +413,7 @@ fn test_shared_locks_for_reads() {
 
 #[test]
 fn test_various_value_types() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
     engine.begin_transaction(tx);
@@ -457,7 +457,7 @@ fn test_various_value_types() {
 
 #[test]
 fn test_read_lock_released_on_prepare() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx1 = HlcTimestamp::new(100, 0, NodeId::new(1));
     let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
@@ -500,7 +500,7 @@ fn test_read_lock_released_on_prepare() {
 
 #[test]
 fn test_write_lock_not_released_on_prepare() {
-    let mut engine = QueueEngine::new();
+    let mut engine = QueueTransactionEngine::new();
     let tx1 = HlcTimestamp::new(100, 0, NodeId::new(1));
     let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 

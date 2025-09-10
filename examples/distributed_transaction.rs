@@ -8,11 +8,12 @@
 
 use proven_coordinator::Coordinator;
 use proven_engine::{MockClient, MockEngine};
-use proven_kv::{coordinator::KvClient, stream::engine::KvTransactionEngine, types::Value};
-use proven_queue::{coordinator::QueueClient, stream::QueueEngine};
-use proven_resource::{coordinator::ResourceClient, stream::ResourceEngine};
-use proven_sql::{coordinator::SqlClient, SqlTransactionEngine};
-use proven_stream::StreamProcessor;
+use proven_kv::types::Value;
+use proven_kv_client::KvClient;
+use proven_queue_client::QueueClient;
+use proven_resource_client::ResourceClient;
+use proven_runner::Runner;
+use proven_sql_client::SqlClient;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,86 +27,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = Arc::new(MockEngine::new());
 
     // Create streams for each storage type
+    // In a real system, streams would be placed in consensus groups
+    // For this example, we'll use the mock engine's default group placement
     engine.create_stream("sql_stream".to_string())?;
     engine.create_stream("kv_stream".to_string())?;
     engine.create_stream("queue_stream".to_string())?;
     engine.create_stream("resource_stream".to_string())?;
+
+    // Place all streams in group 1 (mock engine default)
+    // The runner will automatically start processors on nodes in the group
     println!("✓ Created streams: sql_stream, kv_stream, queue_stream, resource_stream");
 
-    // Create clients for each processor
-    let sql_client = Arc::new(MockClient::new("sql-processor".to_string(), engine.clone()));
-    let kv_client = Arc::new(MockClient::new("kv-processor".to_string(), engine.clone()));
-    let queue_client = Arc::new(MockClient::new(
-        "queue-processor".to_string(),
-        engine.clone(),
-    ));
-    let resource_client = Arc::new(MockClient::new(
-        "resource-processor".to_string(),
-        engine.clone(),
-    ));
-    println!("✓ Created processor clients");
+    // Create and start the runner to manage stream processors
+    let runner_client = Arc::new(MockClient::new("runner-node".to_string(), engine.clone()));
+    let runner = Arc::new(Runner::new("runner-node", runner_client.clone()));
+    runner.start().await.unwrap();
+    println!("✓ Started runner");
 
-    // Create and start stream processors
-    let sql_engine = SqlTransactionEngine::new();
-    let mut sql_processor =
-        StreamProcessor::new(sql_engine, sql_client.clone(), "sql_stream".to_string());
+    // The runner will automatically start processors as needed when transactions are executed
+    println!("✓ Runner will manage stream processors on demand\n");
 
-    let kv_engine = KvTransactionEngine::new();
-    let mut kv_processor =
-        StreamProcessor::new(kv_engine, kv_client.clone(), "kv_stream".to_string());
-
-    let queue_engine = QueueEngine::new();
-    let mut queue_processor = StreamProcessor::new(
-        queue_engine,
-        queue_client.clone(),
-        "queue_stream".to_string(),
-    );
-
-    let resource_engine = ResourceEngine::new();
-    let mut resource_processor = StreamProcessor::new(
-        resource_engine,
-        resource_client.clone(),
-        "resource_stream".to_string(),
-    );
-
-    // Spawn processor tasks
-    tokio::spawn(async move {
-        println!("  [SQL] Processor started");
-        if let Err(e) = sql_processor.run().await {
-            println!("  [SQL] Processor error: {:?}", e);
-        }
-    });
-
-    tokio::spawn(async move {
-        println!("  [KV] Processor started");
-        if let Err(e) = kv_processor.run().await {
-            println!("  [KV] Processor error: {:?}", e);
-        }
-    });
-
-    tokio::spawn(async move {
-        println!("  [Queue] Processor started");
-        if let Err(e) = queue_processor.run().await {
-            println!("  [Queue] Processor error: {:?}", e);
-        }
-    });
-
-    tokio::spawn(async move {
-        println!("  [Resource] Processor started");
-        if let Err(e) = resource_processor.run().await {
-            println!("  [Resource] Processor error: {:?}", e);
-        }
-    });
-
-    println!("✓ Started stream processors\n");
-
-    // Give processors time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Create the coordinator
+    // Create the coordinator with the runner
     let coordinator_client = Arc::new(MockClient::new("coordinator".to_string(), engine.clone()));
-    let coordinator = Coordinator::new("coordinator-1".to_string(), coordinator_client);
-    println!("✓ Created coordinator\n");
+    let coordinator = Coordinator::new(
+        "coordinator-1".to_string(),
+        coordinator_client,
+        runner.clone(),
+    );
+    println!("✓ Created coordinator with runner integration\n");
 
     // Begin a distributed transaction
     let transaction = coordinator.begin(Duration::from_secs(60)).await?;
@@ -218,21 +167,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resource_verify = ResourceClient::new(verify_txn.clone());
 
     // Check stored values
-    match sql_verify
+    let sql_result = sql_verify
         .select("sql_stream", "users", &["name", "level"], Some("id = 1"))
-        .await
-    {
-        Ok(sql_result) => {
-            if let Some(name) = sql_result.column_values("name").first() {
-                println!("  User name (SQL): {}", name);
-            }
-            if let Some(level) = sql_result.column_values("level").first() {
-                println!("  User level (SQL): {}", level);
-            }
-        }
-        Err(e) => {
-            println!("  SQL verification error: {:?}", e);
-        }
+        .await?;
+
+    if let Some(name) = sql_result.column_values("name").first() {
+        println!("  User name (SQL): {}", name);
+    }
+    if let Some(level) = sql_result.column_values("level").first() {
+        println!("  User level (SQL): {}", level);
     }
 
     if let Some(name) = kv_verify.get_string("kv_stream", "user:alice").await? {
@@ -268,12 +211,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Verify Aborted Data Not Visible ---");
     let check_txn = coordinator.begin(Duration::from_secs(60)).await?;
     let kv_check = KvClient::new(check_txn.clone());
-    
+
     match kv_check.get("kv_stream", "temp:data").await? {
         None => println!("  ✓ Aborted data not visible (temp:data = None)"),
         Some(value) => println!("  ❌ Unexpected: Found aborted data: {:?}", value),
     }
-    
+
     check_txn.commit().await?;
 
     // Clean up

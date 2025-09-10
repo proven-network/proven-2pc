@@ -66,7 +66,10 @@ mod tests {
         let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
 
         // Create stream
-        client.create_stream("kv-stream".to_string()).await.unwrap();
+        client
+            .create_group_stream("kv-stream".to_string())
+            .await
+            .unwrap();
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
@@ -193,7 +196,10 @@ mod tests {
         let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
 
         // Create stream
-        client.create_stream("kv-stream".to_string()).await.unwrap();
+        client
+            .create_group_stream("kv-stream".to_string())
+            .await
+            .unwrap();
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
@@ -332,7 +338,10 @@ mod tests {
         let client = Arc::new(MockClient::new("test-node".to_string(), engine.clone()));
 
         // Create stream
-        client.create_stream("kv-stream".to_string()).await.unwrap();
+        client
+            .create_group_stream("kv-stream".to_string())
+            .await
+            .unwrap();
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
@@ -421,7 +430,10 @@ mod tests {
         let client = Arc::new(MockClient::new("test-node".to_string(), engine.clone()));
 
         // Create stream
-        client.create_stream("kv-stream".to_string()).await.unwrap();
+        client
+            .create_group_stream("kv-stream".to_string())
+            .await
+            .unwrap();
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
@@ -499,7 +511,10 @@ mod tests {
         let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
 
         // Create stream
-        client.create_stream("kv-stream".to_string()).await.unwrap();
+        client
+            .create_group_stream("kv-stream".to_string())
+            .await
+            .unwrap();
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
@@ -597,7 +612,10 @@ mod tests {
         let client = Arc::new(MockClient::new("test-kv".to_string(), engine.clone()));
 
         // Create stream
-        client.create_stream("kv-stream".to_string()).await.unwrap();
+        client
+            .create_group_stream("kv-stream".to_string())
+            .await
+            .unwrap();
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
