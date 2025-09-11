@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::types::schema::Table;
-use crate::types::value::{StorageRow as Row, Value};
+use crate::types::value::{StorageRow, StorageRow as Row, Value};
 use proven_hlc::HlcTimestamp;
 use rust_decimal::prelude::ToPrimitive;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -21,7 +21,7 @@ pub struct IndexKey {
 }
 
 /// Composite index key that can hold multiple values
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum CompositeKey {
     /// Single value (for single-column indexes)
     Single(Value),
@@ -52,7 +52,7 @@ impl CompositeKey {
 }
 
 /// A versioned value in storage
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VersionedValue {
     /// The actual row data
     pub row: Arc<Row>,
@@ -65,7 +65,7 @@ pub struct VersionedValue {
 }
 
 /// Versioned index entry - tracks which transaction added/removed a row_id
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexEntry {
     pub row_id: u64,
     pub added_by: HlcTimestamp,
@@ -1400,7 +1400,7 @@ impl VersionedTable {
 }
 
 /// Index metadata for tracking index names
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexMetadata {
     pub name: String,
     pub table: String,
@@ -1651,6 +1651,150 @@ impl MvccStorage {
 
         total_removed
     }
+
+    /// Get a compacted view of storage for snapshots
+    /// Returns only committed data (latest version per row)
+    pub fn get_compacted_data(&self) -> CompactedSqlData {
+        let mut compacted_tables = HashMap::new();
+
+        for (table_name, table) in &self.tables {
+            let mut compacted_rows = BTreeMap::new();
+
+            // Get only the latest committed version of each row
+            for (row_id, versions) in &table.versions {
+                // Find the latest committed version that isn't deleted
+                for version in versions.iter().rev() {
+                    if table.committed_transactions.contains(&version.created_by) {
+                        if version.deleted_by.is_none() {
+                            // Include this row
+                            compacted_rows.insert(*row_id, (*version.row).clone());
+                        }
+                        break; // Found the latest committed version
+                    }
+                }
+            }
+
+            // Create compacted table data
+            let compacted_table = CompactedTableData {
+                schema: table.schema.clone(),
+                rows: compacted_rows,
+                next_id: table.next_id,
+                indexes: table.index_columns.clone(),
+                index_included_columns: table.index_included_columns.clone(),
+            };
+
+            compacted_tables.insert(table_name.clone(), compacted_table);
+        }
+
+        CompactedSqlData {
+            tables: compacted_tables,
+            index_metadata: self.index_metadata.clone(),
+        }
+    }
+
+    /// Restore from compacted data
+    /// Should only be called on a fresh storage instance
+    pub fn restore_from_compacted(&mut self, data: CompactedSqlData) {
+        use proven_hlc::NodeId;
+
+        // Clear any existing data
+        self.tables.clear();
+        self.index_metadata.clear();
+        self.global_committed.clear();
+        self.active_transactions.clear();
+
+        // Create a special "restore" transaction that's already committed
+        let restore_txn = HlcTimestamp::new(0, 0, NodeId::new(0));
+        self.global_committed.insert(restore_txn);
+
+        // Restore index metadata
+        self.index_metadata = data.index_metadata;
+
+        // Restore each table
+        for (table_name, compacted_table) in data.tables {
+            let mut table = VersionedTable::new(table_name.clone(), compacted_table.schema);
+
+            // Set the next_id
+            table.next_id = compacted_table.next_id;
+
+            // Restore indexes structure
+            table.index_columns = compacted_table.indexes;
+            table.index_included_columns = compacted_table.index_included_columns;
+
+            // Initialize index storage
+            for index_name in table.index_columns.keys() {
+                table.indexes.insert(index_name.clone(), BTreeMap::new());
+            }
+
+            // Mark restore transaction as committed in this table
+            table.committed_transactions.insert(restore_txn);
+
+            // Restore all rows
+            for (row_id, row) in compacted_table.rows {
+                let version = VersionedValue {
+                    row: Arc::new(row.clone()),
+                    created_by: restore_txn,
+                    created_at: restore_txn,
+                    deleted_by: None,
+                };
+                table.versions.insert(row_id, vec![version]);
+
+                // Rebuild indexes for this row
+                for (index_name, columns) in &table.index_columns {
+                    let mut key_values = Vec::new();
+                    for col_name in columns {
+                        if let Some(col_idx) = table
+                            .schema
+                            .columns
+                            .iter()
+                            .position(|c| &c.name == col_name)
+                        {
+                            if col_idx < row.values.len() {
+                                key_values.push(row.values[col_idx].clone());
+                            }
+                        }
+                    }
+
+                    if !key_values.is_empty() {
+                        let composite_key = CompositeKey::from_values(key_values);
+                        let entry = IndexEntry {
+                            row_id,
+                            added_by: restore_txn,
+                            removed_by: None,
+                            included_values: None, // Simplified for snapshot
+                        };
+
+                        table
+                            .indexes
+                            .get_mut(index_name)
+                            .unwrap()
+                            .entry(composite_key)
+                            .or_insert_with(Vec::new)
+                            .push(entry);
+                    }
+                }
+            }
+
+            self.tables.insert(table_name, table);
+        }
+    }
+}
+
+/// Compacted SQL data for snapshots
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompactedSqlData {
+    pub tables: HashMap<String, CompactedTableData>,
+    pub index_metadata: HashMap<String, IndexMetadata>,
+}
+
+/// Compacted table data
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompactedTableData {
+    pub schema: Table,
+    pub rows: BTreeMap<u64, StorageRow>,
+    pub next_id: u64,
+    pub indexes: HashMap<String, Vec<String>>,
+    pub index_included_columns: HashMap<String, Vec<String>>,
 }
 
 #[cfg(test)]

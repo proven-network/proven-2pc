@@ -824,6 +824,7 @@ name = "proven-sql"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "ciborium",
  "hex",
  "parking_lot",
  "proven-engine",
@@ -836,6 +837,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
