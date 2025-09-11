@@ -10,22 +10,21 @@ use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::{OperationResult, RetryOn, TransactionEngine};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
 
 /// Queue engine that implements the TransactionEngine trait
 pub struct QueueTransactionEngine {
     /// Transaction manager handles MVCC and locking
-    manager: Arc<Mutex<QueueTransactionManager>>,
+    manager: QueueTransactionManager,
     /// Track active transactions
-    active_transactions: Arc<Mutex<HashSet<HlcTimestamp>>>,
+    active_transactions: HashSet<HlcTimestamp>,
 }
 
 impl QueueTransactionEngine {
     /// Create a new queue engine
     pub fn new() -> Self {
         Self {
-            manager: Arc::new(Mutex::new(QueueTransactionManager::new())),
-            active_transactions: Arc::new(Mutex::new(HashSet::new())),
+            manager: QueueTransactionManager::new(),
+            active_transactions: HashSet::new(),
         }
     }
 }
@@ -41,9 +40,8 @@ impl TransactionEngine for QueueTransactionEngine {
     type Response = QueueResponse;
 
     fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
-        let mut manager = self.manager.lock().unwrap();
-        manager.begin_transaction(txn_id, txn_id);
-        self.active_transactions.lock().unwrap().insert(txn_id);
+        self.manager.begin_transaction(txn_id, txn_id);
+        self.active_transactions.insert(txn_id);
     }
 
     fn apply_operation(
@@ -51,9 +49,7 @@ impl TransactionEngine for QueueTransactionEngine {
         operation: Self::Operation,
         txn_id: HlcTimestamp,
     ) -> OperationResult<Self::Response> {
-        let mut manager = self.manager.lock().unwrap();
-
-        match manager.execute_operation(txn_id, &operation, txn_id) {
+        match self.manager.execute_operation(txn_id, &operation, txn_id) {
             Ok(response) => OperationResult::Success(response),
             Err(crate::stream::transaction::TransactionError::LockConflict { holder, mode }) => {
                 // Check what operation we're trying to do
@@ -90,27 +86,24 @@ impl TransactionEngine for QueueTransactionEngine {
         }
 
         // Release read locks on prepare
-        let mut manager = self.manager.lock().unwrap();
-        manager.prepare_transaction(txn_id)?;
+        self.manager.prepare_transaction(txn_id)?;
         Ok(())
     }
 
     fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
-        let mut manager = self.manager.lock().unwrap();
-        let result = manager.commit_transaction(txn_id);
-        self.active_transactions.lock().unwrap().remove(&txn_id);
+        let result = self.manager.commit_transaction(txn_id);
+        self.active_transactions.remove(&txn_id);
         result
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
-        let mut manager = self.manager.lock().unwrap();
-        let result = manager.abort_transaction(txn_id);
-        self.active_transactions.lock().unwrap().remove(&txn_id);
+        let result = self.manager.abort_transaction(txn_id);
+        self.active_transactions.remove(&txn_id);
         result
     }
 
     fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
-        self.active_transactions.lock().unwrap().contains(txn_id)
+        self.active_transactions.contains(txn_id)
     }
 
     fn engine_name(&self) -> &str {
@@ -119,7 +112,7 @@ impl TransactionEngine for QueueTransactionEngine {
 
     fn snapshot(&self) -> Result<Vec<u8>, String> {
         // Only snapshot when no active transactions
-        if !self.active_transactions.lock().unwrap().is_empty() {
+        if !self.active_transactions.is_empty() {
             return Err("Cannot snapshot with active transactions".to_string());
         }
 
@@ -131,8 +124,7 @@ impl TransactionEngine for QueueTransactionEngine {
         }
 
         // Get compacted data from the transaction manager
-        let manager = self.manager.lock().unwrap();
-        let compacted = manager.get_compacted_data();
+        let compacted = self.manager.get_compacted_data();
 
         let snapshot = QueueSnapshot { queues: compacted };
 
@@ -167,10 +159,10 @@ impl TransactionEngine for QueueTransactionEngine {
         new_manager.restore_from_compacted(snapshot.queues);
 
         // Replace the current manager
-        *self.manager.lock().unwrap() = new_manager;
+        self.manager = new_manager;
 
         // Clear active transactions
-        self.active_transactions.lock().unwrap().clear();
+        self.active_transactions.clear();
 
         Ok(())
     }
