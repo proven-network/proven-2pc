@@ -95,33 +95,8 @@ pub struct StreamProcessor<E: TransactionEngine> {
 }
 
 impl<E: TransactionEngine> StreamProcessor<E> {
-    /// Create a new stream processor (starts in replay mode)
-    pub fn new(engine: E, client: Arc<MockClient>, stream_name: String) -> Self {
-        use proven_hlc::NodeId;
-
-        Self {
-            engine,
-            deferred_manager: DeferredOperationsManager::new(),
-            transaction_coordinators: HashMap::new(),
-            wounded_transactions: HashMap::new(),
-            transaction_deadlines: HashMap::new(),
-            transaction_participants: HashMap::new(),
-            recovery_manager: RecoveryManager::new(client.clone(), stream_name.clone()),
-            client,
-            stream_name,
-            phase: ProcessorPhase::Replay,
-            current_offset: 0,
-            snapshot_store: None,
-            last_snapshot_offset: 0,
-            last_message_time: None,
-            last_log_timestamp: HlcTimestamp::new(0, 0, NodeId::new(0)),
-            commits_since_snapshot: 0,
-            snapshot_config: SnapshotConfig::default(),
-        }
-    }
-
-    /// Create a new stream processor with snapshot store
-    pub fn new_with_snapshot_store(
+    /// Create a new stream processor with snapshot store (starts in replay mode)
+    pub fn new(
         mut engine: E,
         client: Arc<MockClient>,
         stream_name: String,

@@ -6,6 +6,7 @@ mod tests {
     use crate::processor::StreamProcessor;
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_snapshot_memory::MemorySnapshotStore;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -165,8 +166,13 @@ mod tests {
 
         // Create and run processor in background
         let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            test_engine,
+            client.clone(),
+            "test-stream".to_string(),
+            snapshot_store,
+        );
 
         // Run processor with a timeout
         let processor_task = async move {
@@ -241,8 +247,13 @@ mod tests {
 
         // Create and run processor with timeout
         let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            test_engine,
+            client.clone(),
+            "test-stream".to_string(),
+            snapshot_store,
+        );
 
         // Run processor in background with timeout
         let processor_handle = tokio::spawn(async move {
@@ -410,7 +421,7 @@ mod tests {
             .insert("initial".to_string(), "data".to_string());
 
         // Create processor with snapshot store
-        let mut processor = StreamProcessor::new_with_snapshot_store(
+        let mut processor = StreamProcessor::new(
             engine,
             client.clone(),
             "test-stream".to_string(),
@@ -509,7 +520,7 @@ mod tests {
         // Phase 1: Process some messages and create a snapshot
         {
             let engine = TestEngine::new();
-            let mut processor = StreamProcessor::new_with_snapshot_store(
+            let mut processor = StreamProcessor::new(
                 engine,
                 client.clone(),
                 "test-stream".to_string(),
@@ -582,7 +593,7 @@ mod tests {
         // Phase 2: Create new processor from snapshot and verify state
         {
             let engine = TestEngine::new();
-            let processor = StreamProcessor::new_with_snapshot_store(
+            let processor = StreamProcessor::new(
                 engine,
                 client.clone(),
                 "test-stream".to_string(),

@@ -7,6 +7,7 @@ use crate::messages::{ProcessorAck, ProcessorExtension, ProcessorRequest};
 use crate::processor::{self, ProcessorHandle};
 use parking_lot::Mutex;
 use proven_engine::MockClient;
+use proven_snapshot::SnapshotStore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +30,7 @@ type PendingRequests = Arc<Mutex<HashMap<Uuid, oneshot::Sender<ProcessorInfo>>>>
 pub struct Runner {
     node_id: String,
     client: Arc<MockClient>,
+    snapshot_store: Arc<dyn SnapshotStore>,
 
     // Core components
     pub(crate) processors: Arc<Mutex<HashMap<String, ProcessorHandle>>>,
@@ -42,11 +44,16 @@ pub struct Runner {
 }
 
 impl Runner {
-    /// Create a new runner
-    pub fn new(node_id: impl Into<String>, client: Arc<MockClient>) -> Self {
+    /// Create a new runner with snapshot store
+    pub fn new(
+        node_id: impl Into<String>,
+        client: Arc<MockClient>,
+        snapshot_store: Arc<dyn SnapshotStore>,
+    ) -> Self {
         Self {
             node_id: node_id.into(),
             client,
+            snapshot_store,
             processors: Arc::new(Mutex::new(HashMap::new())),
             cluster_view: Arc::new(RwLock::new(ClusterView::new())),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -278,9 +285,12 @@ impl Runner {
         let client = self.client.clone();
         let node_id = self.node_id.clone();
         let processors = self.processors.clone();
+        let snapshot_store = self.snapshot_store.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = Self::listen_for_requests(client, node_id, processors).await {
+            if let Err(e) =
+                Self::listen_for_requests(client, node_id, processors, snapshot_store).await
+            {
                 tracing::error!("Request listener failed: {}", e);
             }
         })
@@ -316,6 +326,7 @@ impl Runner {
         client: Arc<MockClient>,
         node_id: String,
         processors: Arc<Mutex<HashMap<String, ProcessorHandle>>>,
+        snapshot_store: Arc<dyn SnapshotStore>,
     ) -> Result<()> {
         // Subscribe to processor requests
         let mut subscription = client
@@ -343,6 +354,7 @@ impl Runner {
                     request.stream.clone(),
                     Duration::from_millis(request.min_duration_ms),
                     client.clone(),
+                    snapshot_store.clone(),
                 )
                 .await
                 {
@@ -453,6 +465,7 @@ impl Runner {
 mod tests {
     use super::*;
     use proven_engine::{MockClient, MockEngine};
+    use proven_snapshot_memory::MemorySnapshotStore;
     use std::time::Duration;
 
     /// Create a test engine with a stream
@@ -466,7 +479,8 @@ mod tests {
     async fn test_processor_extension() {
         let engine = create_test_engine_with_stream("ext-stream").await;
         let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
-        let runner = Runner::new("node1", client.clone());
+        let snapshot_store: Arc<dyn SnapshotStore> = Arc::new(MemorySnapshotStore::new());
+        let runner = Runner::new("node1", client.clone(), snapshot_store);
 
         runner.start().await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;

@@ -99,6 +99,7 @@ proven-queue-client.workspace = true
 proven-resource.workspace = true
 proven-resource-client.workspace = true
 proven-runner.workspace = true
+proven-snapshot-memory.workspace = true
 proven-sql.workspace = true
 proven-sql-client.workspace = true
 proven-stream.workspace = true

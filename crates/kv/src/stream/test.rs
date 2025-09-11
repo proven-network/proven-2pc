@@ -6,6 +6,7 @@ mod tests {
     use crate::types::Value;
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_snapshot_memory::MemorySnapshotStore;
     use proven_stream::StreamProcessor;
     use serde_json;
     use std::collections::HashMap;
@@ -73,8 +74,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,
@@ -203,8 +209,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,
@@ -345,8 +356,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,
@@ -359,8 +375,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,
@@ -437,8 +458,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,
@@ -451,8 +477,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,
@@ -518,8 +549,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,
@@ -619,8 +655,13 @@ mod tests {
 
         // Start processor
         let kv_engine = KvTransactionEngine::new();
-        let mut processor =
-            StreamProcessor::new(kv_engine, client.clone(), "kv-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            kv_engine,
+            client.clone(),
+            "kv-stream".to_string(),
+            snapshot_store,
+        );
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
                 result = processor.run() => result,

@@ -1,65 +1,44 @@
 //! Benchmark for inserting 1 million rows
 //!
 //! This benchmark measures the throughput of the SQL engine by inserting
-//! 1 million rows into a table through the streaming interface.
+//! 1 million rows into a table directly using the engine.
 
-use proven_engine::{Message, MockClient, MockEngine};
+use proven_hlc::{HlcTimestamp, NodeId};
 use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
-use proven_stream::StreamProcessor;
-use std::collections::HashMap;
+use proven_stream::TransactionEngine;
 use std::io::{self, Write};
-use std::sync::Arc;
 use std::time::Instant;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     println!("=== 1 Million Insert Benchmark ===\n");
 
-    // Create mock engine and client
-    let engine = Arc::new(MockEngine::new());
-    let client = Arc::new(MockClient::new("benchmark".to_string(), engine.clone()));
-
-    // Create stream
-    client
-        .create_group_stream("sql-stream".to_string())
-        .await
-        .unwrap();
-
-    // Create stream processor and start it
-    let sql_engine = SqlTransactionEngine::new();
-    let mut processor = StreamProcessor::new(sql_engine, client.clone(), "sql-stream".to_string());
-
-    // Start processor in background
-    let processor_handle = tokio::spawn(async move { processor.run().await });
-
-    // Give processor time to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Create SQL engine directly
+    let mut sql_engine = SqlTransactionEngine::new();
 
     // Create table
     println!("Creating table...");
-    let create_table = create_message(
-        Some(SqlOperation::Execute {
-            sql: "CREATE TABLE bench (
-                id INT PRIMARY KEY, 
-                value INT, 
-                data VARCHAR,
-                timestamp INT
-            )"
-            .to_string(),
-        }),
-        "txn_bench_1000000000",
-        Some("coordinator_bench"),
-        true,
-        None,
-    );
+    let txn_id = HlcTimestamp::new(1000000000, 0, NodeId::new(1));
+    sql_engine.begin_transaction(txn_id);
 
-    client
-        .publish_to_stream("sql-stream".to_string(), vec![create_table])
-        .await
-        .expect("Failed to publish create table");
+    let create_table = SqlOperation::Execute {
+        sql: "CREATE TABLE bench (
+            id INT PRIMARY KEY, 
+            value INT, 
+            data VARCHAR,
+            timestamp INT
+        )"
+        .to_string(),
+    };
 
-    // Give time for table creation
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    match sql_engine.apply_operation(create_table, txn_id) {
+        proven_stream::OperationResult::Success(_) => {
+            sql_engine
+                .commit(txn_id)
+                .expect("Failed to commit table creation");
+            println!("✓ Table created");
+        }
+        _ => panic!("Failed to create table"),
+    }
 
     // Benchmark configuration
     const NUM_INSERTS: usize = 1_000_000;
@@ -74,32 +53,33 @@ async fn main() {
     // Process inserts
     for i in 0..NUM_INSERTS {
         // Generate unique transaction ID with incrementing timestamp
-        let txn_id = format!("txn_bench_{}", 2000000000 + i as u64);
+        let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
+        sql_engine.begin_transaction(txn_id);
 
-        // Create insert message
-        let insert = create_message(
-            Some(SqlOperation::Execute {
-                sql: format!(
-                    "INSERT INTO bench (id, value, data, timestamp) VALUES ({}, {}, 'data_{}', {})",
-                    i,
-                    i * 2,    // Some computation
-                    i % 1000, // Repeating data pattern
-                    2000000000 + i
-                ),
-            }),
-            &txn_id,
-            Some("coordinator_bench"),
-            true, // Auto-commit each insert
-            None,
-        );
+        // Create insert operation
+        let insert = SqlOperation::Execute {
+            sql: format!(
+                "INSERT INTO bench (id, value, data, timestamp) VALUES ({}, {}, 'data_{}', {})",
+                i,
+                i * 2,    // Some computation
+                i % 1000, // Repeating data pattern
+                2000000000 + i
+            ),
+        };
 
-        // Publish message to stream
-        if let Err(e) = client
-            .publish_to_stream("sql-stream".to_string(), vec![insert])
-            .await
-        {
-            eprintln!("\nError at insert {}: {:?}", i, e);
-            break;
+        // Execute insert directly on engine
+        match sql_engine.apply_operation(insert, txn_id) {
+            proven_stream::OperationResult::Success(_) => {
+                // Commit the transaction
+                if let Err(e) = sql_engine.commit(txn_id) {
+                    eprintln!("\nError committing insert {}: {}", i, e);
+                    break;
+                }
+            }
+            _ => {
+                eprintln!("\nError at insert {}", i);
+                break;
+            }
         }
 
         // Progress indicator
@@ -137,26 +117,23 @@ async fn main() {
 
     // Verify count
     println!("\nVerifying insert count...");
-    let count_query = create_message(
-        Some(SqlOperation::Query {
-            sql: "SELECT COUNT(*) FROM bench".to_string(),
-        }),
-        "txn_bench_9999999999", // Valid timestamp format
-        Some("coordinator_bench"),
-        true,
-        None,
-    );
+    let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
+    sql_engine.begin_transaction(verify_txn);
 
-    client
-        .publish_to_stream("sql-stream".to_string(), vec![count_query])
-        .await
-        .expect("Failed to publish count query");
+    let count_query = SqlOperation::Query {
+        sql: "SELECT COUNT(*) FROM bench".to_string(),
+    };
 
-    // Give time for query to be processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    // Note: In a real system, we would subscribe to responses to verify the count
-    // For this benchmark, we'll just report timing
+    match sql_engine.apply_operation(count_query, verify_txn) {
+        proven_stream::OperationResult::Success(_response) => {
+            // In a real system, we'd parse the response to get the actual count
+            println!("✓ Count query executed successfully");
+            sql_engine
+                .commit(verify_txn)
+                .expect("Failed to commit count query");
+        }
+        _ => println!("⚠ Count query failed"),
+    }
 
     // Print final statistics
     println!("\n=== Benchmark Results ===");
@@ -169,41 +146,6 @@ async fn main() {
     );
 
     println!("\nMemory usage and detailed statistics:");
-    println!("- Messages published: {}", NUM_INSERTS + 2); // +2 for create table and count
+    println!("- Transactions executed: {}", NUM_INSERTS + 2); // +2 for create table and count
     println!("\n✓ Benchmark complete!");
-
-    // Cancel the processor
-    processor_handle.abort();
-}
-
-/// Helper function to create a stream message
-fn create_message(
-    operation: Option<SqlOperation>,
-    txn_id: &str,
-    coordinator_id: Option<&str>,
-    auto_commit: bool,
-    txn_phase: Option<&str>,
-) -> Message {
-    let mut headers = HashMap::new();
-    headers.insert("txn_id".to_string(), txn_id.to_string());
-
-    if let Some(coord) = coordinator_id {
-        headers.insert("coordinator_id".to_string(), coord.to_string());
-    }
-
-    if auto_commit {
-        headers.insert("auto_commit".to_string(), "true".to_string());
-    }
-
-    if let Some(phase) = txn_phase {
-        headers.insert("txn_phase".to_string(), phase.to_string());
-    }
-
-    let body = if let Some(op) = operation {
-        serde_json::to_vec(&op).unwrap()
-    } else {
-        Vec::new()
-    };
-
-    Message::new(body, headers)
 }

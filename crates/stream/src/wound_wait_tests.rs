@@ -9,6 +9,7 @@ mod tests {
     use crate::processor::StreamProcessor;
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_snapshot_memory::MemorySnapshotStore;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -159,8 +160,13 @@ mod tests {
 
         // Start processor first
         let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            test_engine,
+            client.clone(),
+            "test-stream".to_string(),
+            snapshot_store,
+        );
 
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
@@ -248,8 +254,13 @@ mod tests {
 
         // Start processor first
         let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            test_engine,
+            client.clone(),
+            "test-stream".to_string(),
+            snapshot_store,
+        );
 
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
@@ -337,8 +348,13 @@ mod tests {
 
         // Start processor first
         let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            test_engine,
+            client.clone(),
+            "test-stream".to_string(),
+            snapshot_store,
+        );
 
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
@@ -471,8 +487,13 @@ mod tests {
 
         // Start processor
         let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            test_engine,
+            client.clone(),
+            "test-stream".to_string(),
+            snapshot_store,
+        );
 
         let processor_handle = tokio::spawn(async move {
             tokio::select! {
@@ -543,8 +564,13 @@ mod tests {
 
         // Start processor first
         let test_engine = TestEngine::new();
-        let mut processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+        let mut processor = StreamProcessor::new(
+            test_engine,
+            client.clone(),
+            "test-stream".to_string(),
+            snapshot_store,
+        );
 
         let processor_handle = tokio::spawn(async move {
             tokio::select! {

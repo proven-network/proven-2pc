@@ -1,5 +1,6 @@
 use proven_engine::{ConsensusGroupId, MockClient, MockEngine};
 use proven_runner::Runner;
+use proven_snapshot_memory::MemorySnapshotStore;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -19,10 +20,12 @@ async fn test_basic_processor_request_ack_flow() {
     let runner1 = Runner::new(
         "node1",
         Arc::new(MockClient::new("node1".to_string(), engine.clone())),
+        Arc::new(MemorySnapshotStore::new()),
     );
     let runner2 = Runner::new(
         "node2",
         Arc::new(MockClient::new("node2".to_string(), engine.clone())),
+        Arc::new(MemorySnapshotStore::new()),
     );
 
     // Start both runners
@@ -75,8 +78,16 @@ async fn test_direct_node_assignment() {
     assert!(groups2.contains(&ConsensusGroupId(1)));
 
     // Create runners
-    let runner1 = Runner::new("node1", client1.clone());
-    let runner2 = Runner::new("node2", client2.clone());
+    let runner1 = Runner::new(
+        "node1",
+        client1.clone(),
+        Arc::new(MemorySnapshotStore::new()),
+    );
+    let runner2 = Runner::new(
+        "node2",
+        client2.clone(),
+        Arc::new(MemorySnapshotStore::new()),
+    );
 
     // Start both runners
     runner1.start().await.unwrap();
@@ -112,7 +123,11 @@ async fn test_direct_node_assignment() {
 async fn test_heartbeat_includes_groups() {
     let engine = Arc::new(MockEngine::new());
     let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
-    let runner = Runner::new("node1", client.clone());
+    let runner = Runner::new(
+        "node1",
+        client.clone(),
+        Arc::new(MemorySnapshotStore::new()),
+    );
 
     runner.start().await.unwrap();
 
@@ -141,7 +156,11 @@ async fn test_concurrent_processor_requests() {
     let engine = Arc::new(MockEngine::new());
 
     let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
-    let runner = Arc::new(Runner::new("node1", client.clone()));
+    let runner = Arc::new(Runner::new(
+        "node1",
+        client.clone(),
+        Arc::new(MemorySnapshotStore::new()),
+    ));
 
     runner.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;

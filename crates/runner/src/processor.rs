@@ -1,6 +1,7 @@
 //! Processor lifecycle management
 
 use proven_engine::MockClient;
+use proven_snapshot::SnapshotStore;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -44,6 +45,7 @@ pub async fn start_processor(
     stream: String,
     duration: Duration,
     client: Arc<MockClient>,
+    snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<ProcessorHandle, crate::RunnerError> {
     // Determine processor type from stream name
     let processor_type = determine_processor_type(&stream);
@@ -58,25 +60,49 @@ pub async fn start_processor(
         // Create and run processor based on type
         let result = match processor_type {
             ProcessorType::Kv => {
-                match create_kv_processor(stream_clone2.clone(), client_clone.clone()).await {
+                match create_kv_processor(
+                    stream_clone2.clone(),
+                    client_clone.clone(),
+                    snapshot_store.clone(),
+                )
+                .await
+                {
                     Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
                     Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
                 }
             }
             ProcessorType::Sql => {
-                match create_sql_processor(stream_clone2.clone(), client_clone.clone()).await {
+                match create_sql_processor(
+                    stream_clone2.clone(),
+                    client_clone.clone(),
+                    snapshot_store.clone(),
+                )
+                .await
+                {
                     Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
                     Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
                 }
             }
             ProcessorType::Queue => {
-                match create_queue_processor(stream_clone2.clone(), client_clone.clone()).await {
+                match create_queue_processor(
+                    stream_clone2.clone(),
+                    client_clone.clone(),
+                    snapshot_store.clone(),
+                )
+                .await
+                {
                     Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
                     Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
                 }
             }
             ProcessorType::Resource => {
-                match create_resource_processor(stream_clone2.clone(), client_clone.clone()).await {
+                match create_resource_processor(
+                    stream_clone2.clone(),
+                    client_clone.clone(),
+                    snapshot_store.clone(),
+                )
+                .await
+                {
                     Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
                     Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
                 }
@@ -145,13 +171,17 @@ fn determine_processor_type(stream: &str) -> ProcessorType {
 async fn create_kv_processor(
     stream: String,
     client: Arc<MockClient>,
+    snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<
     proven_stream::processor::StreamProcessor<proven_kv::KvTransactionEngine>,
     crate::RunnerError,
 > {
     let engine = proven_kv::KvTransactionEngine::new();
     Ok(proven_stream::processor::StreamProcessor::new(
-        engine, client, stream,
+        engine,
+        client,
+        stream,
+        snapshot_store,
     ))
 }
 
@@ -159,13 +189,17 @@ async fn create_kv_processor(
 async fn create_sql_processor(
     stream: String,
     client: Arc<MockClient>,
+    snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<
     proven_stream::processor::StreamProcessor<proven_sql::SqlTransactionEngine>,
     crate::RunnerError,
 > {
     let engine = proven_sql::SqlTransactionEngine::new();
     Ok(proven_stream::processor::StreamProcessor::new(
-        engine, client, stream,
+        engine,
+        client,
+        stream,
+        snapshot_store,
     ))
 }
 
@@ -173,13 +207,17 @@ async fn create_sql_processor(
 async fn create_queue_processor(
     stream: String,
     client: Arc<MockClient>,
+    snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<
     proven_stream::processor::StreamProcessor<proven_queue::QueueTransactionEngine>,
     crate::RunnerError,
 > {
     let engine = proven_queue::QueueTransactionEngine::new();
     Ok(proven_stream::processor::StreamProcessor::new(
-        engine, client, stream,
+        engine,
+        client,
+        stream,
+        snapshot_store,
     ))
 }
 
@@ -187,13 +225,17 @@ async fn create_queue_processor(
 async fn create_resource_processor(
     stream: String,
     client: Arc<MockClient>,
+    snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<
     proven_stream::processor::StreamProcessor<proven_resource::ResourceTransactionEngine>,
     crate::RunnerError,
 > {
     let engine = proven_resource::ResourceTransactionEngine::new();
     Ok(proven_stream::processor::StreamProcessor::new(
-        engine, client, stream,
+        engine,
+        client,
+        stream,
+        snapshot_store,
     ))
 }
 
