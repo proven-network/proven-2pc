@@ -51,8 +51,9 @@ impl MvccStorage {
 
     /// Mark a transaction as committed
     pub fn commit_transaction(&mut self, tx_id: HlcTimestamp) {
+        // Just mark transaction as committed - O(1) operation
+        // Keep transaction_start_times for visibility checks - will be cleaned up later
         self.committed_transactions.insert(tx_id);
-        self.transaction_start_times.remove(&tx_id);
     }
 
     /// Abort a transaction by removing all its versions
@@ -100,21 +101,24 @@ impl MvccStorage {
             .unwrap_or(tx_id);
 
         // Check if we need to mark any existing version as deleted
-        // We need to capture the committed_transactions state for visibility check
-        let committed_transactions = self.committed_transactions.clone();
-
         if let Some(versions) = self.versions.get_mut(&key) {
             // Find and mark the current visible version as deleted
+            // Optimized: iterate only until we find the visible version
             for version in versions.iter_mut().rev() {
                 // Inline visibility check to avoid borrow issues
+                // Version is visible if:
+                // 1. Created by current transaction OR created by committed transaction before our start
                 let created_visible = version.created_by == tx_id
-                    || (committed_transactions.contains(&version.created_by)
+                    || (self.committed_transactions.contains(&version.created_by)
                         && version.created_at <= tx_start);
 
+                // 2. Not deleted OR deleted by uncommitted transaction (but NOT by us)
                 let not_deleted = version.deleted_by.is_none()
                     || (version.deleted_by.is_some()
-                        && version.deleted_by != Some(tx_id)  // We don't see our own deletes
-                        && !committed_transactions.contains(&version.deleted_by.unwrap()));
+                        && version.deleted_by != Some(tx_id)
+                        && !self
+                            .committed_transactions
+                            .contains(&version.deleted_by.unwrap()));
 
                 if created_visible && not_deleted {
                     version.deleted_by = Some(tx_id);
@@ -142,21 +146,24 @@ impl MvccStorage {
             .copied()
             .unwrap_or(tx_id);
 
-        // Capture committed_transactions for visibility check
-        let committed_transactions = self.committed_transactions.clone();
-
         if let Some(versions) = self.versions.get_mut(key) {
             // Find and mark the current visible version as deleted
+            // Optimized: iterate only until we find the visible version
             for version in versions.iter_mut().rev() {
                 // Inline visibility check to avoid borrow issues
+                // Version is visible if:
+                // 1. Created by current transaction OR created by committed transaction before our start
                 let created_visible = version.created_by == tx_id
-                    || (committed_transactions.contains(&version.created_by)
+                    || (self.committed_transactions.contains(&version.created_by)
                         && version.created_at <= tx_start);
 
+                // 2. Not deleted OR deleted by uncommitted transaction (but NOT by us)
                 let not_deleted = version.deleted_by.is_none()
                     || (version.deleted_by.is_some()
-                        && version.deleted_by != Some(tx_id)  // We don't see our own deletes
-                        && !committed_transactions.contains(&version.deleted_by.unwrap()));
+                        && version.deleted_by != Some(tx_id)
+                        && !self
+                            .committed_transactions
+                            .contains(&version.deleted_by.unwrap()));
 
                 if created_visible && not_deleted {
                     version.deleted_by = Some(tx_id);
@@ -299,6 +306,30 @@ impl MvccStorage {
             total_versions,
             committed_txns,
             active_txns,
+        }
+    }
+
+    /// Clean up old transaction metadata for committed transactions
+    /// This should be called periodically to prevent unbounded growth
+    /// Only cleans up transactions older than the oldest active transaction
+    pub fn garbage_collect(&mut self) {
+        // Find the oldest active transaction to ensure we don't clean up
+        // anything that active transactions might need for visibility checks
+        let oldest_active = self
+            .transaction_start_times
+            .iter()
+            .filter(|(tx, _)| !self.committed_transactions.contains(tx))
+            .map(|(_, &start_time)| start_time)
+            .min();
+
+        if let Some(cutoff) = oldest_active {
+            // Remove all committed transactions older than the oldest active one
+            self.committed_transactions.retain(|&tx| tx >= cutoff);
+
+            // Remove old transaction start times for committed transactions
+            // Keep all active (non-committed) transactions regardless of age
+            self.transaction_start_times
+                .retain(|&tx, _| tx >= cutoff || !self.committed_transactions.contains(&tx));
         }
     }
 }
