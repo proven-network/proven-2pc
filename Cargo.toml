@@ -10,6 +10,9 @@ members = [
     "crates/resource",
     "crates/resource-client",
     "crates/runner",
+    "crates/snapshot",
+    "crates/snapshot-file",
+    "crates/snapshot-memory",
     "crates/sql",
     "crates/sql-client",
     "crates/stream",
@@ -26,6 +29,9 @@ default-members = [
     "crates/resource",
     "crates/resource-client",
     "crates/runner",
+    "crates/snapshot",
+    "crates/snapshot-file",
+    "crates/snapshot-memory",
     "crates/sql",
     "crates/sql-client",
     "crates/stream",
@@ -41,6 +47,7 @@ edition = "2024"
 async-stream = "0.3"
 async-trait = "0.1"
 bytes = { version = "1.7", features = ["serde"] }
+ciborium = "0.2"
 futures = "0.3"
 hex = "0.4"
 parking_lot = "0.12"
@@ -48,6 +55,7 @@ regex = "1.10"
 rust_decimal = { version = "1.32", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
+sha2 = "0.10"
 thiserror = "2.0.16"
 tokio = { version = "1.41", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 tokio-stream = "0.1"
@@ -66,6 +74,9 @@ proven-queue-client = { path = "crates/queue-client" }
 proven-resource = { path = "crates/resource" }
 proven-resource-client = { path = "crates/resource-client" }
 proven-runner = { path = "crates/runner" }
+proven-snapshot = { path = "crates/snapshot" }
+proven-snapshot-file = { path = "crates/snapshot-file" }
+proven-snapshot-memory = { path = "crates/snapshot-memory" }
 proven-sql = { path = "crates/sql" }
 proven-sql-client = { path = "crates/sql-client" }
 proven-stream = { path = "crates/stream" }

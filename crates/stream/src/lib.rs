@@ -34,5 +34,5 @@ mod wound_wait_tests;
 pub use deferred::DeferredOperationsManager;
 pub use engine::{OperationResult, RetryOn, TransactionEngine};
 pub use error::{ProcessorError, Result};
-pub use processor::StreamProcessor;
+pub use processor::{ProcessorPhase, SnapshotConfig, StreamProcessor};
 pub use recovery::{RecoveryManager, RecoveryState, TransactionDecision};

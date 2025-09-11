@@ -31,6 +31,17 @@ Test implementation simulating a consensus/streaming layer for development and t
 #### `proven-hlc` - Hybrid Logical Clocks
 Provides distributed timestamp generation combining physical time with logical counters for causal ordering.
 
+### Snapshot Storage
+
+#### `proven-snapshot` - Snapshot Storage Trait
+Core trait and types for snapshot storage backends used by stream processors.
+
+#### `proven-snapshot-memory` - In-Memory Snapshots
+Memory-based snapshot storage for testing and development.
+
+#### `proven-snapshot-file` - File System Snapshots
+Persistent filesystem-based snapshot storage for production use.
+
 ### Storage Engines
 
 #### `proven-sql` - SQL Storage Engine
@@ -117,6 +128,8 @@ All storage engines implement the `TransactionEngine` trait providing:
 - `prepare` - Phase 1 of 2PC, validate and prepare to commit
 - `commit` - Phase 2 of 2PC, make changes permanent
 - `abort` - Rollback all changes
+- `snapshot` - Generate a point-in-time snapshot of engine state
+- `restore_from_snapshot` - Restore engine state from a snapshot
 
 ### Concurrency Control
 - **SQL**: Predicate-based locking with retry on conflicts
@@ -191,9 +204,9 @@ cargo test -p proven-resource
 - ✅ Queue storage engine
 - ✅ Resource storage engine
 - ✅ Two-phase commit coordinator
+- ✅ Snapshot infrastructure with memory and file backends
 
 ### In Development
-- 🚧 Snapshots for efficient point-in-time restoration
 - 🚧 SQL engine (basic functionality complete, optimization ongoing)
 - 🚧 Production consensus integration (monorepo using a mock version of engine)
 - 🚧 Client libraries and runtime integration

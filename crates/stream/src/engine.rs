@@ -81,4 +81,20 @@ pub trait TransactionEngine: Send + Sync {
 
     /// Get the name/type of this engine for logging and debugging
     fn engine_name(&self) -> &str;
+
+    /// Generate a snapshot of current state
+    ///
+    /// This should only be called when no transactions are active.
+    /// Returns serialized bytes representing the complete state.
+    fn snapshot(&self) -> Result<Vec<u8>, String> {
+        Err("Snapshots not supported by this engine".to_string())
+    }
+
+    /// Restore state from a snapshot
+    ///
+    /// This should completely replace the current state with the snapshot.
+    /// Should only be called on a fresh engine instance.
+    fn restore_from_snapshot(&mut self, _data: &[u8]) -> Result<(), String> {
+        Err("Snapshot restoration not supported by this engine".to_string())
+    }
 }

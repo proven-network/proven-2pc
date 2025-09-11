@@ -11,9 +11,11 @@ use crate::error::{ProcessorError, Result};
 use crate::recovery::{RecoveryManager, TransactionDecision};
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
+use proven_snapshot::SnapshotStore;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Processing phase for the stream processor
 #[derive(Debug, Clone)]
@@ -24,6 +26,24 @@ pub enum ProcessorPhase {
     Recovery,
     /// Normal live processing
     Live,
+}
+
+/// Configuration for snapshot behavior
+#[derive(Debug, Clone)]
+pub struct SnapshotConfig {
+    /// No messages for this duration triggers snapshot consideration
+    pub idle_duration: Duration,
+    /// Minimum commits before allowing snapshot
+    pub min_commits_between_snapshots: u64,
+}
+
+impl Default for SnapshotConfig {
+    fn default() -> Self {
+        Self {
+            idle_duration: Duration::from_secs(10),
+            min_commits_between_snapshots: 100,
+        }
+    }
 }
 
 /// Generic stream processor that works with any TransactionEngine
@@ -59,12 +79,26 @@ pub struct StreamProcessor<E: TransactionEngine> {
     phase: ProcessorPhase,
 
     /// Current stream offset (for phase transitions)
-    current_offset: u64,
+    pub current_offset: u64,
+
+    /// Snapshot store (if configured)
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
+
+    /// Snapshot tracking
+    last_snapshot_offset: u64,
+    last_message_time: Option<Instant>,
+    last_log_timestamp: HlcTimestamp,
+    commits_since_snapshot: u64,
+
+    /// Snapshot configuration
+    pub snapshot_config: SnapshotConfig,
 }
 
 impl<E: TransactionEngine> StreamProcessor<E> {
     /// Create a new stream processor (starts in replay mode)
     pub fn new(engine: E, client: Arc<MockClient>, stream_name: String) -> Self {
+        use proven_hlc::NodeId;
+
         Self {
             engine,
             deferred_manager: DeferredOperationsManager::new(),
@@ -77,6 +111,63 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             stream_name,
             phase: ProcessorPhase::Replay,
             current_offset: 0,
+            snapshot_store: None,
+            last_snapshot_offset: 0,
+            last_message_time: None,
+            last_log_timestamp: HlcTimestamp::new(0, 0, NodeId::new(0)),
+            commits_since_snapshot: 0,
+            snapshot_config: SnapshotConfig::default(),
+        }
+    }
+
+    /// Create a new stream processor with snapshot store
+    pub fn new_with_snapshot_store(
+        mut engine: E,
+        client: Arc<MockClient>,
+        stream_name: String,
+        snapshot_store: Arc<dyn SnapshotStore>,
+    ) -> Self {
+        use proven_hlc::NodeId;
+
+        // Try to restore from latest snapshot
+        let mut start_offset = 0u64;
+        let mut last_snapshot_offset = 0u64;
+        let mut last_timestamp = HlcTimestamp::new(0, 0, NodeId::new(0));
+
+        if let Some((metadata, data)) = snapshot_store.get_latest_snapshot(&stream_name)
+            && engine.restore_from_snapshot(&data).is_ok()
+        {
+            // Remember where we snapshotted
+            last_snapshot_offset = metadata.log_offset;
+            // Start replay from the next message after the snapshot
+            start_offset = metadata.log_offset + 1;
+            last_timestamp = metadata.log_timestamp;
+            tracing::info!(
+                "Restored from snapshot at offset {}, will replay from {} for stream {}",
+                metadata.log_offset,
+                start_offset,
+                stream_name
+            );
+        }
+
+        Self {
+            engine,
+            deferred_manager: DeferredOperationsManager::new(),
+            transaction_coordinators: HashMap::new(),
+            wounded_transactions: HashMap::new(),
+            transaction_deadlines: HashMap::new(),
+            transaction_participants: HashMap::new(),
+            recovery_manager: RecoveryManager::new(client.clone(), stream_name.clone()),
+            client,
+            stream_name: stream_name.clone(),
+            phase: ProcessorPhase::Replay,
+            current_offset: start_offset,
+            snapshot_store: Some(snapshot_store),
+            last_snapshot_offset,
+            last_message_time: None,
+            last_log_timestamp: last_timestamp,
+            commits_since_snapshot: 0,
+            snapshot_config: SnapshotConfig::default(),
         }
     }
 
@@ -93,6 +184,8 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         msg_offset: u64,
     ) -> Result<()> {
         self.current_offset = msg_offset;
+        self.last_log_timestamp = msg_timestamp;
+        self.last_message_time = Some(Instant::now());
 
         // Always track state regardless of phase
         self.track_transaction_state(&message, msg_timestamp)?;
@@ -163,6 +256,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                     self.transaction_coordinators.remove(&txn_id);
                     self.transaction_deadlines.remove(&txn_id);
                     self.transaction_participants.remove(&txn_id);
+                    self.commits_since_snapshot += 1;
                 }
                 "abort" => {
                     // Transaction aborted, remove from tracking
@@ -867,6 +961,67 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         });
     }
 
+    /// Check if we should take a snapshot
+    fn should_snapshot(&self) -> bool {
+        // No active transactions
+        if !self.transaction_coordinators.is_empty() {
+            return false;
+        }
+
+        // Check idle time - must be idle
+        if let Some(last_msg_time) = self.last_message_time
+            && last_msg_time.elapsed() < self.snapshot_config.idle_duration
+        {
+            return false;
+        }
+
+        // Check minimum commit count
+        if self.commits_since_snapshot < self.snapshot_config.min_commits_between_snapshots {
+            return false;
+        }
+
+        // We're idle and have enough commits
+        true
+    }
+
+    /// Try to take a snapshot if conditions are met
+    async fn try_snapshot(&mut self) -> Result<()> {
+        if !self.should_snapshot() {
+            return Ok(());
+        }
+
+        if let Some(store) = &self.snapshot_store {
+            match self.engine.snapshot() {
+                Ok(data) => {
+                    store
+                        .save_snapshot(
+                            &self.stream_name,
+                            self.current_offset,
+                            self.last_log_timestamp,
+                            data,
+                        )
+                        .map_err(|e| {
+                            ProcessorError::EngineError(format!("Snapshot save failed: {}", e))
+                        })?;
+
+                    self.last_snapshot_offset = self.current_offset;
+                    self.commits_since_snapshot = 0;
+
+                    tracing::info!(
+                        "Created snapshot at offset {} for stream {}",
+                        self.current_offset,
+                        self.stream_name
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!("Snapshot not taken: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Run the processor, consuming messages from its stream
     pub async fn run(&mut self) -> Result<()> {
         use proven_engine::DeadlineStreamItem;
@@ -929,10 +1084,27 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
 
         // Process live messages continuously
-        while let Some((message, timestamp, offset)) = live_stream.recv().await {
-            if let Err(e) = self.process_message(message, timestamp, offset).await {
-                // Log error but continue processing
-                tracing::error!("Error processing message at offset {}: {:?}", offset, e);
+        loop {
+            // Check for messages with a timeout to allow periodic snapshot checks
+            let timeout = tokio::time::timeout(Duration::from_secs(1), live_stream.recv()).await;
+
+            match timeout {
+                Ok(Some((message, timestamp, offset))) => {
+                    if let Err(e) = self.process_message(message, timestamp, offset).await {
+                        // Log error but continue processing
+                        tracing::error!("Error processing message at offset {}: {:?}", offset, e);
+                    }
+                }
+                Ok(None) => {
+                    // Stream ended
+                    break;
+                }
+                Err(_) => {
+                    // Timeout - check if we should snapshot
+                    if let Err(e) = self.try_snapshot().await {
+                        tracing::warn!("Failed to create snapshot: {:?}", e);
+                    }
+                }
             }
         }
 

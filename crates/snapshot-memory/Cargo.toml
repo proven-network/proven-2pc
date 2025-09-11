@@ -1,0 +1,11 @@
+[package]
+name = "proven-snapshot-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+proven-hlc.workspace = true
+proven-snapshot = { path = "../snapshot" }
+serde.workspace = true
+sha2.workspace = true
+tracing.workspace = true

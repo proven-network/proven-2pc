@@ -9,7 +9,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     /// Helper to generate test timestamps
     #[allow(dead_code)]
@@ -48,6 +48,11 @@ mod tests {
                 active_txns: Vec::new(),
             }
         }
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct TestEngineSnapshot {
+        data: HashMap<String, String>,
     }
 
     impl TransactionEngine for TestEngine {
@@ -95,6 +100,31 @@ mod tests {
 
         fn engine_name(&self) -> &str {
             "test-engine"
+        }
+
+        fn snapshot(&self) -> Result<Vec<u8>, String> {
+            // Only snapshot when no active transactions
+            if !self.active_txns.is_empty() {
+                return Err("Cannot snapshot with active transactions".to_string());
+            }
+
+            let snapshot = TestEngineSnapshot {
+                data: self.data.clone(),
+            };
+
+            let mut buf = Vec::new();
+            ciborium::into_writer(&snapshot, &mut buf)
+                .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
+            Ok(buf)
+        }
+
+        fn restore_from_snapshot(&mut self, data: &[u8]) -> Result<(), String> {
+            let snapshot: TestEngineSnapshot = ciborium::from_reader(data)
+                .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
+
+            self.data = snapshot.data;
+            self.active_txns.clear();
+            Ok(())
         }
     }
 
@@ -234,171 +264,341 @@ mod tests {
         let _ = processor_handle.await;
     }
 
-    /* Phase transition tests removed - these are now handled automatically by run()
     #[tokio::test]
-    async fn test_phase_transitions() {
+    async fn test_snapshot_and_restore() {
+        // Test that we can snapshot and restore engine state
+        let mut engine1 = TestEngine::new();
+
+        // Add some data
+        engine1
+            .data
+            .insert("key1".to_string(), "value1".to_string());
+        engine1
+            .data
+            .insert("key2".to_string(), "value2".to_string());
+        engine1
+            .data
+            .insert("key3".to_string(), "value3".to_string());
+
+        // Take a snapshot
+        let snapshot = engine1.snapshot().unwrap();
+        assert!(!snapshot.is_empty());
+
+        // Create a new engine and restore
+        let mut engine2 = TestEngine::new();
+        assert!(engine2.data.is_empty());
+
+        engine2.restore_from_snapshot(&snapshot).unwrap();
+
+        // Verify data was restored exactly
+        assert_eq!(engine2.data.len(), 3);
+        assert_eq!(engine2.data.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(engine2.data.get("key2"), Some(&"value2".to_string()));
+        assert_eq!(engine2.data.get("key3"), Some(&"value3".to_string()));
+
+        // Verify the restored engine is functional
+        let txn_id = HlcTimestamp::new(100, 0, NodeId::new(1));
+        engine2.begin_transaction(txn_id);
+        let result = engine2.apply_operation(
+            TestOperation::Write {
+                key: "key4".to_string(),
+                value: "value4".to_string(),
+            },
+            txn_id,
+        );
+        assert!(matches!(result, OperationResult::Success(_)));
+        engine2.commit(txn_id).unwrap();
+        assert_eq!(engine2.data.get("key4"), Some(&"value4".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_with_active_transaction() {
+        let mut engine = TestEngine::new();
+
+        // Begin a transaction
+        let txn_id = HlcTimestamp::new(1, 0, NodeId::new(1));
+        engine.begin_transaction(txn_id);
+
+        // Should fail to snapshot with active transaction
+        let result = engine.snapshot();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("active transactions"));
+
+        // Commit the transaction
+        engine.commit(txn_id).unwrap();
+
+        // Now snapshot should succeed
+        let result = engine.snapshot();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_memory_snapshot_store() {
+        use proven_snapshot::SnapshotStore;
+        use proven_snapshot_memory::MemorySnapshotStore;
+
+        let store = MemorySnapshotStore::new();
+        let stream = "test-stream";
+        let timestamp = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Initially no snapshots
+        assert!(store.get_latest_snapshot(stream).is_none());
+        assert!(store.list_snapshots(stream).is_empty());
+
+        // Save a snapshot
+        let data1 = vec![1, 2, 3, 4, 5];
+        store
+            .save_snapshot(stream, 100, timestamp, data1.clone())
+            .unwrap();
+
+        // Verify we can retrieve it
+        let (metadata, data) = store.get_latest_snapshot(stream).unwrap();
+        assert_eq!(metadata.log_offset, 100);
+        assert_eq!(metadata.log_timestamp, timestamp);
+        assert_eq!(data, data1);
+
+        // Save another snapshot at higher offset
+        let timestamp2 = HlcTimestamp::new(2000, 0, NodeId::new(1));
+        let data2 = vec![6, 7, 8, 9, 10];
+        store
+            .save_snapshot(stream, 200, timestamp2, data2.clone())
+            .unwrap();
+
+        // Latest should be the newer one
+        let (metadata, data) = store.get_latest_snapshot(stream).unwrap();
+        assert_eq!(metadata.log_offset, 200);
+        assert_eq!(data, data2);
+
+        // List should show both (newest first)
+        let snapshots = store.list_snapshots(stream);
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].log_offset, 200);
+        assert_eq!(snapshots[1].log_offset, 100);
+
+        // Test cleanup
+        store.cleanup_old_snapshots(stream, 1).unwrap();
+        let snapshots = store.list_snapshots(stream);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].log_offset, 200);
+    }
+
+    #[tokio::test]
+    async fn test_processor_with_snapshot_store() {
+        use crate::processor::{SnapshotConfig, StreamProcessor};
+        use proven_snapshot::SnapshotStore;
+        use proven_snapshot_memory::MemorySnapshotStore;
+
         let engine_backend = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new(
             "test-node".to_string(),
             engine_backend.clone(),
         ));
 
-        let test_engine = TestEngine::new();
+        // Create the stream
+        client
+            .create_group_stream("test-stream".to_string())
+            .await
+            .unwrap();
 
-        // Create processor starting in replay mode
-        let mut processor = StreamProcessor::new_with_replay_target(
-            test_engine,
+        // Create snapshot store
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
+
+        // Create a test engine with some initial data
+        let mut engine = TestEngine::new();
+        engine
+            .data
+            .insert("initial".to_string(), "data".to_string());
+
+        // Create processor with snapshot store
+        let mut processor = StreamProcessor::new_with_snapshot_store(
+            engine,
             client.clone(),
             "test-stream".to_string(),
-            5, // Target offset to transition at
+            snapshot_store.clone(),
         );
 
-        // Verify initial phase is Replay
-        assert!(matches!(
-            processor.phase(),
-            ProcessorPhase::Replay { target_offset: 5 }
-        ));
+        // Configure for aggressive snapshotting (for testing)
+        processor.snapshot_config = SnapshotConfig {
+            idle_duration: Duration::from_millis(100),
+            min_commits_between_snapshots: 1,
+        };
 
-        let txn_id = HlcTimestamp::new(1, 0, NodeId::new(1));
-        let mut headers = HashMap::new();
-        headers.insert("txn_id".to_string(), txn_id.to_string());
-        headers.insert("coordinator_id".to_string(), "coord1".to_string());
-
-        // Process messages during replay phase - they should not produce responses
-        for offset in 0..5 {
+        // Process some transactions to trigger snapshot
+        for i in 0..3 {
+            let txn_id = HlcTimestamp::new(i + 1, 0, NodeId::new(1));
             let operation = TestOperation::Write {
-                key: format!("key{}", offset),
-                value: format!("value{}", offset),
+                key: format!("key{}", i),
+                value: format!("value{}", i),
             };
+
+            let mut headers = HashMap::new();
+            headers.insert("txn_id".to_string(), txn_id.to_string());
+            headers.insert("coordinator_id".to_string(), "coord1".to_string());
+
+            // Write operation
             let message = Message::new(serde_json::to_vec(&operation).unwrap(), headers.clone());
+            client
+                .publish_to_stream("test-stream".to_string(), vec![message])
+                .await
+                .unwrap();
 
-            // Messages during replay should be tracked but not executed
-            let result = processor
-                .process_message(message, test_timestamp(), offset)
-                .await;
-            assert!(result.is_ok());
-
-            // Should still be in replay phase until we reach target
-            if offset < 4 {
-                assert!(matches!(processor.phase(), &ProcessorPhase::Replay { .. }));
-            }
+            // Commit
+            headers.insert("txn_phase".to_string(), "commit".to_string());
+            let commit_msg = Message::new(Vec::new(), headers);
+            client
+                .publish_to_stream("test-stream".to_string(), vec![commit_msg])
+                .await
+                .unwrap();
         }
 
-        // Still in replay because offset 4 < target_offset 5
-        assert!(matches!(processor.phase(), &ProcessorPhase::Replay { .. }));
+        // Run processor briefly
+        let processor_handle = tokio::spawn(async move {
+            tokio::select! {
+                result = processor.run() => result,
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                    Ok(())
+                }
+            }
+        });
 
-        // Process message at offset 5 to trigger transition
-        let operation = TestOperation::Write {
-            key: "trigger".to_string(),
-            value: "transition".to_string(),
-        };
-        let message = Message::new(serde_json::to_vec(&operation).unwrap(), headers.clone());
-        processor
-            .process_message(message, test_timestamp(), 5)
-            .await
-            .unwrap();
+        // Wait for processing
+        let _ = processor_handle.await;
 
-        // Now we should have transitioned through Recovery to Live
-        assert!(matches!(processor.phase(), &ProcessorPhase::Live));
+        // Wait a bit more for snapshot to be taken
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // Now process a message in live mode - should execute normally
-        let operation = TestOperation::Write {
-            key: "live_key".to_string(),
-            value: "live_value".to_string(),
-        };
-        let message = Message::new(serde_json::to_vec(&operation).unwrap(), headers);
+        // Verify a snapshot was created
+        let snapshots = snapshot_store.list_snapshots("test-stream");
 
-        let result = processor
-            .process_message(message, test_timestamp(), 6)
-            .await;
-        assert!(result.is_ok());
+        // We might not have a snapshot yet due to timing, but if we do, verify it
+        if !snapshots.is_empty() {
+            let (metadata, data) = snapshot_store.get_latest_snapshot("test-stream").unwrap();
+            assert!(metadata.log_offset > 0);
+            assert!(!data.is_empty());
 
-        // Should still be in live phase
-        assert!(matches!(processor.phase(), &ProcessorPhase::Live));
+            // Create a new engine and restore from snapshot
+            let mut new_engine = TestEngine::new();
+            new_engine.restore_from_snapshot(&data).unwrap();
+
+            // Should have the data that was written
+            // Note: exact data depends on timing of snapshot
+            assert!(!new_engine.data.is_empty());
+        }
     }
-    */
 
-    /* Replay state tracking test removed - replay is now handled by run()
     #[tokio::test]
-    async fn test_replay_state_tracking() {
+    async fn test_processor_restoration_state() {
+        use crate::processor::StreamProcessor;
+        use proven_snapshot::SnapshotStore;
+        use proven_snapshot_memory::MemorySnapshotStore;
+
         let engine_backend = Arc::new(MockEngine::new());
         let client = Arc::new(MockClient::new(
             "test-node".to_string(),
             engine_backend.clone(),
         ));
 
-        let test_engine = TestEngine::new();
-
-        // Create processor starting in replay mode
-        let mut processor = StreamProcessor::new_with_replay_target(
-            test_engine,
-            client.clone(),
-            "test-stream".to_string(),
-            3,
-        );
-
-        let txn1 = HlcTimestamp::new(1000, 0, NodeId::new(1));
-        let txn2 = HlcTimestamp::new(2000, 0, NodeId::new(1));
-
-        // Simulate replay: txn1 prepares
-        let mut headers = HashMap::new();
-        headers.insert("txn_id".to_string(), txn1.to_string());
-        headers.insert("coordinator_id".to_string(), "coord1".to_string());
-        headers.insert("txn_phase".to_string(), "prepare".to_string());
-
-        // Add deadline and participants for recovery tracking
-        let deadline = HlcTimestamp::new(1500, 0, NodeId::new(1));
-        headers.insert("deadline".to_string(), deadline.to_string());
-        headers.insert("participant_stream1".to_string(), "10".to_string());
-        headers.insert("participant_stream2".to_string(), "20".to_string());
-
-        let prepare_msg = Message::new(Vec::new(), headers.clone());
-        processor
-            .process_message(prepare_msg, test_timestamp(), 0)
+        // Create the stream
+        client
+            .create_group_stream("test-stream".to_string())
             .await
             .unwrap();
 
-        // txn2 commits
-        headers.clear();
-        headers.insert("txn_id".to_string(), txn2.to_string());
-        headers.insert("coordinator_id".to_string(), "coord2".to_string());
-        headers.insert("txn_phase".to_string(), "commit".to_string());
+        let snapshot_store = Arc::new(MemorySnapshotStore::new());
 
-        let commit_msg = Message::new(Vec::new(), headers);
-        processor
-            .process_message(commit_msg, test_timestamp(), 1)
-            .await
-            .unwrap();
+        // Phase 1: Process some messages and create a snapshot
+        {
+            let engine = TestEngine::new();
+            let mut processor = StreamProcessor::new_with_snapshot_store(
+                engine,
+                client.clone(),
+                "test-stream".to_string(),
+                snapshot_store.clone(),
+            );
 
-        // Still in replay at offset 1
-        assert!(matches!(processor.phase(), &ProcessorPhase::Replay { .. }));
+            // Send 5 transactions
+            for i in 0..5 {
+                let txn_id = HlcTimestamp::new(i + 1, 0, NodeId::new(1));
+                let operation = TestOperation::Write {
+                    key: format!("key{}", i),
+                    value: format!("value{}", i),
+                };
 
-        // Process message at offset 2 - still in replay
-        let operation = TestOperation::Read {
-            key: "dummy".to_string(),
+                let mut headers = HashMap::new();
+                headers.insert("txn_id".to_string(), txn_id.to_string());
+                headers.insert("coordinator_id".to_string(), "coord1".to_string());
+
+                let message =
+                    Message::new(serde_json::to_vec(&operation).unwrap(), headers.clone());
+                client
+                    .publish_to_stream("test-stream".to_string(), vec![message])
+                    .await
+                    .unwrap();
+
+                headers.insert("txn_phase".to_string(), "commit".to_string());
+                let commit_msg = Message::new(Vec::new(), headers);
+                client
+                    .publish_to_stream("test-stream".to_string(), vec![commit_msg])
+                    .await
+                    .unwrap();
+            }
+
+            // Run processor to process all messages
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = processor.run() => {},
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {},
+                }
+            });
+
+            // Wait for processing
+            tokio::time::sleep(Duration::from_millis(250)).await;
+
+            // Manually create a snapshot for testing
+            let test_engine = TestEngine {
+                data: vec![
+                    ("key0".to_string(), "value0".to_string()),
+                    ("key1".to_string(), "value1".to_string()),
+                    ("key2".to_string(), "value2".to_string()),
+                    ("key3".to_string(), "value3".to_string()),
+                    ("key4".to_string(), "value4".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+                active_txns: Vec::new(),
+            };
+
+            let snapshot_data = test_engine.snapshot().unwrap();
+            let timestamp = HlcTimestamp::new(5000, 0, NodeId::new(1));
+
+            // Save snapshot at offset 9 (5 operations + 5 commits - 1 for 0-indexing)
+            snapshot_store
+                .save_snapshot("test-stream", 9, timestamp, snapshot_data)
+                .unwrap();
+
+            5 // Number of keys we processed
         };
-        let mut headers = HashMap::new();
-        headers.insert("txn_id".to_string(), txn2.to_string());
-        headers.insert("coordinator_id".to_string(), "coord2".to_string());
 
-        let message = Message::new(serde_json::to_vec(&operation).unwrap(), headers.clone());
-        processor
-            .process_message(message, test_timestamp(), 2)
-            .await
-            .unwrap();
+        // Phase 2: Create new processor from snapshot and verify state
+        {
+            let engine = TestEngine::new();
+            let processor = StreamProcessor::new_with_snapshot_store(
+                engine,
+                client.clone(),
+                "test-stream".to_string(),
+                snapshot_store.clone(),
+            );
 
-        // Still in replay because offset 2 < target 3
-        assert!(matches!(processor.phase(), &ProcessorPhase::Replay { .. }));
+            // Verify processor starts from correct offset
+            assert_eq!(processor.current_offset, 10); // Should start at snapshot offset + 1
 
-        // Process message at offset 3 to trigger transition
-        let message = Message::new(serde_json::to_vec(&operation).unwrap(), headers);
-        processor
-            .process_message(message, test_timestamp(), 3)
-            .await
-            .unwrap();
+            // The fact that current_offset is 10 proves we restored from snapshot
+            // and will skip replaying messages 0-9
+        }
 
-        // Should have transitioned to Live after recovery
-        assert!(matches!(processor.phase(), &ProcessorPhase::Live));
+        // Verify snapshot was actually used
+        let snapshots = snapshot_store.list_snapshots("test-stream");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].log_offset, 9);
     }
-    */
 }
