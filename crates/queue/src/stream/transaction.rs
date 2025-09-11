@@ -234,6 +234,27 @@ impl QueueTransactionManager {
     pub fn stats(&self) -> crate::storage::StorageStats {
         self.storage.stats()
     }
+
+    /// Get compacted data for snapshots
+    pub fn get_compacted_data(
+        &self,
+    ) -> std::collections::HashMap<
+        String,
+        std::collections::VecDeque<crate::storage::mvcc::QueueEntry>,
+    > {
+        self.storage.get_compacted_data()
+    }
+
+    /// Restore from compacted data
+    pub fn restore_from_compacted(
+        &mut self,
+        data: std::collections::HashMap<
+            String,
+            std::collections::VecDeque<crate::storage::mvcc::QueueEntry>,
+        >,
+    ) {
+        self.storage.restore_from_compacted(data);
+    }
 }
 
 impl Default for QueueTransactionManager {

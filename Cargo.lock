@@ -714,6 +714,7 @@ dependencies = [
 name = "proven-queue"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "parking_lot",
  "proven-engine",
  "proven-hlc",
@@ -722,6 +723,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "zstd",
 ]
 
 [[package]]

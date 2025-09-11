@@ -8,7 +8,7 @@ use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A single entry in the queue
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueueEntry {
     /// The actual value
     pub value: QueueValue,
@@ -256,6 +256,51 @@ impl MvccStorage {
             total_entries,
             committed_txns,
             active_txns,
+        }
+    }
+
+    /// Get a compacted view of the storage (only committed state)
+    /// Used for creating snapshots when no transactions are active
+    pub fn get_compacted_data(&self) -> HashMap<String, VecDeque<QueueEntry>> {
+        let mut result = HashMap::new();
+
+        // Only include base queues (committed state)
+        for (queue_name, versioned_queue) in &self.base_queues {
+            if !versioned_queue.entries.is_empty() {
+                result.insert(queue_name.clone(), versioned_queue.entries.clone());
+            }
+        }
+
+        result
+    }
+
+    /// Restore from compacted data
+    /// Should only be called on a fresh MVCC storage instance
+    pub fn restore_from_compacted(&mut self, data: HashMap<String, VecDeque<QueueEntry>>) {
+        use proven_hlc::NodeId;
+
+        // Clear any existing data
+        self.queue_versions.clear();
+        self.base_queues.clear();
+        self.committed_transactions.clear();
+        self.transaction_start_times.clear();
+        self.transaction_modified_queues.clear();
+
+        // Create a special "restore" transaction that's already committed
+        let restore_txn = HlcTimestamp::new(0, 0, NodeId::new(0));
+        self.committed_transactions.insert(restore_txn);
+
+        // Restore all queues
+        for (queue_name, entries) in data {
+            // Find the max entry_id to set next_entry_id correctly
+            let max_id = entries.iter().map(|e| e.entry_id).max().unwrap_or(0);
+
+            let versioned_queue = VersionedQueue {
+                entries,
+                next_entry_id: max_id + 1,
+            };
+
+            self.base_queues.insert(queue_name, versioned_queue);
         }
     }
 }

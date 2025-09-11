@@ -4,11 +4,12 @@
 //! queue operations with MVCC and eager locking.
 
 use crate::storage::lock::LockMode;
+use crate::storage::mvcc::QueueEntry;
 use crate::stream::transaction::QueueTransactionManager;
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::{OperationResult, RetryOn, TransactionEngine};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Queue engine that implements the TransactionEngine trait
@@ -114,6 +115,64 @@ impl TransactionEngine for QueueTransactionEngine {
 
     fn engine_name(&self) -> &str {
         "queue"
+    }
+
+    fn snapshot(&self) -> Result<Vec<u8>, String> {
+        // Only snapshot when no active transactions
+        if !self.active_transactions.lock().unwrap().is_empty() {
+            return Err("Cannot snapshot with active transactions".to_string());
+        }
+
+        // Define the snapshot structure
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct QueueSnapshot {
+            // Compacted queue data - only committed state
+            queues: HashMap<String, VecDeque<QueueEntry>>,
+        }
+
+        // Get compacted data from the transaction manager
+        let manager = self.manager.lock().unwrap();
+        let compacted = manager.get_compacted_data();
+
+        let snapshot = QueueSnapshot { queues: compacted };
+
+        // Serialize with CBOR
+        let mut buf = Vec::new();
+        ciborium::into_writer(&snapshot, &mut buf)
+            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
+
+        // Compress with zstd (level 3 is a good balance)
+        let compressed = zstd::encode_all(&buf[..], 3)
+            .map_err(|e| format!("Failed to compress snapshot: {}", e))?;
+
+        Ok(compressed)
+    }
+
+    fn restore_from_snapshot(&mut self, data: &[u8]) -> Result<(), String> {
+        // Decompress the data
+        let decompressed =
+            zstd::decode_all(data).map_err(|e| format!("Failed to decompress snapshot: {}", e))?;
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct QueueSnapshot {
+            queues: HashMap<String, VecDeque<QueueEntry>>,
+        }
+
+        // Deserialize snapshot
+        let snapshot: QueueSnapshot = ciborium::from_reader(&decompressed[..])
+            .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
+
+        // Create a fresh transaction manager and restore data
+        let mut new_manager = QueueTransactionManager::new();
+        new_manager.restore_from_compacted(snapshot.queues);
+
+        // Replace the current manager
+        *self.manager.lock().unwrap() = new_manager;
+
+        // Clear active transactions
+        self.active_transactions.lock().unwrap().clear();
+
+        Ok(())
     }
 }
 
