@@ -1,6 +1,6 @@
 //! Resource engine implementation
 
-use crate::storage::{ReservationManager, ReservationType, ResourceStorage};
+use crate::storage::{CompactedResourceData, ReservationManager, ReservationType, ResourceStorage};
 use crate::stream::{ResourceOperation, ResourceResponse, TransactionContext};
 use crate::types::Amount;
 use proven_hlc::HlcTimestamp;
@@ -329,6 +329,47 @@ impl TransactionEngine for ResourceTransactionEngine {
 
     fn engine_name(&self) -> &str {
         "resource"
+    }
+
+    fn snapshot(&self) -> Result<Vec<u8>, String> {
+        // Only snapshot when no active transactions
+        if !self.transactions.is_empty() {
+            return Err("Cannot snapshot with active transactions".to_string());
+        }
+
+        // Get compacted data from storage
+        let compacted = self.storage.get_compacted_data();
+
+        // Serialize with CBOR
+        let mut buf = Vec::new();
+        ciborium::into_writer(&compacted, &mut buf)
+            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
+
+        // Compress with zstd (level 3 is a good balance)
+        let compressed = zstd::encode_all(&buf[..], 3)
+            .map_err(|e| format!("Failed to compress snapshot: {}", e))?;
+
+        Ok(compressed)
+    }
+
+    fn restore_from_snapshot(&mut self, data: &[u8]) -> Result<(), String> {
+        // Decompress the data
+        let decompressed =
+            zstd::decode_all(data).map_err(|e| format!("Failed to decompress snapshot: {}", e))?;
+
+        // Deserialize snapshot
+        let compacted: CompactedResourceData = ciborium::from_reader(&decompressed[..])
+            .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
+
+        // Clear existing state
+        self.storage = ResourceStorage::new();
+        self.reservations = ReservationManager::new();
+        self.transactions.clear();
+
+        // Restore storage from compacted data
+        self.storage.restore_from_compacted(compacted);
+
+        Ok(())
     }
 }
 

@@ -5,7 +5,7 @@ use proven_hlc::HlcTimestamp;
 use std::collections::BTreeMap;
 
 /// Resource metadata
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ResourceMetadata {
     pub name: String,
     pub symbol: String,
@@ -14,7 +14,7 @@ pub struct ResourceMetadata {
 }
 
 /// Versioned balance entry
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct BalanceVersion {
     amount: Amount,
     timestamp: HlcTimestamp,
@@ -213,6 +213,62 @@ impl ResourceStorage {
         self.pending_changes.remove(&transaction_id);
         self.pending_supply.remove(&transaction_id);
     }
+
+    /// Get a compacted view of the storage for snapshots
+    /// Returns only the latest committed state for each account
+    pub fn get_compacted_data(&self) -> CompactedResourceData {
+        let mut latest_balances = BTreeMap::new();
+
+        // For each account, get only the latest balance version
+        for (account, versions) in &self.balances {
+            if let Some(latest) = versions.last() {
+                latest_balances.insert(account.clone(), latest.amount);
+            }
+        }
+
+        CompactedResourceData {
+            metadata: self.metadata.clone(),
+            total_supply: self.total_supply,
+            balances: latest_balances,
+        }
+    }
+
+    /// Restore from compacted data
+    /// Should only be called on a fresh storage instance
+    pub fn restore_from_compacted(&mut self, data: CompactedResourceData) {
+        use proven_hlc::NodeId;
+
+        // Clear any existing data
+        self.metadata = ResourceMetadata::default();
+        self.total_supply = Amount::zero();
+        self.balances.clear();
+        self.pending_changes.clear();
+        self.pending_supply.clear();
+
+        // Restore metadata and supply
+        self.metadata = data.metadata;
+        self.total_supply = data.total_supply;
+
+        // Create a special "restore" timestamp
+        let restore_timestamp = HlcTimestamp::new(0, 0, NodeId::new(0));
+
+        // Restore all balances with the restore timestamp
+        for (account, amount) in data.balances {
+            let version = BalanceVersion {
+                amount,
+                timestamp: restore_timestamp,
+            };
+            self.balances.insert(account, vec![version]);
+        }
+    }
+}
+
+/// Compacted resource data for snapshots
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompactedResourceData {
+    pub metadata: ResourceMetadata,
+    pub total_supply: Amount,
+    pub balances: BTreeMap<String, Amount>,
 }
 
 impl Default for ResourceStorage {

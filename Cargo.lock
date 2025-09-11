@@ -740,6 +740,7 @@ dependencies = [
 name = "proven-resource"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "proven-hlc",
  "proven-stream",
  "rust_decimal",
@@ -748,6 +749,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-test",
+ "zstd",
 ]
 
 [[package]]

@@ -3,5 +3,5 @@
 mod mvcc;
 mod reservation;
 
-pub use mvcc::{ResourceMetadata, ResourceStorage};
+pub use mvcc::{CompactedResourceData, ResourceMetadata, ResourceStorage};
 pub use reservation::{BalanceReservation, ReservationManager, ReservationType};
