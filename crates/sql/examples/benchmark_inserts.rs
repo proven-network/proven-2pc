@@ -5,6 +5,7 @@
 
 use proven_hlc::{HlcTimestamp, NodeId};
 use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
+use proven_sql::types::value::Value;
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -28,6 +29,7 @@ fn main() {
             timestamp INT
         )"
         .to_string(),
+        params: None,
     };
 
     match sql_engine.apply_operation(create_table, txn_id) {
@@ -46,6 +48,7 @@ fn main() {
     const STATUS_INTERVAL: usize = 100_000;
 
     println!("Starting {} inserts...", NUM_INSERTS);
+
     let start_time = Instant::now();
     let mut last_status_time = start_time;
     let mut last_status_count = 0;
@@ -58,13 +61,13 @@ fn main() {
 
         // Create insert operation
         let insert = SqlOperation::Execute {
-            sql: format!(
-                "INSERT INTO bench (id, value, data, timestamp) VALUES ({}, {}, 'data_{}', {})",
-                i,
-                i * 2,    // Some computation
-                i % 1000, // Repeating data pattern
-                2000000000 + i
-            ),
+            sql: "INSERT INTO bench (id, value, data, timestamp) VALUES (?, ?, ?, ?)".to_string(),
+            params: Some(vec![
+                Value::Integer(i as i64),                    // id
+                Value::Integer((i * 2) as i64),              // value (some computation)
+                Value::String(format!("data_{}", i % 1000)), // data (repeating pattern)
+                Value::Integer((2000000000 + i) as i64),     // timestamp
+            ]),
         };
 
         // Execute insert directly on engine
@@ -122,6 +125,7 @@ fn main() {
 
     let count_query = SqlOperation::Query {
         sql: "SELECT COUNT(*) FROM bench".to_string(),
+        params: None,
     };
 
     match sql_engine.apply_operation(count_query, verify_txn) {

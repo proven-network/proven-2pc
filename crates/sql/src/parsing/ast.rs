@@ -161,6 +161,8 @@ pub enum Expression {
     Function(String, Vec<Expression>),
     /// An operator.
     Operator(Operator),
+    /// A parameter placeholder (? in SQL), with its position (0-indexed).
+    Parameter(usize),
 }
 
 /// Expression literal values.
@@ -283,7 +285,7 @@ impl Expression {
 
             Self::Function(_, exprs) => exprs.iter().all(|expr| expr.walk(visitor)),
 
-            Self::All | Self::Column(_, _) | Self::Literal(_) => true,
+            Self::All | Self::Column(_, _) | Self::Literal(_) | Self::Parameter(_) => true,
         }
     }
 
@@ -335,7 +337,7 @@ impl Expression {
                 }
             }
 
-            Self::All | Self::Column(_, _) | Self::Literal(_) => {}
+            Self::All | Self::Column(_, _) | Self::Literal(_) | Self::Parameter(_) => {}
         }
     }
 

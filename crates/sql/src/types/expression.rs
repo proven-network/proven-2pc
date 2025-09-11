@@ -22,6 +22,8 @@ pub enum Expression {
     Constant(Value),
     /// A column reference. Looks up the value in a row during evaluation.
     Column(usize),
+    /// A parameter placeholder for prepared statements (0-indexed).
+    Parameter(usize),
 
     /// a AND b: logical AND of two booleans.
     And(Box<Expression>, Box<Expression>),
@@ -83,6 +85,14 @@ impl Expression {
                 .and_then(|row| row.get(*i))
                 .cloned()
                 .ok_or_else(|| Error::ExecutionError(format!("column {i} not found")))?,
+
+            Parameter(idx) => {
+                // Parameters should be bound before evaluation
+                return Err(Error::ExecutionError(format!(
+                    "unbound parameter at position {}",
+                    idx
+                )));
+            }
 
             // Logical operations
             And(lhs, rhs) => {
@@ -288,7 +298,7 @@ impl Expression {
         }
 
         match self {
-            Constant(_) | Column(_) => true,
+            Constant(_) | Column(_) | Parameter(_) => true,
 
             And(lhs, rhs)
             | Or(lhs, rhs)
@@ -322,6 +332,7 @@ impl Expression {
                 .get(i)
                 .and_then(|i| i.map(Column))
                 .unwrap_or(Constant(Value::Null)),
+            Parameter(idx) => Parameter(idx),
 
             And(lhs, rhs) => And(
                 Box::new(lhs.remap_columns(map)),
@@ -409,6 +420,7 @@ impl Display for Expression {
         match self {
             Constant(value) => write!(f, "{}", value),
             Column(i) => write!(f, "#{}", i),
+            Parameter(idx) => write!(f, "?{}", idx),
 
             And(lhs, rhs) => write!(f, "({} AND {})", lhs, rhs),
             Or(lhs, rhs) => write!(f, "({} OR {})", lhs, rhs),

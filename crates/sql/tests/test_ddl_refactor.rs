@@ -23,6 +23,7 @@ fn execute_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) -
     let result = engine.apply_operation(
         SqlOperation::Execute {
             sql: sql.to_string(),
+            params: None,
         },
         tx,
     );
@@ -42,6 +43,7 @@ fn execute_sql_expect_error(
     let result = engine.apply_operation(
         SqlOperation::Execute {
             sql: sql.to_string(),
+            params: None,
         },
         tx,
     );

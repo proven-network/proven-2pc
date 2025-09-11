@@ -22,6 +22,7 @@ fn timestamp(n: u64) -> HlcTimestamp {
 fn execute_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) {
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: sql.to_string(),
         },
         tx,
@@ -37,6 +38,7 @@ fn execute_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) {
 fn query_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) -> Vec<Vec<String>> {
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: sql.to_string(),
         },
         tx,

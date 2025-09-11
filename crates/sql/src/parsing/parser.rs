@@ -15,6 +15,8 @@ use crate::types::value::DataType;
 /// the planner.
 pub struct Parser<'a> {
     pub lexer: Peekable<Lexer<'a>>,
+    /// Counter for parameter placeholders (?)
+    param_count: usize,
 }
 
 impl Parser<'_> {
@@ -46,6 +48,7 @@ impl Parser<'_> {
     fn new(input: &str) -> Parser<'_> {
         Parser {
             lexer: Lexer::new(input).peekable(),
+            param_count: 0,
         }
     }
 
@@ -798,6 +801,13 @@ impl Parser<'_> {
                 ast::Expression::Column(Some(table), self.next_ident()?)
             }
             Token::Ident(column) => ast::Expression::Column(None, column),
+
+            // Parameter placeholder (?)
+            Token::Question => {
+                let param_idx = self.param_count;
+                self.param_count += 1;
+                ast::Expression::Parameter(param_idx)
+            }
 
             // Parenthesized expression.
             Token::OpenParen => {

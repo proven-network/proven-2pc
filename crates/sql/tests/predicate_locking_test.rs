@@ -27,6 +27,7 @@ fn test_read_write_conflict_same_table() {
     engine.begin_transaction(tx1);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE users (id INT PRIMARY KEY, name TEXT)".to_string(),
         },
         tx1,
@@ -39,6 +40,7 @@ fn test_read_write_conflict_same_table() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM users".to_string(),
         },
         tx2,
@@ -50,6 +52,7 @@ fn test_read_write_conflict_same_table() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO users VALUES (1, 'Alice')".to_string(),
         },
         tx3,
@@ -64,6 +67,7 @@ fn test_read_write_conflict_same_table() {
     // Now tx3 should succeed
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO users VALUES (1, 'Alice')".to_string(),
         },
         tx3,
@@ -81,12 +85,14 @@ fn test_write_write_conflict() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE accounts (id INT PRIMARY KEY, balance INT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO accounts VALUES (1, 100)".to_string(),
         },
         tx1,
@@ -98,6 +104,7 @@ fn test_write_write_conflict() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE accounts SET balance = balance + 50 WHERE id = 1".to_string(),
         },
         tx2,
@@ -109,6 +116,7 @@ fn test_write_write_conflict() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE accounts SET balance = balance - 30 WHERE id = 1".to_string(),
         },
         tx3,
@@ -123,6 +131,7 @@ fn test_write_write_conflict() {
     // Now tx3 should succeed
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE accounts SET balance = balance - 30 WHERE id = 1".to_string(),
         },
         tx3,
@@ -140,12 +149,14 @@ fn test_no_conflict_different_tables() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE users (id INT PRIMARY KEY, name TEXT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE products (id INT PRIMARY KEY, name TEXT)".to_string(),
         },
         tx1,
@@ -157,6 +168,7 @@ fn test_no_conflict_different_tables() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO users VALUES (1, 'Alice')".to_string(),
         },
         tx2,
@@ -168,6 +180,7 @@ fn test_no_conflict_different_tables() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO products VALUES (1, 'Widget')".to_string(),
         },
         tx3,
@@ -188,12 +201,14 @@ fn test_no_conflict_different_rows_with_filter() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE items (id INT PRIMARY KEY, category TEXT, price INT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO items VALUES (1, 'electronics', 100), (2, 'books', 20), (3, 'electronics', 200)".to_string(),
         },
         tx1,
@@ -205,6 +220,7 @@ fn test_no_conflict_different_rows_with_filter() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE items SET price = price * 2 WHERE category = 'electronics'".to_string(),
         },
         tx2,
@@ -216,6 +232,7 @@ fn test_no_conflict_different_rows_with_filter() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE items SET price = price + 5 WHERE category = 'books'".to_string(),
         },
         tx3,
@@ -237,12 +254,14 @@ fn test_read_read_no_conflict() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE data (id INT PRIMARY KEY, value TEXT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO data VALUES (1, 'test')".to_string(),
         },
         tx1,
@@ -254,6 +273,7 @@ fn test_read_read_no_conflict() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM data".to_string(),
         },
         tx2,
@@ -265,6 +285,7 @@ fn test_read_read_no_conflict() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM data WHERE id = 1".to_string(),
         },
         tx3,
@@ -285,6 +306,7 @@ fn test_insert_insert_conflict_same_pk() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE unique_items (id INT PRIMARY KEY, name TEXT)".to_string(),
         },
         tx1,
@@ -296,6 +318,7 @@ fn test_insert_insert_conflict_same_pk() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO unique_items VALUES (1, 'First')".to_string(),
         },
         tx2,
@@ -307,6 +330,7 @@ fn test_insert_insert_conflict_same_pk() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO unique_items VALUES (1, 'Second')".to_string(),
         },
         tx3,
@@ -328,12 +352,14 @@ fn test_delete_read_conflict() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE records (id INT PRIMARY KEY, active BOOLEAN)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO records VALUES (1, true), (2, false), (3, true)".to_string(),
         },
         tx1,
@@ -345,6 +371,7 @@ fn test_delete_read_conflict() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM records".to_string(),
         },
         tx2,
@@ -356,6 +383,7 @@ fn test_delete_read_conflict() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "DELETE FROM records WHERE id = 1".to_string(),
         },
         tx3,
@@ -377,12 +405,14 @@ fn test_prepare_releases_read_locks() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE test (id INT PRIMARY KEY, value INT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO test VALUES (1, 100)".to_string(),
         },
         tx1,
@@ -394,6 +424,7 @@ fn test_prepare_releases_read_locks() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM test".to_string(),
         },
         tx2,
@@ -405,6 +436,7 @@ fn test_prepare_releases_read_locks() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE test SET value = 200 WHERE id = 1".to_string(),
         },
         tx3,
@@ -419,6 +451,7 @@ fn test_prepare_releases_read_locks() {
     // Now tx3 should succeed since read predicates were released
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE test SET value = 200 WHERE id = 1".to_string(),
         },
         tx3,
@@ -439,12 +472,14 @@ fn test_complex_multi_statement_transaction() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE accounts (id INT PRIMARY KEY, balance INT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql:
                 "CREATE TABLE transactions (id INT PRIMARY KEY, from_id INT, to_id INT, amount INT)"
                     .to_string(),
@@ -453,6 +488,7 @@ fn test_complex_multi_statement_transaction() {
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO accounts VALUES (1, 1000), (2, 500)".to_string(),
         },
         tx1,
@@ -466,6 +502,7 @@ fn test_complex_multi_statement_transaction() {
     // Read source balance
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT balance FROM accounts WHERE id = 1".to_string(),
         },
         tx2,
@@ -475,6 +512,7 @@ fn test_complex_multi_statement_transaction() {
     // Update source account
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE accounts SET balance = balance - 100 WHERE id = 1".to_string(),
         },
         tx2,
@@ -484,6 +522,7 @@ fn test_complex_multi_statement_transaction() {
     // Update destination account
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "UPDATE accounts SET balance = balance + 100 WHERE id = 2".to_string(),
         },
         tx2,
@@ -495,6 +534,7 @@ fn test_complex_multi_statement_transaction() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM accounts WHERE id = 1".to_string(),
         },
         tx3,
@@ -508,6 +548,7 @@ fn test_complex_multi_statement_transaction() {
     engine.begin_transaction(tx4);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM transactions".to_string(),
         },
         tx4,
@@ -529,12 +570,14 @@ fn test_phantom_prevention() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE orders (id INT PRIMARY KEY, status TEXT, amount INT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO orders VALUES (1, 'pending', 100), (2, 'shipped', 200)".to_string(),
         },
         tx1,
@@ -546,6 +589,7 @@ fn test_phantom_prevention() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT * FROM orders".to_string(),
         },
         tx2,
@@ -558,6 +602,7 @@ fn test_phantom_prevention() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO orders VALUES (3, 'pending', 150)".to_string(),
         },
         tx3,
@@ -579,12 +624,14 @@ fn test_aggregation_conflict() {
     engine.begin_transaction(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "CREATE TABLE sales (id INT PRIMARY KEY, amount INT, region TEXT)".to_string(),
         },
         tx1,
     );
     engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO sales VALUES (1, 100, 'west'), (2, 200, 'east'), (3, 150, 'west')"
                 .to_string(),
         },
@@ -597,6 +644,7 @@ fn test_aggregation_conflict() {
     engine.begin_transaction(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
+            params: None,
             sql: "SELECT SUM(amount) FROM sales".to_string(),
         },
         tx2,
@@ -609,6 +657,7 @@ fn test_aggregation_conflict() {
     engine.begin_transaction(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
+            params: None,
             sql: "INSERT INTO sales VALUES (4, 300, 'north')".to_string(),
         },
         tx3,

@@ -8,6 +8,7 @@ use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution::Executor;
 use crate::planning::planner::Planner;
+use crate::planning::prepared_cache::{PreparedCache, PreparedPlan, bind_parameters};
 use crate::storage::mvcc::MvccStorage;
 use crate::stream::{
     operation::SqlOperation,
@@ -30,6 +31,9 @@ pub struct SqlTransactionEngine {
 
     /// Current migration version
     migration_version: u32,
+
+    /// Prepared statement cache
+    prepared_cache: PreparedCache,
 }
 
 impl SqlTransactionEngine {
@@ -40,30 +44,100 @@ impl SqlTransactionEngine {
             active_transactions: HashMap::new(),
             executor: Executor::new(),
             migration_version: 0,
+            prepared_cache: PreparedCache::new(),
         }
     }
 
     /// Execute SQL with predicate-based conflict detection
-    fn execute_sql(&mut self, sql: &str, txn_id: HlcTimestamp) -> OperationResult<SqlResponse> {
+    fn execute_sql(
+        &mut self,
+        sql: &str,
+        params: Option<Vec<crate::types::value::Value>>,
+        txn_id: HlcTimestamp,
+    ) -> OperationResult<SqlResponse> {
         // Verify transaction exists
         if !self.active_transactions.contains_key(&txn_id) {
             return OperationResult::Error(format!("Transaction {:?} not found", txn_id));
         }
 
-        // Phase 1: Parse SQL
-        let statement = match crate::parsing::parse_sql(sql) {
-            Ok(stmt) => stmt,
-            Err(e) => return OperationResult::Error(format!("Parse error: {:?}", e)),
-        };
+        // Check if we have parameters
+        let plan = if params.is_some() {
+            // Try to get from cache
+            if let Some(prepared) = self.prepared_cache.get(sql) {
+                // Use cached plan and bind parameters
+                let params = params.unwrap_or_default();
+                if params.len() != prepared.param_count {
+                    return OperationResult::Error(format!(
+                        "Expected {} parameters, got {}",
+                        prepared.param_count,
+                        params.len()
+                    ));
+                }
+                match bind_parameters(&prepared.plan_template, &params) {
+                    Ok(bound_plan) => bound_plan,
+                    Err(e) => {
+                        return OperationResult::Error(format!("Parameter binding error: {:?}", e));
+                    }
+                }
+            } else {
+                // Parse, plan, and cache
+                let statement = match crate::parsing::parse_sql(sql) {
+                    Ok(stmt) => stmt,
+                    Err(e) => return OperationResult::Error(format!("Parse error: {:?}", e)),
+                };
 
-        // Phase 2: Plan and extract predicates
-        let planner = Planner::new(self.storage.get_schemas());
-        let plan = match planner.plan(statement) {
-            Ok(p) => p,
-            Err(e) => return OperationResult::Error(format!("Planning error: {:?}", e)),
+                // Count parameters in the ORIGINAL statement (before optimization)
+                // This ensures we always expect the same number of parameters the user wrote
+                let original_param_count = count_statement_parameters(&statement);
+
+                let planner = Planner::new(self.storage.get_schemas());
+                let plan_template = match planner.plan(statement) {
+                    Ok(p) => p,
+                    Err(e) => return OperationResult::Error(format!("Planning error: {:?}", e)),
+                };
+
+                // Cache the prepared plan with the ORIGINAL parameter count
+                self.prepared_cache.insert(
+                    sql.to_string(),
+                    PreparedPlan {
+                        plan_template: plan_template.clone(),
+                        param_count: original_param_count,
+                        param_locations: Vec::new(), // Not tracking locations for now
+                    },
+                );
+
+                // Bind parameters
+                let params = params.unwrap_or_default();
+                if params.len() != original_param_count {
+                    return OperationResult::Error(format!(
+                        "Expected {} parameters, got {}",
+                        original_param_count,
+                        params.len()
+                    ));
+                }
+                match bind_parameters(&plan_template, &params) {
+                    Ok(bound_plan) => bound_plan,
+                    Err(e) => {
+                        return OperationResult::Error(format!("Parameter binding error: {:?}", e));
+                    }
+                }
+            }
+        } else {
+            // No parameters - regular execution
+            let statement = match crate::parsing::parse_sql(sql) {
+                Ok(stmt) => stmt,
+                Err(e) => return OperationResult::Error(format!("Parse error: {:?}", e)),
+            };
+
+            let planner = Planner::new(self.storage.get_schemas());
+            match planner.plan(statement) {
+                Ok(p) => p,
+                Err(e) => return OperationResult::Error(format!("Planning error: {:?}", e)),
+            }
         };
 
         // Phase 3: Extract predicates from the plan
+        let planner = Planner::new(self.storage.get_schemas());
         let plan_predicates = planner.extract_predicates(&plan);
 
         for (other_tx_id, other_tx) in &self.active_transactions {
@@ -122,8 +196,8 @@ impl TransactionEngine for SqlTransactionEngine {
         txn_id: HlcTimestamp,
     ) -> OperationResult<Self::Response> {
         match operation {
-            SqlOperation::Query { sql } => self.execute_sql(&sql, txn_id),
-            SqlOperation::Execute { sql } => self.execute_sql(&sql, txn_id),
+            SqlOperation::Query { sql, params } => self.execute_sql(&sql, params, txn_id),
+            SqlOperation::Execute { sql, params } => self.execute_sql(&sql, params, txn_id),
             SqlOperation::Migrate { version, sql } => {
                 // Check if migration is needed
                 if version <= self.migration_version {
@@ -134,8 +208,8 @@ impl TransactionEngine for SqlTransactionEngine {
                     });
                 }
 
-                // Execute migration
-                match self.execute_sql(&sql, txn_id) {
+                // Execute migration (no parameters for migrations)
+                match self.execute_sql(&sql, None, txn_id) {
                     OperationResult::Success(response) => {
                         self.migration_version = version;
                         OperationResult::Success(response)
@@ -195,6 +269,106 @@ impl TransactionEngine for SqlTransactionEngine {
     fn engine_name(&self) -> &str {
         "sql"
     }
+}
+
+/// Count the number of parameter placeholders in an AST statement (before planning)
+fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
+    use crate::parsing::{Expression, Statement};
+
+    let mut max_idx = 0;
+
+    fn count_expr_params(expr: &Expression, max_idx: &mut usize) {
+        match expr {
+            Expression::Parameter(idx) => {
+                *max_idx = (*max_idx).max(*idx + 1);
+            }
+            Expression::Operator(op) => {
+                use crate::parsing::Operator;
+                match op {
+                    Operator::And(l, r)
+                    | Operator::Or(l, r)
+                    | Operator::Equal(l, r)
+                    | Operator::NotEqual(l, r)
+                    | Operator::GreaterThan(l, r)
+                    | Operator::GreaterThanOrEqual(l, r)
+                    | Operator::LessThan(l, r)
+                    | Operator::LessThanOrEqual(l, r)
+                    | Operator::Add(l, r)
+                    | Operator::Subtract(l, r)
+                    | Operator::Multiply(l, r)
+                    | Operator::Divide(l, r)
+                    | Operator::Remainder(l, r)
+                    | Operator::Exponentiate(l, r)
+                    | Operator::Like(l, r) => {
+                        count_expr_params(l, max_idx);
+                        count_expr_params(r, max_idx);
+                    }
+                    Operator::Not(e)
+                    | Operator::Factorial(e)
+                    | Operator::Identity(e)
+                    | Operator::Negate(e) => {
+                        count_expr_params(e, max_idx);
+                    }
+                    Operator::Is(e, _) => {
+                        count_expr_params(e, max_idx);
+                    }
+                }
+            }
+            Expression::Function(_, args) => {
+                for arg in args {
+                    count_expr_params(arg, max_idx);
+                }
+            }
+            Expression::All | Expression::Column(_, _) | Expression::Literal(_) => {}
+        }
+    }
+
+    match stmt {
+        Statement::Select(select) => {
+            // Check all parts of SELECT
+            for (expr, _) in &select.select {
+                count_expr_params(expr, &mut max_idx);
+            }
+            if let Some(where_clause) = &select.r#where {
+                count_expr_params(where_clause, &mut max_idx);
+            }
+            for expr in &select.group_by {
+                count_expr_params(expr, &mut max_idx);
+            }
+            if let Some(having) = &select.having {
+                count_expr_params(having, &mut max_idx);
+            }
+            for (expr, _) in &select.order_by {
+                count_expr_params(expr, &mut max_idx);
+            }
+        }
+        Statement::Insert { values, .. } => {
+            for row in values {
+                for expr in row {
+                    count_expr_params(expr, &mut max_idx);
+                }
+            }
+        }
+        Statement::Update { set, r#where, .. } => {
+            for expr in set.values().flatten() {
+                count_expr_params(expr, &mut max_idx);
+            }
+
+            if let Some(where_clause) = r#where {
+                count_expr_params(where_clause, &mut max_idx);
+            }
+        }
+        Statement::Delete {
+            r#where: Some(where_clause),
+            ..
+        } => {
+            count_expr_params(where_clause, &mut max_idx);
+        }
+        Statement::Delete { r#where: None, .. } => {}
+        _ => {} // DDL statements don't have parameters
+    }
+
+    max_idx
 }
 
 impl Default for SqlTransactionEngine {

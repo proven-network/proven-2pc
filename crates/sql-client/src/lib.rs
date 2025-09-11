@@ -24,7 +24,10 @@ impl SqlClient {
         stream_name: impl Into<String>,
         sql: impl Into<String>,
     ) -> Result<SqlResult, SqlError> {
-        let operation = SqlOperation::Query { sql: sql.into() };
+        let operation = SqlOperation::Query {
+            sql: sql.into(),
+            params: None,
+        };
 
         let response = self
             .execute_operation(stream_name.into(), operation)
@@ -43,7 +46,10 @@ impl SqlClient {
         stream_name: impl Into<String>,
         sql: impl Into<String>,
     ) -> Result<u64, SqlError> {
-        let operation = SqlOperation::Execute { sql: sql.into() };
+        let operation = SqlOperation::Execute {
+            sql: sql.into(),
+            params: None,
+        };
 
         let response = self
             .execute_operation(stream_name.into(), operation)
@@ -64,7 +70,10 @@ impl SqlClient {
         stream_name: impl Into<String>,
         sql: impl Into<String>,
     ) -> Result<(), SqlError> {
-        let operation = SqlOperation::Execute { sql: sql.into() };
+        let operation = SqlOperation::Execute {
+            sql: sql.into(),
+            params: None,
+        };
 
         let response = self
             .execute_operation(stream_name.into(), operation)
@@ -167,6 +176,54 @@ impl SqlClient {
         };
 
         self.query(stream_name, sql).await
+    }
+
+    /// Execute a parameterized SQL query
+    pub async fn query_with_params(
+        &self,
+        stream_name: impl Into<String>,
+        sql: impl Into<String>,
+        params: Vec<Value>,
+    ) -> Result<SqlResult, SqlError> {
+        let operation = SqlOperation::Query {
+            sql: sql.into(),
+            params: Some(params),
+        };
+
+        let response = self
+            .execute_operation(stream_name.into(), operation)
+            .await?;
+
+        match response {
+            SqlResponse::QueryResult { columns, rows } => Ok(SqlResult { columns, rows }),
+            SqlResponse::Error(e) => Err(SqlError::QueryError(e)),
+            _ => Err(SqlError::UnexpectedResponse),
+        }
+    }
+
+    /// Execute a parameterized SQL statement
+    pub async fn execute_with_params(
+        &self,
+        stream_name: impl Into<String>,
+        sql: impl Into<String>,
+        params: Vec<Value>,
+    ) -> Result<u64, SqlError> {
+        let operation = SqlOperation::Execute {
+            sql: sql.into(),
+            params: Some(params),
+        };
+
+        let response = self
+            .execute_operation(stream_name.into(), operation)
+            .await?;
+
+        match response {
+            SqlResponse::ExecuteResult { rows_affected, .. } => {
+                Ok(rows_affected.unwrap_or(0) as u64)
+            }
+            SqlResponse::Error(e) => Err(SqlError::ExecuteError(e)),
+            _ => Err(SqlError::UnexpectedResponse),
+        }
     }
 
     /// Count rows in a table with optional WHERE clause

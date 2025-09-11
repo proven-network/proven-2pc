@@ -1218,6 +1218,11 @@ impl<'a> PlanContext<'a> {
 
             ast::Expression::Operator(op) => self.resolve_operator(op),
 
+            ast::Expression::Parameter(idx) => {
+                // Keep parameters as-is for prepared statements
+                Ok(Expression::Parameter(idx))
+            }
+
             ast::Expression::All => {
                 Err(Error::ExecutionError("* not valid in this context".into()))
             }

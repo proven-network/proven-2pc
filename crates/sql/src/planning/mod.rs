@@ -9,6 +9,7 @@ pub mod optimizer;
 pub mod plan;
 pub mod planner;
 pub mod predicate;
+pub mod prepared_cache;
 
 // Re-export main types
 pub use optimizer::Optimizer;
