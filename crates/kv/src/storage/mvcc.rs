@@ -241,6 +241,52 @@ impl MvccStorage {
         created_visible && not_deleted
     }
 
+    /// Get a compacted view of the storage (latest committed version per key)
+    /// Used for creating snapshots when no transactions are active
+    pub fn get_compacted_data(&self) -> HashMap<String, Value> {
+        let mut result = HashMap::new();
+
+        for (key, versions) in &self.versions {
+            // Find the latest committed version that isn't deleted
+            for version in versions.iter().rev() {
+                if self.committed_transactions.contains(&version.created_by)
+                    && version.deleted_by.is_none()
+                {
+                    result.insert(key.clone(), version.value.clone());
+                    break;
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Restore from compacted data
+    /// Should only be called on a fresh MVCC storage instance
+    pub fn restore_from_compacted(&mut self, data: HashMap<String, Value>) {
+        use proven_hlc::NodeId;
+
+        // Clear any existing data
+        self.versions.clear();
+        self.committed_transactions.clear();
+        self.transaction_start_times.clear();
+
+        // Create a special "restore" transaction that's already committed
+        let restore_txn = HlcTimestamp::new(0, 0, NodeId::new(0));
+        self.committed_transactions.insert(restore_txn);
+
+        // Add all data as committed versions
+        for (key, value) in data {
+            let version = VersionedValue {
+                value,
+                created_by: restore_txn,
+                created_at: restore_txn,
+                deleted_by: None,
+            };
+            self.versions.insert(key, vec![version]);
+        }
+    }
+
     /// Get statistics about the storage
     pub fn stats(&self) -> StorageStats {
         let total_keys = self.versions.len();

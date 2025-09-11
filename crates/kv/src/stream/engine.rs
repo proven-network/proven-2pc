@@ -285,6 +285,61 @@ impl TransactionEngine for KvTransactionEngine {
     fn engine_name(&self) -> &str {
         "kv"
     }
+
+    fn snapshot(&self) -> Result<Vec<u8>, String> {
+        // Only snapshot when no active transactions
+        if !self.active_transactions.is_empty() {
+            return Err("Cannot snapshot with active transactions".to_string());
+        }
+
+        // Define the snapshot structure
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct KvSnapshot {
+            // Compacted data - only latest committed version per key
+            data: HashMap<String, Value>,
+        }
+
+        // Get compacted data from MVCC storage
+        let compacted = self.storage.get_compacted_data();
+
+        let snapshot = KvSnapshot { data: compacted };
+
+        // Serialize with CBOR
+        let mut buf = Vec::new();
+        ciborium::into_writer(&snapshot, &mut buf)
+            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
+
+        // Compress with zstd (level 3 is a good balance)
+        let compressed = zstd::encode_all(&buf[..], 3)
+            .map_err(|e| format!("Failed to compress snapshot: {}", e))?;
+
+        Ok(compressed)
+    }
+
+    fn restore_from_snapshot(&mut self, data: &[u8]) -> Result<(), String> {
+        // Decompress the data
+        let decompressed =
+            zstd::decode_all(data).map_err(|e| format!("Failed to decompress snapshot: {}", e))?;
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct KvSnapshot {
+            data: HashMap<String, Value>,
+        }
+
+        // Deserialize snapshot
+        let snapshot: KvSnapshot = ciborium::from_reader(&decompressed[..])
+            .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
+
+        // Clear existing state
+        self.storage = MvccStorage::new();
+        self.lock_manager = LockManager::new();
+        self.active_transactions.clear();
+
+        // Restore compacted data
+        self.storage.restore_from_compacted(snapshot.data);
+
+        Ok(())
+    }
 }
 
 impl Default for KvTransactionEngine {
