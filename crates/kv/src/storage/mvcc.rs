@@ -6,12 +6,13 @@
 use crate::types::Value;
 use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// A versioned value in storage
 #[derive(Debug, Clone)]
 pub struct VersionedValue {
-    /// The actual value
-    pub value: Value,
+    /// The actual value (wrapped in Arc for cheap clones)
+    pub value: Arc<Value>,
     /// Transaction that created this version
     pub created_by: HlcTimestamp,
     /// When this version was created
@@ -79,7 +80,7 @@ impl MvccStorage {
     }
 
     /// Get the visible version of a key for a transaction
-    pub fn get(&self, key: &str, tx_id: HlcTimestamp) -> Option<&Value> {
+    pub fn get(&self, key: &str, tx_id: HlcTimestamp) -> Option<Arc<Value>> {
         let versions = self.versions.get(key)?;
         let tx_start = self
             .transaction_start_times
@@ -89,7 +90,7 @@ impl MvccStorage {
 
         // Find the latest visible version
         self.find_visible_version(versions, tx_id, tx_start)
-            .map(|v| &v.value)
+            .map(|v| v.value.clone()) // Cheap Arc clone
     }
 
     /// Put a new value for a key
@@ -129,7 +130,7 @@ impl MvccStorage {
 
         // Add the new version
         let new_version = VersionedValue {
-            value,
+            value: Arc::new(value),
             created_by: tx_id,
             created_at: timestamp,
             deleted_by: None,
@@ -259,7 +260,8 @@ impl MvccStorage {
                 if self.committed_transactions.contains(&version.created_by)
                     && version.deleted_by.is_none()
                 {
-                    result.insert(key.clone(), version.value.clone());
+                    // Dereference the Arc to get the actual value for snapshot
+                    result.insert(key.clone(), (*version.value).clone());
                     break;
                 }
             }
@@ -285,7 +287,7 @@ impl MvccStorage {
         // Add all data as committed versions
         for (key, value) in data {
             let version = VersionedValue {
-                value,
+                value: Arc::new(value),
                 created_by: restore_txn,
                 created_at: restore_txn,
                 deleted_by: None,
@@ -373,7 +375,7 @@ mod tests {
 
         // Should see our own write
         assert_eq!(
-            storage.get("key1", tx1),
+            storage.get("key1", tx1).as_deref(),
             Some(&Value::String("value1".to_string()))
         );
 
@@ -385,7 +387,7 @@ mod tests {
         // After commit, other transaction should see it
         storage.commit_transaction(tx1);
         assert_eq!(
-            storage.get("key1", tx2),
+            storage.get("key1", tx2).as_deref(),
             Some(&Value::String("value1".to_string()))
         );
     }
@@ -417,7 +419,7 @@ mod tests {
 
         // tx2 sees its own write
         assert_eq!(
-            storage.get("key1", tx2),
+            storage.get("key1", tx2).as_deref(),
             Some(&Value::String("value2".to_string()))
         );
 
@@ -428,7 +430,7 @@ mod tests {
         let tx3 = create_timestamp(300);
         storage.register_transaction(tx3, tx3);
         assert_eq!(
-            storage.get("key1", tx3),
+            storage.get("key1", tx3).as_deref(),
             Some(&Value::String("value1".to_string()))
         );
     }

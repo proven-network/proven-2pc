@@ -57,7 +57,7 @@ impl KvTransactionEngine {
 
                 OperationResult::Success(KvResponse::GetResult {
                     key: key.to_string(),
-                    value: value.cloned(),
+                    value: value.map(|arc| (*arc).clone()),
                 })
             }
             LockAttemptResult::Conflict { holder, mode } => {
@@ -93,7 +93,7 @@ impl KvTransactionEngine {
                     .grant(txn_id, key.to_string(), LockMode::Exclusive);
 
                 // Get the previous value for the response
-                let previous = self.storage.get(key, txn_id).cloned();
+                let previous = self.storage.get(key, txn_id).map(|arc| (*arc).clone());
 
                 // Write to storage
                 self.storage
