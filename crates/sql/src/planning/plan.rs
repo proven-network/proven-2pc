@@ -36,6 +36,7 @@ pub enum Plan {
     CreateTable {
         name: String,
         schema: crate::types::schema::Table,
+        if_not_exists: bool,
     },
 
     /// DROP TABLE

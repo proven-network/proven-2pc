@@ -30,6 +30,7 @@ fn execute_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) -
 
     match result {
         OperationResult::Success(response) => response,
+        OperationResult::Error(err) => panic!("SQL execution failed: {} - Error: {}", sql, err),
         _ => panic!("SQL execution failed: {}", sql),
     }
 }

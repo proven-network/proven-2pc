@@ -116,7 +116,11 @@ impl Planner {
 
             ast::Statement::Delete { table, r#where } => self.plan_delete(table, r#where),
 
-            ast::Statement::CreateTable { name, columns } => self.plan_create_table(name, columns),
+            ast::Statement::CreateTable {
+                name,
+                columns,
+                if_not_exists,
+            } => self.plan_create_table(name, columns, if_not_exists),
 
             ast::Statement::DropTable { name, if_exists } => {
                 Ok(Plan::DropTable { name, if_exists })
@@ -542,7 +546,12 @@ impl Planner {
     }
 
     /// Plan CREATE TABLE
-    fn plan_create_table(&self, name: String, columns: Vec<ast::Column>) -> Result<Plan> {
+    fn plan_create_table(
+        &self,
+        name: String,
+        columns: Vec<ast::Column>,
+        if_not_exists: bool,
+    ) -> Result<Plan> {
         // Convert AST columns to schema
         let mut schema_columns = Vec::new();
         let mut primary_key_idx = None;
@@ -588,6 +597,7 @@ impl Planner {
         Ok(Plan::CreateTable {
             name,
             schema: table,
+            if_not_exists,
             // TODO: Pass indexed_columns to executor somehow
         })
     }

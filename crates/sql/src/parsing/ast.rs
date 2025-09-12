@@ -26,6 +26,8 @@ pub enum Statement {
         name: String,
         /// Column specifications.
         columns: Vec<Column>,
+        /// IF NOT EXISTS: if true, don't error if the table already exists.
+        if_not_exists: bool,
     },
     /// DROP TABLE: drops a table.
     DropTable {

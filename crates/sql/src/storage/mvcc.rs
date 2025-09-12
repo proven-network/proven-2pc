@@ -89,6 +89,8 @@ pub struct VersionedTable {
     pub index_columns: HashMap<String, Vec<String>>,
     /// Map from index name to included columns (for covering indexes)
     pub index_included_columns: HashMap<String, Vec<String>>,
+    /// Map from index name to whether it's a unique index
+    pub unique_indexes: HashMap<String, bool>,
     /// Next row ID for inserts
     pub next_id: u64,
     /// Track committed transactions
@@ -103,13 +105,18 @@ impl VersionedTable {
         let mut indexes = HashMap::new();
         let mut index_columns = HashMap::new();
         let index_included_columns = HashMap::new();
+        let mut unique_indexes = HashMap::new();
 
         for column in &schema.columns {
             if column.index || column.primary_key || column.unique {
                 // Create single-column index
                 let index_name = column.name.clone();
                 indexes.insert(index_name.clone(), BTreeMap::new());
-                index_columns.insert(index_name, vec![column.name.clone()]);
+                index_columns.insert(index_name.clone(), vec![column.name.clone()]);
+                // Mark as unique if column is unique or primary key
+                if column.unique || column.primary_key {
+                    unique_indexes.insert(index_name, true);
+                }
             }
         }
 
@@ -120,6 +127,7 @@ impl VersionedTable {
             indexes,
             index_columns,
             index_included_columns,
+            unique_indexes,
             next_id: 1,
             committed_transactions: HashSet::new(),
             transaction_start_times: HashMap::new(),
@@ -161,13 +169,12 @@ impl VersionedTable {
 
         // Check unique constraints before inserting
         for (index_name, column_names) in &self.index_columns.clone() {
-            // Check if this is a unique index (all columns must be unique/pk for composite to be unique)
-            let is_unique = column_names.iter().all(|col_name| {
-                self.schema
-                    .columns
-                    .iter()
-                    .any(|c| c.name == *col_name && (c.unique || c.primary_key))
-            });
+            // Check if this is a unique index
+            let is_unique = self
+                .unique_indexes
+                .get(index_name)
+                .copied()
+                .unwrap_or(false);
 
             if is_unique && let Some(index) = self.indexes.get(index_name) {
                 // Build composite key from values
@@ -307,12 +314,11 @@ impl VersionedTable {
         // Check unique constraints for new values
         for (index_name, column_names) in &self.index_columns.clone() {
             // Check if this is a unique index
-            let is_unique = column_names.iter().all(|col_name| {
-                self.schema
-                    .columns
-                    .iter()
-                    .any(|c| c.name == *col_name && (c.unique || c.primary_key))
-            });
+            let is_unique = self
+                .unique_indexes
+                .get(index_name)
+                .copied()
+                .unwrap_or(false);
 
             if is_unique && let Some(index) = self.indexes.get(index_name) {
                 // Build composite keys from old and new values
@@ -819,6 +825,8 @@ impl VersionedTable {
             self.index_included_columns
                 .insert(index_name.clone(), included);
         }
+        // Store unique flag
+        self.unique_indexes.insert(index_name, unique);
 
         Ok(())
     }
@@ -1438,10 +1446,7 @@ impl MvccStorage {
     /// Create a new table
     pub fn create_table(&mut self, name: String, schema: Table) -> Result<()> {
         if self.tables.contains_key(&name) {
-            return Err(Error::InvalidValue(format!(
-                "Table {} already exists",
-                name
-            )));
+            return Err(Error::DuplicateTable(name.clone()));
         }
 
         self.tables
@@ -1464,10 +1469,18 @@ impl MvccStorage {
         use crate::planning::plan::Plan;
 
         match plan {
-            Plan::CreateTable { name, schema } => {
-                self.create_table(name.clone(), schema.clone())?;
-                Ok(format!("Table '{}' created", name))
-            }
+            Plan::CreateTable {
+                name,
+                schema,
+                if_not_exists,
+            } => match self.create_table(name.clone(), schema.clone()) {
+                Ok(_) => Ok(format!("Table '{}' created", name)),
+                Err(Error::DuplicateTable(_)) if *if_not_exists => Ok(format!(
+                    "Table '{}' already exists (IF NOT EXISTS specified)",
+                    name
+                )),
+                Err(e) => Err(e),
+            },
 
             Plan::DropTable { name, if_exists } => match self.drop_table(name) {
                 Ok(_) => Ok(format!("Table '{}' dropped", name)),
@@ -1681,6 +1694,7 @@ impl MvccStorage {
                 next_id: table.next_id,
                 indexes: table.index_columns.clone(),
                 index_included_columns: table.index_included_columns.clone(),
+                unique_indexes: table.unique_indexes.clone(),
             };
 
             compacted_tables.insert(table_name.clone(), compacted_table);
@@ -1720,6 +1734,7 @@ impl MvccStorage {
             // Restore indexes structure
             table.index_columns = compacted_table.indexes;
             table.index_included_columns = compacted_table.index_included_columns;
+            table.unique_indexes = compacted_table.unique_indexes;
 
             // Initialize index storage
             for index_name in table.index_columns.keys() {
@@ -1748,10 +1763,9 @@ impl MvccStorage {
                             .columns
                             .iter()
                             .position(|c| &c.name == col_name)
+                            && col_idx < row.values.len()
                         {
-                            if col_idx < row.values.len() {
-                                key_values.push(row.values[col_idx].clone());
-                            }
+                            key_values.push(row.values[col_idx].clone());
                         }
                     }
 
@@ -1769,7 +1783,7 @@ impl MvccStorage {
                             .get_mut(index_name)
                             .unwrap()
                             .entry(composite_key)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(entry);
                     }
                 }
@@ -1795,6 +1809,7 @@ pub struct CompactedTableData {
     pub next_id: u64,
     pub indexes: HashMap<String, Vec<String>>,
     pub index_included_columns: HashMap<String, Vec<String>>,
+    pub unique_indexes: HashMap<String, bool>,
 }
 
 #[cfg(test)]

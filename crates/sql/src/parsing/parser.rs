@@ -71,6 +71,27 @@ impl Parser<'_> {
         }
     }
 
+    /// Returns the next identifier or keyword as identifier (for contexts where keywords can be identifiers).
+    fn next_ident_or_keyword(&mut self) -> Result<String> {
+        match self.next()? {
+            Token::Ident(ident) => Ok(ident),
+            // Allow certain keywords to be used as identifiers
+            Token::Keyword(Keyword::Text) => Ok("text".to_string()),
+            Token::Keyword(Keyword::String) => Ok("string".to_string()),
+            Token::Keyword(Keyword::Int) => Ok("int".to_string()),
+            Token::Keyword(Keyword::Integer) => Ok("integer".to_string()),
+            Token::Keyword(Keyword::Bool) => Ok("bool".to_string()),
+            Token::Keyword(Keyword::Boolean) => Ok("boolean".to_string()),
+            Token::Keyword(Keyword::Float) => Ok("float".to_string()),
+            Token::Keyword(Keyword::Double) => Ok("double".to_string()),
+            Token::Keyword(Keyword::Varchar) => Ok("varchar".to_string()),
+            token => Err(Error::ParseError(format!(
+                "expected identifier, got {}",
+                token
+            ))),
+        }
+    }
+
     /// Returns the next lexer token if it satisfies the predicate.
     fn next_if(&mut self, predicate: impl Fn(&Token) -> bool) -> Option<Token> {
         self.peek().ok()?.filter(|t| predicate(t))?;
@@ -197,6 +218,16 @@ impl Parser<'_> {
     /// Parses a CREATE TABLE statement (after CREATE).
     fn parse_create_table_inner(&mut self) -> Result<ast::Statement> {
         self.expect(Keyword::Table.into())?;
+
+        // Check for IF NOT EXISTS
+        let if_not_exists = if self.next_is(Keyword::If.into()) {
+            self.expect(Keyword::Not.into())?;
+            self.expect(Keyword::Exists.into())?;
+            true
+        } else {
+            false
+        };
+
         let name = self.next_ident()?;
         self.expect(Token::OpenParen)?;
         let mut columns = Vec::new();
@@ -207,12 +238,16 @@ impl Parser<'_> {
             }
         }
         self.expect(Token::CloseParen)?;
-        Ok(ast::Statement::CreateTable { name, columns })
+        Ok(ast::Statement::CreateTable {
+            name,
+            columns,
+            if_not_exists,
+        })
     }
 
     /// Parses a CREATE TABLE column definition.
     fn parse_create_table_column(&mut self) -> Result<ast::Column> {
-        let name = self.next_ident()?;
+        let name = self.next_ident_or_keyword()?;
         let datatype = match self.next()? {
             Token::Keyword(Keyword::Bool | Keyword::Boolean) => DataType::Boolean,
             Token::Keyword(Keyword::Int | Keyword::Integer) => DataType::Integer,
