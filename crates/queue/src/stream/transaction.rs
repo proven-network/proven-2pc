@@ -143,7 +143,10 @@ impl QueueTransactionManager {
                 Ok(QueueResponse::Dequeued(value))
             }
             QueueOperation::Peek { queue_name } => {
-                let value = self.storage.peek(queue_name, tx_id).cloned();
+                let value = self
+                    .storage
+                    .peek(queue_name, tx_id)
+                    .map(|arc| (*arc).clone());
                 Ok(QueueResponse::Peeked(value))
             }
             QueueOperation::Size { queue_name } => {
