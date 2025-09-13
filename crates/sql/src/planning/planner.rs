@@ -1339,16 +1339,75 @@ impl Planner {
         match plan {
             Plan::Select(node) => self.extract_node_predicates(node),
 
-            Plan::Insert { table, source, .. } => {
+            Plan::Insert {
+                table,
+                source,
+                columns,
+            } => {
                 // Get source predicates to find what values we're inserting
                 let source_predicates = self.extract_node_predicates(source);
 
-                // For now, assume we're inserting to the whole table
-                // A better implementation would extract specific PKs from the source
+                // Try to extract primary key values from the source
+                let insert_predicates = if let Some(schema) = self.schemas.get(table) {
+                    if let Some(pk_idx) = schema.primary_key {
+                        // We have a primary key, try to extract values
+                        let mut pk_predicates = Vec::new();
+
+                        // Check if source is VALUES with concrete rows
+                        if let Node::Values { rows } = &**source {
+                            for row in rows {
+                                // Determine which expression contains the primary key
+                                let pk_expr = if let Some(column_mapping) = columns {
+                                    // Columns specified - find which maps to primary key
+                                    column_mapping
+                                        .iter()
+                                        .position(|&idx| idx == pk_idx)
+                                        .and_then(|pos| row.get(pos))
+                                } else {
+                                    // No column mapping - direct positional
+                                    row.get(pk_idx)
+                                };
+
+                                // Extract primary key value if it's a constant
+                                if let Some(expr) = pk_expr {
+                                    if let Expression::Constant(value) = expr {
+                                        pk_predicates.push(Predicate::primary_key(
+                                            table.clone(),
+                                            value.clone(),
+                                        ));
+                                    } else {
+                                        // Non-literal PK (expression, function, etc.)
+                                        // Fall back to full table lock
+                                        pk_predicates.clear();
+                                        pk_predicates.push(Predicate::full_table(table.clone()));
+                                        break;
+                                    }
+                                } else {
+                                    // Couldn't find PK value
+                                    pk_predicates.clear();
+                                    pk_predicates.push(Predicate::full_table(table.clone()));
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Source is not VALUES (e.g., INSERT SELECT)
+                            pk_predicates.push(Predicate::full_table(table.clone()));
+                        }
+
+                        pk_predicates
+                    } else {
+                        // No primary key defined - use full table
+                        vec![Predicate::full_table(table.clone())]
+                    }
+                } else {
+                    // Table not found in schema
+                    vec![Predicate::full_table(table.clone())]
+                };
+
                 QueryPredicates {
                     reads: source_predicates.reads,
                     writes: vec![],
-                    inserts: vec![Predicate::full_table(table.clone())],
+                    inserts: insert_predicates,
                 }
             }
 
