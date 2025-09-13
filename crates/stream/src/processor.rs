@@ -1065,24 +1065,20 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         let stream_name_clone = stream_name.clone();
         let stream_name_task = stream_name.clone();
         let handle = tokio::spawn(async move {
-            println!(
-                "🚀 Live processing started for stream: {}",
-                stream_name_task
-            );
+            tracing::debug!("Live processing started for stream: {}", stream_name_task);
             match self
                 .run_live_processing_with_stream(shutdown_rx, live_stream)
                 .await
             {
                 Ok(()) => {
-                    println!("✅ Live processing for {} ended normally", stream_name_task);
+                    tracing::debug!("Live processing for {} ended normally", stream_name_task);
                 }
                 Err(e) => {
-                    println!("❌ PROCESSOR CRASHED for {}: {:?}", stream_name_task, e);
                     tracing::error!("Live processing for {} failed: {:?}", stream_name_task, e);
                 }
             }
-            println!(
-                "🛑 Live processing task exited for stream: {}",
+            tracing::debug!(
+                "Live processing task exited for stream: {}",
                 stream_name_clone
             );
         });
@@ -1095,13 +1091,14 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     // Task completed normally
                 }
                 Err(e) if e.is_panic() => {
-                    println!(
-                        "💥 PANIC DETECTED in processor for {}: {:?}",
-                        stream_name_monitor, e
+                    tracing::error!(
+                        "Panic detected in processor for {}: {:?}",
+                        stream_name_monitor,
+                        e
                     );
                 }
                 Err(e) => {
-                    println!("⚠️ Task join error for {}: {:?}", stream_name_monitor, e);
+                    tracing::warn!("Task join error for {}: {:?}", stream_name_monitor, e);
                 }
             }
         });
