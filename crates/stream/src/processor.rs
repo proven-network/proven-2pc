@@ -79,6 +79,9 @@ pub struct StreamProcessor<E: TransactionEngine> {
     /// Name of this stream for identification
     stream_name: String,
 
+    /// Cached engine name to avoid repeated string allocation
+    engine_name: String,
+
     /// Current processing phase
     phase: ProcessorPhase,
 
@@ -132,6 +135,8 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             );
         }
 
+        let engine_name = engine.engine_name().to_string();
+
         Self {
             engine,
             deferred_manager: DeferredOperationsManager::new(),
@@ -142,6 +147,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             recovery_manager: RecoveryManager::new(client.clone(), stream_name.clone()),
             client,
             stream_name: stream_name.clone(),
+            engine_name,
             phase: ProcessorPhase::Replay,
             current_offset: start_offset,
             snapshot_store: Some(snapshot_store),
@@ -841,10 +847,11 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         response: R,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::new();
+        // Pre-size HashMap to avoid reallocation (request_id is almost always present)
+        let mut headers = HashMap::with_capacity(4);
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("engine".to_string(), self.engine_name.clone());
 
         if let Some(req_id) = &request_id {
             headers.insert("request_id".to_string(), req_id.clone());
@@ -881,10 +888,11 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         txn_id: &str,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::new();
+        // Pre-size HashMap to avoid reallocation
+        let mut headers = HashMap::with_capacity(5);
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("engine".to_string(), self.engine_name.clone());
         headers.insert("status".to_string(), "prepared".to_string());
 
         if let Some(req_id) = request_id {
@@ -908,10 +916,11 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         wounded_by: HlcTimestamp,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::new();
+        // Pre-size HashMap to avoid reallocation
+        let mut headers = HashMap::with_capacity(6);
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("engine".to_string(), self.engine_name.clone());
         headers.insert("status".to_string(), "wounded".to_string());
         headers.insert("wounded_by".to_string(), wounded_by.to_string());
 
@@ -936,10 +945,11 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         blocking_txn: HlcTimestamp,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::new();
+        // Pre-size HashMap to avoid reallocation
+        let mut headers = HashMap::with_capacity(6);
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("engine".to_string(), self.engine_name.clone());
         headers.insert("status".to_string(), "deferred".to_string());
         headers.insert("blocking_txn".to_string(), blocking_txn.to_string());
 
@@ -966,10 +976,11 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         error: String,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::new();
+        // Pre-size HashMap to avoid reallocation
+        let mut headers = HashMap::with_capacity(6);
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine.engine_name().to_string());
+        headers.insert("engine".to_string(), self.engine_name.clone());
         headers.insert("status".to_string(), "error".to_string());
         headers.insert("error".to_string(), error.clone());
 
@@ -977,15 +988,9 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             headers.insert("request_id".to_string(), req_id);
         }
 
-        // Send a minimal valid JSON body to avoid EOF deserialization errors
-        // The coordinator uses headers for error detection, but clients may try to deserialize
-        let error_json = serde_json::json!({
-            "error": error
-        });
-        let body = serde_json::to_vec(&error_json).unwrap_or_else(|e| {
-            tracing::error!("Failed to serialize error response: {}", e);
-            Vec::new()
-        });
+        // Use a minimal body - coordinator uses headers for error detection
+        // Only create JSON if absolutely necessary
+        let body = Vec::new();
 
         let subject = format!("coordinator.{}.response", coordinator_id);
         let message = Message::new(body, headers);

@@ -8,6 +8,7 @@ use proven_hlc::HlcTimestamp;
 use proven_runner::Runner;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Transaction state in the coordinator
@@ -88,6 +89,9 @@ pub struct Transaction {
 
     /// Runner for ensuring processors are running
     runner: Arc<Runner>,
+
+    /// Request counter for generating unique request IDs
+    request_counter: Arc<AtomicU64>,
 }
 
 impl Transaction {
@@ -108,6 +112,7 @@ impl Transaction {
             response_collector,
             coordinator_id,
             runner,
+            request_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -136,9 +141,10 @@ impl Transaction {
     /// The operation bytes and response bytes are opaque to the coordinator.
     /// Clients handle serialization/deserialization.
     pub async fn execute(&self, stream: String, operation: Vec<u8>) -> Result<Vec<u8>> {
-        // Calculate timeout based on remaining time until deadline
-        let timeout = {
-            let meta = self.metadata.lock();
+        // Batch metadata operations under a single lock
+        let (timeout, deadline_str, _is_first_participant) = {
+            let mut meta = self.metadata.lock();
+
             // Get current physical time in microseconds
             let now_micros = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -152,21 +158,20 @@ impl Transaction {
 
             // Calculate remaining time and convert to Duration
             let remaining_micros = meta.deadline.physical - now_micros;
-            Duration::from_micros(remaining_micros)
-        };
+            let timeout = Duration::from_micros(remaining_micros);
 
-        // Check if this is first contact with stream and include deadline if so
-        let deadline_str = {
-            let mut meta = self.metadata.lock();
-            if !meta.participants.contains(&stream) {
+            // Check if this is first contact with stream
+            let is_first_participant = meta.participants.is_empty();
+            let deadline_str = if !meta.participants.contains(&stream) {
                 meta.participants.push(stream.clone());
 
-                // Track initial offset for this participant (0 for now, could be enhanced)
-                meta.participant_offsets.insert(stream.clone(), 0);
-
-                // Initialize awareness tracking
-                meta.participant_awareness
-                    .insert(stream.clone(), Default::default());
+                // For single-stream transactions, skip the extra tracking overhead
+                if !is_first_participant {
+                    // Only do complex tracking for multi-stream transactions
+                    meta.participant_offsets.insert(stream.clone(), 0);
+                    meta.participant_awareness
+                        .insert(stream.clone(), Default::default());
+                }
 
                 // Mark this stream as having received the deadline
                 meta.streams_with_deadline.insert(stream.clone());
@@ -175,18 +180,17 @@ impl Transaction {
                 Some(meta.deadline.to_string())
             } else {
                 None
-            }
+            };
+
+            (timeout, deadline_str, is_first_participant)
         };
 
-        // Generate request ID for correlation
+        // Generate request ID for correlation using atomic counter
         let request_id = format!(
             "op-{}-{}-{}",
             self.id,
             stream,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
+            self.request_counter.fetch_add(1, Ordering::Relaxed)
         );
 
         // Build message headers
@@ -298,14 +302,11 @@ impl Transaction {
             meta.state = TransactionState::Preparing;
         }
 
-        // Send prepare_and_commit
+        // Send prepare_and_commit using atomic counter
         let request_id = format!(
             "prepare_commit-{}-{}",
             self.id,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
+            self.request_counter.fetch_add(1, Ordering::Relaxed)
         );
 
         let mut headers = HashMap::new();
@@ -358,14 +359,11 @@ impl Transaction {
             meta.state = TransactionState::Preparing;
         }
 
-        // Generate request ID for this prepare round
+        // Generate request ID for this prepare round using atomic counter
         let request_id = format!(
             "prepare-{}-{}",
             self.id,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
+            self.request_counter.fetch_add(1, Ordering::Relaxed)
         );
 
         // Send prepare to all participants
@@ -471,6 +469,12 @@ impl Transaction {
     /// Calculate new participants that a stream doesn't know about
     fn calculate_new_participants(&self, stream: &str) -> HashMap<String, u64> {
         let meta = self.metadata.lock();
+
+        // Fast path: single-stream transactions have no other participants
+        if meta.participants.len() <= 1 {
+            return HashMap::new();
+        }
+
         let mut new_participants = HashMap::new();
 
         let stream_awareness = meta
