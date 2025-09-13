@@ -450,7 +450,8 @@ impl Transaction {
 
         if !all_prepared {
             // Abort if any participant couldn't prepare
-            return self.abort().await;
+            self.abort().await?;
+            return Err(CoordinatorError::TransactionAborted);
         }
 
         // Update state to prepared

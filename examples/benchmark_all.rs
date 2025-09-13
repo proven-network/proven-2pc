@@ -15,8 +15,10 @@ use proven_runner::Runner;
 use proven_snapshot_memory::MemorySnapshotStore;
 use proven_sql::types::value::Value as SqlValue;
 use proven_sql_client::SqlClient;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::task::JoinSet;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,7 +81,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
         coordinators.push(coordinator);
     }
-    println!("✓ Created {} coordinators\n", NUM_COORDINATORS);
+    println!("✓ Created {} coordinators", NUM_COORDINATORS);
+
+    // Warm up each coordinator with a test transaction to ensure channels are ready
+    println!("  Warming up coordinators...");
+    for (idx, coordinator) in coordinators.iter().enumerate() {
+        match coordinator.begin(Duration::from_secs(1)).await {
+            Ok(txn) => {
+                // Do a simple operation to fully exercise the path
+                let kv = KvClient::new(txn.clone());
+                let _ = kv.get("kv_stream", "warmup_key").await;
+                let _ = txn.commit().await;
+                println!("    ✓ Coordinator {} ready", idx);
+            }
+            Err(e) => {
+                eprintln!("    ⚠ Coordinator {} warmup failed: {}", idx, e);
+            }
+        }
+    }
+    // Additional delay after warmup
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    println!("  Ready!\n");
 
     // Use first coordinator for setup
     let coordinator = &coordinators[0];
@@ -139,215 +161,355 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Coordinators:     {}", NUM_COORDINATORS);
     println!("\nStarting benchmark...\n");
 
+    // Shared counters for progress tracking
+    let successful_txns = Arc::new(AtomicUsize::new(0));
+    let failed_txns = Arc::new(AtomicUsize::new(0));
+    let total_completed = Arc::new(AtomicUsize::new(0));
+    let total_retries = Arc::new(AtomicUsize::new(0));
+
     let start_time = Instant::now();
-    let mut successful_txns = 0;
-    let mut failed_txns = 0;
 
-    for i in 0..NUM_TRANSACTIONS {
-        // Select coordinator in round-robin fashion
-        let coordinator = &coordinators[i % NUM_COORDINATORS];
+    // Create tasks for each coordinator
+    let mut tasks = JoinSet::new();
+    let txns_per_coordinator = NUM_TRANSACTIONS / NUM_COORDINATORS;
 
-        // Begin a distributed transaction
-        let txn = match coordinator.begin(Duration::from_secs(5)).await {
-            Ok(t) => t,
+    for (coordinator_idx, coordinator) in coordinators.into_iter().enumerate() {
+        let successful = successful_txns.clone();
+        let failed = failed_txns.clone();
+        let completed = total_completed.clone();
+        let retries = total_retries.clone();
+        let start_time_clone = start_time;
+
+        tasks.spawn(async move {
+            let start_idx = coordinator_idx * txns_per_coordinator;
+            let end_idx = if coordinator_idx == NUM_COORDINATORS - 1 {
+                NUM_TRANSACTIONS // Last coordinator handles any remainder
+            } else {
+                start_idx + txns_per_coordinator
+            };
+
+            for i in start_idx..end_idx {
+                // Retry loop for each transaction
+                const MAX_RETRIES: usize = 3;
+                let mut retry_count = 0;
+                let mut transaction_succeeded = false;
+
+                while retry_count < MAX_RETRIES && !transaction_succeeded {
+                    // Begin a distributed transaction
+                    let txn = match coordinator.begin(Duration::from_secs(5)).await {
+                        Ok(t) => t,
+                        Err(_e) => {
+                            retry_count += 1;
+                            retries.fetch_add(1, Ordering::Relaxed);
+                            if retry_count >= MAX_RETRIES {
+                                failed.fetch_add(1, Ordering::Relaxed);
+                                completed.fetch_add(1, Ordering::Relaxed);
+                            }
+                            continue;
+                        }
+                    };
+
+                    // Create clients for this transaction
+                    let kv = KvClient::new(txn.clone());
+                    let queue = QueueClient::new(txn.clone());
+                    let resource = ResourceClient::new(txn.clone());
+                    let sql = SqlClient::new(txn.clone());
+
+                    // Track if all operations succeed
+                    let mut all_succeeded = true;
+
+                    // 1. KV Put operation
+                    let kv_key = format!("key_{:08}", i);
+                    let kv_value = match i % 5 {
+                        0 => Value::Integer(i as i64),
+                        1 => Value::String(format!("value_{}", i)),
+                        2 => Value::Boolean(i % 2 == 0),
+                        3 => Value::Bytes(format!("data_{}", i % 1000).into_bytes()),
+                        _ => Value::List(vec![
+                            Value::Integer(i as i64),
+                            Value::String(format!("item_{}", i % 100)),
+                        ]),
+                    };
+
+                    if let Err(e) = kv.put("kv_stream", &kv_key, kv_value).await {
+                        eprintln!(
+                            "[Coordinator {}] KV put failed in txn {}: {}",
+                            coordinator_idx, i, e
+                        );
+                        all_succeeded = false;
+                    }
+
+                    // 2. Queue Enqueue operation
+                    let queue_name = "benchmark_queue";
+                    let queue_value = match i % 6 {
+                        0 => QueueValue::Integer(i as i64),
+                        1 => QueueValue::String(format!("message_{}", i)),
+                        2 => QueueValue::Boolean(i % 2 == 0),
+                        3 => QueueValue::Float(i as f64 * 1.5),
+                        4 => QueueValue::Bytes(format!("queue_data_{}", i).into_bytes()),
+                        _ => QueueValue::String(format!(
+                            "json_{{id:{},timestamp:{},type:benchmark}}",
+                            i,
+                            start_time_clone.elapsed().as_millis()
+                        )),
+                    };
+
+                    if let Err(e) = queue.enqueue("queue_stream", queue_name, queue_value).await {
+                        eprintln!(
+                            "[Coordinator {}] Queue enqueue failed in txn {}: {}",
+                            coordinator_idx, i, e
+                        );
+                        all_succeeded = false;
+                    }
+
+                    // 3. Resource Transfer operation
+                    let from_account = if i % 2 == 0 {
+                        "treasury".to_string()
+                    } else {
+                        format!("account_{}", i % NUM_ACCOUNTS)
+                    };
+                    let to_account = if i % 2 == 0 {
+                        format!("account_{}", i % NUM_ACCOUNTS)
+                    } else {
+                        "treasury".to_string()
+                    };
+                    let transfer_amount = match i % 5 {
+                        0 => 1, // 1 token
+                        1 => 0, // Skip very small amounts to avoid issues
+                        2 => 0, // Skip very small amounts
+                        3 => 0, // Skip very small amounts
+                        _ => 0, // Skip very small amounts
+                    };
+
+                    if transfer_amount > 0 {
+                        if let Err(e) = resource
+                            .transfer_integer(
+                                "resource_stream",
+                                &from_account,
+                                &to_account,
+                                transfer_amount,
+                            )
+                            .await
+                        {
+                            // Resource transfers may fail due to insufficient balance
+                            // This is expected in a benchmark, don't mark as failed
+                            if !e.to_string().contains("Insufficient") {
+                                eprintln!(
+                                    "[Coordinator {}] Resource transfer failed in txn {}: {}",
+                                    coordinator_idx, i, e
+                                );
+                                all_succeeded = false;
+                            }
+                        }
+                    }
+
+                    // 4. SQL Insert operation - use a unique ID to avoid conflicts
+                    // Combine run timestamp with transaction number for guaranteed uniqueness
+                    let run_id = start_time_clone.elapsed().as_secs();
+                    let unique_id = (run_id * 1_000_000) + i as u64; // Guaranteed unique across runs
+
+                    // Use parameterized query for better performance and safety
+                    let params = vec![
+                        SqlValue::Integer(unique_id as i64),
+                        SqlValue::Integer((i * 2) as i64),
+                        SqlValue::String(format!("data_{}", i % 1000)),
+                        SqlValue::Integer(start_time_clone.elapsed().as_millis() as i64),
+                    ];
+
+                    if let Err(e) = sql
+                        .insert_with_params(
+                            "sql_stream",
+                            "benchmark",
+                            &["id", "value", "data", "timestamp"],
+                            params,
+                        )
+                        .await
+                    {
+                        eprintln!(
+                            "[Coordinator {}] SQL insert failed in txn {}: {}",
+                            coordinator_idx, i, e
+                        );
+                        all_succeeded = false;
+                    }
+
+                    // Commit or abort the transaction based on success
+                    if all_succeeded {
+                        match txn.commit().await {
+                            Ok(_) => {
+                                transaction_succeeded = true;
+                                successful.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(_e) => {
+                                retry_count += 1;
+                                retries.fetch_add(1, Ordering::Relaxed);
+                                if retry_count >= MAX_RETRIES {
+                                    failed.fetch_add(1, Ordering::Relaxed);
+                                    transaction_succeeded = true; // Mark as done to exit retry loop
+                                }
+                                // Otherwise, will retry
+                            }
+                        };
+                    } else {
+                        // Abort the transaction if any operation failed
+                        match txn.abort().await {
+                            Ok(_) => {
+                                // Retry the transaction
+                                retry_count += 1;
+                                retries.fetch_add(1, Ordering::Relaxed);
+                                if retry_count >= MAX_RETRIES {
+                                    failed.fetch_add(1, Ordering::Relaxed);
+                                    transaction_succeeded = true; // Mark as done to exit retry loop
+                                }
+                            }
+                            Err(_e) => {
+                                retry_count += 1;
+                                retries.fetch_add(1, Ordering::Relaxed);
+                                if retry_count >= MAX_RETRIES {
+                                    failed.fetch_add(1, Ordering::Relaxed);
+                                    transaction_succeeded = true; // Mark as done to exit retry loop
+                                }
+                            }
+                        }
+                    }
+                } // End of retry loop
+
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+
+            coordinator_idx
+        });
+    }
+
+    // Progress monitoring task
+    let monitor_successful = successful_txns.clone();
+    let monitor_failed = failed_txns.clone();
+    let monitor_completed = total_completed.clone();
+    let monitor_handle = tokio::spawn(async move {
+        let mut last_completed = 0;
+        let mut last_time = Instant::now();
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let current_completed = monitor_completed.load(Ordering::Relaxed);
+            if current_completed >= NUM_TRANSACTIONS {
+                break;
+            }
+
+            if current_completed - last_completed >= PROGRESS_INTERVAL {
+                let current_time = Instant::now();
+                let interval_duration = current_time.duration_since(last_time);
+                let interval_count = current_completed - last_completed;
+                let interval_throughput = interval_count as f64 / interval_duration.as_secs_f64();
+
+                let success = monitor_successful.load(Ordering::Relaxed);
+                let fail = monitor_failed.load(Ordering::Relaxed);
+
+                eprintln!(
+                    "[{:6}/{:6}] {:3}% | {:.0} txns/sec | Success: {} Failed: {}",
+                    current_completed,
+                    NUM_TRANSACTIONS,
+                    (current_completed * 100) / NUM_TRANSACTIONS,
+                    interval_throughput,
+                    success,
+                    fail
+                );
+
+                last_completed = current_completed;
+                last_time = current_time;
+            }
+        }
+    });
+
+    // Wait for all coordinators to complete
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(coordinator_idx) => {
+                println!("Coordinator {} completed", coordinator_idx);
+            }
             Err(e) => {
-                eprintln!("Failed to begin transaction {}: {}", i, e);
-                failed_txns += 1;
-                continue;
+                eprintln!("Coordinator task failed: {}", e);
             }
-        };
-
-        // Create clients for this transaction
-        let kv = KvClient::new(txn.clone());
-        let queue = QueueClient::new(txn.clone());
-        let resource = ResourceClient::new(txn.clone());
-        let sql = SqlClient::new(txn.clone());
-
-        // Track if all operations succeed
-        let mut all_succeeded = true;
-
-        // 1. KV Put operation
-        let kv_key = format!("key_{:08}", i);
-        let kv_value = match i % 5 {
-            0 => Value::Integer(i as i64),
-            1 => Value::String(format!("value_{}", i)),
-            2 => Value::Boolean(i % 2 == 0),
-            3 => Value::Bytes(format!("data_{}", i % 1000).into_bytes()),
-            _ => Value::List(vec![
-                Value::Integer(i as i64),
-                Value::String(format!("item_{}", i % 100)),
-            ]),
-        };
-
-        if let Err(e) = kv.put("kv_stream", &kv_key, kv_value).await {
-            eprintln!("KV put failed in txn {}: {}", i, e);
-            all_succeeded = false;
-        }
-
-        // 2. Queue Enqueue operation
-        let queue_name = "benchmark_queue";
-        let queue_value = match i % 6 {
-            0 => QueueValue::Integer(i as i64),
-            1 => QueueValue::String(format!("message_{}", i)),
-            2 => QueueValue::Boolean(i % 2 == 0),
-            3 => QueueValue::Float(i as f64 * 1.5),
-            4 => QueueValue::Bytes(format!("queue_data_{}", i).into_bytes()),
-            _ => QueueValue::String(format!(
-                "json_{{id:{},timestamp:{},type:benchmark}}",
-                i,
-                start_time.elapsed().as_millis()
-            )),
-        };
-
-        if let Err(e) = queue.enqueue("queue_stream", queue_name, queue_value).await {
-            eprintln!("Queue enqueue failed in txn {}: {}", i, e);
-            all_succeeded = false;
-        }
-
-        // 3. Resource Transfer operation
-        let from_account = if i % 2 == 0 {
-            "treasury".to_string()
-        } else {
-            format!("account_{}", i % NUM_ACCOUNTS)
-        };
-        let to_account = if i % 2 == 0 {
-            format!("account_{}", i % NUM_ACCOUNTS)
-        } else {
-            "treasury".to_string()
-        };
-        let transfer_amount = match i % 5 {
-            0 => 1, // 1 token
-            1 => 0, // Skip very small amounts to avoid issues
-            2 => 0, // Skip very small amounts
-            3 => 0, // Skip very small amounts
-            _ => 0, // Skip very small amounts
-        };
-
-        if transfer_amount > 0 {
-            if let Err(e) = resource
-                .transfer_integer(
-                    "resource_stream",
-                    &from_account,
-                    &to_account,
-                    transfer_amount,
-                )
-                .await
-            {
-                // Resource transfers may fail due to insufficient balance
-                // This is expected in a benchmark, don't mark as failed
-                if !e.to_string().contains("Insufficient") {
-                    eprintln!("Resource transfer failed in txn {}: {}", i, e);
-                    all_succeeded = false;
-                }
-            }
-        }
-
-        // 4. SQL Insert operation - use a unique ID to avoid conflicts
-        // Combine run timestamp with transaction number for guaranteed uniqueness
-        let run_id = start_time.elapsed().as_secs();
-        let unique_id = (run_id * 1_000_000) + i as u64; // Guaranteed unique across runs
-
-        // Use parameterized query for better performance and safety
-        let params = vec![
-            SqlValue::Integer(unique_id as i64),
-            SqlValue::Integer((i * 2) as i64),
-            SqlValue::String(format!("data_{}", i % 1000)),
-            SqlValue::Integer(start_time.elapsed().as_millis() as i64),
-        ];
-
-        if let Err(e) = sql
-            .insert_with_params(
-                "sql_stream",
-                "benchmark",
-                &["id", "value", "data", "timestamp"],
-                params,
-            )
-            .await
-        {
-            eprintln!("SQL insert failed in txn {}: {}", i, e);
-            all_succeeded = false;
-        }
-
-        // Commit or abort the transaction based on success
-        if all_succeeded {
-            match txn.commit().await {
-                Ok(_) => successful_txns += 1,
-                Err(e) => {
-                    eprintln!("Failed to commit txn {}: {}", i, e);
-                    failed_txns += 1;
-                }
-            }
-        } else {
-            // Abort the transaction if any operation failed
-            match txn.abort().await {
-                Ok(_) => {
-                    failed_txns += 1;
-                }
-                Err(e) => {
-                    eprintln!("Failed to abort txn {}: {}", i, e);
-                    failed_txns += 1;
-                }
-            }
-        }
-
-        // Progress indicator
-        if (i + 1) % PROGRESS_INTERVAL == 0 {
-            let elapsed = start_time.elapsed();
-            let throughput = (i + 1) as f64 / elapsed.as_secs_f64();
-            eprintln!(
-                "[{:6}/{:6}] {:3}% | {:.0} txns/sec | Success: {} Failed: {}",
-                i + 1,
-                NUM_TRANSACTIONS,
-                ((i + 1) * 100) / NUM_TRANSACTIONS,
-                throughput,
-                successful_txns,
-                failed_txns
-            );
         }
     }
+
+    // Stop monitoring
+    monitor_handle.abort();
 
     // Calculate final statistics
     let total_duration = start_time.elapsed();
     let total_seconds = total_duration.as_secs_f64();
-    let txn_throughput = successful_txns as f64 / total_seconds;
-    let op_throughput = (successful_txns * OPERATIONS_PER_TXN) as f64 / total_seconds;
+    let final_successful = successful_txns.load(Ordering::Relaxed);
+    let final_failed = failed_txns.load(Ordering::Relaxed);
+    let final_retries = total_retries.load(Ordering::Relaxed);
+    let txn_throughput = final_successful as f64 / total_seconds;
+    let op_throughput = (final_successful * OPERATIONS_PER_TXN) as f64 / total_seconds;
 
     println!("\n=== Benchmark Results ===");
     println!("Total transactions:      {}", NUM_TRANSACTIONS);
-    println!("Successful transactions: {}", successful_txns);
-    println!("Failed transactions:     {}", failed_txns);
+    println!("Successful transactions: {}", final_successful);
+    println!("Failed transactions:     {}", final_failed);
+    if final_retries > 0 {
+        println!("Transaction retries:     {}", final_retries);
+    }
     println!(
         "Success rate:            {:.1}%",
-        (successful_txns as f64 / NUM_TRANSACTIONS as f64) * 100.0
+        (final_successful as f64 / NUM_TRANSACTIONS as f64) * 100.0
     );
     println!("Total time:              {:.2} seconds", total_seconds);
     println!("Transaction throughput:  {:.0} txns/second", txn_throughput);
     println!("Operation throughput:    {:.0} ops/second", op_throughput);
     println!(
         "Avg latency:             {:.3} ms/transaction",
-        (total_seconds * 1000.0) / successful_txns as f64
+        (total_seconds * 1000.0) / final_successful as f64
     );
 
     println!("\nOperation breakdown:");
-    println!("- KV puts:          {}", successful_txns);
-    println!("- Queue enqueues:   {}", successful_txns);
-    println!("- Resource transfers: ~{}", successful_txns); // Some may fail due to balance
-    println!("- SQL inserts:      {}", successful_txns);
+    println!("- KV puts:          {}", final_successful);
+    println!("- Queue enqueues:   {}", final_successful);
+    println!("- Resource transfers: ~{}", final_successful); // Some may fail due to balance
+    println!("- SQL inserts:      {}", final_successful);
     println!(
         "- Total operations: ~{}",
-        successful_txns * OPERATIONS_PER_TXN
+        final_successful * OPERATIONS_PER_TXN
     );
 
-    // Verification phase
+    // Wait a bit for any pending operations to complete
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verification phase - create a new coordinator for verification
     println!("\n=== Verification Phase ===");
-    let verify_txn = coordinators[0].begin(Duration::from_secs(10)).await?;
+    let verify_coordinator_client = Arc::new(MockClient::new(
+        "verify-coordinator".to_string(),
+        engine.clone(),
+    ));
+    let verify_coordinator = Arc::new(Coordinator::new(
+        "verify-coordinator".to_string(),
+        verify_coordinator_client,
+        runner.clone(),
+    ));
+    let verify_txn = verify_coordinator.begin(Duration::from_secs(10)).await?;
     let kv_verify = KvClient::new(verify_txn.clone());
     let queue_verify = QueueClient::new(verify_txn.clone());
     let sql_verify = SqlClient::new(verify_txn.clone());
 
-    // Check a sample KV entry
-    if let Some(value) = kv_verify.get("kv_stream", "key_00000000").await? {
-        println!("✓ Sample KV entry found: {:?}", value);
+    // Check KV count by checking existence of keys
+    let mut kv_count = 0;
+    let mut missing_keys = Vec::new();
+    for i in 0..NUM_TRANSACTIONS {
+        let key = format!("key_{:08}", i);
+        if kv_verify.get("kv_stream", &key).await?.is_some() {
+            kv_count += 1;
+        } else {
+            missing_keys.push(i);
+        }
+    }
+    println!(
+        "✓ KV entries found: {} out of {}",
+        kv_count, NUM_TRANSACTIONS
+    );
+    if !missing_keys.is_empty() && missing_keys.len() <= 10 {
+        println!("  Missing KV keys for transactions: {:?}", missing_keys);
     }
 
     // Check queue size
@@ -362,15 +524,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(count) = count_result.column_values("cnt").first() {
         println!("✓ SQL table contains {} rows", count);
     }
-
-    verify_txn.commit().await?;
-
-    // Clean up
-    println!("\n=== Cleanup ===");
-    for coordinator in &coordinators {
-        coordinator.stop().await;
-    }
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     println!("\n✓ Benchmark complete!");
     Ok(())

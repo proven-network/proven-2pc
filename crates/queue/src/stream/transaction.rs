@@ -192,19 +192,20 @@ impl QueueTransactionManager {
 
     /// Commit a transaction
     pub fn commit_transaction(&mut self, tx_id: HlcTimestamp) -> Result<(), String> {
-        let tx = self
-            .transactions
-            .remove(&tx_id)
-            .ok_or_else(|| format!("Transaction {} not found", tx_id))?;
-
-        if tx.aborted {
+        // Remove transaction if it exists
+        if let Some(tx) = self.transactions.remove(&tx_id)
+            && tx.aborted
+        {
             return Err(format!("Cannot commit aborted transaction {}", tx_id));
         }
 
-        // Release all locks
+        // If transaction doesn't exist, we still proceed with cleanup
+        // This could happen if the transaction was already processed
+
+        // Release all locks (no-op if none exist)
         self.lock_manager.release_all(tx_id);
 
-        // Commit storage changes
+        // Commit storage changes (no-op if no changes)
         self.storage.commit_transaction(tx_id);
 
         Ok(())
@@ -212,17 +213,16 @@ impl QueueTransactionManager {
 
     /// Abort a transaction
     pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) -> Result<(), String> {
-        let mut tx = self
-            .transactions
-            .remove(&tx_id)
-            .ok_or_else(|| format!("Transaction {} not found", tx_id))?;
+        // Remove transaction if it exists and mark it as aborted
+        if let Some(mut tx) = self.transactions.remove(&tx_id) {
+            tx.abort();
+        }
+        // If transaction doesn't exist, treat as no-op (already cleaned up)
 
-        tx.abort();
-
-        // Release all locks
+        // Release all locks (no-op if none exist)
         self.lock_manager.release_all(tx_id);
 
-        // Rollback storage changes
+        // Rollback storage changes (no-op if no changes)
         self.storage.abort_transaction(tx_id);
 
         Ok(())

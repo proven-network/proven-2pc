@@ -29,6 +29,9 @@ pub enum CoordinatorError {
     #[error("Transaction deadline exceeded")]
     DeadlineExceeded,
 
+    #[error("Transaction was aborted")]
+    TransactionAborted,
+
     #[error("Transaction was wounded by {wounded_by}")]
     TransactionWounded { wounded_by: String },
 
