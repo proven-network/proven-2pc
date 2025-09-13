@@ -81,88 +81,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nStarting {} inserts...\n", NUM_INSERTS);
 
     let start_time = Instant::now();
-    let mut last_status_time = start_time;
-    let mut last_status_count = 0;
-    let mut successful_inserts = 0;
-    let mut failed_inserts = 0;
 
-    for i in 0..NUM_INSERTS {
-        // Begin a transaction for each insert (matching benchmark_inserts.rs behavior)
-        let txn = match coordinator.begin(Duration::from_secs(5)).await {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("\nError beginning transaction {}: {}", i, e);
-                failed_inserts += 1;
-                continue;
-            }
-        };
+    // Spawn the work in a task for better async scheduling (matching benchmark_parallel_coordinators)
+    let coordinator_clone = coordinator.clone();
+    let insert_task = tokio::spawn(async move {
+        let mut last_status_time = Instant::now();
+        let mut last_status_count = 0;
+        let mut successful_inserts = 0;
+        let mut failed_inserts = 0;
 
-        let sql = SqlClient::new(txn.clone());
+        for i in 0..NUM_INSERTS {
+            // Begin a transaction for each insert (matching benchmark_inserts.rs behavior)
+            let txn = match coordinator_clone.begin(Duration::from_secs(5)).await {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("\nError beginning transaction {}: {}", i, e);
+                    failed_inserts += 1;
+                    continue;
+                }
+            };
 
-        // Use parameterized insert (matching the data from benchmark_inserts.rs)
-        let params = vec![
-            SqlValue::Integer(i as i64),                    // id
-            SqlValue::Integer((i * 2) as i64),              // value (some computation)
-            SqlValue::String(format!("data_{}", i % 1000)), // data (repeating pattern)
-            SqlValue::Integer((2000000000 + i) as i64),     // timestamp
-        ];
+            let sql = SqlClient::new(txn.clone());
 
-        match sql
-            .insert_with_params(
-                "sql_stream",
-                "bench",
-                &["id", "value", "data", "timestamp"],
-                params,
-            )
-            .await
-        {
-            Ok(_) => {
-                // Commit the transaction
-                match txn.commit().await {
-                    Ok(_) => successful_inserts += 1,
-                    Err(e) => {
-                        eprintln!("\nError committing insert {}: {}", i, e);
-                        failed_inserts += 1;
+            // Use parameterized insert (matching the data from benchmark_inserts.rs)
+            let params = vec![
+                SqlValue::Integer(i as i64),                    // id
+                SqlValue::Integer((i * 2) as i64),              // value (some computation)
+                SqlValue::String(format!("data_{}", i % 1000)), // data (repeating pattern)
+                SqlValue::Integer((2000000000 + i) as i64),     // timestamp
+            ];
+
+            match sql
+                .insert_with_params(
+                    "sql_stream",
+                    "bench",
+                    &["id", "value", "data", "timestamp"],
+                    params,
+                )
+                .await
+            {
+                Ok(_) => {
+                    // Commit the transaction
+                    match txn.commit().await {
+                        Ok(_) => successful_inserts += 1,
+                        Err(e) => {
+                            eprintln!("\nError committing insert {}: {}", i, e);
+                            failed_inserts += 1;
+                        }
                     }
                 }
+                Err(e) => {
+                    eprintln!("\nError executing insert {}: {}", i, e);
+                    failed_inserts += 1;
+                    // Try to abort the transaction
+                    let _ = txn.abort().await;
+                }
             }
-            Err(e) => {
-                eprintln!("\nError executing insert {}: {}", i, e);
-                failed_inserts += 1;
-                // Try to abort the transaction
-                let _ = txn.abort().await;
+
+            // Progress indicator
+            if (i + 1) % PROGRESS_INTERVAL == 0 {
+                eprint!(".");
+                std::io::Write::flush(&mut std::io::stderr()).unwrap();
+            }
+
+            // Status update
+            if (i + 1) % STATUS_INTERVAL == 0 {
+                let current_time = Instant::now();
+                let interval_duration = current_time.duration_since(last_status_time);
+                let interval_count = (i + 1) - last_status_count;
+                let interval_throughput = interval_count as f64 / interval_duration.as_secs_f64();
+
+                eprintln!(
+                    "\n[{:7}/{:7}] {:3}% | Interval: {:.0} inserts/sec | Success: {} Failed: {}",
+                    i + 1,
+                    NUM_INSERTS,
+                    ((i + 1) * 100) / NUM_INSERTS,
+                    interval_throughput,
+                    successful_inserts,
+                    failed_inserts
+                );
+
+                last_status_time = current_time;
+                last_status_count = i + 1;
             }
         }
 
-        // Progress indicator
-        if (i + 1) % PROGRESS_INTERVAL == 0 {
-            eprint!(".");
-            std::io::Write::flush(&mut std::io::stderr()).unwrap();
+        eprintln!(); // New line after progress dots
+
+        (successful_inserts, failed_inserts)
+    });
+
+    // Wait for the task to complete
+    let (successful_inserts, failed_inserts) = match insert_task.await {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Insert task failed: {}", e);
+            (0, 0)
         }
-
-        // Status update
-        if (i + 1) % STATUS_INTERVAL == 0 {
-            let current_time = Instant::now();
-            let interval_duration = current_time.duration_since(last_status_time);
-            let interval_count = (i + 1) - last_status_count;
-            let interval_throughput = interval_count as f64 / interval_duration.as_secs_f64();
-
-            eprintln!(
-                "\n[{:7}/{:7}] {:3}% | Interval: {:.0} inserts/sec | Success: {} Failed: {}",
-                i + 1,
-                NUM_INSERTS,
-                ((i + 1) * 100) / NUM_INSERTS,
-                interval_throughput,
-                successful_inserts,
-                failed_inserts
-            );
-
-            last_status_time = current_time;
-            last_status_count = i + 1;
-        }
-    }
-
-    eprintln!(); // New line after progress dots
+    };
 
     // Calculate final statistics
     let total_duration = start_time.elapsed();
