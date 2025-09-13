@@ -116,6 +116,32 @@ impl SqlClient {
         self.execute(stream_name, sql).await
     }
 
+    /// Insert a single row using parameterized query
+    pub async fn insert_with_params(
+        &self,
+        stream_name: impl Into<String>,
+        table: &str,
+        columns: &[&str],
+        values: Vec<Value>,
+    ) -> Result<u64, SqlError> {
+        let stream_name = stream_name.into();
+        if columns.len() != values.len() {
+            return Err(SqlError::InvalidParameters(
+                "Column count doesn't match value count".to_string(),
+            ));
+        }
+
+        let columns_str = columns.join(", ");
+        let placeholders = vec!["?"; values.len()].join(", ");
+
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table, columns_str, placeholders
+        );
+
+        self.execute_with_params(stream_name, sql, values).await
+    }
+
     /// Update rows in a table
     pub async fn update(
         &self,

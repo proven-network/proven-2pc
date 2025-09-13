@@ -13,6 +13,7 @@ use proven_queue_client::QueueClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
 use proven_snapshot_memory::MemorySnapshotStore;
+use proven_sql::types::value::Value as SqlValue;
 use proven_sql_client::SqlClient;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -245,15 +246,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Combine run timestamp with transaction number for guaranteed uniqueness
         let run_id = start_time.elapsed().as_secs();
         let unique_id = (run_id * 1_000_000) + i as u64; // Guaranteed unique across runs
-        let sql_query = format!(
-            "INSERT INTO benchmark (id, value, data, timestamp) VALUES ({}, {}, 'data_{}', {})",
-            unique_id,
-            i * 2,
-            i % 1000,
-            start_time.elapsed().as_millis()
-        );
 
-        if let Err(e) = sql.execute("sql_stream", &sql_query).await {
+        // Use parameterized query for better performance and safety
+        let params = vec![
+            SqlValue::Integer(unique_id as i64),
+            SqlValue::Integer((i * 2) as i64),
+            SqlValue::String(format!("data_{}", i % 1000)),
+            SqlValue::Integer(start_time.elapsed().as_millis() as i64),
+        ];
+
+        if let Err(e) = sql
+            .insert_with_params(
+                "sql_stream",
+                "benchmark",
+                &["id", "value", "data", "timestamp"],
+                params,
+            )
+            .await
+        {
             eprintln!("SQL insert failed in txn {}: {}", i, e);
             all_succeeded = false;
         }
