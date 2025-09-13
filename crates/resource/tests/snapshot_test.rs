@@ -20,7 +20,7 @@ fn test_resource_snapshot_and_restore() {
         decimals: 8,
     };
     let result = engine1.apply_operation(init_op, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Mint some tokens to different accounts
     let mint1 = ResourceOperation::Mint {
@@ -29,7 +29,7 @@ fn test_resource_snapshot_and_restore() {
         memo: Some("Initial mint".to_string()),
     };
     let result = engine1.apply_operation(mint1, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     let mint2 = ResourceOperation::Mint {
         to: "bob".to_string(),
@@ -37,7 +37,7 @@ fn test_resource_snapshot_and_restore() {
         memo: None,
     };
     let result = engine1.apply_operation(mint2, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Commit transaction
     engine1.prepare(txn1).unwrap();
@@ -54,7 +54,7 @@ fn test_resource_snapshot_and_restore() {
         memo: None,
     };
     let result = engine1.apply_operation(transfer_op, txn2);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     engine1.prepare(txn2).unwrap();
     engine1.commit(txn2).unwrap();
@@ -76,7 +76,7 @@ fn test_resource_snapshot_and_restore() {
         account: "alice".to_string(),
     };
     let result = engine2.apply_operation(balance_op, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         if let ResourceResponse::Balance { amount, .. } = response {
             assert_eq!(amount, Amount::from_integer(900, 8));
         } else {
@@ -91,7 +91,7 @@ fn test_resource_snapshot_and_restore() {
         account: "bob".to_string(),
     };
     let result = engine2.apply_operation(balance_op, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         if let ResourceResponse::Balance { amount, .. } = response {
             assert_eq!(amount, Amount::from_integer(500, 8));
         } else {
@@ -104,7 +104,7 @@ fn test_resource_snapshot_and_restore() {
         account: "charlie".to_string(),
     };
     let result = engine2.apply_operation(balance_op, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         if let ResourceResponse::Balance { amount, .. } = response {
             assert_eq!(amount, Amount::from_integer(100, 8));
         } else {
@@ -115,7 +115,7 @@ fn test_resource_snapshot_and_restore() {
     // Check total supply (1500)
     let supply_op = ResourceOperation::GetTotalSupply;
     let result = engine2.apply_operation(supply_op, txn3);
-    if let OperationResult::Success(ResourceResponse::TotalSupply { amount }) = result {
+    if let OperationResult::Complete(ResourceResponse::TotalSupply { amount }) = result {
         assert_eq!(amount, Amount::from_integer(1500, 8));
     }
 }
@@ -195,13 +195,13 @@ fn test_snapshot_with_burns() {
         account: "treasury".to_string(),
     };
     let result = engine2.apply_operation(balance_op, txn3);
-    if let OperationResult::Success(ResourceResponse::Balance { amount, .. }) = result {
+    if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
         assert_eq!(amount, Amount::from_integer(8000, 6));
     }
 
     let supply_op = ResourceOperation::GetTotalSupply;
     let result = engine2.apply_operation(supply_op, txn3);
-    if let OperationResult::Success(ResourceResponse::TotalSupply { amount }) = result {
+    if let OperationResult::Complete(ResourceResponse::TotalSupply { amount }) = result {
         assert_eq!(amount, Amount::from_integer(8000, 6));
     }
 }
@@ -257,7 +257,7 @@ fn test_snapshot_compression() {
             account: format!("account_{}", i),
         };
         let result = engine2.apply_operation(balance_op, txn2);
-        if let OperationResult::Success(ResourceResponse::Balance { amount, .. }) = result {
+        if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
             assert_eq!(amount, standard_amount);
         }
     }
@@ -305,7 +305,7 @@ fn test_metadata_preserved_in_snapshot() {
 
     let metadata_op = ResourceOperation::GetMetadata;
     let result = engine2.apply_operation(metadata_op, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         if let ResourceResponse::Metadata {
             name,
             symbol,

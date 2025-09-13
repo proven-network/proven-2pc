@@ -51,7 +51,7 @@ fn main() {
 
         // Execute put directly on engine
         match kv_engine.apply_operation(put, txn_id) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
                 if let Err(e) = kv_engine.commit(txn_id) {
                     eprintln!("\nError committing put {}: {}", i, e);
@@ -112,7 +112,7 @@ fn main() {
         };
 
         match kv_engine.apply_operation(get, verify_txn) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 verified += 1;
             }
             _ => {

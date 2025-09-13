@@ -855,6 +855,7 @@ name = "proven-stream"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "parking_lot",
  "proven-engine",
  "proven-hlc",
  "proven-snapshot",

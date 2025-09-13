@@ -20,7 +20,7 @@ fn test_simple_snapshot() {
     };
     let result = engine1.apply_operation(create_table, txn1);
     println!("Create table result: {:?}", result);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
     engine1.commit(txn1).unwrap();
 
     // Insert one row
@@ -33,7 +33,7 @@ fn test_simple_snapshot() {
     };
     let result = engine1.apply_operation(insert, txn2);
     println!("Insert result: {:?}", result);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
     engine1.commit(txn2).unwrap();
 
     // Query before snapshot
@@ -68,7 +68,7 @@ fn test_simple_snapshot() {
     let result = engine2.apply_operation(query_tables, txn4);
     println!("Query after restore: {:?}", result);
 
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         let response_str = format!("{:?}", response);
         println!("Response string: {}", response_str);
         assert!(response_str.contains("TestName") || response_str.contains("String(\"TestName\")"));

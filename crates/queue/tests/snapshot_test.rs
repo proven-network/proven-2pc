@@ -21,21 +21,21 @@ fn test_queue_snapshot_and_restore() {
         value: QueueValue::String("order-123".to_string()),
     };
     let result = engine1.apply_operation(op1, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     let op2 = QueueOperation::Enqueue {
         queue_name: "orders".to_string(),
         value: QueueValue::String("order-456".to_string()),
     };
     let result = engine1.apply_operation(op2, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     let op3 = QueueOperation::Enqueue {
         queue_name: "notifications".to_string(),
         value: QueueValue::Integer(42),
     };
     let result = engine1.apply_operation(op3, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Commit transaction
     engine1.prepare(txn1).unwrap();
@@ -58,7 +58,7 @@ fn test_queue_snapshot_and_restore() {
         queue_name: "orders".to_string(),
     };
     let result = engine2.apply_operation(dequeue1, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(
             format!("{:?}", response),
             r#"Dequeued(Some(String("order-123")))"#
@@ -72,7 +72,7 @@ fn test_queue_snapshot_and_restore() {
         queue_name: "orders".to_string(),
     };
     let result = engine2.apply_operation(size_op, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(format!("{:?}", response), "Size(1)");
     }
 
@@ -81,7 +81,7 @@ fn test_queue_snapshot_and_restore() {
         queue_name: "notifications".to_string(),
     };
     let result = engine2.apply_operation(peek_op, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(format!("{:?}", response), "Peeked(Some(Integer(42)))");
     }
 }
@@ -163,7 +163,7 @@ fn test_snapshot_with_empty_queues() {
         queue_name: "temp".to_string(),
     };
     let result = engine2.apply_operation(is_empty, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(format!("{:?}", response), "IsEmpty(true)");
     }
 }
@@ -210,7 +210,7 @@ fn test_snapshot_compression() {
         queue_name: "queue0".to_string(),
     };
     let result = engine2.apply_operation(size_op, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         // queue0 should have 10 entries (i % 10 == 0 for i = 0, 10, 20, ..., 90)
         assert_eq!(format!("{:?}", response), "Size(10)");
     }
@@ -249,7 +249,7 @@ fn test_queue_ordering_preserved_in_snapshot() {
             queue_name: "ordered".to_string(),
         };
         let result = engine2.apply_operation(dequeue, txn2);
-        if let OperationResult::Success(response) = result {
+        if let OperationResult::Complete(response) = result {
             assert_eq!(
                 format!("{:?}", response),
                 format!("Dequeued(Some(Integer({})))", expected)

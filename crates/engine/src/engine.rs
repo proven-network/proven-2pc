@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::Stream as TokioStream;
 
 /// Type alias for request handler channels
-type RequestHandler = mpsc::Sender<(Message, oneshot::Sender<Message>)>;
+type RequestHandler = mpsc::UnboundedSender<(Message, oneshot::Sender<Message>)>;
 
 /// Consensus group identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,7 +49,7 @@ pub struct MockEngine {
     streams: Arc<StreamManager>,
 
     /// Pub/sub subscriptions
-    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>>,
+    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::UnboundedSender<Message>>>>>,
 
     /// Request/reply handlers
     request_handlers: Arc<Mutex<HashMap<String, RequestHandler>>>,
@@ -115,7 +115,7 @@ impl MockEngine {
         &self,
         stream_name: &str,
         start_sequence: Option<u64>,
-    ) -> Result<mpsc::Receiver<(Message, HlcTimestamp, u64)>> {
+    ) -> Result<mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)>> {
         self.streams.create_consumer(stream_name, start_sequence)
     }
 
@@ -129,7 +129,7 @@ impl MockEngine {
             if subject_matches(subject, pattern) {
                 for sub in subscribers {
                     for msg in &messages {
-                        let _ = sub.try_send(msg.clone());
+                        let _ = sub.send(msg.clone());
                         sent = true;
                     }
                 }
@@ -142,7 +142,7 @@ impl MockEngine {
             // For request handlers, we expect a single message and need a reply
             if messages.len() == 1 {
                 let (reply_tx, _reply_rx) = oneshot::channel();
-                let _ = handler.try_send((messages[0].clone(), reply_tx));
+                let _ = handler.send((messages[0].clone(), reply_tx));
                 sent = true;
             }
         }
@@ -156,8 +156,8 @@ impl MockEngine {
     }
 
     /// Subscribe to a subject pattern
-    pub fn subscribe(&self, subject_pattern: &str) -> mpsc::Receiver<Message> {
-        let (tx, rx) = mpsc::channel(1000);
+    pub fn subscribe(&self, subject_pattern: &str) -> mpsc::UnboundedReceiver<Message> {
+        let (tx, rx) = mpsc::unbounded_channel();
 
         let mut subs = self.subscriptions.lock();
         subs.entry(subject_pattern.to_string())
@@ -171,8 +171,8 @@ impl MockEngine {
     pub fn register_handler(
         &self,
         subject: &str,
-    ) -> mpsc::Receiver<(Message, oneshot::Sender<Message>)> {
-        let (tx, rx) = mpsc::channel(100);
+    ) -> mpsc::UnboundedReceiver<(Message, oneshot::Sender<Message>)> {
+        let (tx, rx) = mpsc::unbounded_channel();
 
         let mut handlers = self.request_handlers.lock();
         handlers.insert(subject.to_string(), tx);
@@ -194,7 +194,7 @@ impl MockEngine {
                 let (reply_tx, reply_rx) = oneshot::channel();
 
                 // Send the request to the handler
-                if handler.try_send((message, reply_tx)).is_err() {
+                if handler.send((message, reply_tx)).is_err() {
                     return Err(MockEngineError::ChannelClosed);
                 }
                 Some(reply_rx)

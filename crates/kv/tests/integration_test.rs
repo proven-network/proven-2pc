@@ -27,7 +27,7 @@ fn test_basic_get_put_delete() {
     };
     let result = engine.apply_operation(put_op, tx);
     match result {
-        OperationResult::Success(KvResponse::PutResult { key, previous }) => {
+        OperationResult::Complete(KvResponse::PutResult { key, previous }) => {
             assert_eq!(key, "test_key");
             assert_eq!(previous, None);
         }
@@ -40,7 +40,7 @@ fn test_basic_get_put_delete() {
     };
     let result = engine.apply_operation(get_op.clone(), tx);
     match result {
-        OperationResult::Success(KvResponse::GetResult { key, value }) => {
+        OperationResult::Complete(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "test_key");
             assert_eq!(value, Some(Value::String("test_value".to_string())));
         }
@@ -54,7 +54,7 @@ fn test_basic_get_put_delete() {
     };
     let result = engine.apply_operation(put_op, tx);
     match result {
-        OperationResult::Success(KvResponse::PutResult { key, previous }) => {
+        OperationResult::Complete(KvResponse::PutResult { key, previous }) => {
             assert_eq!(key, "test_key");
             assert_eq!(previous, Some(Value::String("test_value".to_string())));
         }
@@ -67,7 +67,7 @@ fn test_basic_get_put_delete() {
     };
     let result = engine.apply_operation(delete_op, tx);
     match result {
-        OperationResult::Success(KvResponse::DeleteResult { key, deleted }) => {
+        OperationResult::Complete(KvResponse::DeleteResult { key, deleted }) => {
             assert_eq!(key, "test_key");
             assert!(deleted);
         }
@@ -77,7 +77,7 @@ fn test_basic_get_put_delete() {
     // Test GET after DELETE - should return None
     let result = engine.apply_operation(get_op, tx);
     match result {
-        OperationResult::Success(KvResponse::GetResult { key, value }) => {
+        OperationResult::Complete(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "test_key");
             assert_eq!(value, None);
         }
@@ -102,7 +102,7 @@ fn test_transaction_isolation() {
         value: Value::Integer(42),
     };
     let result = engine.apply_operation(put_op, tx1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to read the same key (should be blocked due to write lock)
     let get_op = KvOperation::Get {
@@ -117,7 +117,7 @@ fn test_transaction_isolation() {
     // TX2: Now should be able to read
     let result = engine.apply_operation(get_op, tx2);
     match result {
-        OperationResult::Success(KvResponse::GetResult { key, value }) => {
+        OperationResult::Complete(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "isolated_key");
             assert_eq!(value, Some(Value::Integer(42)));
         }
@@ -156,7 +156,7 @@ fn test_transaction_abort_rollback() {
         };
         let result = engine.apply_operation(get_op, tx2);
         match result {
-            OperationResult::Success(KvResponse::GetResult { value, .. }) => {
+            OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
                 assert_eq!(value, None);
             }
             _ => panic!("Expected successful get"),
@@ -198,7 +198,7 @@ fn test_different_value_types() {
         };
         let result = engine.apply_operation(get_op, tx);
         match result {
-            OperationResult::Success(KvResponse::GetResult { value, .. }) => {
+            OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
                 assert_eq!(value, Some(expected_value.clone()));
             }
             _ => panic!("Expected successful get for key {}", key),
@@ -237,13 +237,13 @@ fn test_concurrent_reads_with_shared_locks() {
     };
 
     let result1 = engine.apply_operation(get_op.clone(), tx1);
-    assert!(matches!(result1, OperationResult::Success(_)));
+    assert!(matches!(result1, OperationResult::Complete(_)));
 
     let result2 = engine.apply_operation(get_op.clone(), tx2);
-    assert!(matches!(result2, OperationResult::Success(_)));
+    assert!(matches!(result2, OperationResult::Complete(_)));
 
     let result3 = engine.apply_operation(get_op, tx3);
-    assert!(matches!(result3, OperationResult::Success(_)));
+    assert!(matches!(result3, OperationResult::Complete(_)));
 
     assert!(engine.commit(tx1).is_ok());
     assert!(engine.commit(tx2).is_ok());
@@ -265,7 +265,7 @@ fn test_write_write_conflict() {
         value: Value::String("value1".to_string()),
     };
     let result = engine.apply_operation(put_op, tx1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to write to same key (should be blocked)
     let put_op = KvOperation::Put {
@@ -289,7 +289,7 @@ fn test_write_write_conflict() {
 
     // TX2: Retry write (should now succeed)
     let result = engine.apply_operation(put_op, tx2);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     assert!(engine.commit(tx2).is_ok());
 }
@@ -307,7 +307,7 @@ fn test_delete_non_existent_key() {
     };
     let result = engine.apply_operation(delete_op, tx);
     match result {
-        OperationResult::Success(KvResponse::DeleteResult { key, deleted }) => {
+        OperationResult::Complete(KvResponse::DeleteResult { key, deleted }) => {
             assert_eq!(key, "non_existent");
             assert!(!deleted); // Should indicate nothing was deleted
         }
@@ -338,7 +338,7 @@ fn test_read_lock_released_on_prepare() {
         },
         tx1,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to write to key1 (should be blocked)
     let result = engine.apply_operation(
@@ -371,7 +371,7 @@ fn test_read_lock_released_on_prepare() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 }
 
 #[test]
@@ -392,7 +392,7 @@ fn test_write_lock_not_released_on_prepare() {
         },
         tx1,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to read key1 (should be blocked)
     let result = engine.apply_operation(
@@ -447,7 +447,7 @@ fn test_write_lock_not_released_on_prepare() {
     );
 
     match result {
-        OperationResult::Success(KvResponse::GetResult { key, value }) => {
+        OperationResult::Complete(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "key1");
             assert_eq!(value, Some(Value::String("value1".to_string())));
         }
@@ -473,7 +473,7 @@ fn test_multiple_reads_released_on_prepare() {
             },
             tx1,
         );
-        assert!(matches!(result, OperationResult::Success(_)));
+        assert!(matches!(result, OperationResult::Complete(_)));
     }
 
     // TX2: Try to write to key2 (should be blocked)
@@ -507,7 +507,7 @@ fn test_multiple_reads_released_on_prepare() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Also write to key1 and key3 (should succeed)
     for key in ["key1", "key3"] {
@@ -518,7 +518,7 @@ fn test_multiple_reads_released_on_prepare() {
             },
             tx2,
         );
-        assert!(matches!(result, OperationResult::Success(_)));
+        assert!(matches!(result, OperationResult::Complete(_)));
     }
 }
 
@@ -599,7 +599,7 @@ fn test_mixed_locks_partial_release() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Write to key3 (should succeed - read lock released)
     let result = engine.apply_operation(
@@ -609,7 +609,7 @@ fn test_mixed_locks_partial_release() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Retry read of key2 (should still be blocked - write lock not released)
     let result = engine.apply_operation(

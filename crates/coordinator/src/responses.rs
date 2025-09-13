@@ -89,8 +89,9 @@ impl ResponseCollector {
                         .or_default()
                         .push(response);
 
-                    // Notify any waiters
-                    if let Some(notifier) = notifiers.lock().get(request_id) {
+                    // Notify any waiters - get notifier without holding lock
+                    let notifier = notifiers.lock().get(request_id).cloned();
+                    if let Some(notifier) = notifier {
                         notifier.notify_waiters();
                     }
                 }
@@ -156,17 +157,7 @@ impl ResponseCollector {
         request_id: String,
         timeout: Duration,
     ) -> Result<ResponseMessage> {
-        // Check if response already arrived
-        {
-            let mut responses = self.responses.lock();
-            if let Some(response_list) = responses.get_mut(&request_id)
-                && !response_list.is_empty()
-            {
-                return Ok(response_list.remove(0));
-            }
-        }
-
-        // Create or get notifier for this request
+        // Create or get notifier for this request FIRST
         let notifier = {
             let mut notifiers = self.notifiers.lock();
             notifiers
@@ -178,25 +169,57 @@ impl ResponseCollector {
         // Wait for notification with timeout
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
+            // CRITICAL: Create the notified future BEFORE checking for responses
+            // This prevents lost wakeups
+            let notified = notifier.notified();
+
+            // Check if response already arrived
+            // Use a block to ensure the lock is dropped before waiting
+            let response_opt = {
+                let mut responses = self.responses.lock();
+                if let Some(response_list) = responses.get_mut(&request_id) {
+                    if !response_list.is_empty() {
+                        Some(response_list.remove(0))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            // If we got a response, clean up if needed and return
+            if let Some(response) = response_opt {
+                // Check if we should clean up empty entries
+                {
+                    let mut responses = self.responses.lock();
+                    if let Some(response_list) = responses.get(&request_id)
+                        && response_list.is_empty()
+                    {
+                        responses.remove(&request_id);
+                        // Also remove notifier
+                        self.notifiers.lock().remove(&request_id);
+                    }
+                }
+                return Ok(response);
+            }
+
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
+                // Clean up notifier on timeout
+                self.notifiers.lock().remove(&request_id);
                 return Err(CoordinatorError::ResponseTimeout);
             }
 
             // Wait for notification or timeout
-            match tokio::time::timeout(remaining, notifier.notified()).await {
+            match tokio::time::timeout(remaining, notified).await {
                 Ok(()) => {
-                    // Check if we have a response now
-                    let mut responses = self.responses.lock();
-                    if let Some(response_list) = responses.get_mut(&request_id)
-                        && !response_list.is_empty()
-                    {
-                        return Ok(response_list.remove(0));
-                    }
-                    // Spurious wakeup, continue waiting
+                    // Loop will check for response again
+                    continue;
                 }
                 Err(_) => {
-                    // Timeout
+                    // Timeout - clean up notifier
+                    self.notifiers.lock().remove(&request_id);
                     return Err(CoordinatorError::ResponseTimeout);
                 }
             }

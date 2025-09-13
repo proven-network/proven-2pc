@@ -25,7 +25,7 @@ fn test_resource_lifecycle() {
 
     let result = engine.apply_operation(init_op, tx1);
     match result {
-        OperationResult::Success(ResourceResponse::Initialized {
+        OperationResult::Complete(ResourceResponse::Initialized {
             name,
             symbol,
             decimals,
@@ -51,7 +51,10 @@ fn test_resource_lifecycle() {
     };
 
     let result = engine.apply_operation(init_op, tx2);
-    assert!(matches!(result, OperationResult::Error(_)));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(ResourceResponse::Error(_))
+    ));
 
     engine.abort(tx2).unwrap();
 }
@@ -82,7 +85,7 @@ fn test_mint_and_burn() {
 
     let result = engine.apply_operation(mint_op, tx1);
     match result {
-        OperationResult::Success(ResourceResponse::Minted {
+        OperationResult::Complete(ResourceResponse::Minted {
             to,
             amount,
             new_balance,
@@ -111,7 +114,7 @@ fn test_mint_and_burn() {
 
     let result = engine.apply_operation(burn_op, tx2);
     match result {
-        OperationResult::Success(ResourceResponse::Burned {
+        OperationResult::Complete(ResourceResponse::Burned {
             from,
             amount,
             new_balance,
@@ -138,7 +141,7 @@ fn test_mint_and_burn() {
 
     let result = engine.apply_operation(balance_op, tx3);
     match result {
-        OperationResult::Success(ResourceResponse::Balance { account, amount }) => {
+        OperationResult::Complete(ResourceResponse::Balance { account, amount }) => {
             assert_eq!(account, "alice");
             assert_eq!(amount, Amount::from_integer(700, 8));
         }
@@ -148,7 +151,7 @@ fn test_mint_and_burn() {
     // Check total supply after mint and burn
     let result = engine.apply_operation(ResourceOperation::GetTotalSupply, tx3);
     match result {
-        OperationResult::Success(ResourceResponse::TotalSupply { amount }) => {
+        OperationResult::Complete(ResourceResponse::TotalSupply { amount }) => {
             assert_eq!(amount, Amount::from_integer(700, 8)); // 1000 minted - 300 burned
         }
         _ => panic!("Expected TotalSupply response"),
@@ -197,7 +200,7 @@ fn test_transfer() {
 
     let result = engine.apply_operation(transfer_op, tx2);
     match result {
-        OperationResult::Success(ResourceResponse::Transferred {
+        OperationResult::Complete(ResourceResponse::Transferred {
             from,
             to,
             amount,
@@ -235,14 +238,14 @@ fn test_transfer() {
     );
 
     match alice_balance {
-        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+        OperationResult::Complete(ResourceResponse::Balance { amount, .. }) => {
             assert_eq!(amount, Amount::from_integer(750, 6));
         }
         _ => panic!("Expected Balance response"),
     }
 
     match bob_balance {
-        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+        OperationResult::Complete(ResourceResponse::Balance { amount, .. }) => {
             assert_eq!(amount, Amount::from_integer(250, 6));
         }
         _ => panic!("Expected Balance response"),
@@ -290,7 +293,10 @@ fn test_insufficient_balance() {
     };
 
     let result = engine.apply_operation(transfer_op, tx2);
-    assert!(matches!(result, OperationResult::Error(_)));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(ResourceResponse::Error(_))
+    ));
 
     engine.abort(tx2).unwrap();
 
@@ -305,7 +311,10 @@ fn test_insufficient_balance() {
     };
 
     let result = engine.apply_operation(burn_op, tx3);
-    assert!(matches!(result, OperationResult::Error(_)));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(ResourceResponse::Error(_))
+    ));
 
     engine.abort(tx3).unwrap();
 }
@@ -355,7 +364,7 @@ fn test_concurrent_transfers_with_reservations() {
     };
 
     let result1 = engine.apply_operation(transfer1, tx2);
-    assert!(matches!(result1, OperationResult::Success(_)));
+    assert!(matches!(result1, OperationResult::Complete(_)));
 
     // Second transfer: alice -> charlie 50 (should block due to insufficient balance after reservation)
     let transfer2 = ResourceOperation::Transfer {
@@ -369,7 +378,10 @@ fn test_concurrent_transfers_with_reservations() {
     // Should block due to insufficient balance after tx2's reservation
     assert!(
         matches!(result2, OperationResult::WouldBlock { .. })
-            || matches!(result2, OperationResult::Error(_))
+            || matches!(
+                result2,
+                OperationResult::Complete(ResourceResponse::Error(_))
+            )
     );
 
     // Commit first transaction
@@ -391,7 +403,7 @@ fn test_concurrent_transfers_with_reservations() {
     };
 
     let result3 = engine.apply_operation(transfer3, tx4);
-    assert!(matches!(result3, OperationResult::Success(_)));
+    assert!(matches!(result3, OperationResult::Complete(_)));
 
     engine.prepare(tx4).unwrap();
     engine.commit(tx4).unwrap();
@@ -428,7 +440,7 @@ fn test_metadata_update() {
 
     let result = engine.apply_operation(update_op, tx2);
     match result {
-        OperationResult::Success(ResourceResponse::MetadataUpdated { name, symbol }) => {
+        OperationResult::Complete(ResourceResponse::MetadataUpdated { name, symbol }) => {
             assert_eq!(name, Some("Updated Token".to_string()));
             assert_eq!(symbol, None);
         }
@@ -444,7 +456,7 @@ fn test_metadata_update() {
 
     let result = engine.apply_operation(ResourceOperation::GetMetadata, tx3);
     match result {
-        OperationResult::Success(ResourceResponse::Metadata {
+        OperationResult::Complete(ResourceResponse::Metadata {
             name,
             symbol,
             decimals,
@@ -460,7 +472,7 @@ fn test_metadata_update() {
     // Also test GetTotalSupply
     let result = engine.apply_operation(ResourceOperation::GetTotalSupply, tx3);
     match result {
-        OperationResult::Success(ResourceResponse::TotalSupply { amount }) => {
+        OperationResult::Complete(ResourceResponse::TotalSupply { amount }) => {
             assert_eq!(amount, Amount::zero()); // No mints in this test
         }
         _ => panic!("Expected TotalSupply response"),
@@ -543,14 +555,14 @@ fn test_transaction_rollback() {
     );
 
     match alice_balance {
-        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+        OperationResult::Complete(ResourceResponse::Balance { amount, .. }) => {
             assert_eq!(amount, Amount::from_integer(1000, 0));
         }
         _ => panic!("Expected Balance response"),
     }
 
     match bob_balance {
-        OperationResult::Success(ResourceResponse::Balance { amount, .. }) => {
+        OperationResult::Complete(ResourceResponse::Balance { amount, .. }) => {
             assert_eq!(amount, Amount::from_integer(0, 0));
         }
         _ => panic!("Expected Balance response"),

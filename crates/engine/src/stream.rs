@@ -86,9 +86,7 @@ impl Stream {
         for consumer in &self.consumers {
             for (msg, timestamp, sequence) in &message_metadata {
                 // Send tuple to each consumer (ignore if channel is closed)
-                let _ = consumer
-                    .sender
-                    .try_send((msg.clone(), *timestamp, *sequence));
+                let _ = consumer.sender.send((msg.clone(), *timestamp, *sequence));
             }
         }
 
@@ -102,14 +100,14 @@ impl Stream {
     pub fn create_consumer(
         &mut self,
         start_sequence: Option<u64>,
-    ) -> mpsc::Receiver<(Message, HlcTimestamp, u64)> {
-        let (tx, rx) = mpsc::channel(1000);
+    ) -> mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)> {
+        let (tx, rx) = mpsc::unbounded_channel();
 
         // Send historical messages
         let start = start_sequence.unwrap_or(1) as usize;
         if start > 0 && start <= self.messages.len() {
             for (msg, timestamp, sequence) in &self.messages[start - 1..] {
-                let _ = tx.try_send((msg.clone(), *timestamp, *sequence));
+                let _ = tx.send((msg.clone(), *timestamp, *sequence));
             }
         }
 
@@ -159,7 +157,7 @@ pub enum DeadlineStreamItem {
 
 /// An active stream consumer
 struct StreamConsumer {
-    sender: mpsc::Sender<(Message, HlcTimestamp, u64)>,
+    sender: mpsc::UnboundedSender<(Message, HlcTimestamp, u64)>,
     #[allow(dead_code)]
     current_sequence: u64,
 }
@@ -208,7 +206,7 @@ impl StreamManager {
         &self,
         name: &str,
         start_sequence: Option<u64>,
-    ) -> Result<mpsc::Receiver<(Message, HlcTimestamp, u64)>> {
+    ) -> Result<mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)>> {
         let mut streams = self.streams.lock();
         let stream = streams
             .get_mut(name)

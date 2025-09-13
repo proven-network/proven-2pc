@@ -57,4 +57,7 @@ pub enum ResourceResponse {
 
     /// Total supply query result
     TotalSupply { amount: Amount },
+
+    /// Error occurred
+    Error(String),
 }

@@ -68,11 +68,11 @@ mod tests {
             match operation {
                 TestOperation::Read { key } => {
                     let value = self.data.get(&key).cloned();
-                    OperationResult::Success(TestResponse::Value(value))
+                    OperationResult::Complete(TestResponse::Value(value))
                 }
                 TestOperation::Write { key, value } => {
                     self.data.insert(key, value);
-                    OperationResult::Success(TestResponse::Success)
+                    OperationResult::Complete(TestResponse::Success)
                 }
             }
         }
@@ -167,26 +167,25 @@ mod tests {
         // Create and run processor in background
         let test_engine = TestEngine::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
-        let mut processor = StreamProcessor::new(
+        let processor = StreamProcessor::new(
             test_engine,
             client.clone(),
             "test-stream".to_string(),
             snapshot_store,
         );
 
-        // Run processor with a timeout
-        let processor_task = async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
-                    Ok(())
-                }
-            }
-        };
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-        // Wait for processor to complete with timeout
-        let result = processor_task.await;
+        // Start processor with replay
+        let result = processor.start_with_replay(shutdown_rx).await;
         assert!(result.is_ok());
+
+        // Give processor time to process
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
     }
 
     #[tokio::test]
@@ -245,34 +244,33 @@ mod tests {
             .await
             .unwrap();
 
-        // Create and run processor with timeout
+        // Create and run processor
         let test_engine = TestEngine::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
-        let mut processor = StreamProcessor::new(
+        let processor = StreamProcessor::new(
             test_engine,
             client.clone(),
             "test-stream".to_string(),
             snapshot_store,
         );
 
-        // Run processor in background with timeout
-        let processor_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)) => {
-                    Ok(())
-                }
-            }
-        });
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start processor with replay
+        processor.start_with_replay(shutdown_rx).await.unwrap();
 
         // Wait for responses with timeout
-        let timeout = tokio::time::Duration::from_millis(150);
+        let timeout = Duration::from_millis(150);
         let _op_response = tokio::time::timeout(timeout, responses.recv()).await.ok();
         let _prepare_response = tokio::time::timeout(timeout, responses.recv()).await.ok();
         let _commit_response = tokio::time::timeout(timeout, responses.recv()).await.ok();
 
-        // Wait for processor to finish
-        let _ = processor_handle.await;
+        // Give processor time to finish
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
     }
 
     #[tokio::test]
@@ -317,7 +315,7 @@ mod tests {
             },
             txn_id,
         );
-        assert!(matches!(result, OperationResult::Success(_)));
+        assert!(matches!(result, OperationResult::Complete(_)));
         engine2.commit(txn_id).unwrap();
         assert_eq!(engine2.data.get("key4"), Some(&"value4".to_string()));
     }
@@ -462,18 +460,17 @@ mod tests {
                 .unwrap();
         }
 
-        // Run processor briefly
-        let processor_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                    Ok(())
-                }
-            }
-        });
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start processor with replay
+        processor.start_with_replay(shutdown_rx).await.unwrap();
 
         // Wait for processing
-        let _ = processor_handle.await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
 
         // Wait a bit more for snapshot to be taken
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -520,7 +517,7 @@ mod tests {
         // Phase 1: Process some messages and create a snapshot
         {
             let engine = TestEngine::new();
-            let mut processor = StreamProcessor::new(
+            let processor = StreamProcessor::new(
                 engine,
                 client.clone(),
                 "test-stream".to_string(),
@@ -554,13 +551,17 @@ mod tests {
                     .unwrap();
             }
 
-            // Run processor to process all messages
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = processor.run() => {},
-                    _ = tokio::time::sleep(Duration::from_millis(200)) => {},
-                }
-            });
+            // Create shutdown channel
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+            // Start processor with replay
+            processor.start_with_replay(shutdown_rx).await.unwrap();
+
+            // Give processor time to process messages
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            // Shutdown the processor
+            let _ = shutdown_tx.send(());
 
             // Wait for processing
             tokio::time::sleep(Duration::from_millis(250)).await;

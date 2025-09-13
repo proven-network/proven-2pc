@@ -13,7 +13,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     /// Helper to generate test timestamps
     #[allow(dead_code)]
@@ -77,11 +77,11 @@ mod tests {
                         };
                     }
                     self.locks.insert(resource, txn_id);
-                    OperationResult::Success(TestResponse::Success {
+                    OperationResult::Complete(TestResponse::Success {
                         message: "Lock acquired".to_string(),
                     })
                 }
-                TestOp::Read { resource } => OperationResult::Success(TestResponse::Value {
+                TestOp::Read { resource } => OperationResult::Complete(TestResponse::Value {
                     data: format!("Data from {}", resource),
                 }),
             }
@@ -161,22 +161,21 @@ mod tests {
         // Start processor first
         let test_engine = TestEngine::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
-        let mut processor = StreamProcessor::new(
+        let processor = StreamProcessor::new(
             test_engine,
             client.clone(),
             "test-stream".to_string(),
             snapshot_store,
         );
 
-        let processor_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
-            }
-        });
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start processor with replay
+        processor.start_with_replay(shutdown_rx).await.unwrap();
 
         // Give processor time to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Younger transaction (3000) acquires lock first
         let msg = create_message(
@@ -228,7 +227,8 @@ mod tests {
             "Older should succeed after wounding"
         );
 
-        let _ = processor_handle.await;
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
     }
 
     #[tokio::test]
@@ -255,22 +255,21 @@ mod tests {
         // Start processor first
         let test_engine = TestEngine::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
-        let mut processor = StreamProcessor::new(
+        let processor = StreamProcessor::new(
             test_engine,
             client.clone(),
             "test-stream".to_string(),
             snapshot_store,
         );
 
-        let processor_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
-            }
-        });
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start processor with replay
+        processor.start_with_replay(shutdown_rx).await.unwrap();
 
         // Give processor time to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Older transaction (2000) acquires lock first
         let msg = create_message(
@@ -326,7 +325,8 @@ mod tests {
             "Younger should succeed after retry"
         );
 
-        let _ = processor_handle.await;
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
     }
 
     #[tokio::test]
@@ -349,22 +349,21 @@ mod tests {
         // Start processor first
         let test_engine = TestEngine::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
-        let mut processor = StreamProcessor::new(
+        let processor = StreamProcessor::new(
             test_engine,
             client.clone(),
             "test-stream".to_string(),
             snapshot_store,
         );
 
-        let processor_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
-            }
-        });
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start processor with replay
+        processor.start_with_replay(shutdown_rx).await.unwrap();
 
         // Give processor time to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Youngest (4000) gets lock
         let msg = create_message(
@@ -415,7 +414,8 @@ mod tests {
             "Oldest should succeed after wounding"
         );
 
-        let _ = processor_handle.await;
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
     }
 
     #[tokio::test]
@@ -488,19 +488,21 @@ mod tests {
         // Start processor
         let test_engine = TestEngine::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
-        let mut processor = StreamProcessor::new(
+        let processor = StreamProcessor::new(
             test_engine,
             client.clone(),
             "test-stream".to_string(),
             snapshot_store,
         );
 
-        let processor_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)) => Ok(())
-            }
-        });
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start processor with replay
+        processor.start_with_replay(shutdown_rx).await.unwrap();
+
+        // Give processor time to process
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Process responses
         for (_txn_id_str, coord_id, _resource) in operations {
@@ -541,7 +543,12 @@ mod tests {
             }
         }
 
-        let _ = processor_handle.await;
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
+
+        // Wait for processor to handle shutdown
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
         results
     }
 
@@ -565,22 +572,21 @@ mod tests {
         // Start processor first
         let test_engine = TestEngine::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
-        let mut processor = StreamProcessor::new(
+        let processor = StreamProcessor::new(
             test_engine,
             client.clone(),
             "test-stream".to_string(),
             snapshot_store,
         );
 
-        let processor_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = processor.run() => result,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => Ok(())
-            }
-        });
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start processor with replay
+        processor.start_with_replay(shutdown_rx).await.unwrap();
 
         // Give processor time to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Younger transaction acquires lock
         let msg = create_message(
@@ -631,6 +637,7 @@ mod tests {
             "Wounded transaction should not be able to prepare"
         );
 
-        let _ = processor_handle.await;
+        // Shutdown the processor
+        let _ = shutdown_tx.send(());
     }
 }

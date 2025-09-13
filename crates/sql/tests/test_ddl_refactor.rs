@@ -29,8 +29,18 @@ fn execute_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) -
     );
 
     match result {
-        OperationResult::Success(response) => response,
-        OperationResult::Error(err) => panic!("SQL execution failed: {} - Error: {}", sql, err),
+        OperationResult::Complete(SqlResponse::ExecuteResult {
+            result_type,
+            rows_affected,
+            message,
+        }) => SqlResponse::ExecuteResult {
+            result_type,
+            rows_affected,
+            message,
+        },
+        OperationResult::Complete(SqlResponse::Error(err)) => {
+            panic!("SQL execution failed: {} - Error: {}", sql, err)
+        }
         _ => panic!("SQL execution failed: {}", sql),
     }
 }
@@ -50,7 +60,7 @@ fn execute_sql_expect_error(
     );
 
     match result {
-        OperationResult::Error(msg) => msg,
+        OperationResult::Complete(SqlResponse::Error(msg)) => msg,
         _ => panic!("Expected error for SQL: {}", sql),
     }
 }

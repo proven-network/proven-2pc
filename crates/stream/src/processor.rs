@@ -9,13 +9,17 @@ use crate::deferred::DeferredOperationsManager;
 use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::{ProcessorError, Result};
 use crate::recovery::{RecoveryManager, TransactionDecision};
+use proven_engine::client::MessageStream;
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
 use proven_snapshot::SnapshotStore;
 use serde::Serialize;
+use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 
 /// Processing phase for the stream processor
 #[derive(Debug, Clone)]
@@ -92,9 +96,12 @@ pub struct StreamProcessor<E: TransactionEngine> {
 
     /// Snapshot configuration
     pub snapshot_config: SnapshotConfig,
+
+    /// Flag indicating if replay is complete and processor is ready
+    is_ready: Arc<AtomicBool>,
 }
 
-impl<E: TransactionEngine> StreamProcessor<E> {
+impl<E: TransactionEngine + Send> StreamProcessor<E> {
     /// Create a new stream processor with snapshot store (starts in replay mode)
     pub fn new(
         mut engine: E,
@@ -143,6 +150,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             last_log_timestamp: last_timestamp,
             commits_since_snapshot: 0,
             snapshot_config: SnapshotConfig::default(),
+            is_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -404,10 +412,18 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
         // Handle auto-commit if specified
         if message.is_auto_commit() {
-            self.engine
-                .commit(txn_id)
-                .map_err(ProcessorError::EngineError)?;
-            self.retry_deferred_operations(txn_id).await;
+            match self.engine.commit(txn_id) {
+                Ok(()) => {
+                    self.retry_deferred_operations(txn_id).await;
+                }
+                Err(e) => {
+                    println!(
+                        "[{}] ERROR: Auto-commit failed for txn {}: {}",
+                        self.stream_name, txn_id, e
+                    );
+                    return Err(ProcessorError::EngineError(e));
+                }
+            }
         }
 
         Ok(())
@@ -423,7 +439,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         request_id: Option<String>,
     ) -> Result<()> {
         match self.engine.apply_operation(operation.clone(), txn_id) {
-            OperationResult::Success(response) => {
+            OperationResult::Complete(response) => {
                 self.send_response(coordinator_id, txn_id_str, response, request_id);
                 Ok(())
             }
@@ -439,7 +455,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
                     // Retry the operation after wounding
                     match self.engine.apply_operation(operation.clone(), txn_id) {
-                        OperationResult::Success(response) => {
+                        OperationResult::Complete(response) => {
                             self.send_response(coordinator_id, txn_id_str, response, request_id);
                             Ok(())
                         }
@@ -464,15 +480,6 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                             );
                             Ok(())
                         }
-                        OperationResult::Error(msg) => {
-                            self.send_error_response(
-                                coordinator_id,
-                                txn_id_str,
-                                msg.clone(),
-                                request_id,
-                            );
-                            Err(ProcessorError::EngineError(msg))
-                        }
                     }
                 } else {
                     // We're younger - must wait
@@ -492,11 +499,6 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                     );
                     Ok(())
                 }
-            }
-
-            OperationResult::Error(msg) => {
-                self.send_error_response(coordinator_id, txn_id_str, msg.clone(), request_id);
-                Err(ProcessorError::EngineError(msg))
             }
         }
     }
@@ -557,6 +559,10 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                 Ok(())
             }
             Err(e) => {
+                println!(
+                    "[{}] ERROR: Prepare failed in handle_prepare for txn {}: {}",
+                    self.stream_name, txn_id, e
+                );
                 if let Some(coord_id) = coordinator_id {
                     self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
                 }
@@ -615,7 +621,17 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                     }
                     Err(e) => {
                         // Commit failed, abort
-                        let _ = self.engine.abort(txn_id);
+                        println!(
+                            "[{}] ERROR: Commit failed for txn {}: {}",
+                            self.stream_name, txn_id, e
+                        );
+                        let abort_result = self.engine.abort(txn_id);
+                        if let Err(abort_err) = abort_result {
+                            println!(
+                                "[{}] ERROR: Abort failed after commit failure for txn {}: {}",
+                                self.stream_name, txn_id, abort_err
+                            );
+                        }
                         if let Some(coord_id) = coordinator_id {
                             self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
                         }
@@ -625,7 +641,17 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             }
             Err(e) => {
                 // Prepare failed, abort
-                let _ = self.engine.abort(txn_id);
+                println!(
+                    "[{}] ERROR: Prepare failed for txn {}: {}",
+                    self.stream_name, txn_id, e
+                );
+                let abort_result = self.engine.abort(txn_id);
+                if let Err(abort_err) = abort_result {
+                    println!(
+                        "[{}] ERROR: Abort failed after prepare failure for txn {}: {}",
+                        self.stream_name, txn_id, abort_err
+                    );
+                }
                 if let Some(coord_id) = coordinator_id {
                     self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
                 }
@@ -642,15 +668,21 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
     ) -> Result<()> {
-        self.engine
-            .commit(txn_id)
-            .map_err(ProcessorError::EngineError)?;
-
-        // Clean up wounded tracking
-        self.wounded_transactions.remove(&txn_id);
-
-        self.retry_deferred_operations(txn_id).await;
-        Ok(())
+        match self.engine.commit(txn_id) {
+            Ok(()) => {
+                // Clean up wounded tracking
+                self.wounded_transactions.remove(&txn_id);
+                self.retry_deferred_operations(txn_id).await;
+                Ok(())
+            }
+            Err(e) => {
+                println!(
+                    "[{}] ERROR: Commit failed in handle_commit for txn {}: {}",
+                    self.stream_name, txn_id, e
+                );
+                Err(ProcessorError::EngineError(e))
+            }
+        }
     }
 
     /// Handle abort phase
@@ -661,17 +693,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
     ) -> Result<()> {
-        self.engine
-            .abort(txn_id)
-            .map_err(ProcessorError::EngineError)?;
-
-        // Clean up wounded tracking
-        self.wounded_transactions.remove(&txn_id);
-
-        self.deferred_manager
-            .remove_operations_for_transaction(&txn_id);
-        self.retry_deferred_operations(txn_id).await;
-        Ok(())
+        match self.engine.abort(txn_id) {
+            Ok(()) => {
+                // Clean up wounded tracking
+                self.wounded_transactions.remove(&txn_id);
+                self.deferred_manager
+                    .remove_operations_for_transaction(&txn_id);
+                self.retry_deferred_operations(txn_id).await;
+                Ok(())
+            }
+            Err(e) => {
+                println!(
+                    "[{}] ERROR: Abort failed in handle_abort for txn {}: {}",
+                    self.stream_name, txn_id, e
+                );
+                Err(ProcessorError::EngineError(e))
+            }
+        }
     }
 
     /// Run recovery check for transactions past their deadline
@@ -808,14 +846,24 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         headers.insert("participant".to_string(), self.stream_name.clone());
         headers.insert("engine".to_string(), self.engine.engine_name().to_string());
 
-        if let Some(req_id) = request_id {
-            headers.insert("request_id".to_string(), req_id);
+        if let Some(req_id) = &request_id {
+            headers.insert("request_id".to_string(), req_id.clone());
         }
 
-        let body = serde_json::to_vec(&response).unwrap_or_else(|e| {
-            tracing::error!("Failed to serialize response: {}", e);
-            Vec::new()
-        });
+        let body = match serde_json::to_vec(&response) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                // If we can't serialize the response, send an error instead
+                tracing::error!("Failed to serialize response: {}", e);
+                self.send_error_response(
+                    coordinator_id,
+                    txn_id,
+                    format!("Failed to serialize response: {}", e),
+                    request_id,
+                );
+                return;
+            }
+        };
 
         let subject = format!("coordinator.{}.response", coordinator_id);
         let message = Message::new(body, headers);
@@ -908,7 +956,9 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         });
     }
 
-    /// Send an error response
+    /// Send an infrastructure error response
+    /// These are errors that occur outside of normal operation processing
+    /// (e.g., deadline exceeded, prepare failures, etc.)
     fn send_error_response(
         &self,
         coordinator_id: &str,
@@ -921,14 +971,24 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         headers.insert("participant".to_string(), self.stream_name.clone());
         headers.insert("engine".to_string(), self.engine.engine_name().to_string());
         headers.insert("status".to_string(), "error".to_string());
-        headers.insert("error".to_string(), error);
+        headers.insert("error".to_string(), error.clone());
 
         if let Some(req_id) = request_id {
             headers.insert("request_id".to_string(), req_id);
         }
 
+        // Send a minimal valid JSON body to avoid EOF deserialization errors
+        // The coordinator uses headers for error detection, but clients may try to deserialize
+        let error_json = serde_json::json!({
+            "error": error
+        });
+        let body = serde_json::to_vec(&error_json).unwrap_or_else(|e| {
+            tracing::error!("Failed to serialize error response: {}", e);
+            Vec::new()
+        });
+
         let subject = format!("coordinator.{}.response", coordinator_id);
-        let message = Message::new(Vec::new(), headers);
+        let message = Message::new(body, headers);
 
         let client = self.client.clone();
         tokio::spawn(async move {
@@ -997,8 +1057,94 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         Ok(())
     }
 
-    /// Run the processor, consuming messages from its stream
-    pub async fn run(&mut self) -> Result<()> {
+    /// Check if the processor has completed replay and is ready for operations
+    pub fn is_ready(&self) -> bool {
+        self.is_ready.load(Ordering::Relaxed)
+    }
+
+    /// Start the processor - performs replay then spawns live processing task
+    /// Returns after replay is complete and live stream is subscribed
+    pub async fn start_with_replay(mut self, shutdown_rx: oneshot::Receiver<()>) -> Result<()>
+    where
+        E: Send + 'static,
+    {
+        let stream_name = self.stream_name.clone();
+
+        // Perform replay phase first (blocking)
+        self.perform_replay().await?;
+
+        // Mark as ready
+        self.is_ready.store(true, Ordering::Relaxed);
+
+        // Create the live stream subscription BEFORE spawning the task
+        // This ensures we're subscribed before returning
+        let start_offset = if self.current_offset > 0 {
+            Some(self.current_offset + 1)
+        } else {
+            Some(0)
+        };
+
+        let live_stream = self
+            .client
+            .stream_messages(stream_name.clone(), start_offset)
+            .await
+            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
+
+        tracing::info!(
+            "Stream processor for {} is ready, starting live processing",
+            stream_name
+        );
+
+        // Spawn live processing in background task (processor takes ownership)
+        let stream_name_clone = stream_name.clone();
+        let stream_name_task = stream_name.clone();
+        let handle = tokio::spawn(async move {
+            println!(
+                "🚀 Live processing started for stream: {}",
+                stream_name_task
+            );
+            match self
+                .run_live_processing_with_stream(shutdown_rx, live_stream)
+                .await
+            {
+                Ok(()) => {
+                    println!("✅ Live processing for {} ended normally", stream_name_task);
+                }
+                Err(e) => {
+                    println!("❌ PROCESSOR CRASHED for {}: {:?}", stream_name_task, e);
+                    tracing::error!("Live processing for {} failed: {:?}", stream_name_task, e);
+                }
+            }
+            println!(
+                "🛑 Live processing task exited for stream: {}",
+                stream_name_clone
+            );
+        });
+
+        // Spawn a monitor task to detect if the processor task panics
+        let stream_name_monitor = stream_name.clone();
+        tokio::spawn(async move {
+            match handle.await {
+                Ok(()) => {
+                    // Task completed normally
+                }
+                Err(e) if e.is_panic() => {
+                    println!(
+                        "💥 PANIC DETECTED in processor for {}: {:?}",
+                        stream_name_monitor, e
+                    );
+                }
+                Err(e) => {
+                    println!("⚠️ Task join error for {}: {:?}", stream_name_monitor, e);
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Perform the replay phase (blocking until complete)
+    async fn perform_replay(&mut self) -> Result<()> {
         use proven_engine::DeadlineStreamItem;
         use proven_hlc::NodeId;
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -1045,23 +1191,27 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             }
         }
 
-        // Phase 2: Continue with live processing
-        let start_offset = if last_offset > 0 {
-            Some(last_offset + 1)
-        } else {
-            Some(self.current_offset)
-        };
+        self.current_offset = last_offset;
+        Ok(())
+    }
 
-        let mut live_stream = self
-            .client
-            .stream_messages(self.stream_name.clone(), start_offset)
-            .await
-            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
-
+    /// Run live processing with provided stream
+    async fn run_live_processing_with_stream(
+        mut self,
+        mut shutdown_rx: oneshot::Receiver<()>,
+        mut live_stream: MessageStream,
+    ) -> Result<()> {
         // Process live messages continuously
         loop {
-            // Check for messages with a timeout to allow periodic snapshot checks
-            let timeout = tokio::time::timeout(Duration::from_secs(1), live_stream.recv()).await;
+            // Check for shutdown signal
+            if shutdown_rx.try_recv().is_ok() {
+                tracing::info!("Stream processor for {} shutting down", self.stream_name);
+                break;
+            }
+
+            // Check for messages with a timeout to allow periodic snapshot checks and shutdown checks
+            let timeout =
+                tokio::time::timeout(Duration::from_millis(100), live_stream.recv()).await;
 
             match timeout {
                 Ok(Some((message, timestamp, offset))) => {

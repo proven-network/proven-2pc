@@ -50,7 +50,7 @@ impl TransactionEngine for QueueTransactionEngine {
         txn_id: HlcTimestamp,
     ) -> OperationResult<Self::Response> {
         match self.manager.execute_operation(txn_id, &operation, txn_id) {
-            Ok(response) => OperationResult::Success(response),
+            Ok(response) => OperationResult::Complete(response),
             Err(crate::stream::transaction::TransactionError::LockConflict { holder, mode }) => {
                 // Check what operation we're trying to do
                 let our_mode = match &operation {
@@ -76,7 +76,7 @@ impl TransactionEngine for QueueTransactionEngine {
                     retry_on,
                 }
             }
-            Err(err) => OperationResult::Error(format!("{:?}", err)),
+            Err(err) => OperationResult::Complete(QueueResponse::Error(format!("{:?}", err))),
         }
     }
 
@@ -194,7 +194,7 @@ mod tests {
         let result = engine.apply_operation(enqueue_op, tx1);
         assert!(matches!(
             result,
-            OperationResult::Success(QueueResponse::Enqueued)
+            OperationResult::Complete(QueueResponse::Enqueued)
         ));
 
         // Test peek
@@ -205,7 +205,7 @@ mod tests {
         let result = engine.apply_operation(peek_op, tx1);
         assert!(matches!(
             result,
-            OperationResult::Success(QueueResponse::Peeked(Some(QueueValue::Integer(42))))
+            OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(42))))
         ));
 
         // Test commit
@@ -228,7 +228,7 @@ mod tests {
         };
 
         let result = engine.apply_operation(enqueue_op, tx1);
-        assert!(matches!(result, OperationResult::Success(_)));
+        assert!(matches!(result, OperationResult::Complete(_)));
 
         // tx2 should be blocked
         let dequeue_op = QueueOperation::Dequeue {

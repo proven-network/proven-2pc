@@ -50,96 +50,62 @@ pub async fn start_processor(
     // Determine processor type from stream name
     let processor_type = determine_processor_type(&stream);
 
-    // Start processor task
+    // Create shutdown channel
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let stream_clone = stream.clone();
-    let stream_clone2 = stream.clone();
-    let client_clone = client.clone();
 
-    tokio::spawn(async move {
-        // Create and run processor based on type
-        let result = match processor_type {
-            ProcessorType::Kv => {
-                match create_kv_processor(
-                    stream_clone2.clone(),
-                    client_clone.clone(),
-                    snapshot_store.clone(),
-                )
+    // Create processor and start it (waits for replay to complete)
+    match processor_type {
+        ProcessorType::Kv => {
+            let processor =
+                create_kv_processor(stream.clone(), client.clone(), snapshot_store.clone()).await?;
+            processor
+                .start_with_replay(shutdown_rx)
                 .await
-                {
-                    Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
-                    Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-                }
-            }
-            ProcessorType::Sql => {
-                match create_sql_processor(
-                    stream_clone2.clone(),
-                    client_clone.clone(),
-                    snapshot_store.clone(),
-                )
-                .await
-                {
-                    Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
-                    Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-                }
-            }
-            ProcessorType::Queue => {
-                match create_queue_processor(
-                    stream_clone2.clone(),
-                    client_clone.clone(),
-                    snapshot_store.clone(),
-                )
-                .await
-                {
-                    Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
-                    Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-                }
-            }
-            ProcessorType::Resource => {
-                match create_resource_processor(
-                    stream_clone2.clone(),
-                    client_clone.clone(),
-                    snapshot_store.clone(),
-                )
-                .await
-                {
-                    Ok(processor) => run_typed_processor(processor, shutdown_rx).await,
-                    Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-                }
-            }
-        };
-
-        if let Err(ref e) = result {
-            tracing::error!("Processor for {} failed: {}", stream_clone, e);
+                .map_err(|e| {
+                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
+                })?;
         }
-        result
-    });
+        ProcessorType::Sql => {
+            let processor =
+                create_sql_processor(stream.clone(), client.clone(), snapshot_store.clone())
+                    .await?;
+            processor
+                .start_with_replay(shutdown_rx)
+                .await
+                .map_err(|e| {
+                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
+                })?;
+        }
+        ProcessorType::Queue => {
+            let processor =
+                create_queue_processor(stream.clone(), client.clone(), snapshot_store.clone())
+                    .await?;
+            processor
+                .start_with_replay(shutdown_rx)
+                .await
+                .map_err(|e| {
+                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
+                })?;
+        }
+        ProcessorType::Resource => {
+            let processor =
+                create_resource_processor(stream.clone(), client.clone(), snapshot_store.clone())
+                    .await?;
+            processor
+                .start_with_replay(shutdown_rx)
+                .await
+                .map_err(|e| {
+                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
+                })?;
+        }
+    }
 
-    // Wait a bit for the processor to reach Live phase
-    // In production, this would use a proper ready signal
-    // For now, a small delay works since phase transitions are fast
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Processor has completed replay and is ready
 
     Ok(ProcessorHandle {
         guaranteed_until: Instant::now() + duration,
         shutdown_tx: Arc::new(parking_lot::Mutex::new(Some(shutdown_tx))),
     })
-}
-
-/// Run a typed processor until shutdown
-async fn run_typed_processor<E: proven_stream::engine::TransactionEngine>(
-    mut processor: proven_stream::processor::StreamProcessor<E>,
-    shutdown_rx: oneshot::Receiver<()>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Run the processor until shutdown
-    tokio::select! {
-        result = processor.run() => {
-            result.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        }
-        _ = shutdown_rx => {
-            Ok(())
-        }
-    }
 }
 
 /// Processor types

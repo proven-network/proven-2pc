@@ -57,7 +57,10 @@ impl SqlTransactionEngine {
     ) -> OperationResult<SqlResponse> {
         // Verify transaction exists
         if !self.active_transactions.contains_key(&txn_id) {
-            return OperationResult::Error(format!("Transaction {:?} not found", txn_id));
+            return OperationResult::Complete(SqlResponse::Error(format!(
+                "Transaction {:?} not found",
+                txn_id
+            )));
         }
 
         // Check if we have parameters
@@ -67,23 +70,31 @@ impl SqlTransactionEngine {
                 // Use cached plan and bind parameters
                 let params = params.unwrap_or_default();
                 if params.len() != prepared.param_count {
-                    return OperationResult::Error(format!(
+                    return OperationResult::Complete(SqlResponse::Error(format!(
                         "Expected {} parameters, got {}",
                         prepared.param_count,
                         params.len()
-                    ));
+                    )));
                 }
                 match bind_parameters(&prepared.plan_template, &params) {
                     Ok(bound_plan) => bound_plan,
                     Err(e) => {
-                        return OperationResult::Error(format!("Parameter binding error: {:?}", e));
+                        return OperationResult::Complete(SqlResponse::Error(format!(
+                            "Parameter binding error: {:?}",
+                            e
+                        )));
                     }
                 }
             } else {
                 // Parse, plan, and cache
                 let statement = match crate::parsing::parse_sql(sql) {
                     Ok(stmt) => stmt,
-                    Err(e) => return OperationResult::Error(format!("Parse error: {:?}", e)),
+                    Err(e) => {
+                        return OperationResult::Complete(SqlResponse::Error(format!(
+                            "Parse error: {:?}",
+                            e
+                        )));
+                    }
                 };
 
                 // Count parameters in the ORIGINAL statement (before optimization)
@@ -93,7 +104,12 @@ impl SqlTransactionEngine {
                 let planner = Planner::new(self.storage.get_schemas());
                 let plan_template = match planner.plan(statement) {
                     Ok(p) => p,
-                    Err(e) => return OperationResult::Error(format!("Planning error: {:?}", e)),
+                    Err(e) => {
+                        return OperationResult::Complete(SqlResponse::Error(format!(
+                            "Planning error: {:?}",
+                            e
+                        )));
+                    }
                 };
 
                 // Cache the prepared plan with the ORIGINAL parameter count
@@ -109,16 +125,19 @@ impl SqlTransactionEngine {
                 // Bind parameters
                 let params = params.unwrap_or_default();
                 if params.len() != original_param_count {
-                    return OperationResult::Error(format!(
+                    return OperationResult::Complete(SqlResponse::Error(format!(
                         "Expected {} parameters, got {}",
                         original_param_count,
                         params.len()
-                    ));
+                    )));
                 }
                 match bind_parameters(&plan_template, &params) {
                     Ok(bound_plan) => bound_plan,
                     Err(e) => {
-                        return OperationResult::Error(format!("Parameter binding error: {:?}", e));
+                        return OperationResult::Complete(SqlResponse::Error(format!(
+                            "Parameter binding error: {:?}",
+                            e
+                        )));
                     }
                 }
             }
@@ -126,13 +145,23 @@ impl SqlTransactionEngine {
             // No parameters - regular execution
             let statement = match crate::parsing::parse_sql(sql) {
                 Ok(stmt) => stmt,
-                Err(e) => return OperationResult::Error(format!("Parse error: {:?}", e)),
+                Err(e) => {
+                    return OperationResult::Complete(SqlResponse::Error(format!(
+                        "Parse error: {:?}",
+                        e
+                    )));
+                }
             };
 
             let planner = Planner::new(self.storage.get_schemas());
             match planner.plan(statement) {
                 Ok(p) => p,
-                Err(e) => return OperationResult::Error(format!("Planning error: {:?}", e)),
+                Err(e) => {
+                    return OperationResult::Complete(SqlResponse::Error(format!(
+                        "Planning error: {:?}",
+                        e
+                    )));
+                }
             }
         };
 
@@ -179,9 +208,11 @@ impl SqlTransactionEngine {
                 if plan.is_ddl() {
                     // Schema updates are handled internally by storage
                 }
-                OperationResult::Success(convert_execution_result(result))
+                OperationResult::Complete(convert_execution_result(result))
             }
-            Err(e) => OperationResult::Error(format!("Execution error: {:?}", e)),
+            Err(e) => {
+                OperationResult::Complete(SqlResponse::Error(format!("Execution error: {:?}", e)))
+            }
         }
     }
 }
@@ -201,7 +232,7 @@ impl TransactionEngine for SqlTransactionEngine {
             SqlOperation::Migrate { version, sql } => {
                 // Check if migration is needed
                 if version <= self.migration_version {
-                    return OperationResult::Success(SqlResponse::ExecuteResult {
+                    return OperationResult::Complete(SqlResponse::ExecuteResult {
                         result_type: "migration".to_string(),
                         rows_affected: Some(0),
                         message: Some("Migration already applied".to_string()),
@@ -210,9 +241,9 @@ impl TransactionEngine for SqlTransactionEngine {
 
                 // Execute migration (no parameters for migrations)
                 match self.execute_sql(&sql, None, txn_id) {
-                    OperationResult::Success(response) => {
+                    OperationResult::Complete(response) => {
                         self.migration_version = version;
-                        OperationResult::Success(response)
+                        OperationResult::Complete(response)
                     }
                     other => other,
                 }

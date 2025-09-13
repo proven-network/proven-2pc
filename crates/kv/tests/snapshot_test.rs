@@ -21,21 +21,21 @@ fn test_kv_snapshot_and_restore() {
         value: Value::String("Alice".to_string()),
     };
     let result = engine1.apply_operation(op1, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     let op2 = KvOperation::Put {
         key: "user:2".to_string(),
         value: Value::String("Bob".to_string()),
     };
     let result = engine1.apply_operation(op2, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     let op3 = KvOperation::Put {
         key: "count".to_string(),
         value: Value::Integer(42),
     };
     let result = engine1.apply_operation(op3, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Commit transaction
     engine1.prepare(txn1).unwrap();
@@ -57,7 +57,7 @@ fn test_kv_snapshot_and_restore() {
         key: "user:1".to_string(),
     };
     let result = engine2.apply_operation(read1, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(
             format!("{:?}", response),
             r#"GetResult { key: "user:1", value: Some(String("Alice")) }"#
@@ -70,7 +70,7 @@ fn test_kv_snapshot_and_restore() {
         key: "user:2".to_string(),
     };
     let result = engine2.apply_operation(read2, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(
             format!("{:?}", response),
             r#"GetResult { key: "user:2", value: Some(String("Bob")) }"#
@@ -83,7 +83,7 @@ fn test_kv_snapshot_and_restore() {
         key: "count".to_string(),
     };
     let result = engine2.apply_operation(read3, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(
             format!("{:?}", response),
             r#"GetResult { key: "count", value: Some(Integer(42)) }"#
@@ -165,7 +165,7 @@ fn test_snapshot_with_deleted_keys() {
         key: "temp1".to_string(),
     };
     let result = engine2.apply_operation(read1, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(
             format!("{:?}", response),
             r#"GetResult { key: "temp1", value: None }"#
@@ -177,7 +177,7 @@ fn test_snapshot_with_deleted_keys() {
         key: "keep".to_string(),
     };
     let result = engine2.apply_operation(read2, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(
             format!("{:?}", response),
             r#"GetResult { key: "keep", value: Some(String("keeper")) }"#
@@ -227,7 +227,7 @@ fn test_snapshot_compression() {
         key: "key50".to_string(),
     };
     let result = engine2.apply_operation(read, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         let response_str = format!("{:?}", response);
         assert!(response_str.contains(&format!("String(\"{}\")", long_string)));
     }
@@ -267,7 +267,7 @@ fn test_mvcc_compaction_in_snapshot() {
         key: "versioned".to_string(),
     };
     let result = engine2.apply_operation(read, txn);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         assert_eq!(
             format!("{:?}", response),
             r#"GetResult { key: "versioned", value: Some(Integer(5)) }"#

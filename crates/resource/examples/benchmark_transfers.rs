@@ -29,7 +29,7 @@ fn main() {
     };
 
     match resource_engine.apply_operation(init_op, init_txn) {
-        proven_stream::OperationResult::Success(_) => {
+        proven_stream::OperationResult::Complete(_) => {
             resource_engine
                 .commit(init_txn)
                 .expect("Failed to commit initialization");
@@ -52,7 +52,7 @@ fn main() {
     };
 
     match resource_engine.apply_operation(mint_op, mint_txn) {
-        proven_stream::OperationResult::Success(_) => {
+        proven_stream::OperationResult::Complete(_) => {
             resource_engine
                 .commit(mint_txn)
                 .expect("Failed to commit mint");
@@ -79,7 +79,7 @@ fn main() {
         };
 
         match resource_engine.apply_operation(transfer_op, setup_txn) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 resource_engine
                     .commit(setup_txn)
                     .expect("Failed to commit setup transfer");
@@ -144,7 +144,7 @@ fn main() {
 
         // Execute transfer directly on engine
         match resource_engine.apply_operation(transfer, txn_id) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
                 if let Err(e) = resource_engine.commit(txn_id) {
                     eprintln!("\nError committing transfer {}: {}", i, e);
@@ -156,11 +156,6 @@ fn main() {
                 // For benchmark, just skip and continue
                 resource_engine.abort(txn_id).ok();
                 continue;
-            }
-            proven_stream::OperationResult::Error(e) => {
-                eprintln!("\nError at transfer {}: {}", i, e);
-                resource_engine.abort(txn_id).ok();
-                break;
             }
         }
 
@@ -208,7 +203,7 @@ fn main() {
     };
 
     match resource_engine.apply_operation(balance_op, verify_txn) {
-        proven_stream::OperationResult::Success(_response) => {
+        proven_stream::OperationResult::Complete(_response) => {
             println!("✓ Source account balance query successful");
         }
         _ => println!("⚠ Balance query failed"),
@@ -224,7 +219,7 @@ fn main() {
         };
 
         match resource_engine.apply_operation(balance_op, verify_txn) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 verified += 1;
             }
             _ => {
@@ -249,7 +244,7 @@ fn main() {
 
     let supply_op = ResourceOperation::GetTotalSupply;
     match resource_engine.apply_operation(supply_op, supply_txn) {
-        proven_stream::OperationResult::Success(_) => {
+        proven_stream::OperationResult::Complete(_) => {
             println!("✓ Total supply query successful");
             resource_engine
                 .commit(supply_txn)

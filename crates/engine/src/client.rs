@@ -131,7 +131,7 @@ impl MockClient {
 
 /// Stream of messages from a subscription or stream consumer
 pub struct MessageStream {
-    receiver: mpsc::Receiver<(Message, HlcTimestamp, u64)>,
+    receiver: mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)>,
 }
 
 impl MessageStream {
@@ -163,7 +163,7 @@ use futures;
 
 /// Stream of messages from pub/sub subscriptions (without timestamps/sequence)
 pub struct PubSubMessageStream {
-    receiver: mpsc::Receiver<Message>,
+    receiver: mpsc::UnboundedReceiver<Message>,
 }
 
 impl PubSubMessageStream {

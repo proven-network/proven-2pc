@@ -3,7 +3,6 @@
 use crate::error::Result;
 use crate::responses::ResponseCollector;
 use crate::transaction::Transaction;
-use parking_lot::Mutex;
 use proven_engine::MockClient;
 use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
 use proven_runner::Runner;
@@ -16,8 +15,8 @@ pub struct Coordinator {
     /// Coordinator ID
     coordinator_id: String,
 
-    /// HLC clock for timestamps
-    hlc: Arc<Mutex<HlcClock>>,
+    /// HLC clock for timestamps (thread-safe via atomics)
+    hlc: Arc<HlcClock>,
 
     /// Response collector for all transactions
     response_collector: Arc<ResponseCollector>,
@@ -37,7 +36,7 @@ impl Coordinator {
             .bytes()
             .fold(0u8, |acc, b| acc.wrapping_add(b));
         let node_id = NodeId::from_seed(seed);
-        let hlc = Arc::new(Mutex::new(HlcClock::new(node_id)));
+        let hlc = Arc::new(HlcClock::new(node_id));
 
         // Create and start response collector
         let response_collector = Arc::new(ResponseCollector::new(
@@ -57,7 +56,7 @@ impl Coordinator {
 
     /// Begin a new distributed transaction
     pub async fn begin(&self, timeout: Duration) -> Result<Transaction> {
-        let timestamp = self.hlc.lock().now();
+        let timestamp = self.hlc.now();
         let txn_id = timestamp.to_string();
 
         // Calculate deadline

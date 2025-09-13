@@ -32,7 +32,7 @@ fn test_read_write_conflict_same_table() {
         },
         tx1,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
     engine.commit(tx1).unwrap();
 
     // Transaction 2: Start reading from users table
@@ -45,7 +45,7 @@ fn test_read_write_conflict_same_table() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to write to users table - should block
     let tx3 = timestamp(3);
@@ -72,7 +72,7 @@ fn test_read_write_conflict_same_table() {
         },
         tx3,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
     engine.commit(tx3).unwrap();
 }
 
@@ -109,7 +109,7 @@ fn test_write_write_conflict() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to update same account - should block
     let tx3 = timestamp(3);
@@ -136,7 +136,7 @@ fn test_write_write_conflict() {
         },
         tx3,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
     engine.commit(tx3).unwrap();
 }
 
@@ -173,7 +173,7 @@ fn test_no_conflict_different_tables() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Write to products - should NOT block
     let tx3 = timestamp(3);
@@ -185,7 +185,7 @@ fn test_no_conflict_different_tables() {
         },
         tx3,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Both should commit successfully
     engine.commit(tx2).unwrap();
@@ -225,7 +225,7 @@ fn test_no_conflict_different_rows_with_filter() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Update books items - should NOT block (different predicates)
     let tx3 = timestamp(3);
@@ -239,7 +239,7 @@ fn test_no_conflict_different_rows_with_filter() {
     );
     // These updates work on different rows (different category values)
     // so they don't conflict. This is correct behavior.
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     engine.commit(tx2).unwrap();
     engine.abort(tx3).unwrap();
@@ -278,7 +278,7 @@ fn test_read_read_no_conflict() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Also read data - should NOT block
     let tx3 = timestamp(3);
@@ -290,7 +290,7 @@ fn test_read_read_no_conflict() {
         },
         tx3,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Both can commit
     engine.commit(tx2).unwrap();
@@ -323,7 +323,7 @@ fn test_insert_insert_conflict_same_pk() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to insert with same id - should block
     let tx3 = timestamp(3);
@@ -376,7 +376,7 @@ fn test_delete_read_conflict() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to delete records - should block
     let tx3 = timestamp(3);
@@ -429,7 +429,7 @@ fn test_prepare_releases_read_locks() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to write - should block
     let tx3 = timestamp(3);
@@ -456,7 +456,7 @@ fn test_prepare_releases_read_locks() {
         },
         tx3,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Both can commit
     engine.commit(tx2).unwrap();
@@ -507,7 +507,7 @@ fn test_complex_multi_statement_transaction() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Update source account
     let result = engine.apply_operation(
@@ -517,7 +517,7 @@ fn test_complex_multi_statement_transaction() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Update destination account
     let result = engine.apply_operation(
@@ -527,7 +527,7 @@ fn test_complex_multi_statement_transaction() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to read account 1 - should block (tx2 has write predicate)
     let tx3 = timestamp(3);
@@ -553,7 +553,7 @@ fn test_complex_multi_statement_transaction() {
         },
         tx4,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Clean up
     engine.commit(tx2).unwrap();
@@ -594,7 +594,7 @@ fn test_phantom_prevention() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to insert a new order - should block
     // (This prevents phantoms - tx2's read predicate covers the entire table)
@@ -649,7 +649,7 @@ fn test_aggregation_conflict() {
         },
         tx2,
     );
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Transaction 3: Try to insert new sale - should block
     // (Aggregation needs stable view of all data)

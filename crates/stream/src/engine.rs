@@ -18,8 +18,8 @@ pub enum RetryOn {
 /// Result of attempting to apply an operation
 #[derive(Debug, Clone)]
 pub enum OperationResult<R> {
-    /// Operation completed successfully
-    Success(R),
+    /// Operation completed successfully (including application-level errors)
+    Complete(R),
 
     /// Operation would block - defer and retry when appropriate
     WouldBlock {
@@ -28,9 +28,6 @@ pub enum OperationResult<R> {
         /// When this operation can be retried
         retry_on: RetryOn,
     },
-
-    /// Operation failed with an error
-    Error(String),
 }
 
 /// Transaction engine that handles the actual storage operations

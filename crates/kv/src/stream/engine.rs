@@ -55,7 +55,7 @@ impl KvTransactionEngine {
                     tx_ctx.locks_held.push((key.to_string(), LockMode::Shared));
                 }
 
-                OperationResult::Success(KvResponse::GetResult {
+                OperationResult::Complete(KvResponse::GetResult {
                     key: key.to_string(),
                     value: value.map(|arc| (*arc).clone()),
                 })
@@ -106,7 +106,7 @@ impl KvTransactionEngine {
                         .push((key.to_string(), LockMode::Exclusive));
                 }
 
-                OperationResult::Success(KvResponse::PutResult {
+                OperationResult::Complete(KvResponse::PutResult {
                     key: key.to_string(),
                     previous,
                 })
@@ -153,7 +153,7 @@ impl KvTransactionEngine {
                         .push((key.to_string(), LockMode::Exclusive));
                 }
 
-                OperationResult::Success(KvResponse::DeleteResult {
+                OperationResult::Complete(KvResponse::DeleteResult {
                     key: key.to_string(),
                     deleted: existed,
                 })

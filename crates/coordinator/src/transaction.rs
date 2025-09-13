@@ -321,9 +321,19 @@ impl Transaction {
             .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
 
         // Wait for response
-        let success = self
+        let success = match self
             .collect_prepare_votes(&[participant.to_string()], &request_id)
-            .await?;
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                // Always abort on any prepare error (including timeout)
+                // For single participant, the prepare_and_commit already told them to abort
+                let mut meta = self.metadata.lock();
+                meta.state = TransactionState::Aborted;
+                return Err(e);
+            }
+        };
 
         if !success {
             let mut meta = self.metadata.lock();
@@ -395,9 +405,29 @@ impl Transaction {
         }
 
         // Wait for prepare votes
-        let all_prepared = self
-            .collect_prepare_votes(participants, &request_id)
-            .await?;
+        let all_prepared = match self.collect_prepare_votes(participants, &request_id).await {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                // Check if we're past the deadline
+                let past_deadline = {
+                    let meta = self.metadata.lock();
+                    let now_micros = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_micros() as u64;
+                    now_micros >= meta.deadline.physical
+                };
+
+                if past_deadline {
+                    // Transaction is already effectively aborted by deadline
+                    // No need to send explicit abort messages
+                } else {
+                    // Still within deadline, explicitly abort
+                    let _ = self.abort().await;
+                }
+                return Err(e);
+            }
+        };
 
         if !all_prepared {
             // Abort if any participant couldn't prepare
@@ -470,7 +500,26 @@ impl Transaction {
         request_id: &str,
     ) -> Result<bool> {
         let mut pending_participants: HashSet<String> = participants.iter().cloned().collect();
-        let timeout_duration = Duration::from_secs(5);
+
+        // Use remaining time until transaction deadline for prepare timeout
+        let timeout_duration = {
+            let meta = self.metadata.lock();
+            let now_micros = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64;
+
+            if now_micros >= meta.deadline.physical {
+                // Already past deadline
+                return Err(CoordinatorError::DeadlineExceeded);
+            }
+
+            let remaining_micros = meta.deadline.physical - now_micros;
+            // Cap at 2 seconds to avoid waiting too long for unresponsive participants
+            // This helps prevent slowdowns when a processor is unresponsive
+            Duration::from_micros(remaining_micros).min(Duration::from_secs(2))
+        };
+
         let deadline = tokio::time::Instant::now() + timeout_duration;
 
         while !pending_participants.is_empty() {

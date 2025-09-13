@@ -264,7 +264,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         txn_id: HlcTimestamp,
     ) -> OperationResult<Self::Response> {
         match self.process_operation(&operation, txn_id) {
-            Ok(response) => OperationResult::Success(response),
+            Ok(response) => OperationResult::Complete(response),
             Err(err) if err.contains("blocked by transactions") => {
                 // Parse blocking transactions from error message
                 // In a real implementation, we'd return them more cleanly
@@ -279,7 +279,7 @@ impl TransactionEngine for ResourceTransactionEngine {
                     retry_on,
                 }
             }
-            Err(err) => OperationResult::Error(err),
+            Err(err) => OperationResult::Complete(ResourceResponse::Error(err)),
         }
     }
 
@@ -404,7 +404,7 @@ mod tests {
         };
 
         let result = engine.apply_operation(op, tx1);
-        assert!(matches!(result, OperationResult::Success(_)));
+        assert!(matches!(result, OperationResult::Complete(_)));
 
         // Mint tokens
         let op = ResourceOperation::Mint {
@@ -414,7 +414,7 @@ mod tests {
         };
 
         let result = engine.apply_operation(op, tx1);
-        assert!(matches!(result, OperationResult::Success(_)));
+        assert!(matches!(result, OperationResult::Complete(_)));
 
         // Commit transaction
         engine.prepare(tx1).unwrap();
@@ -429,7 +429,7 @@ mod tests {
         };
 
         let result = engine.apply_operation(op, tx2);
-        if let OperationResult::Success(ResourceResponse::Balance { amount, .. }) = result {
+        if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
             assert_eq!(amount, Amount::from_integer(1000, 0));
         } else {
             panic!("Expected balance response");

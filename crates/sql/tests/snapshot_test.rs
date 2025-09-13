@@ -1,9 +1,9 @@
 //! Tests for SQL engine snapshot functionality
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::stream::engine::SqlTransactionEngine;
 use proven_sql::stream::operation::SqlOperation;
 use proven_sql::types::value::Value;
+use proven_sql::{SqlResponse, stream::engine::SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
 
 #[test]
@@ -21,7 +21,7 @@ fn test_sql_snapshot_and_restore() {
         params: None,
     };
     let result = engine1.apply_operation(create_table, txn1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
     engine1.commit(txn1).unwrap();
 
     // Insert some data
@@ -39,7 +39,7 @@ fn test_sql_snapshot_and_restore() {
             ]),
         };
         let result = engine1.apply_operation(insert, txn2);
-        assert!(matches!(result, OperationResult::Success(_)));
+        assert!(matches!(result, OperationResult::Complete(_)));
     }
     engine1.commit(txn2).unwrap();
 
@@ -85,7 +85,7 @@ fn test_sql_snapshot_and_restore() {
         params: None,
     };
     let result = engine2.apply_operation(query_users, txn4);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // Query specific user
     let query_user = SqlOperation::Query {
@@ -93,7 +93,7 @@ fn test_sql_snapshot_and_restore() {
         params: Some(vec![Value::Integer(3)]),
     };
     let result = engine2.apply_operation(query_user, txn4);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         // Response should contain User3 with age 23
         let response_str = format!("{:?}", response);
         // Check if it's a query result with rows
@@ -106,7 +106,7 @@ fn test_sql_snapshot_and_restore() {
         params: Some(vec![Value::Integer(1)]),
     };
     let result = engine2.apply_operation(query_orders, txn4);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn test_snapshot_with_deleted_rows() {
         params: None,
     };
     let result = engine2.apply_operation(count_query, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         // Should have 5 items
         let response_str = format!("{:?}", response);
         assert!(response_str.contains("5") || response_str.contains("[[Integer(5)]]"));
@@ -192,7 +192,7 @@ fn test_snapshot_with_deleted_rows() {
         params: Some(vec![Value::Integer(6)]),
     };
     let result = engine2.apply_operation(query_deleted, txn3);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         let response_str = format!("{:?}", response);
         assert!(response_str.contains("[]") || response_str.contains("empty"));
     }
@@ -252,7 +252,7 @@ fn test_snapshot_compression() {
         params: None,
     };
     let result = engine2.apply_operation(count_query, txn3);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 }
 
 #[test]
@@ -299,7 +299,7 @@ fn test_snapshot_preserves_indexes() {
         params: Some(vec![Value::String("user3@test.com".to_string())]),
     };
     let result = engine2.apply_operation(query_by_email, txn2);
-    if let OperationResult::Success(response) = result {
+    if let OperationResult::Complete(response) = result {
         let response_str = format!("{:?}", response);
         assert!(response_str.contains("3"));
     }
@@ -315,7 +315,10 @@ fn test_snapshot_preserves_indexes() {
     };
     let result = engine2.apply_operation(duplicate_insert, txn2);
     // Should fail due to unique constraint
-    assert!(matches!(result, OperationResult::Error(_)));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(SqlResponse::Error(_))
+    ));
 
     println!("Indexes and constraints preserved across snapshot/restore");
 }

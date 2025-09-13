@@ -33,7 +33,7 @@ fn main() {
     };
 
     match sql_engine.apply_operation(create_table, txn_id) {
-        proven_stream::OperationResult::Success(_) => {
+        proven_stream::OperationResult::Complete(_) => {
             sql_engine
                 .commit(txn_id)
                 .expect("Failed to commit table creation");
@@ -72,7 +72,7 @@ fn main() {
 
         // Execute insert directly on engine
         match sql_engine.apply_operation(insert, txn_id) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
                 if let Err(e) = sql_engine.commit(txn_id) {
                     eprintln!("\nError committing insert {}: {}", i, e);
@@ -129,7 +129,7 @@ fn main() {
     };
 
     match sql_engine.apply_operation(count_query, verify_txn) {
-        proven_stream::OperationResult::Success(_response) => {
+        proven_stream::OperationResult::Complete(_response) => {
             // In a real system, we'd parse the response to get the actual count
             println!("✓ Count query executed successfully");
             sql_engine

@@ -26,7 +26,7 @@ fn test_basic_queue_operations() {
     let result = engine.apply_operation(enqueue1, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Enqueued)
+        OperationResult::Complete(QueueResponse::Enqueued)
     ));
 
     let enqueue2 = QueueOperation::Enqueue {
@@ -37,7 +37,7 @@ fn test_basic_queue_operations() {
     let result = engine.apply_operation(enqueue2, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Enqueued)
+        OperationResult::Complete(QueueResponse::Enqueued)
     ));
 
     // Test size
@@ -48,7 +48,7 @@ fn test_basic_queue_operations() {
     let result = engine.apply_operation(size_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(2))
+        OperationResult::Complete(QueueResponse::Size(2))
     ));
 
     // Test dequeue (FIFO)
@@ -59,20 +59,20 @@ fn test_basic_queue_operations() {
     let result = engine.apply_operation(dequeue_op.clone(), tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "first"
+        OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "first"
     ));
 
     let result = engine.apply_operation(dequeue_op.clone(), tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "second"
+        OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "second"
     ));
 
     // Queue should be empty now
     let result = engine.apply_operation(dequeue_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Dequeued(None))
+        OperationResult::Complete(QueueResponse::Dequeued(None))
     ));
 
     assert!(engine.commit(tx).is_ok());
@@ -96,7 +96,7 @@ fn test_transaction_isolation() {
     let result = engine.apply_operation(enqueue_op, tx1);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Enqueued)
+        OperationResult::Complete(QueueResponse::Enqueued)
     ));
 
     // tx2 tries to read the queue but is blocked by tx1's exclusive lock
@@ -115,7 +115,7 @@ fn test_transaction_isolation() {
     let result = engine.apply_operation(size_op.clone(), tx2);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(1))
+        OperationResult::Complete(QueueResponse::Size(1))
     ));
     assert!(engine.commit(tx2).is_ok());
 
@@ -126,7 +126,7 @@ fn test_transaction_isolation() {
     let result = engine.apply_operation(size_op, tx3);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(1))
+        OperationResult::Complete(QueueResponse::Size(1))
     ));
 
     assert!(engine.commit(tx3).is_ok());
@@ -148,7 +148,7 @@ fn test_concurrent_access_with_locking() {
     };
 
     let result = engine.apply_operation(enqueue_op, tx1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // tx2 tries to dequeue - should be blocked
     let dequeue_op = QueueOperation::Dequeue {
@@ -165,7 +165,7 @@ fn test_concurrent_access_with_locking() {
     let result = engine.apply_operation(dequeue_op, tx2);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "tx1_data"
+        OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "tx1_data"
     ));
 
     assert!(engine.commit(tx2).is_ok());
@@ -195,7 +195,7 @@ fn test_abort_rollback() {
     let result = engine.apply_operation(size_op.clone(), tx1);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(3))
+        OperationResult::Complete(QueueResponse::Size(3))
     ));
 
     // Abort the transaction
@@ -208,7 +208,7 @@ fn test_abort_rollback() {
     let result = engine.apply_operation(size_op, tx2);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(0))
+        OperationResult::Complete(QueueResponse::Size(0))
     ));
 
     assert!(engine.commit(tx2).is_ok());
@@ -241,7 +241,7 @@ fn test_multiple_queues() {
         let result = engine.apply_operation(size_op, tx);
         assert!(matches!(
             result,
-            OperationResult::Success(QueueResponse::Size(1))
+            OperationResult::Complete(QueueResponse::Size(1))
         ));
     }
 
@@ -271,14 +271,14 @@ fn test_peek_operation() {
     let result = engine.apply_operation(peek_op.clone(), tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "peek_me"
+        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "peek_me"
     ));
 
     // Peek again - should still be there
     let result = engine.apply_operation(peek_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "peek_me"
+        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "peek_me"
     ));
 
     // Size should still be 1
@@ -289,7 +289,7 @@ fn test_peek_operation() {
     let result = engine.apply_operation(size_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(1))
+        OperationResult::Complete(QueueResponse::Size(1))
     ));
 
     assert!(engine.commit(tx).is_ok());
@@ -319,7 +319,7 @@ fn test_clear_operation() {
     let result = engine.apply_operation(size_op.clone(), tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(5))
+        OperationResult::Complete(QueueResponse::Size(5))
     ));
 
     // Clear the queue
@@ -330,14 +330,14 @@ fn test_clear_operation() {
     let result = engine.apply_operation(clear_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Cleared)
+        OperationResult::Complete(QueueResponse::Cleared)
     ));
 
     // Queue should be empty
     let result = engine.apply_operation(size_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(0))
+        OperationResult::Complete(QueueResponse::Size(0))
     ));
 
     let is_empty_op = QueueOperation::IsEmpty {
@@ -347,7 +347,7 @@ fn test_clear_operation() {
     let result = engine.apply_operation(is_empty_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::IsEmpty(true))
+        OperationResult::Complete(QueueResponse::IsEmpty(true))
     ));
 
     assert!(engine.commit(tx).is_ok());
@@ -381,13 +381,13 @@ fn test_shared_locks_for_reads() {
     let result = engine.apply_operation(peek_op.clone(), tx2);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Peeked(_))
+        OperationResult::Complete(QueueResponse::Peeked(_))
     ));
 
     let result = engine.apply_operation(peek_op, tx3);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Peeked(_))
+        OperationResult::Complete(QueueResponse::Peeked(_))
     ));
 
     // Both should be able to check size (shared lock)
@@ -398,13 +398,13 @@ fn test_shared_locks_for_reads() {
     let result = engine.apply_operation(size_op.clone(), tx2);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(1))
+        OperationResult::Complete(QueueResponse::Size(1))
     ));
 
     let result = engine.apply_operation(size_op, tx3);
     assert!(matches!(
         result,
-        OperationResult::Success(QueueResponse::Size(1))
+        OperationResult::Complete(QueueResponse::Size(1))
     ));
 
     assert!(engine.commit(tx2).is_ok());
@@ -445,7 +445,7 @@ fn test_various_value_types() {
 
         let result = engine.apply_operation(dequeue_op, tx);
         match result {
-            OperationResult::Success(QueueResponse::Dequeued(Some(value))) => {
+            OperationResult::Complete(QueueResponse::Dequeued(Some(value))) => {
                 assert_eq!(&value, expected_value);
             }
             _ => panic!("Expected successful dequeue"),
@@ -470,7 +470,7 @@ fn test_read_lock_released_on_prepare() {
         queue_name: "queue1".to_string(),
     };
     let result = engine.apply_operation(peek_op, tx1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to enqueue to queue1 (should be blocked)
     let enqueue_op = QueueOperation::Enqueue {
@@ -495,7 +495,7 @@ fn test_read_lock_released_on_prepare() {
 
     // TX2: Retry enqueue (should now succeed)
     let result = engine.apply_operation(enqueue_op, tx2);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn test_write_lock_not_released_on_prepare() {
         value: QueueValue::String("value1".to_string()),
     };
     let result = engine.apply_operation(enqueue_op, tx1);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to peek queue1 (should be blocked)
     let peek_op = QueueOperation::Peek {
@@ -555,5 +555,5 @@ fn test_write_lock_not_released_on_prepare() {
 
     // TX2: Retry peek (should now succeed)
     let result = engine.apply_operation(peek_op, tx2);
-    assert!(matches!(result, OperationResult::Success(_)));
+    assert!(matches!(result, OperationResult::Complete(_)));
 }

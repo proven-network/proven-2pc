@@ -112,6 +112,11 @@ impl Runner {
                     stream: stream.to_string(),
                     guaranteed_until_ms,
                 });
+            } else {
+                println!(
+                    "⏰ Processor for {} has expired (guaranteed_until: {} < now: {})",
+                    stream, guaranteed_until_ms, now_ms
+                );
             }
         }
 
@@ -368,7 +373,7 @@ impl Runner {
                         let ack = ProcessorAck {
                             request_id: request.request_id,
                             node_id: node_id.clone(),
-                            stream: request.stream,
+                            stream: request.stream.clone(),
                             guaranteed_until_ms: handle.guaranteed_until_ms(),
                         };
 

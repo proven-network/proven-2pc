@@ -54,7 +54,7 @@ fn main() {
 
         // Execute enqueue directly on engine
         match queue_engine.apply_operation(enqueue, txn_id) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
                 if let Err(e) = queue_engine.commit(txn_id) {
                     eprintln!("\nError committing enqueue {}: {}", i, e);
@@ -110,7 +110,7 @@ fn main() {
     };
 
     match queue_engine.apply_operation(size_op, verify_txn) {
-        proven_stream::OperationResult::Success(_response) => {
+        proven_stream::OperationResult::Complete(_response) => {
             println!("✓ Queue size query executed successfully");
             // The response would contain the actual size
             queue_engine
@@ -134,7 +134,7 @@ fn main() {
         };
 
         match queue_engine.apply_operation(dequeue, dequeue_txn) {
-            proven_stream::OperationResult::Success(_) => {
+            proven_stream::OperationResult::Complete(_) => {
                 verified += 1;
                 queue_engine
                     .commit(dequeue_txn)

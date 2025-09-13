@@ -29,7 +29,7 @@ fn execute_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) {
     );
 
     match result {
-        OperationResult::Success(_) => {}
+        OperationResult::Complete(_) => {}
         _ => panic!("SQL execution failed: {}", sql),
     }
 }
@@ -45,11 +45,13 @@ fn query_sql(engine: &mut SqlTransactionEngine, sql: &str, tx: HlcTimestamp) -> 
     );
 
     match result {
-        OperationResult::Success(SqlResponse::QueryResult { rows, .. }) => rows
+        OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) => rows
             .into_iter()
             .map(|row| row.into_iter().map(|v| format!("{:?}", v)).collect())
             .collect(),
-        OperationResult::Error(err) => panic!("Query failed: {} - Error: {}", sql, err),
+        OperationResult::Complete(SqlResponse::Error(err)) => {
+            panic!("Query failed: {} - Error: {}", sql, err)
+        }
         other => panic!("Query failed: {} - Result: {:?}", sql, other),
     }
 }
