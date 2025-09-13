@@ -9,26 +9,101 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
-/// Status of a response (protocol level, no storage types)
+/// Infrastructure/protocol-level error types
 #[derive(Debug, Clone)]
-pub enum ResponseStatus {
-    /// Operation completed successfully
-    Success,
+pub enum ErrorKind {
+    /// Transaction deadline was exceeded
+    DeadlineExceeded,
 
-    /// Transaction was wounded
-    Wounded { wounded_by: HlcTimestamp },
+    /// Transaction deadline format was invalid
+    InvalidDeadlineFormat,
 
-    /// Operation failed with an error
-    Error(String),
+    /// Transaction deadline was required but not provided
+    DeadlineRequired,
+
+    /// Prepare phase message arrived after deadline
+    PrepareAfterDeadline,
+
+    /// Failed to serialize the response
+    SerializationFailed(String),
+
+    /// Engine-specific error during prepare/commit
+    EngineError(String),
+
+    /// Unknown/unrecognized error
+    Unknown(String),
 }
 
-/// A response message from a storage engine
+impl ErrorKind {
+    /// Parse an error kind from the error message
+    fn from_message(msg: &str) -> Self {
+        match msg {
+            "Transaction deadline exceeded" => ErrorKind::DeadlineExceeded,
+            "Invalid transaction deadline format" => ErrorKind::InvalidDeadlineFormat,
+            "Transaction deadline required" => ErrorKind::DeadlineRequired,
+            "Prepare received after deadline" => ErrorKind::PrepareAfterDeadline,
+            msg if msg.starts_with("Failed to serialize response:") => {
+                ErrorKind::SerializationFailed(msg.to_string())
+            }
+            other => {
+                // Could be an engine error or unknown
+                ErrorKind::Unknown(other.to_string())
+            }
+        }
+    }
+}
+
+/// A response message from a storage engine with type-safe variants
 #[derive(Debug)]
-pub struct ResponseMessage {
-    pub status: ResponseStatus,
-    pub body: Vec<u8>,
-    pub engine: String,
-    pub participant: Option<String>,
+pub enum ResponseMessage {
+    /// Operation completed with a response body
+    Complete {
+        body: Vec<u8>,
+        engine: String,
+        participant: Option<String>,
+    },
+
+    /// Transaction was wounded by another transaction
+    Wounded {
+        wounded_by: HlcTimestamp,
+        engine: String,
+        participant: Option<String>,
+    },
+
+    /// Infrastructure/protocol error (not operation-level)
+    Error {
+        kind: ErrorKind,
+        engine: String,
+        participant: Option<String>,
+    },
+
+    /// Transaction prepared successfully (2PC vote)
+    Prepared {
+        engine: String,
+        participant: Option<String>,
+    },
+}
+
+impl ResponseMessage {
+    /// Get the engine name from any response variant
+    pub fn engine(&self) -> &str {
+        match self {
+            ResponseMessage::Complete { engine, .. }
+            | ResponseMessage::Wounded { engine, .. }
+            | ResponseMessage::Error { engine, .. }
+            | ResponseMessage::Prepared { engine, .. } => engine,
+        }
+    }
+
+    /// Get the participant from any response variant
+    pub fn participant(&self) -> Option<&str> {
+        match self {
+            ResponseMessage::Complete { participant, .. }
+            | ResponseMessage::Wounded { participant, .. }
+            | ResponseMessage::Error { participant, .. }
+            | ResponseMessage::Prepared { participant, .. } => participant.as_deref(),
+        }
+    }
 }
 
 /// Collects responses from storage engines
@@ -112,7 +187,7 @@ impl ResponseCollector {
         let participant = msg.headers.get("participant").cloned();
 
         // Check status header for protocol-level responses
-        let status = if let Some(status) = msg.headers.get("status") {
+        if let Some(status) = msg.headers.get("status") {
             match status.as_str() {
                 "wounded" => {
                     let wounded_by = msg
@@ -121,33 +196,45 @@ impl ResponseCollector {
                         .and_then(|s| HlcTimestamp::parse(s).ok())
                         .unwrap_or_else(|| HlcTimestamp::new(0, 0, proven_hlc::NodeId::new(0)));
 
-                    ResponseStatus::Wounded { wounded_by }
+                    ResponseMessage::Wounded {
+                        wounded_by,
+                        engine,
+                        participant,
+                    }
                 }
                 "error" => {
-                    let error = msg
+                    let message = msg
                         .headers
                         .get("error")
                         .cloned()
                         .unwrap_or_else(|| "Unknown error".to_string());
 
-                    ResponseStatus::Error(error)
+                    ResponseMessage::Error {
+                        kind: ErrorKind::from_message(&message),
+                        engine,
+                        participant,
+                    }
                 }
-                "prepared" => {
-                    // Prepare vote - treat as success with empty body
-                    ResponseStatus::Success
+                "prepared" => ResponseMessage::Prepared {
+                    engine,
+                    participant,
+                },
+                _ => {
+                    // Unknown status or success
+                    ResponseMessage::Complete {
+                        body: msg.body.clone(),
+                        engine,
+                        participant,
+                    }
                 }
-                _ => ResponseStatus::Success,
             }
         } else {
-            // No status header means success
-            ResponseStatus::Success
-        };
-
-        ResponseMessage {
-            status,
-            body: msg.body.clone(),
-            engine,
-            participant,
+            // No status header means success with body
+            ResponseMessage::Complete {
+                body: msg.body.clone(),
+                engine,
+                participant,
+            }
         }
     }
 

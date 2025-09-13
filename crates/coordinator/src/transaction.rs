@@ -1,7 +1,7 @@
 //! Transaction implementation with active methods
 
 use crate::error::{CoordinatorError, Result};
-use crate::responses::{ResponseCollector, ResponseStatus};
+use crate::responses::{ResponseCollector, ResponseMessage};
 use parking_lot::Mutex;
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
@@ -227,12 +227,33 @@ impl Transaction {
             .await?;
 
         // Handle protocol-level response status
-        match response.status {
-            ResponseStatus::Success => Ok(response.body),
-            ResponseStatus::Wounded { wounded_by } => Err(CoordinatorError::TransactionWounded {
-                wounded_by: wounded_by.to_string(),
-            }),
-            ResponseStatus::Error(e) => Err(CoordinatorError::OperationFailed(e)),
+        match response {
+            ResponseMessage::Complete { body, .. } => Ok(body),
+            ResponseMessage::Wounded { wounded_by, .. } => {
+                Err(CoordinatorError::TransactionWounded {
+                    wounded_by: wounded_by.to_string(),
+                })
+            }
+            ResponseMessage::Error { kind, .. } => {
+                use crate::responses::ErrorKind;
+                match kind {
+                    ErrorKind::DeadlineExceeded | ErrorKind::PrepareAfterDeadline => {
+                        Err(CoordinatorError::DeadlineExceeded)
+                    }
+                    ErrorKind::InvalidDeadlineFormat | ErrorKind::DeadlineRequired => Err(
+                        CoordinatorError::OperationFailed(format!("Protocol error: {:?}", kind)),
+                    ),
+                    ErrorKind::SerializationFailed(msg)
+                    | ErrorKind::EngineError(msg)
+                    | ErrorKind::Unknown(msg) => Err(CoordinatorError::OperationFailed(msg)),
+                }
+            }
+            ResponseMessage::Prepared { .. } => {
+                // Prepared responses shouldn't come here (only in 2PC)
+                Err(CoordinatorError::OperationFailed(
+                    "Unexpected prepared response".to_string(),
+                ))
+            }
         }
     }
 
@@ -540,15 +561,21 @@ impl Transaction {
             {
                 Ok(response) => {
                     // Get participant from response
-                    if let Some(participant) = response.participant
-                        && pending_participants.contains(&participant)
+                    if let Some(participant_str) = response.participant()
+                        && pending_participants.contains(participant_str)
                     {
-                        let vote = match response.status {
-                            ResponseStatus::Success => PrepareVote::Prepared,
-                            ResponseStatus::Wounded { wounded_by } => PrepareVote::Wounded {
+                        let participant = participant_str.to_string();
+                        let vote = match response {
+                            ResponseMessage::Complete { .. } | ResponseMessage::Prepared { .. } => {
+                                PrepareVote::Prepared
+                            }
+                            ResponseMessage::Wounded { wounded_by, .. } => PrepareVote::Wounded {
                                 wounded_by: wounded_by.to_string(),
                             },
-                            ResponseStatus::Error(e) => PrepareVote::Error(e),
+                            ResponseMessage::Error { kind, .. } => {
+                                // Convert error kind to string for PrepareVote
+                                PrepareVote::Error(format!("{:?}", kind))
+                            }
                         };
 
                         // Record vote

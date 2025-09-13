@@ -10,5 +10,5 @@ mod transaction;
 
 pub use coordinator::Coordinator;
 pub use error::{CoordinatorError, Result};
-pub use responses::{ResponseCollector, ResponseMessage, ResponseStatus};
+pub use responses::{ResponseCollector, ResponseMessage};
 pub use transaction::{PrepareVote, Transaction, TransactionState};
