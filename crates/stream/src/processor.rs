@@ -469,13 +469,8 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                             blocking_txn: new_blocker,
                             retry_on: new_retry_on,
                         } => {
-                            // Still blocked (shouldn't happen after wounding, but handle it)
-                            self.send_deferred_response(
-                                coordinator_id,
-                                txn_id_str,
-                                new_blocker,
-                                request_id.clone(),
-                            );
+                            // Still blocked after wounding - defer without sending response
+                            // The coordinator will wait for the actual completion
                             self.deferred_manager.defer_operation(
                                 operation,
                                 txn_id,
@@ -488,13 +483,8 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                         }
                     }
                 } else {
-                    // We're younger - must wait
-                    self.send_deferred_response(
-                        coordinator_id,
-                        txn_id_str,
-                        blocking_txn,
-                        request_id.clone(),
-                    );
+                    // We're younger - must wait without sending response
+                    // The coordinator will wait for the actual completion
                     self.deferred_manager.defer_operation(
                         operation,
                         txn_id,
@@ -923,35 +913,6 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         headers.insert("engine".to_string(), self.engine_name.clone());
         headers.insert("status".to_string(), "wounded".to_string());
         headers.insert("wounded_by".to_string(), wounded_by.to_string());
-
-        if let Some(req_id) = request_id {
-            headers.insert("request_id".to_string(), req_id);
-        }
-
-        let subject = format!("coordinator.{}.response", coordinator_id);
-        let message = Message::new(Vec::new(), headers);
-
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            let _ = client.publish(&subject, vec![message]).await;
-        });
-    }
-
-    /// Send a deferred response (operation blocked on lock)
-    fn send_deferred_response(
-        &self,
-        coordinator_id: &str,
-        txn_id: &str,
-        blocking_txn: HlcTimestamp,
-        request_id: Option<String>,
-    ) {
-        // Pre-size HashMap to avoid reallocation
-        let mut headers = HashMap::with_capacity(6);
-        headers.insert("txn_id".to_string(), txn_id.to_string());
-        headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine_name.clone());
-        headers.insert("status".to_string(), "deferred".to_string());
-        headers.insert("blocking_txn".to_string(), blocking_txn.to_string());
 
         if let Some(req_id) = request_id {
             headers.insert("request_id".to_string(), req_id);
