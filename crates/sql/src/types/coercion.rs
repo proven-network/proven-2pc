@@ -349,6 +349,39 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             value.data_type()
         ))),
 
+        // String to Date conversion
+        (Value::Str(s), DataType::Date) => {
+            use chrono::NaiveDate;
+            NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map(Value::Date)
+                .map_err(|_| Error::TypeMismatch {
+                    expected: "DATE".into(),
+                    found: format!("Invalid date string: '{}'", s),
+                })
+        }
+
+        // String to Time conversion
+        (Value::Str(s), DataType::Time) => {
+            use chrono::NaiveTime;
+            NaiveTime::parse_from_str(s, "%H:%M:%S")
+                .map(Value::Time)
+                .map_err(|_| Error::TypeMismatch {
+                    expected: "TIME".into(),
+                    found: format!("Invalid time string: '{}'", s),
+                })
+        }
+
+        // String to Timestamp conversion
+        (Value::Str(s), DataType::Timestamp) => {
+            use chrono::NaiveDateTime;
+            NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .map(Value::Timestamp)
+                .map_err(|_| Error::TypeMismatch {
+                    expected: "TIMESTAMP".into(),
+                    found: format!("Invalid timestamp string: '{}'", s),
+                })
+        }
+
         // No coercion possible
         _ => Err(Error::TypeMismatch {
             expected: target_type.to_string(),

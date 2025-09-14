@@ -85,6 +85,8 @@ impl Parser<'_> {
             Token::Keyword(Keyword::Float) => Ok("float".to_string()),
             Token::Keyword(Keyword::Double) => Ok("double".to_string()),
             Token::Keyword(Keyword::Varchar) => Ok("varchar".to_string()),
+            Token::Keyword(Keyword::Date) => Ok("date".to_string()),
+            Token::Keyword(Keyword::Time) => Ok("time".to_string()),
             token => Err(Error::ParseError(format!(
                 "expected identifier, got {}",
                 token
@@ -324,10 +326,15 @@ impl Parser<'_> {
             // UUID is now a keyword
             Token::Keyword(Keyword::Uuid) => DataType::Uuid,
 
-            // Other types as identifiers (for now)
-            Token::Ident(s) if s.to_uppercase() == "TIMESTAMP" => DataType::Timestamp,
+            // Date/Time types (now keywords)
+            Token::Keyword(Keyword::Date) => DataType::Date,
+            Token::Keyword(Keyword::Time) => DataType::Time,
+            Token::Keyword(Keyword::Timestamp) => DataType::Timestamp,
+            Token::Keyword(Keyword::Interval) => DataType::Interval,
+            // Also accept as identifiers for backward compatibility
             Token::Ident(s) if s.to_uppercase() == "DATE" => DataType::Date,
             Token::Ident(s) if s.to_uppercase() == "TIME" => DataType::Time,
+            Token::Ident(s) if s.to_uppercase() == "TIMESTAMP" => DataType::Timestamp,
             Token::Ident(s) if s.to_uppercase() == "INTERVAL" => DataType::Interval,
             Token::Ident(s) if s.to_uppercase() == "BLOB" || s.to_uppercase() == "BYTEA" => {
                 DataType::Bytea
@@ -396,10 +403,10 @@ impl Parser<'_> {
         let table = self.next_ident()?;
         self.expect(Token::OpenParen)?;
 
-        // Parse one or more columns for composite index support
-        let mut columns = vec![self.next_ident()?];
+        // Parse one or more columns for composite index support (allow keywords as column names)
+        let mut columns = vec![self.next_ident_or_keyword()?];
         while self.next_is(Token::Comma) {
-            columns.push(self.next_ident()?);
+            columns.push(self.next_ident_or_keyword()?);
         }
 
         self.expect(Token::CloseParen)?;
@@ -407,9 +414,9 @@ impl Parser<'_> {
         // Parse optional INCLUDE clause for covering indexes
         let included_columns = if self.next_is(Keyword::Include.into()) {
             self.expect(Token::OpenParen)?;
-            let mut included = vec![self.next_ident()?];
+            let mut included = vec![self.next_ident_or_keyword()?];
             while self.next_is(Token::Comma) {
-                included.push(self.next_ident()?);
+                included.push(self.next_ident_or_keyword()?);
             }
             self.expect(Token::CloseParen)?;
             Some(included)
@@ -476,7 +483,7 @@ impl Parser<'_> {
         if self.next_is(Token::OpenParen) {
             let columns = columns.insert(Vec::new());
             loop {
-                columns.push(self.next_ident()?);
+                columns.push(self.next_ident_or_keyword()?);
                 if !self.next_is(Token::Comma) {
                     break;
                 }
@@ -902,7 +909,8 @@ impl Parser<'_> {
     /// * A function call.
     /// * A parenthesized expression.
     fn parse_expression_atom(&mut self) -> Result<ast::Expression> {
-        Ok(match self.next()? {
+        let token = self.next()?;
+        Ok(match token {
             // All columns.
             Token::Asterisk => ast::Expression::All,
 
@@ -951,6 +959,187 @@ impl Parser<'_> {
             Token::Keyword(Keyword::Infinity) => ast::Literal::Float(f64::INFINITY).into(),
             Token::Keyword(Keyword::NaN) => ast::Literal::Float(f64::NAN).into(),
             Token::Keyword(Keyword::Null) => ast::Literal::Null.into(),
+
+            // DATE literal: DATE 'YYYY-MM-DD' or column name "date"
+            Token::Keyword(Keyword::Date) => {
+                // Check if this is a DATE literal (followed by a string) or a column reference
+                match self.peek()? {
+                    Some(Token::String(_)) => {
+                        // It's a DATE literal
+                        match self.next()? {
+                            Token::String(date_str) => {
+                                // Parse the date string into a NaiveDate
+                                use chrono::NaiveDate;
+                                match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                                    Ok(date) => ast::Literal::Date(date).into(),
+                                    Err(_) => {
+                                        return Err(Error::ParseError(format!(
+                                            "Invalid date format: '{}'. Expected 'YYYY-MM-DD'",
+                                            date_str
+                                        )));
+                                    }
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => {
+                        // It's a column reference named "date"
+                        ast::Expression::Column(None, "date".to_string())
+                    }
+                }
+            }
+
+            // TIME literal: TIME 'HH:MM:SS' or column name "time"
+            Token::Keyword(Keyword::Time) => {
+                // Check if this is a TIME literal (followed by a string) or a column reference
+                match self.peek()? {
+                    Some(Token::String(_)) => {
+                        // It's a TIME literal
+                        match self.next()? {
+                            Token::String(time_str) => {
+                                // Parse the time string into a NaiveTime
+                                use chrono::NaiveTime;
+                                match NaiveTime::parse_from_str(&time_str, "%H:%M:%S") {
+                                    Ok(time) => ast::Literal::Time(time).into(),
+                                    Err(_) => {
+                                        // Try with fractional seconds
+                                        match NaiveTime::parse_from_str(&time_str, "%H:%M:%S%.f") {
+                                            Ok(time) => ast::Literal::Time(time).into(),
+                                            Err(_) => {
+                                                return Err(Error::ParseError(format!(
+                                                    "Invalid time format: '{}'. Expected 'HH:MM:SS[.fraction]'",
+                                                    time_str
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => {
+                        // It's a column reference named "time"
+                        ast::Expression::Column(None, "time".to_string())
+                    }
+                }
+            }
+
+            // TIMESTAMP literal: TIMESTAMP 'YYYY-MM-DD HH:MM:SS' or column name "timestamp"
+            Token::Keyword(Keyword::Timestamp) => {
+                // Check if this is a TIMESTAMP literal (followed by a string) or a column reference
+                match self.peek()? {
+                    Some(Token::String(_)) => {
+                        // It's a TIMESTAMP literal
+                        match self.next()? {
+                            Token::String(timestamp_str) => {
+                                // Parse the timestamp string into a NaiveDateTime
+                                use chrono::NaiveDateTime;
+                                match NaiveDateTime::parse_from_str(
+                                    &timestamp_str,
+                                    "%Y-%m-%d %H:%M:%S",
+                                ) {
+                                    Ok(timestamp) => ast::Literal::Timestamp(timestamp).into(),
+                                    Err(_) => {
+                                        // Try with fractional seconds
+                                        match NaiveDateTime::parse_from_str(
+                                            &timestamp_str,
+                                            "%Y-%m-%d %H:%M:%S%.f",
+                                        ) {
+                                            Ok(timestamp) => {
+                                                ast::Literal::Timestamp(timestamp).into()
+                                            }
+                                            Err(_) => {
+                                                return Err(Error::ParseError(format!(
+                                                    "Invalid timestamp format: '{}'. Expected 'YYYY-MM-DD HH:MM:SS[.fraction]'",
+                                                    timestamp_str
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => {
+                        // It's a column reference named "timestamp"
+                        ast::Expression::Column(None, "timestamp".to_string())
+                    }
+                }
+            }
+
+            // INTERVAL literal: INTERVAL '1' DAY/MONTH/YEAR or column name "interval"
+            Token::Keyword(Keyword::Interval) => {
+                // Check if this is an INTERVAL literal (followed by a string) or a column reference
+                match self.peek()? {
+                    Some(Token::String(_)) => {
+                        // It's an INTERVAL literal
+                        match self.next()? {
+                            Token::String(interval_str) => {
+                                // Parse the interval value
+                                let value: i32 = interval_str.parse().map_err(|_| {
+                                    Error::ParseError(format!(
+                                        "Invalid interval value: '{}'. Expected a number",
+                                        interval_str
+                                    ))
+                                })?;
+
+                                // Parse the interval unit (DAY, MONTH, YEAR, etc.)
+                                let unit = self.next_ident_or_keyword()?;
+                                let unit_upper = unit.to_uppercase();
+
+                                use crate::types::data_type::Interval;
+                                let interval = match unit_upper.as_str() {
+                                    "DAY" | "DAYS" => Interval {
+                                        months: 0,
+                                        days: value,
+                                        microseconds: 0,
+                                    },
+                                    "MONTH" | "MONTHS" => Interval {
+                                        months: value,
+                                        days: 0,
+                                        microseconds: 0,
+                                    },
+                                    "YEAR" | "YEARS" => Interval {
+                                        months: value * 12,
+                                        days: 0,
+                                        microseconds: 0,
+                                    },
+                                    "HOUR" | "HOURS" => Interval {
+                                        months: 0,
+                                        days: 0,
+                                        microseconds: value as i64 * 3_600_000_000,
+                                    },
+                                    "MINUTE" | "MINUTES" => Interval {
+                                        months: 0,
+                                        days: 0,
+                                        microseconds: value as i64 * 60_000_000,
+                                    },
+                                    "SECOND" | "SECONDS" => Interval {
+                                        months: 0,
+                                        days: 0,
+                                        microseconds: value as i64 * 1_000_000,
+                                    },
+                                    _ => {
+                                        return Err(Error::ParseError(format!(
+                                            "Invalid interval unit: '{}'. Expected DAY, MONTH, YEAR, HOUR, MINUTE, or SECOND",
+                                            unit
+                                        )));
+                                    }
+                                };
+                                ast::Literal::Interval(interval).into()
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => {
+                        // It's a column reference named "interval"
+                        ast::Expression::Column(None, "interval".to_string())
+                    }
+                }
+            }
 
             // CAST expression: CAST(expr AS type)
             Token::Keyword(Keyword::Cast) => {

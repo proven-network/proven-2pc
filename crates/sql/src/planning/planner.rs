@@ -1326,6 +1326,10 @@ impl<'a> PlanContext<'a> {
                     }
                     ast::Literal::String(s) => crate::types::value::Value::string(s),
                     ast::Literal::Bytea(b) => crate::types::value::Value::Bytea(b),
+                    ast::Literal::Date(d) => crate::types::value::Value::Date(d),
+                    ast::Literal::Time(t) => crate::types::value::Value::Time(t),
+                    ast::Literal::Timestamp(ts) => crate::types::value::Value::Timestamp(ts),
+                    ast::Literal::Interval(i) => crate::types::value::Value::Interval(i),
                 };
                 Ok(Expression::Constant(value))
             }

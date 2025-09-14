@@ -1159,8 +1159,17 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         // String comparisons
         (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
 
+        // Date comparisons
+        (Value::Date(a), Value::Date(b)) => Ok(a.cmp(b)),
+
+        // Time comparisons
+        (Value::Time(a), Value::Time(b)) => Ok(a.cmp(b)),
+
         // Timestamp comparisons
         (Value::Timestamp(a), Value::Timestamp(b)) => Ok(a.cmp(b)),
+
+        // Interval comparisons
+        (Value::Interval(a), Value::Interval(b)) => Ok(a.cmp(b)),
 
         // UUID comparisons
         (Value::Uuid(a), Value::Uuid(b)) => Ok(a.cmp(b)),
@@ -1190,6 +1199,12 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
 
         // Bytea comparisons
         (Value::Bytea(a), Value::Bytea(b)) => Ok(a.cmp(b)),
+
+        // Inet comparisons
+        (Value::Inet(a), Value::Inet(b)) => Ok(a.cmp(b)),
+
+        // Point comparisons
+        (Value::Point(a), Value::Point(b)) => Ok(a.cmp(b)),
 
         // Type mismatches
         _ => Err(Error::TypeMismatch {

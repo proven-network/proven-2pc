@@ -194,6 +194,10 @@ pub enum Literal {
     Float(f64),
     String(String),
     Bytea(Vec<u8>),
+    Date(chrono::NaiveDate),
+    Time(chrono::NaiveTime),
+    Timestamp(chrono::NaiveDateTime),
+    Interval(crate::types::data_type::Interval),
 }
 
 /// To allow using expressions and literals in e.g. hashmaps, implement simple
@@ -209,6 +213,10 @@ impl PartialEq for Literal {
             (Self::Float(l), Self::Float(r)) => l.to_bits() == r.to_bits(),
             (Self::String(l), Self::String(r)) => l == r,
             (Self::Bytea(l), Self::Bytea(r)) => l == r,
+            (Self::Date(l), Self::Date(r)) => l == r,
+            (Self::Time(l), Self::Time(r)) => l == r,
+            (Self::Timestamp(l), Self::Timestamp(r)) => l == r,
+            (Self::Interval(l), Self::Interval(r)) => l == r,
             (_, _) => false,
         }
     }
@@ -226,6 +234,10 @@ impl Hash for Literal {
             Self::Float(v) => v.to_bits().hash(state),
             Self::String(v) => v.hash(state),
             Self::Bytea(v) => v.hash(state),
+            Self::Date(v) => v.hash(state),
+            Self::Time(v) => v.hash(state),
+            Self::Timestamp(v) => v.hash(state),
+            Self::Interval(v) => v.hash(state),
         }
     }
 }
