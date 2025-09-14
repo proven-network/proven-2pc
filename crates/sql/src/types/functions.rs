@@ -479,6 +479,99 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             }),
         },
 
+        // Unsigned integer types
+        "TINYINT UNSIGNED" => match value {
+            Value::U8(v) => Ok(Value::U8(*v)),
+            Value::I8(v) if *v >= 0 => Ok(Value::U8(*v as u8)),
+            Value::I16(v) if *v >= 0 && *v <= u8::MAX as i16 => Ok(Value::U8(*v as u8)),
+            Value::I32(v) if *v >= 0 && *v <= u8::MAX as i32 => Ok(Value::U8(*v as u8)),
+            Value::I64(v) if *v >= 0 && *v <= u8::MAX as i64 => Ok(Value::U8(*v as u8)),
+            Value::Str(s) => s.parse::<u8>().map(Value::U8).map_err(|_| {
+                Error::InvalidValue(format!("Cannot cast '{}' to TINYINT UNSIGNED", s))
+            }),
+            Value::Null => Ok(Value::Null),
+            _ => Err(Error::InvalidValue(format!(
+                "Cannot cast {} to TINYINT UNSIGNED",
+                value.data_type()
+            ))),
+        },
+
+        "SMALLINT UNSIGNED" => match value {
+            Value::U8(v) => Ok(Value::U16(*v as u16)),
+            Value::U16(v) => Ok(Value::U16(*v)),
+            Value::I8(v) if *v >= 0 => Ok(Value::U16(*v as u16)),
+            Value::I16(v) if *v >= 0 => Ok(Value::U16(*v as u16)),
+            Value::I32(v) if *v >= 0 && *v <= u16::MAX as i32 => Ok(Value::U16(*v as u16)),
+            Value::I64(v) if *v >= 0 && *v <= u16::MAX as i64 => Ok(Value::U16(*v as u16)),
+            Value::Str(s) => s.parse::<u16>().map(Value::U16).map_err(|_| {
+                Error::InvalidValue(format!("Cannot cast '{}' to SMALLINT UNSIGNED", s))
+            }),
+            Value::Null => Ok(Value::Null),
+            _ => Err(Error::InvalidValue(format!(
+                "Cannot cast {} to SMALLINT UNSIGNED",
+                value.data_type()
+            ))),
+        },
+
+        "INT UNSIGNED" => match value {
+            Value::U8(v) => Ok(Value::U32(*v as u32)),
+            Value::U16(v) => Ok(Value::U32(*v as u32)),
+            Value::U32(v) => Ok(Value::U32(*v)),
+            Value::I8(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
+            Value::I16(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
+            Value::I32(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
+            Value::I64(v) if *v >= 0 && *v <= u32::MAX as i64 => Ok(Value::U32(*v as u32)),
+            Value::Str(s) => s
+                .parse::<u32>()
+                .map(Value::U32)
+                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to INT UNSIGNED", s))),
+            Value::Null => Ok(Value::Null),
+            _ => Err(Error::InvalidValue(format!(
+                "Cannot cast {} to INT UNSIGNED",
+                value.data_type()
+            ))),
+        },
+
+        "BIGINT UNSIGNED" => match value {
+            Value::U8(v) => Ok(Value::U64(*v as u64)),
+            Value::U16(v) => Ok(Value::U64(*v as u64)),
+            Value::U32(v) => Ok(Value::U64(*v as u64)),
+            Value::U64(v) => Ok(Value::U64(*v)),
+            Value::I8(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+            Value::I16(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+            Value::I32(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+            Value::I64(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+            Value::Str(s) => s.parse::<u64>().map(Value::U64).map_err(|_| {
+                Error::InvalidValue(format!("Cannot cast '{}' to BIGINT UNSIGNED", s))
+            }),
+            Value::Null => Ok(Value::Null),
+            _ => Err(Error::InvalidValue(format!(
+                "Cannot cast {} to BIGINT UNSIGNED",
+                value.data_type()
+            ))),
+        },
+
+        "HUGEINT UNSIGNED" => match value {
+            Value::U8(v) => Ok(Value::U128(*v as u128)),
+            Value::U16(v) => Ok(Value::U128(*v as u128)),
+            Value::U32(v) => Ok(Value::U128(*v as u128)),
+            Value::U64(v) => Ok(Value::U128(*v as u128)),
+            Value::U128(v) => Ok(Value::U128(*v)),
+            Value::I8(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+            Value::I16(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+            Value::I32(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+            Value::I64(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+            Value::I128(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+            Value::Str(s) => s.parse::<u128>().map(Value::U128).map_err(|_| {
+                Error::InvalidValue(format!("Cannot cast '{}' to HUGEINT UNSIGNED", s))
+            }),
+            Value::Null => Ok(Value::Null),
+            _ => Err(Error::InvalidValue(format!(
+                "Cannot cast {} to HUGEINT UNSIGNED",
+                value.data_type()
+            ))),
+        },
+
         "TEXT" => match value {
             Value::Str(s) => Ok(Value::Str(s.clone())),
             Value::I8(v) => Ok(Value::Str(v.to_string())),

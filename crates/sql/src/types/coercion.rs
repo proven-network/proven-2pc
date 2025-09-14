@@ -122,9 +122,115 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
         (Value::U8(v), DataType::I64) => Ok(Value::I64(*v as i64)),
         (Value::U8(v), DataType::I128) => Ok(Value::I128(*v as i128)),
 
+        // Signed to unsigned coercions (with bounds checking)
+        (Value::I8(v), DataType::U8) => u8::try_from(*v)
+            .map(Value::U8)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to TINYINT UNSIGNED", v))),
+        (Value::I16(v), DataType::U8) => u8::try_from(*v)
+            .map(Value::U8)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to TINYINT UNSIGNED", v))),
+        (Value::I32(v), DataType::U8) => u8::try_from(*v)
+            .map(Value::U8)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to TINYINT UNSIGNED", v))),
+        (Value::I64(v), DataType::U8) => u8::try_from(*v)
+            .map(Value::U8)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to TINYINT UNSIGNED", v))),
+
+        (Value::I8(v), DataType::U16) => u16::try_from(*v)
+            .map(Value::U16)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to SMALLINT UNSIGNED", v))),
+        (Value::I16(v), DataType::U16) => u16::try_from(*v)
+            .map(Value::U16)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to SMALLINT UNSIGNED", v))),
+        (Value::I32(v), DataType::U16) => u16::try_from(*v)
+            .map(Value::U16)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to SMALLINT UNSIGNED", v))),
+        (Value::I64(v), DataType::U16) => u16::try_from(*v)
+            .map(Value::U16)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to SMALLINT UNSIGNED", v))),
+
+        (Value::I8(v), DataType::U32) => u32::try_from(*v)
+            .map(Value::U32)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to INT UNSIGNED", v))),
+        (Value::I16(v), DataType::U32) => u32::try_from(*v)
+            .map(Value::U32)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to INT UNSIGNED", v))),
+        (Value::I32(v), DataType::U32) => u32::try_from(*v)
+            .map(Value::U32)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to INT UNSIGNED", v))),
+        (Value::I64(v), DataType::U32) => u32::try_from(*v)
+            .map(Value::U32)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to INT UNSIGNED", v))),
+
+        (Value::I8(v), DataType::U64) => u64::try_from(*v)
+            .map(Value::U64)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to BIGINT UNSIGNED", v))),
+        (Value::I16(v), DataType::U64) => u64::try_from(*v)
+            .map(Value::U64)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to BIGINT UNSIGNED", v))),
+        (Value::I32(v), DataType::U64) => u64::try_from(*v)
+            .map(Value::U64)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to BIGINT UNSIGNED", v))),
+        (Value::I64(v), DataType::U64) => u64::try_from(*v)
+            .map(Value::U64)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to BIGINT UNSIGNED", v))),
+        (Value::I128(v), DataType::U8) => u8::try_from(*v)
+            .map(Value::U8)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to TINYINT UNSIGNED", v))),
+        (Value::I128(v), DataType::U16) => u16::try_from(*v)
+            .map(Value::U16)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to SMALLINT UNSIGNED", v))),
+        (Value::I128(v), DataType::U32) => u32::try_from(*v)
+            .map(Value::U32)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to INT UNSIGNED", v))),
+        (Value::I128(v), DataType::U64) => u64::try_from(*v)
+            .map(Value::U64)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to BIGINT UNSIGNED", v))),
+
+        (Value::I8(v), DataType::U128) => u128::try_from(*v)
+            .map(Value::U128)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to HUGEINT UNSIGNED", v))),
+        (Value::I16(v), DataType::U128) => u128::try_from(*v)
+            .map(Value::U128)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to HUGEINT UNSIGNED", v))),
+        (Value::I32(v), DataType::U128) => u128::try_from(*v)
+            .map(Value::U128)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to HUGEINT UNSIGNED", v))),
+        (Value::I64(v), DataType::U128) => u128::try_from(*v)
+            .map(Value::U128)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to HUGEINT UNSIGNED", v))),
+        (Value::I128(v), DataType::U128) => u128::try_from(*v)
+            .map(Value::U128)
+            .map_err(|_| Error::InvalidValue(format!("Cannot convert {} to HUGEINT UNSIGNED", v))),
+
         // Float to float coercions
         (Value::F32(v), DataType::F64) => Ok(Value::F64(*v as f64)),
         (Value::F64(v), DataType::F32) => Ok(Value::F32(*v as f32)),
+
+        // Float to unsigned integer coercions (for large u128 values stored as float)
+        (Value::F64(v), DataType::U128) if *v >= 0.0 && v.fract() == 0.0 => {
+            // Note: We can't reliably check if v <= u128::MAX because of float precision
+            // but the cast will saturate at u128::MAX if needed
+            Ok(Value::U128(*v as u128))
+        }
+        (Value::F64(v), DataType::U64)
+            if *v >= 0.0 && *v <= u64::MAX as f64 && v.fract() == 0.0 =>
+        {
+            Ok(Value::U64(*v as u64))
+        }
+        (Value::F64(v), DataType::U32)
+            if *v >= 0.0 && *v <= u32::MAX as f64 && v.fract() == 0.0 =>
+        {
+            Ok(Value::U32(*v as u32))
+        }
+        (Value::F64(v), DataType::U16)
+            if *v >= 0.0 && *v <= u16::MAX as f64 && v.fract() == 0.0 =>
+        {
+            Ok(Value::U16(*v as u16))
+        }
+        (Value::F64(v), DataType::U8) if *v >= 0.0 && *v <= u8::MAX as f64 && v.fract() == 0.0 => {
+            Ok(Value::U8(*v as u8))
+        }
 
         // Integer to float coercions (always safe but may lose precision)
         (Value::I8(v), DataType::F32) => Ok(Value::F32(*v as f32)),
@@ -171,6 +277,51 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
         }
         (Value::I128(v), DataType::Decimal(_, _)) => {
             Ok(Value::Decimal(rust_decimal::Decimal::from(*v)))
+        }
+
+        // Decimal to unsigned integer coercions
+        (Value::Decimal(d), DataType::U8) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_u8()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::U8)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot convert {} to TINYINT UNSIGNED", d))
+                })
+        }
+        (Value::Decimal(d), DataType::U16) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_u16()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::U16)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot convert {} to SMALLINT UNSIGNED", d))
+                })
+        }
+        (Value::Decimal(d), DataType::U32) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_u32()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue(format!("Cannot convert {} to INT UNSIGNED", d)))
+        }
+        (Value::Decimal(d), DataType::U64) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_u64()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::U64)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot convert {} to BIGINT UNSIGNED", d))
+                })
+        }
+        (Value::Decimal(d), DataType::U128) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_u128()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::U128)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot convert {} to HUGEINT UNSIGNED", d))
+                })
         }
 
         // String coercions (only between string types)

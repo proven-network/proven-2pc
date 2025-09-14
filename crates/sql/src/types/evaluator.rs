@@ -207,7 +207,174 @@ pub fn add(left: &Value, right: &Value) -> Result<Value> {
         // Decimal operations
         (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a + b)),
 
-        // Mixed integer types - use macro
+        // Mixed unsigned + signed integer operations - preserve unsigned type when possible
+        // U8 + signed
+        (Value::U8(a), Value::I8(b)) if *b >= 0 => {
+            let b_u8 = *b as u8;
+            a.checked_add(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 overflow".into()))
+        }
+        (Value::I8(a), Value::U8(b)) if *a >= 0 => {
+            let a_u8 = *a as u8;
+            b.checked_add(a_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 overflow".into()))
+        }
+        (Value::U8(a), Value::I16(b)) if *b >= 0 && *b <= 255 => {
+            let b_u8 = *b as u8;
+            a.checked_add(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 overflow".into()))
+        }
+        (Value::U8(a), Value::I32(b)) if *b >= 0 && *b <= 255 => {
+            let b_u8 = *b as u8;
+            a.checked_add(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 overflow".into()))
+        }
+        (Value::U8(a), Value::I64(b)) if *b >= 0 && *b <= 255 => {
+            let b_u8 = *b as u8;
+            a.checked_add(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 overflow".into()))
+        }
+        (Value::U8(a), Value::I128(b)) if *b >= 0 && *b <= 255 => {
+            let b_u8 = *b as u8;
+            a.checked_add(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 overflow".into()))
+        }
+
+        // U16 + signed
+        (Value::U16(a), Value::I8(b)) if *b >= 0 => {
+            let b_u16 = *b as u16;
+            a.checked_add(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 overflow".into()))
+        }
+        (Value::U16(a), Value::I16(b)) if *b >= 0 => {
+            let b_u16 = *b as u16;
+            a.checked_add(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 overflow".into()))
+        }
+        (Value::U16(a), Value::I32(b)) if *b >= 0 && *b <= 65535 => {
+            let b_u16 = *b as u16;
+            a.checked_add(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 overflow".into()))
+        }
+        (Value::U16(a), Value::I64(b)) if *b >= 0 && *b <= 65535 => {
+            let b_u16 = *b as u16;
+            a.checked_add(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 overflow".into()))
+        }
+        (Value::U16(a), Value::I128(b)) if *b >= 0 && *b <= 65535 => {
+            let b_u16 = *b as u16;
+            a.checked_add(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 overflow".into()))
+        }
+
+        // U32 + signed
+        (Value::U32(a), Value::I8(b)) if *b >= 0 => {
+            let b_u32 = *b as u32;
+            a.checked_add(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 overflow".into()))
+        }
+        (Value::U32(a), Value::I16(b)) if *b >= 0 => {
+            let b_u32 = *b as u32;
+            a.checked_add(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 overflow".into()))
+        }
+        (Value::U32(a), Value::I32(b)) if *b >= 0 => {
+            let b_u32 = *b as u32;
+            a.checked_add(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 overflow".into()))
+        }
+        (Value::U32(a), Value::I64(b)) if *b >= 0 && *b <= u32::MAX as i64 => {
+            let b_u32 = *b as u32;
+            a.checked_add(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 overflow".into()))
+        }
+        (Value::U32(a), Value::I128(b)) if *b >= 0 && *b <= u32::MAX as i128 => {
+            let b_u32 = *b as u32;
+            a.checked_add(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 overflow".into()))
+        }
+
+        // U64 + signed
+        (Value::U64(a), Value::I8(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_add(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 overflow".into()))
+        }
+        (Value::U64(a), Value::I16(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_add(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 overflow".into()))
+        }
+        (Value::U64(a), Value::I32(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_add(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 overflow".into()))
+        }
+        (Value::U64(a), Value::I64(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_add(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 overflow".into()))
+        }
+        (Value::U64(a), Value::I128(b)) if *b >= 0 && *b <= u64::MAX as i128 => {
+            let b_u64 = *b as u64;
+            a.checked_add(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 overflow".into()))
+        }
+
+        // U128 + signed
+        (Value::U128(a), Value::I8(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_add(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 overflow".into()))
+        }
+        (Value::U128(a), Value::I16(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_add(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 overflow".into()))
+        }
+        (Value::U128(a), Value::I32(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_add(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 overflow".into()))
+        }
+        (Value::U128(a), Value::I64(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_add(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 overflow".into()))
+        }
+        (Value::U128(a), Value::I128(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_add(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 overflow".into()))
+        }
+
+        // Mixed signed integer types - use macro
         (l, r)
             if matches!(
                 (l, r),
@@ -298,7 +465,168 @@ pub fn subtract(left: &Value, right: &Value) -> Result<Value> {
         // Decimal operations
         (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a - b)),
 
-        // Mixed integer types - use macro
+        // Mixed unsigned - signed integer operations - preserve unsigned type when possible
+        // U8 - signed
+        (Value::U8(a), Value::I8(b)) if *b >= 0 && *b as u8 <= *a => {
+            let b_u8 = *b as u8;
+            a.checked_sub(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 underflow".into()))
+        }
+        (Value::U8(a), Value::I16(b)) if *b >= 0 && *b <= 255 && *b as u8 <= *a => {
+            let b_u8 = *b as u8;
+            a.checked_sub(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 underflow".into()))
+        }
+        (Value::U8(a), Value::I32(b)) if *b >= 0 && *b <= 255 && *b as u8 <= *a => {
+            let b_u8 = *b as u8;
+            a.checked_sub(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 underflow".into()))
+        }
+        (Value::U8(a), Value::I64(b)) if *b >= 0 && *b <= 255 && *b as u8 <= *a => {
+            let b_u8 = *b as u8;
+            a.checked_sub(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 underflow".into()))
+        }
+        (Value::U8(a), Value::I128(b)) if *b >= 0 && *b <= 255 && *b as u8 <= *a => {
+            let b_u8 = *b as u8;
+            a.checked_sub(b_u8)
+                .map(Value::U8)
+                .ok_or_else(|| Error::InvalidValue("U8 underflow".into()))
+        }
+
+        // U16 - signed
+        (Value::U16(a), Value::I8(b)) if *b >= 0 => {
+            let b_u16 = *b as u16;
+            a.checked_sub(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 underflow".into()))
+        }
+        (Value::U16(a), Value::I16(b)) if *b >= 0 => {
+            let b_u16 = *b as u16;
+            a.checked_sub(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 underflow".into()))
+        }
+        (Value::U16(a), Value::I32(b)) if *b >= 0 && *b <= 65535 => {
+            let b_u16 = *b as u16;
+            a.checked_sub(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 underflow".into()))
+        }
+        (Value::U16(a), Value::I64(b)) if *b >= 0 && *b <= 65535 => {
+            let b_u16 = *b as u16;
+            a.checked_sub(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 underflow".into()))
+        }
+        (Value::U16(a), Value::I128(b)) if *b >= 0 && *b <= 65535 => {
+            let b_u16 = *b as u16;
+            a.checked_sub(b_u16)
+                .map(Value::U16)
+                .ok_or_else(|| Error::InvalidValue("U16 underflow".into()))
+        }
+
+        // U32 - signed
+        (Value::U32(a), Value::I8(b)) if *b >= 0 => {
+            let b_u32 = *b as u32;
+            a.checked_sub(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 underflow".into()))
+        }
+        (Value::U32(a), Value::I16(b)) if *b >= 0 => {
+            let b_u32 = *b as u32;
+            a.checked_sub(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 underflow".into()))
+        }
+        (Value::U32(a), Value::I32(b)) if *b >= 0 => {
+            let b_u32 = *b as u32;
+            a.checked_sub(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 underflow".into()))
+        }
+        (Value::U32(a), Value::I64(b)) if *b >= 0 && *b <= u32::MAX as i64 => {
+            let b_u32 = *b as u32;
+            a.checked_sub(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 underflow".into()))
+        }
+        (Value::U32(a), Value::I128(b)) if *b >= 0 && *b <= u32::MAX as i128 => {
+            let b_u32 = *b as u32;
+            a.checked_sub(b_u32)
+                .map(Value::U32)
+                .ok_or_else(|| Error::InvalidValue("U32 underflow".into()))
+        }
+
+        // U64 - signed
+        (Value::U64(a), Value::I8(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_sub(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 underflow".into()))
+        }
+        (Value::U64(a), Value::I16(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_sub(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 underflow".into()))
+        }
+        (Value::U64(a), Value::I32(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_sub(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 underflow".into()))
+        }
+        (Value::U64(a), Value::I64(b)) if *b >= 0 => {
+            let b_u64 = *b as u64;
+            a.checked_sub(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 underflow".into()))
+        }
+        (Value::U64(a), Value::I128(b)) if *b >= 0 && *b <= u64::MAX as i128 => {
+            let b_u64 = *b as u64;
+            a.checked_sub(b_u64)
+                .map(Value::U64)
+                .ok_or_else(|| Error::InvalidValue("U64 underflow".into()))
+        }
+
+        // U128 - signed
+        (Value::U128(a), Value::I8(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_sub(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 underflow".into()))
+        }
+        (Value::U128(a), Value::I16(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_sub(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 underflow".into()))
+        }
+        (Value::U128(a), Value::I32(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_sub(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 underflow".into()))
+        }
+        (Value::U128(a), Value::I64(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_sub(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 underflow".into()))
+        }
+        (Value::U128(a), Value::I128(b)) if *b >= 0 => {
+            let b_u128 = *b as u128;
+            a.checked_sub(b_u128)
+                .map(Value::U128)
+                .ok_or_else(|| Error::InvalidValue("U128 underflow".into()))
+        }
+
+        // Mixed signed integer types - use macro
         (l, r)
             if matches!(
                 (l, r),

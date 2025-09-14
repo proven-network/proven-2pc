@@ -921,6 +921,51 @@ impl Executor {
                     Value::I32(i) => Ok(Value::I32(-i)),
                     Value::I64(i) => Ok(Value::I64(-i)),
                     Value::I128(i) => Ok(Value::I128(-i)),
+                    // Unsigned types need to be converted to signed equivalents
+                    // Note: This will fail during coercion if the result doesn't fit
+                    Value::U8(u) => {
+                        if u <= i8::MAX as u8 {
+                            Ok(Value::I8(-(u as i8)))
+                        } else {
+                            // Value too large to negate as i8, try i16
+                            Ok(Value::I16(-(u as i16)))
+                        }
+                    }
+                    Value::U16(u) => {
+                        if u <= i16::MAX as u16 {
+                            Ok(Value::I16(-(u as i16)))
+                        } else {
+                            // Value too large to negate as i16, try i32
+                            Ok(Value::I32(-(u as i32)))
+                        }
+                    }
+                    Value::U32(u) => {
+                        if u <= i32::MAX as u32 {
+                            Ok(Value::I32(-(u as i32)))
+                        } else {
+                            // Value too large to negate as i32, try i64
+                            Ok(Value::I64(-(u as i64)))
+                        }
+                    }
+                    Value::U64(u) => {
+                        if u <= i64::MAX as u64 {
+                            Ok(Value::I64(-(u as i64)))
+                        } else {
+                            // Value too large to negate as i64, try i128
+                            Ok(Value::I128(-(u as i128)))
+                        }
+                    }
+                    Value::U128(u) => {
+                        if u <= i128::MAX as u128 {
+                            Ok(Value::I128(-(u as i128)))
+                        } else {
+                            // Value too large to negate - this will error
+                            Err(Error::InvalidValue(format!(
+                                "Cannot negate {}: value too large",
+                                u
+                            )))
+                        }
+                    }
                     Value::F32(f) => Ok(Value::F32(-f)),
                     Value::F64(f) => Ok(Value::F64(-f)),
                     Value::Decimal(d) => Ok(Value::Decimal(-d)),

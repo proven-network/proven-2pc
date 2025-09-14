@@ -1288,20 +1288,40 @@ impl<'a> PlanContext<'a> {
                             // Keep as F64 for special values (will be coerced to F32 if needed)
                             crate::types::value::Value::F64(f)
                         } else {
-                            // Try to parse as a decimal string to avoid float precision issues
-                            // If the float is a simple value like 25.12, format with limited precision
-                            let decimal = if f.fract() != 0.0 && f.abs() < 1e10 {
-                                // Format with up to 10 decimal places, then parse
-                                let s = format!("{:.10}", f);
-                                // Trim trailing zeros and parse
-                                let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-                                rust_decimal::Decimal::from_str(trimmed).unwrap_or_else(|_| {
-                                    rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default()
-                                })
+                            // Check if this value can be represented as a Decimal
+                            // Decimal has a max value of about 7.9e28, much smaller than u128::MAX (3.4e38)
+                            // For very large values (like u128 values > i128::MAX), keep as F64
+                            if f.abs() > 7.9e28 {
+                                // Value too large for Decimal, keep as F64
+                                // This is used for large unsigned integer literals
+                                crate::types::value::Value::F64(f)
                             } else {
-                                rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default()
-                            };
-                            crate::types::value::Value::Decimal(decimal)
+                                // Try to parse as a decimal string to avoid float precision issues
+                                // If the float is a simple value like 25.12, format with limited precision
+                                let decimal = if f.fract() != 0.0 && f.abs() < 1e10 {
+                                    // Format with up to 10 decimal places, then parse
+                                    let s = format!("{:.10}", f);
+                                    // Trim trailing zeros and parse
+                                    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                                    rust_decimal::Decimal::from_str(trimmed).unwrap_or_else(|_| {
+                                        rust_decimal::Decimal::from_f64_retain(f).unwrap_or_else(
+                                            || {
+                                                // If that fails, convert to string and back for better precision
+                                                rust_decimal::Decimal::from_str(&f.to_string())
+                                                    .unwrap_or_default()
+                                            },
+                                        )
+                                    })
+                                } else {
+                                    // For integer-like values or large values
+                                    rust_decimal::Decimal::from_f64_retain(f).unwrap_or_else(|| {
+                                        // If that fails, convert to string and back for better precision
+                                        rust_decimal::Decimal::from_str(&f.to_string())
+                                            .unwrap_or_default()
+                                    })
+                                };
+                                crate::types::value::Value::Decimal(decimal)
+                            }
                         }
                     }
                     ast::Literal::String(s) => crate::types::value::Value::string(s),

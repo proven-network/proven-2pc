@@ -112,6 +112,15 @@ impl Parser<'_> {
         })
     }
 
+    /// Returns true if the next token is an identifier matching the given string (case-insensitive)
+    fn next_if_ident_eq(&mut self, expected: &str) -> bool {
+        self.next_if_map(|token| match token {
+            Token::Ident(s) if s.to_uppercase() == expected.to_uppercase() => Some(()),
+            _ => None,
+        })
+        .is_some()
+    }
+
     /// Consumes the next lexer token if it is the given token, returning true.
     fn next_is(&mut self, token: Token) -> bool {
         self.next_if(|t| t == &token).is_some()
@@ -262,12 +271,42 @@ impl Parser<'_> {
             // Boolean types
             Token::Keyword(Keyword::Bool | Keyword::Boolean) => DataType::Bool,
 
-            // Integer types - conventional SQL names
-            Token::Keyword(Keyword::Tinyint) => DataType::I8,
-            Token::Keyword(Keyword::Smallint) => DataType::I16,
-            Token::Keyword(Keyword::Int | Keyword::Integer) => DataType::I32,
-            Token::Keyword(Keyword::Bigint) => DataType::I64,
-            Token::Keyword(Keyword::Hugeint) => DataType::I128,
+            // Integer types - conventional SQL names (check for UNSIGNED modifier)
+            Token::Keyword(Keyword::Tinyint) => {
+                if self.next_if_ident_eq("UNSIGNED") {
+                    DataType::U8
+                } else {
+                    DataType::I8
+                }
+            }
+            Token::Keyword(Keyword::Smallint) => {
+                if self.next_if_ident_eq("UNSIGNED") {
+                    DataType::U16
+                } else {
+                    DataType::I16
+                }
+            }
+            Token::Keyword(Keyword::Int | Keyword::Integer) => {
+                if self.next_if_ident_eq("UNSIGNED") {
+                    DataType::U32
+                } else {
+                    DataType::I32
+                }
+            }
+            Token::Keyword(Keyword::Bigint) => {
+                if self.next_if_ident_eq("UNSIGNED") {
+                    DataType::U64
+                } else {
+                    DataType::I64
+                }
+            }
+            Token::Keyword(Keyword::Hugeint) => {
+                if self.next_if_ident_eq("UNSIGNED") {
+                    DataType::U128
+                } else {
+                    DataType::I128
+                }
+            }
 
             // Floating point types
             Token::Keyword(Keyword::Real) => DataType::F32, // SQL standard single precision
@@ -861,21 +900,29 @@ impl Parser<'_> {
 
             // Literal value.
             Token::Number(n) if n.chars().all(|c| c.is_ascii_digit()) => {
-                // Try to parse as i128. If it fails due to being exactly 1 over i128::MAX,
-                // this means it's meant to be i128::MIN when negated, so we'll handle it
-                // in the expression evaluator when we see the unary minus.
+                // Try to parse as i128 first, then as u128 if that fails
                 match n.parse::<i128>() {
                     Ok(val) => ast::Literal::Integer(val).into(),
-                    Err(_) if n == "170141183460469231731687303715884105728" => {
-                        // This special value is i128::MIN's absolute value
-                        // We can't represent it as positive, so we use a marker
-                        // Actually, for now let's just fail - we'll need a better solution
-                        return Err(Error::ParseError(
-                            "Integer literal too large. For i128::MIN, use the constant directly."
-                                .into(),
-                        ));
+                    Err(_) => {
+                        // Try parsing as u128 for large unsigned values
+                        match n.parse::<u128>() {
+                            Ok(val) => {
+                                // We need to handle u128 values that are > i128::MAX
+                                // For now, we'll store them as i128 and let coercion handle it
+                                // This is a bit of a hack but works for INSERT INTO unsigned columns
+                                if val <= i128::MAX as u128 {
+                                    ast::Literal::Integer(val as i128).into()
+                                } else {
+                                    // For values > i128::MAX, use Float to preserve the value
+                                    // This will be converted to U128 later during coercion
+                                    ast::Literal::Float(val as f64).into()
+                                }
+                            }
+                            Err(e) => {
+                                return Err(Error::ParseError(format!("invalid integer: {}", e)));
+                            }
+                        }
                     }
-                    Err(e) => return Err(Error::ParseError(format!("invalid integer: {}", e))),
                 }
             }
             Token::Number(n) => ast::Literal::Float(
@@ -896,13 +943,43 @@ impl Parser<'_> {
                 let expr = self.parse_expression()?;
                 self.expect(Token::Keyword(Keyword::As))?;
 
-                // Parse the target type
+                // Parse the target type (with support for UNSIGNED)
                 let type_name = match self.next()? {
-                    Token::Keyword(Keyword::Tinyint) => "TINYINT",
-                    Token::Keyword(Keyword::Smallint) => "SMALLINT",
-                    Token::Keyword(Keyword::Int) | Token::Keyword(Keyword::Integer) => "INT",
-                    Token::Keyword(Keyword::Bigint) => "BIGINT",
-                    Token::Keyword(Keyword::Hugeint) => "HUGEINT",
+                    Token::Keyword(Keyword::Tinyint) => {
+                        if self.next_if_ident_eq("UNSIGNED") {
+                            "TINYINT UNSIGNED"
+                        } else {
+                            "TINYINT"
+                        }
+                    }
+                    Token::Keyword(Keyword::Smallint) => {
+                        if self.next_if_ident_eq("UNSIGNED") {
+                            "SMALLINT UNSIGNED"
+                        } else {
+                            "SMALLINT"
+                        }
+                    }
+                    Token::Keyword(Keyword::Int) | Token::Keyword(Keyword::Integer) => {
+                        if self.next_if_ident_eq("UNSIGNED") {
+                            "INT UNSIGNED"
+                        } else {
+                            "INT"
+                        }
+                    }
+                    Token::Keyword(Keyword::Bigint) => {
+                        if self.next_if_ident_eq("UNSIGNED") {
+                            "BIGINT UNSIGNED"
+                        } else {
+                            "BIGINT"
+                        }
+                    }
+                    Token::Keyword(Keyword::Hugeint) => {
+                        if self.next_if_ident_eq("UNSIGNED") {
+                            "HUGEINT UNSIGNED"
+                        } else {
+                            "HUGEINT"
+                        }
+                    }
                     Token::Keyword(Keyword::Real) => "REAL", // REAL is F32
                     Token::Keyword(Keyword::Float) => "FLOAT", // FLOAT is F64
                     Token::Keyword(Keyword::Double) => "DOUBLE",
