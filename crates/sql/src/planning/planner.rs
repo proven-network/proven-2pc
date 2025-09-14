@@ -13,6 +13,7 @@ use crate::types::schema::Table;
 use crate::types::statistics::DatabaseStatistics;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
+use std::str::FromStr;
 
 /// Index metadata for planning
 #[derive(Debug, Clone)]
@@ -1283,10 +1284,21 @@ impl<'a> PlanContext<'a> {
                             crate::types::value::Value::I128(i)
                         }
                     }
-                    ast::Literal::Float(f) => crate::types::value::Value::Decimal(
-                        rust_decimal::Decimal::from_f64_retain(f)
-                            .ok_or_else(|| Error::InvalidValue("Invalid decimal".into()))?,
-                    ),
+                    ast::Literal::Float(f) => {
+                        // Try to parse as a decimal string to avoid float precision issues
+                        // If the float is a simple value like 25.12, format with limited precision
+                        let decimal = if f.fract() != 0.0 && f.abs() < 1e10 {
+                            // Format with up to 10 decimal places, then parse
+                            let s = format!("{:.10}", f);
+                            // Trim trailing zeros and parse
+                            let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                            rust_decimal::Decimal::from_str(trimmed)
+                                .unwrap_or_else(|_| rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default())
+                        } else {
+                            rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default()
+                        };
+                        crate::types::value::Value::Decimal(decimal)
+                    }
                     ast::Literal::String(s) => crate::types::value::Value::string(s),
                 };
                 Ok(Expression::Constant(value))

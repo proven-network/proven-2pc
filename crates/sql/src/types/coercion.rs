@@ -149,6 +149,13 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             })
         }
 
+        // Decimal to Decimal (with potentially different precision/scale)
+        (Value::Decimal(_), DataType::Decimal(_, _)) => {
+            // For now, just pass through the decimal value
+            // TODO: In the future, we may want to check and enforce precision/scale
+            Ok(value)
+        }
+
         // Integer to Decimal coercions
         (Value::I8(v), DataType::Decimal(_, _)) => {
             Ok(Value::Decimal(rust_decimal::Decimal::from(*v)))
