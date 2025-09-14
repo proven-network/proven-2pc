@@ -310,18 +310,11 @@ mod tests {
         let older_msg = older_responses.recv().await.unwrap();
         assert!(!older_msg.body.is_empty(), "Older should acquire lock");
 
-        // Younger should get deferred response (via header)
-        let deferred_msg = younger_responses.recv().await.unwrap();
-        assert_eq!(
-            deferred_msg.headers.get("status"),
-            Some(&"deferred".to_string()),
-            "Younger should be deferred"
-        );
-
-        // Younger should be automatically retried and succeed
-        let retry_msg = younger_responses.recv().await.unwrap();
+        // Younger transaction is deferred internally (no deferred message sent anymore)
+        // It will be automatically retried after older commits and should succeed
+        let younger_msg = younger_responses.recv().await.unwrap();
         assert!(
-            !retry_msg.body.is_empty(),
+            !younger_msg.body.is_empty(),
             "Younger should succeed after retry"
         );
 
