@@ -933,6 +933,13 @@ impl Parser<'_> {
             )
             .into(),
             Token::String(s) => ast::Literal::String(s).into(),
+            Token::HexString(h) => {
+                // Convert hex string to bytes
+                match hex::decode(&h) {
+                    Ok(bytes) => ast::Literal::Bytea(bytes).into(),
+                    Err(_) => return Err(Error::ParseError(format!("Invalid hex string: {}", h))),
+                }
+            }
             Token::Keyword(Keyword::True) => ast::Literal::Boolean(true).into(),
             Token::Keyword(Keyword::False) => ast::Literal::Boolean(false).into(),
             Token::Keyword(Keyword::Infinity) => ast::Literal::Float(f64::INFINITY).into(),

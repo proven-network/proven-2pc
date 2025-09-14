@@ -19,6 +19,8 @@ pub enum Token {
     Number(String),
     /// A Unicode string, with quotes stripped and escape sequences resolved.
     String(String),
+    /// A hex string literal (X'...' format), containing the hex digits only.
+    HexString(String),
     /// An identifier, with any quotes stripped. Lowercased if not quoted.
     Ident(String),
     /// A SQL keyword.
@@ -50,6 +52,7 @@ impl Display for Token {
         f.write_str(match self {
             Self::Number(n) => n,
             Self::String(s) => s,
+            Self::HexString(h) => return write!(f, "X'{}'", h),
             Self::Ident(s) => s,
             Self::Keyword(k) => return k.fmt(f),
             Self::Period => ".",
@@ -416,8 +419,23 @@ impl<'a> Lexer<'a> {
     }
 
     /// Scans the next identifier or keyword, if any. It's converted to
-    /// lowercase, by SQL convention.
+    /// lowercase, by SQL convention. Also checks for hex literals (X'...').
     fn scan_ident_or_keyword(&mut self) -> Option<Token> {
+        // Check for hex literal first (X'...' or x'...')
+        if self.chars.peek() == Some(&'X') || self.chars.peek() == Some(&'x') {
+            // Look ahead to see if this is a hex literal
+            let saved_pos = self.chars.clone();
+            self.chars.next(); // consume X/x
+            if self.chars.peek() == Some(&'\'') {
+                // This is a hex literal, scan it
+                if let Ok(Some(hex)) = self.scan_hex_string() {
+                    return Some(hex);
+                }
+            }
+            // Not a hex literal, restore position
+            self.chars = saved_pos;
+        }
+
         // The first character must be alphabetic. The rest can be numeric.
         let mut name = self
             .next_if(|c| c.is_alphabetic())?
@@ -480,6 +498,39 @@ impl<'a> Lexer<'a> {
             }
         }
         Some(Token::Number(number))
+    }
+
+    /// Scans a hex string literal (X'...'), containing only hex digits.
+    /// The X has already been consumed when this is called.
+    fn scan_hex_string(&mut self) -> Result<Option<Token>> {
+        if !self.next_is('\'') {
+            return Ok(None);
+        }
+        let mut hex = String::new();
+        loop {
+            match self.chars.next() {
+                Some('\'') => {
+                    // Validate that the hex string contains only valid hex digits
+                    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return Err(Error::ParseError(format!("Invalid hex string: {}", hex)));
+                    }
+                    // Hex strings must have an even number of digits (each byte is 2 hex digits)
+                    if !hex.len().is_multiple_of(2) {
+                        return Err(Error::ParseError(format!(
+                            "Hex string must have even number of digits: {}",
+                            hex
+                        )));
+                    }
+                    return Ok(Some(Token::HexString(hex)));
+                }
+                Some(c) => hex.push(c),
+                None => {
+                    return Err(Error::ParseError(
+                        "Unexpected end of hex string".to_string(),
+                    ));
+                }
+            }
+        }
     }
 
     /// Scans the next quoted string literal, if any.

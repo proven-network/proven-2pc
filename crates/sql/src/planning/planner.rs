@@ -1325,6 +1325,7 @@ impl<'a> PlanContext<'a> {
                         }
                     }
                     ast::Literal::String(s) => crate::types::value::Value::string(s),
+                    ast::Literal::Bytea(b) => crate::types::value::Value::Bytea(b),
                 };
                 Ok(Expression::Constant(value))
             }

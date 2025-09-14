@@ -193,6 +193,7 @@ pub enum Literal {
     Integer(i128),
     Float(f64),
     String(String),
+    Bytea(Vec<u8>),
 }
 
 /// To allow using expressions and literals in e.g. hashmaps, implement simple
@@ -207,6 +208,7 @@ impl PartialEq for Literal {
             (Self::Integer(l), Self::Integer(r)) => l == r,
             (Self::Float(l), Self::Float(r)) => l.to_bits() == r.to_bits(),
             (Self::String(l), Self::String(r)) => l == r,
+            (Self::Bytea(l), Self::Bytea(r)) => l == r,
             (_, _) => false,
         }
     }
@@ -223,6 +225,7 @@ impl Hash for Literal {
             Self::Integer(v) => v.hash(state),
             Self::Float(v) => v.to_bits().hash(state),
             Self::String(v) => v.hash(state),
+            Self::Bytea(v) => v.hash(state),
         }
     }
 }
