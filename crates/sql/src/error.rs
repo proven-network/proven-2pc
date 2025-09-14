@@ -65,6 +65,9 @@ pub enum Error {
     #[error("Execution error: {0}")]
     ExecutionError(String),
 
+    #[error("Compound objects are not supported")]
+    CompoundObjectNotSupported,
+
     // Constraint errors
     #[error("Primary key violation: {0}")]
     PrimaryKeyViolation(String),

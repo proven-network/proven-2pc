@@ -1,145 +1,115 @@
-//! SQL types and values with deterministic operations
+//! SQL values with GlueSQL-compatible format
+//!
+//! This module provides SQL value types that match GlueSQL's format
+//! for better test compatibility and SQL compliance.
 
+use super::data_type::{Interval, Point};
 use crate::error::{Error, Result};
-use bytes::Bytes;
+use crate::types::DataType;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
+use std::net::IpAddr;
 use uuid::Uuid;
 
-/// A row of values in a table (simple type alias for most uses)
+/// A row of values in a table
 pub type Row = Vec<Value>;
 
-/// A versioned row in storage with metadata
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct StorageRow {
-    /// Primary key (deterministic ID)
-    pub id: u64,
-    /// Column values
-    pub values: Vec<Value>,
-    /// Soft delete flag
-    pub deleted: bool,
-}
-
-impl StorageRow {
-    pub fn new(id: u64, values: Vec<Value>) -> Self {
-        Self {
-            id,
-            values,
-            deleted: false,
-        }
-    }
-}
-
-/// SQL data types
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DataType {
-    Boolean,
-    Integer,
-    Decimal(u32, u32), // precision, scale
-    String,
-    Timestamp,
-    Uuid,
-    Blob,
-    Nullable(Box<DataType>),
-}
-
-impl DataType {
-    pub fn is_nullable(&self) -> bool {
-        matches!(self, DataType::Nullable(_))
-    }
-
-    pub fn base_type(&self) -> &DataType {
-        match self {
-            DataType::Nullable(inner) => inner.base_type(),
-            _ => self,
-        }
-    }
-}
-
-impl fmt::Display for DataType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DataType::Boolean => write!(f, "BOOLEAN"),
-            DataType::Integer => write!(f, "INTEGER"),
-            DataType::Decimal(p, s) => write!(f, "DECIMAL({}, {})", p, s),
-            DataType::String => write!(f, "VARCHAR"),
-            DataType::Timestamp => write!(f, "TIMESTAMP"),
-            DataType::Uuid => write!(f, "UUID"),
-            DataType::Blob => write!(f, "BLOB"),
-            DataType::Nullable(inner) => write!(f, "{} NULL", inner),
-        }
-    }
-}
-
-/// SQL values with deterministic operations
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// SQL values with GlueSQL-compatible format
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
+    // Null
     Null,
-    Boolean(bool),
-    Integer(i64),
+    // Boolean
+    Bool(bool),
+    // Integer types
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    I128(i128),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    U128(u128),
+    // Float types
+    F32(f32),
+    F64(f64),
+    // Decimal
     Decimal(Decimal),
-    String(String),
-    Timestamp(u64),
+    // String (using Str for GlueSQL compatibility)
+    Str(String),
+    // Date/Time types
+    Date(NaiveDate),
+    Time(NaiveTime),
+    Timestamp(NaiveDateTime),
+    Interval(Interval),
+    // Special types
     Uuid(Uuid),
-    Blob(Bytes),
+    Bytea(Vec<u8>),
+    Inet(IpAddr),
+    Point(Point),
+    // Collection types
+    List(Vec<Value>),
+    Map(HashMap<String, Value>),
 }
 
+// Backward compatibility - map old names to new format
 impl Value {
-    /// Create a new UUID value with a v4 random UUID
-    pub fn new_uuid() -> Self {
-        Value::Uuid(Uuid::new_v4())
+    /// Create an I64 value (most common integer type)
+    pub fn integer(i: i64) -> Self {
+        Value::I64(i)
     }
 
-    /// Create a UUID value from a string
-    pub fn uuid_from_str(s: &str) -> Result<Self> {
-        Uuid::parse_str(s)
-            .map(Value::Uuid)
-            .map_err(|e| Error::InvalidValue(format!("Invalid UUID: {}", e)))
+    /// Create a string value
+    pub fn string(s: String) -> Self {
+        Value::Str(s)
     }
 
-    /// Create a UUID value from bytes
-    pub fn uuid_from_bytes(bytes: [u8; 16]) -> Self {
-        Value::Uuid(Uuid::from_bytes(bytes))
+    /// Create a boolean value
+    pub fn boolean(b: bool) -> Self {
+        Value::Bool(b)
     }
 
-    /// Create a Blob value from a byte vector
-    pub fn blob_from_vec(data: Vec<u8>) -> Self {
-        Value::Blob(Bytes::from(data))
+    /// Check if value is any integer type
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            Value::I8(_)
+                | Value::I16(_)
+                | Value::I32(_)
+                | Value::I64(_)
+                | Value::I128(_)
+                | Value::U8(_)
+                | Value::U16(_)
+                | Value::U32(_)
+                | Value::U64(_)
+                | Value::U128(_)
+        )
     }
 
-    /// Create a Blob value from a string
-    pub fn blob_from_str(s: &str) -> Self {
-        Value::Blob(Bytes::from(s.to_string()))
-    }
-
-    /// Get bytes from a Blob value
-    pub fn as_blob_bytes(&self) -> Option<&[u8]> {
+    /// Convert any integer to i128 for comparison
+    pub fn to_i128(&self) -> Result<i128> {
         match self {
-            Value::Blob(b) => Some(b.as_ref()),
-            _ => None,
-        }
-    }
-
-    /// Get UUID as string
-    pub fn as_uuid_string(&self) -> Option<String> {
-        match self {
-            Value::Uuid(u) => Some(u.to_string()),
-            _ => None,
-        }
-    }
-
-    pub fn data_type(&self) -> DataType {
-        match self {
-            Value::Null => DataType::Nullable(Box::new(DataType::String)), // Default nullable type
-            Value::Boolean(_) => DataType::Boolean,
-            Value::Integer(_) => DataType::Integer,
-            Value::Decimal(_) => DataType::Decimal(38, 10), // Default precision/scale
-            Value::String(_) => DataType::String,
-            Value::Timestamp(_) => DataType::Timestamp,
-            Value::Uuid(_) => DataType::Uuid,
-            Value::Blob(_) => DataType::Blob,
+            Value::I8(v) => Ok(*v as i128),
+            Value::I16(v) => Ok(*v as i128),
+            Value::I32(v) => Ok(*v as i128),
+            Value::I64(v) => Ok(*v as i128),
+            Value::I128(v) => Ok(*v),
+            Value::U8(v) => Ok(*v as i128),
+            Value::U16(v) => Ok(*v as i128),
+            Value::U32(v) => Ok(*v as i128),
+            Value::U64(v) => Ok(*v as i128),
+            Value::U128(v) => (*v)
+                .try_into()
+                .map_err(|_| Error::InvalidValue("U128 too large for I128".into())),
+            _ => Err(Error::TypeMismatch {
+                expected: "integer".into(),
+                found: format!("{:?}", self),
+            }),
         }
     }
 
@@ -147,210 +117,110 @@ impl Value {
         matches!(self, Value::Null)
     }
 
-    pub fn check_type(&self, expected: &DataType) -> Result<()> {
-        match (self, expected) {
-            (Value::Null, DataType::Nullable(_)) => Ok(()),
-            (Value::Boolean(_), DataType::Boolean) => Ok(()),
-            (Value::Integer(_), DataType::Integer) => Ok(()),
-            (Value::Decimal(_), DataType::Decimal(_, _)) => Ok(()),
-            (Value::String(_), DataType::String) => Ok(()),
-            (Value::Timestamp(_), DataType::Timestamp) => Ok(()),
-            (Value::Uuid(_), DataType::Uuid) => Ok(()),
-            (Value::Blob(_), DataType::Blob) => Ok(()),
-            (_, DataType::Nullable(inner)) => self.check_type(inner),
-            _ => Err(Error::TypeMismatch {
-                expected: expected.to_string(),
-                found: self.data_type().to_string(),
-            }),
-        }
-    }
-
-    /// Compare two composite keys lexicographically
-    pub fn compare_composite(keys1: &[Value], keys2: &[Value]) -> Option<Ordering> {
-        for (v1, v2) in keys1.iter().zip(keys2.iter()) {
-            match v1.partial_cmp(v2)? {
-                Ordering::Equal => continue,
-                other => return Some(other),
-            }
-        }
-        // If all compared elements are equal, compare lengths
-        Some(keys1.len().cmp(&keys2.len()))
-    }
-
-    /// Compare two values for ordering
-    pub fn compare(&self, other: &Value) -> Result<Ordering> {
-        match (self, other) {
-            (Value::Null, Value::Null) => Ok(Ordering::Equal),
-            (Value::Null, _) => Ok(Ordering::Less),
-            (_, Value::Null) => Ok(Ordering::Greater),
-
-            (Value::Boolean(a), Value::Boolean(b)) => Ok(a.cmp(b)),
-            (Value::Integer(a), Value::Integer(b)) => Ok(a.cmp(b)),
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(a.cmp(b)),
-            (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
-            (Value::Timestamp(a), Value::Timestamp(b)) => Ok(a.cmp(b)),
-            (Value::Uuid(a), Value::Uuid(b)) => Ok(a.cmp(b)),
-            (Value::Blob(a), Value::Blob(b)) => Ok(a.cmp(b)),
-
-            // Allow comparison between integers and decimals
-            (Value::Integer(i), Value::Decimal(d)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(i_dec.cmp(d))
-            }
-            (Value::Decimal(d), Value::Integer(i)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(d.cmp(&i_dec))
-            }
-
-            _ => Err(Error::TypeMismatch {
-                expected: self.data_type().to_string(),
-                found: other.data_type().to_string(),
-            }),
-        }
-    }
-
-    /// Add two values (deterministic)
-    pub fn add(&self, other: &Value) -> Result<Value> {
-        match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_add(*b)
-                .map(Value::Integer)
-                .ok_or_else(|| Error::InvalidValue("Integer overflow".into())),
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a + b)),
-            (Value::Integer(i), Value::Decimal(d)) | (Value::Decimal(d), Value::Integer(i)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(Value::Decimal(i_dec + d))
-            }
-            (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: format!("{:?} and {:?}", self, other),
-            }),
-        }
-    }
-
-    /// Subtract two values (deterministic)
-    pub fn subtract(&self, other: &Value) -> Result<Value> {
-        match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_sub(*b)
-                .map(Value::Integer)
-                .ok_or_else(|| Error::InvalidValue("Integer underflow".into())),
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a - b)),
-            (Value::Integer(i), Value::Decimal(d)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(Value::Decimal(i_dec - d))
-            }
-            (Value::Decimal(d), Value::Integer(i)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(Value::Decimal(d - i_dec))
-            }
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric".into(),
-                found: format!("{:?} and {:?}", self, other),
-            }),
-        }
-    }
-
-    /// Multiply two values (deterministic)
-    pub fn multiply(&self, other: &Value) -> Result<Value> {
-        match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => a
-                .checked_mul(*b)
-                .map(Value::Integer)
-                .ok_or_else(|| Error::InvalidValue("Integer overflow".into())),
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a * b)),
-            (Value::Integer(i), Value::Decimal(d)) | (Value::Decimal(d), Value::Integer(i)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(Value::Decimal(i_dec * d))
-            }
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric".into(),
-                found: format!("{:?} and {:?}", self, other),
-            }),
-        }
-    }
-
-    /// Divide two values (deterministic)
-    pub fn divide(&self, other: &Value) -> Result<Value> {
-        match (self, other) {
-            (_, Value::Integer(0)) => Err(Error::InvalidValue("Division by zero".into())),
-            (_, Value::Decimal(d)) if d.is_zero() => {
-                Err(Error::InvalidValue("Division by zero".into()))
-            }
-
-            (Value::Integer(a), Value::Integer(b)) => {
-                // Integer division truncates
-                Ok(Value::Integer(a / b))
-            }
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a / b)),
-            (Value::Integer(i), Value::Decimal(d)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(Value::Decimal(i_dec / d))
-            }
-            (Value::Decimal(d), Value::Integer(i)) => {
-                let i_dec = Decimal::from(*i);
-                Ok(Value::Decimal(d / i_dec))
-            }
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric".into(),
-                found: format!("{:?} and {:?}", self, other),
-            }),
-        }
-    }
-
-    /// Logical AND
-    pub fn and(&self, other: &Value) -> Result<Value> {
-        match (self, other) {
-            (Value::Boolean(a), Value::Boolean(b)) => Ok(Value::Boolean(*a && *b)),
-            (Value::Null, Value::Boolean(false)) | (Value::Boolean(false), Value::Null) => {
-                Ok(Value::Boolean(false))
-            }
-            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "boolean".into(),
-                found: format!("{:?} and {:?}", self, other),
-            }),
-        }
-    }
-
-    /// Logical OR
-    pub fn or(&self, other: &Value) -> Result<Value> {
-        match (self, other) {
-            (Value::Boolean(a), Value::Boolean(b)) => Ok(Value::Boolean(*a || *b)),
-            (Value::Null, Value::Boolean(true)) | (Value::Boolean(true), Value::Null) => {
-                Ok(Value::Boolean(true))
-            }
-            (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "boolean".into(),
-                found: format!("{:?} and {:?}", self, other),
-            }),
-        }
-    }
-
-    /// Logical NOT
-    pub fn not(&self) -> Result<Value> {
-        match self {
-            Value::Boolean(b) => Ok(Value::Boolean(!b)),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "boolean".into(),
-                found: self.data_type().to_string(),
-            }),
-        }
-    }
-
     /// Convert value to boolean
     pub fn to_bool(&self) -> Result<bool> {
         match self {
-            Value::Boolean(b) => Ok(*b),
-            Value::Null => Ok(false), // NULL is treated as false
+            Value::Bool(b) => Ok(*b),
+            Value::Null => Ok(false),
+            // Non-zero numbers are true
+            Value::I8(n) => Ok(*n != 0),
+            Value::I16(n) => Ok(*n != 0),
+            Value::I32(n) => Ok(*n != 0),
+            Value::I64(n) => Ok(*n != 0),
+            Value::I128(n) => Ok(*n != 0),
+            Value::U8(n) => Ok(*n != 0),
+            Value::U16(n) => Ok(*n != 0),
+            Value::U32(n) => Ok(*n != 0),
+            Value::U64(n) => Ok(*n != 0),
+            Value::U128(n) => Ok(*n != 0),
+            Value::F32(n) => Ok(*n != 0.0 && !n.is_nan()),
+            Value::F64(n) => Ok(*n != 0.0 && !n.is_nan()),
             _ => Err(Error::TypeMismatch {
                 expected: "boolean".into(),
-                found: self.data_type().to_string(),
+                found: format!("{:?}", self),
             }),
         }
+    }
+
+    /// Get the data type of this value
+    pub fn data_type(&self) -> DataType {
+        match self {
+            Value::Null => DataType::Nullable(Box::new(DataType::I64)), // Default nullable type
+            Value::Bool(_) => DataType::Bool,
+            Value::I8(_) => DataType::I8,
+            Value::I16(_) => DataType::I16,
+            Value::I32(_) => DataType::I32,
+            Value::I64(_) => DataType::I64,
+            Value::I128(_) => DataType::I128,
+            Value::U8(_) => DataType::U8,
+            Value::U16(_) => DataType::U16,
+            Value::U32(_) => DataType::U32,
+            Value::U64(_) => DataType::U64,
+            Value::U128(_) => DataType::U128,
+            Value::F32(_) => DataType::F32,
+            Value::F64(_) => DataType::F64,
+            Value::Decimal(_) => DataType::Decimal(None, None),
+            Value::Str(_) => DataType::Str,
+            Value::Date(_) => DataType::Date,
+            Value::Time(_) => DataType::Time,
+            Value::Timestamp(_) => DataType::Timestamp,
+            Value::Interval(_) => DataType::Interval,
+            Value::Uuid(_) => DataType::Uuid,
+            Value::Bytea(_) => DataType::Bytea,
+            Value::Inet(_) => DataType::Inet,
+            Value::Point(_) => DataType::Point,
+            Value::List(_) => DataType::List(Box::new(DataType::I64)), // TODO: track element type
+            Value::Map(_) => DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64)), // TODO: track types
+        }
+    }
+
+    /// Check if this value matches the expected data type
+    pub fn check_type(&self, expected: &DataType) -> Result<()> {
+        // Handle nullable types
+        if let DataType::Nullable(inner) = expected {
+            if self.is_null() {
+                return Ok(());
+            }
+            return self.check_type(inner);
+        }
+
+        // Check if the value's type matches the expected type
+        let actual = self.data_type();
+        if actual == *expected {
+            return Ok(());
+        }
+
+        // Allow integer type conversions
+        if self.is_integer()
+            && matches!(
+                expected,
+                DataType::I64
+                    | DataType::I32
+                    | DataType::I16
+                    | DataType::I8
+                    | DataType::U64
+                    | DataType::U32
+                    | DataType::U16
+                    | DataType::U8
+            )
+        {
+            return Ok(());
+        }
+
+        // Allow string/text interchangeability
+        if matches!(self, Value::Str(_)) && matches!(expected, DataType::Str | DataType::Text) {
+            return Ok(());
+        }
+
+        // Allow Decimal values to match any Decimal type specification
+        if matches!(self, Value::Decimal(_)) && matches!(expected, DataType::Decimal(_, _)) {
+            return Ok(());
+        }
+
+        Err(Error::TypeMismatch {
+            expected: expected.to_string(),
+            found: actual.to_string(),
+        })
     }
 }
 
@@ -358,26 +228,163 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Null => write!(f, "NULL"),
-            Value::Boolean(b) => write!(f, "{}", b),
-            Value::Integer(i) => write!(f, "{}", i),
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::I8(i) => write!(f, "{}", i),
+            Value::I16(i) => write!(f, "{}", i),
+            Value::I32(i) => write!(f, "{}", i),
+            Value::I64(i) => write!(f, "{}", i),
+            Value::I128(i) => write!(f, "{}", i),
+            Value::U8(i) => write!(f, "{}", i),
+            Value::U16(i) => write!(f, "{}", i),
+            Value::U32(i) => write!(f, "{}", i),
+            Value::U64(i) => write!(f, "{}", i),
+            Value::U128(i) => write!(f, "{}", i),
+            Value::F32(v) => write!(f, "{}", v),
+            Value::F64(v) => write!(f, "{}", v),
             Value::Decimal(d) => write!(f, "{}", d),
-            Value::String(s) => write!(f, "'{}'", s),
-            Value::Timestamp(t) => write!(f, "{}", t),
+            Value::Str(s) => write!(f, "'{}'", s),
+            Value::Date(d) => write!(f, "{}", d),
+            Value::Time(t) => write!(f, "{}", t),
+            Value::Timestamp(ts) => write!(f, "{}", ts),
+            Value::Interval(i) => write!(
+                f,
+                "INTERVAL {} months {} days {} microseconds",
+                i.months, i.days, i.microseconds
+            ),
             Value::Uuid(u) => write!(f, "'{}'", u),
-            Value::Blob(b) => write!(f, "x'{}'", hex::encode(b)),
+            Value::Bytea(b) => write!(f, "x'{}'", hex::encode(b)),
+            Value::Inet(ip) => write!(f, "{}", ip),
+            Value::Point(p) => write!(f, "POINT({} {})", p.x, p.y),
+            Value::List(l) => write!(f, "{:?}", l),
+            Value::Map(m) => write!(f, "{:?}", m),
+        }
+    }
+}
+
+// Implement Hash for Value
+impl std::hash::Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Null => 0.hash(state),
+            Value::Bool(b) => b.hash(state),
+            Value::I8(i) => i.hash(state),
+            Value::I16(i) => i.hash(state),
+            Value::I32(i) => i.hash(state),
+            Value::I64(i) => i.hash(state),
+            Value::I128(i) => i.hash(state),
+            Value::U8(i) => i.hash(state),
+            Value::U16(i) => i.hash(state),
+            Value::U32(i) => i.hash(state),
+            Value::U64(i) => i.hash(state),
+            Value::U128(i) => i.hash(state),
+            Value::F32(f) => f.to_bits().hash(state),
+            Value::F64(f) => f.to_bits().hash(state),
+            Value::Decimal(d) => d.hash(state),
+            Value::Str(s) => s.hash(state),
+            Value::Date(d) => d.hash(state),
+            Value::Time(t) => t.hash(state),
+            Value::Timestamp(ts) => ts.hash(state),
+            Value::Interval(i) => i.hash(state),
+            Value::Uuid(u) => u.hash(state),
+            Value::Bytea(b) => b.hash(state),
+            Value::Inet(ip) => ip.hash(state),
+            Value::Point(p) => {
+                p.x.to_bits().hash(state);
+                p.y.to_bits().hash(state);
+            }
+            Value::List(l) => l.hash(state),
+            Value::Map(m) => {
+                // Hash map keys in sorted order for determinism
+                let mut pairs: Vec<_> = m.iter().collect();
+                pairs.sort_by_key(|(k, _)| k.as_str());
+                for (k, v) in pairs {
+                    k.hash(state);
+                    v.hash(state);
+                }
+            }
+        }
+    }
+}
+
+impl Eq for Value {}
+
+impl Ord for Value {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        match (self, other) {
+            // Null comparisons
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _) => Ordering::Less,
+            (_, Value::Null) => Ordering::Greater,
+
+            // Boolean comparisons
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+
+            // Numeric comparisons - convert to decimal for cross-type comparison
+            (a, b) if a.is_integer() && b.is_integer() => {
+                // Compare as i128 for integer types
+                match (a.to_i128(), b.to_i128()) {
+                    (Ok(a_val), Ok(b_val)) => a_val.cmp(&b_val),
+                    _ => Ordering::Equal,
+                }
+            }
+            (Value::F32(a), Value::F32(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (Value::Decimal(a), Value::Decimal(b)) => a.cmp(b),
+
+            // Mixed numeric types - use evaluator's compare
+            (a, b)
+                if (a.is_integer()
+                    || matches!(a, Value::F32(_) | Value::F64(_) | Value::Decimal(_)))
+                    && (b.is_integer()
+                        || matches!(b, Value::F32(_) | Value::F64(_) | Value::Decimal(_))) =>
+            {
+                crate::types::evaluator::compare(a, b).unwrap_or(Ordering::Equal)
+            }
+
+            // String comparisons
+            (Value::Str(a), Value::Str(b)) => a.cmp(b),
+
+            // Date/Time comparisons
+            (Value::Date(a), Value::Date(b)) => a.cmp(b),
+            (Value::Time(a), Value::Time(b)) => a.cmp(b),
+            (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
+            (Value::Interval(a), Value::Interval(b)) => a.cmp(b),
+
+            // UUID comparisons
+            (Value::Uuid(a), Value::Uuid(b)) => a.cmp(b),
+
+            // Bytea comparisons
+            (Value::Bytea(a), Value::Bytea(b)) => a.cmp(b),
+
+            // IP address comparisons
+            (Value::Inet(a), Value::Inet(b)) => a.cmp(b),
+
+            // Point comparisons
+            (Value::Point(a), Value::Point(b)) => a.cmp(b),
+
+            // List comparisons (lexicographic)
+            (Value::List(a), Value::List(b)) => a.cmp(b),
+
+            // Map comparisons - compare sorted key-value pairs
+            (Value::Map(a), Value::Map(b)) => {
+                let mut a_pairs: Vec<_> = a.iter().collect();
+                let mut b_pairs: Vec<_> = b.iter().collect();
+                a_pairs.sort_by_key(|(k, _)| k.as_str());
+                b_pairs.sort_by_key(|(k, _)| k.as_str());
+                a_pairs.cmp(&b_pairs)
+            }
+
+            // Different types - consider them equal for total ordering
+            _ => Ordering::Equal,
         }
     }
 }
 
 impl PartialOrd for Value {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-impl Ord for Value {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.compare(other).unwrap_or(Ordering::Equal)
     }
 }
 
@@ -386,118 +393,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_value_comparison() {
+    fn test_gluesql_format() {
+        // Test Debug output matches GlueSQL format
         assert_eq!(
-            Value::Integer(1).compare(&Value::Integer(2)).unwrap(),
-            Ordering::Less
+            format!("{:?}", Value::Str("hello".into())),
+            "Str(\"hello\")"
         );
+        assert_eq!(format!("{:?}", Value::I64(42)), "I64(42)");
+        assert_eq!(format!("{:?}", Value::Bool(true)), "Bool(true)");
+        assert_eq!(format!("{:?}", Value::Null), "Null");
+
+        // Test backward compatibility
+        assert_eq!(format!("{:?}", Value::integer(42)), "I64(42)");
         assert_eq!(
-            Value::String("a".into())
-                .compare(&Value::String("b".into()))
-                .unwrap(),
-            Ordering::Less
+            format!("{:?}", Value::string("test".into())),
+            "Str(\"test\")"
         );
-        assert_eq!(
-            Value::Null.compare(&Value::Integer(1)).unwrap(),
-            Ordering::Less
-        );
+        assert_eq!(format!("{:?}", Value::boolean(false)), "Bool(false)");
     }
 
     #[test]
-    fn test_value_arithmetic() {
-        assert_eq!(
-            Value::Integer(2).add(&Value::Integer(3)).unwrap(),
-            Value::Integer(5)
-        );
-        assert_eq!(
-            Value::Decimal(Decimal::from(10))
-                .multiply(&Value::Decimal(Decimal::from(2)))
-                .unwrap(),
-            Value::Decimal(Decimal::from(20))
-        );
-    }
+    fn test_integer_types() {
+        assert!(Value::I8(10).is_integer());
+        assert!(Value::U64(1000).is_integer());
+        assert!(!Value::Str("not integer".into()).is_integer());
 
-    #[test]
-    fn test_type_checking() {
-        assert!(Value::Integer(42).check_type(&DataType::Integer).is_ok());
-        assert!(Value::Integer(42).check_type(&DataType::String).is_err());
-        assert!(
-            Value::Null
-                .check_type(&DataType::Nullable(Box::new(DataType::Integer)))
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn test_uuid_type() {
-        // Test UUID creation and comparison
-        let uuid1 = Value::new_uuid();
-        let uuid2 = Value::new_uuid();
-
-        assert_eq!(uuid1.data_type(), DataType::Uuid);
-        assert!(uuid1.check_type(&DataType::Uuid).is_ok());
-        assert!(uuid1.check_type(&DataType::String).is_err());
-
-        // UUIDs should be different
-        assert_ne!(uuid1, uuid2);
-
-        // Test UUID from string
-        let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
-        let uuid_val = Value::uuid_from_str(uuid_str).unwrap();
-        assert_eq!(uuid_val.as_uuid_string().unwrap(), uuid_str);
-
-        // Test UUID from bytes
-        let bytes = [0u8; 16];
-        let uuid_from_bytes = Value::uuid_from_bytes(bytes);
-        assert_eq!(uuid_from_bytes.data_type(), DataType::Uuid);
-
-        // Test ordering
-        let uuid3 = Value::uuid_from_str("00000000-0000-0000-0000-000000000000").unwrap();
-        let uuid4 = Value::uuid_from_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap();
-        assert_eq!(uuid3.compare(&uuid4).unwrap(), Ordering::Less);
-    }
-
-    #[test]
-    fn test_blob_type() {
-        // Test Blob creation
-        let data = vec![1, 2, 3, 4, 5];
-        let blob = Value::blob_from_vec(data.clone());
-
-        assert_eq!(blob.data_type(), DataType::Blob);
-        assert!(blob.check_type(&DataType::Blob).is_ok());
-        assert!(blob.check_type(&DataType::String).is_err());
-
-        // Test getting bytes back
-        assert_eq!(blob.as_blob_bytes(), Some(data.as_slice()));
-
-        // Test Blob from string
-        let text = "Hello, World!";
-        let text_blob = Value::blob_from_str(text);
-        assert_eq!(text_blob.as_blob_bytes(), Some(text.as_bytes()));
-
-        // Test ordering
-        let blob1 = Value::blob_from_vec(vec![1, 2, 3]);
-        let blob2 = Value::blob_from_vec(vec![1, 2, 4]);
-        assert_eq!(blob1.compare(&blob2).unwrap(), Ordering::Less);
-
-        // Test Display format
-        let blob_display = Value::blob_from_vec(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        assert_eq!(blob_display.to_string(), "x'deadbeef'");
-    }
-
-    #[test]
-    fn test_mixed_type_comparisons() {
-        let uuid = Value::new_uuid();
-        let blob = Value::blob_from_vec(vec![1, 2, 3]);
-        let string = Value::String("test".to_string());
-
-        // Different types should not be comparable (except with Null)
-        assert!(uuid.compare(&blob).is_err());
-        assert!(uuid.compare(&string).is_err());
-        assert!(blob.compare(&string).is_err());
-
-        // Null comparisons should work
-        assert_eq!(Value::Null.compare(&uuid).unwrap(), Ordering::Less);
-        assert_eq!(uuid.compare(&Value::Null).unwrap(), Ordering::Greater);
+        // Test conversion to i128
+        assert_eq!(Value::I8(10).to_i128().unwrap(), 10i128);
+        assert_eq!(Value::U32(1000).to_i128().unwrap(), 1000i128);
     }
 }

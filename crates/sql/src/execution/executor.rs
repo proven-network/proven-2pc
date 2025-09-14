@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::planning::plan::{Node, Plan};
 use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
+use crate::types::evaluator;
 use crate::types::expression::Expression;
 use crate::types::query::Rows;
 use crate::types::value::Value;
@@ -152,7 +153,10 @@ impl Executor {
                 row.to_vec()
             };
 
-            write_ops::insert(storage, tx_ctx, &table, final_row)?;
+            // Apply type coercion to match schema
+            let coerced_row = crate::types::coercion::coerce_row(final_row, schema)?;
+
+            write_ops::insert(storage, tx_ctx, &table, coerced_row)?;
             count += 1;
         }
 
@@ -191,6 +195,14 @@ impl Executor {
         }; // Immutable borrow ends here
 
         // Phase 2: Apply updates (mutable borrow)
+        // Get table schema for type coercion
+        let schema = storage
+            .tables
+            .get(&table)
+            .ok_or_else(|| Error::TableNotFound(table.clone()))?
+            .schema
+            .clone();
+
         let mut count = 0;
         for (row_id, current) in rows_to_update {
             let mut updated = current.to_vec();
@@ -198,7 +210,10 @@ impl Executor {
                 updated[col_idx] = self.evaluate_expression(expr, Some(&current), tx_ctx)?;
             }
 
-            write_ops::update(storage, tx_ctx, &table, row_id, updated)?;
+            // Apply type coercion to match schema
+            let coerced_row = crate::types::coercion::coerce_row(updated, &schema)?;
+
+            write_ops::update(storage, tx_ctx, &table, row_id, coerced_row)?;
             count += 1;
         }
 
@@ -443,7 +458,7 @@ impl Executor {
 
                             // Check start bound
                             if let Some(ref start) = start_vals {
-                                match Value::compare_composite(&row_values, start) {
+                                match evaluator::compare_composite(&row_values, start).ok() {
                                     Some(std::cmp::Ordering::Less) => return None,
                                     Some(std::cmp::Ordering::Equal) if !start_incl => return None,
                                     _ => {}
@@ -452,7 +467,7 @@ impl Executor {
 
                             // Check end bound
                             if let Some(ref end) = end_vals {
-                                match Value::compare_composite(&row_values, end) {
+                                match evaluator::compare_composite(&row_values, end).ok() {
                                     Some(std::cmp::Ordering::Greater) => return None,
                                     Some(std::cmp::Ordering::Equal) if !end_incl => return None,
                                     _ => {}
@@ -686,83 +701,157 @@ impl Executor {
             Expression::Equal(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                Ok(Value::Boolean(l == r))
+                // Use evaluator::compare for type-aware comparison
+                match evaluator::compare(&l, &r) {
+                    Ok(std::cmp::Ordering::Equal) => Ok(Value::boolean(true)),
+                    Ok(_) => Ok(Value::boolean(false)),
+                    Err(_) => Ok(Value::boolean(false)), // Type mismatch means not equal
+                }
             }
 
             Expression::NotEqual(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                Ok(Value::Boolean(l != r))
+                // Use evaluator::compare for type-aware comparison
+                match evaluator::compare(&l, &r) {
+                    Ok(std::cmp::Ordering::Equal) => Ok(Value::boolean(false)),
+                    Ok(_) => Ok(Value::boolean(true)),
+                    Err(_) => Ok(Value::boolean(true)), // Type mismatch means not equal
+                }
             }
 
             Expression::LessThan(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                Ok(Value::Boolean(l < r))
+                // Use evaluator::compare for type-aware comparison
+                match evaluator::compare(&l, &r) {
+                    Ok(std::cmp::Ordering::Less) => Ok(Value::boolean(true)),
+                    Ok(_) => Ok(Value::boolean(false)),
+                    Err(_) => Ok(Value::boolean(false)),
+                }
             }
 
             Expression::LessThanOrEqual(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                Ok(Value::Boolean(l <= r))
+                // Use evaluator::compare for type-aware comparison
+                match evaluator::compare(&l, &r) {
+                    Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
+                        Ok(Value::boolean(true))
+                    }
+                    Ok(_) => Ok(Value::boolean(false)),
+                    Err(_) => Ok(Value::boolean(false)),
+                }
             }
 
             Expression::GreaterThan(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                Ok(Value::Boolean(l > r))
+                // Use evaluator::compare for type-aware comparison
+                match evaluator::compare(&l, &r) {
+                    Ok(std::cmp::Ordering::Greater) => Ok(Value::boolean(true)),
+                    Ok(_) => Ok(Value::boolean(false)),
+                    Err(_) => Ok(Value::boolean(false)),
+                }
             }
 
             Expression::GreaterThanOrEqual(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                Ok(Value::Boolean(l >= r))
+                // Use evaluator::compare for type-aware comparison
+                match evaluator::compare(&l, &r) {
+                    Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
+                        Ok(Value::boolean(true))
+                    }
+                    Ok(_) => Ok(Value::boolean(false)),
+                    Err(_) => Ok(Value::boolean(false)),
+                }
             }
 
             Expression::And(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                l.and(&r)
+                evaluator::and(&l, &r)
             }
 
             Expression::Or(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                l.or(&r)
+                evaluator::or(&l, &r)
             }
 
             Expression::Not(inner) => {
                 let v = Self::evaluate_expression_static(inner, row)?;
-                v.not()
+                evaluator::not(&v)
             }
 
             Expression::Is(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
-                Ok(Value::Boolean(l == *right))
+                Ok(Value::boolean(l == *right))
             }
 
             Expression::Add(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                l.add(&r)
+                evaluator::add(&l, &r)
             }
 
             Expression::Subtract(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                l.subtract(&r)
+                evaluator::subtract(&l, &r)
             }
 
             Expression::Multiply(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                l.multiply(&r)
+                evaluator::multiply(&l, &r)
             }
 
             Expression::Divide(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
-                l.divide(&r)
+                evaluator::divide(&l, &r)
+            }
+
+            Expression::Remainder(left, right) => {
+                let l = Self::evaluate_expression_static(left, row)?;
+                let r = Self::evaluate_expression_static(right, row)?;
+                evaluator::remainder(&l, &r)
+            }
+
+            Expression::Negate(expr) => {
+                let value = Self::evaluate_expression_static(expr, row)?;
+                match value {
+                    Value::I8(i) => Ok(Value::I8(-i)),
+                    Value::I16(i) => Ok(Value::I16(-i)),
+                    Value::I32(i) => Ok(Value::I32(-i)),
+                    Value::I64(i) => Ok(Value::I64(-i)),
+                    Value::I128(i) => Ok(Value::I128(-i)),
+                    Value::F32(f) => Ok(Value::F32(-f)),
+                    Value::F64(f) => Ok(Value::F64(-f)),
+                    Value::Decimal(d) => Ok(Value::Decimal(-d)),
+                    _ => Err(Error::TypeMismatch {
+                        expected: "numeric".into(),
+                        found: format!("{:?}", value),
+                    }),
+                }
+            }
+
+            Expression::Function(name, args) => {
+                // Evaluate function arguments
+                let arg_values: Result<Vec<_>> = args
+                    .iter()
+                    .map(|arg| Self::evaluate_expression_static(arg, row))
+                    .collect();
+
+                // Create a dummy transaction context for function evaluation
+                // In a real implementation, this should come from the query context
+                use proven_hlc::{HlcTimestamp, NodeId};
+                let timestamp = HlcTimestamp::new(1, 0, NodeId::new(0));
+                let context = crate::stream::transaction::TransactionContext::new(timestamp);
+
+                crate::types::functions::evaluate_function(name, &arg_values?, &context)
             }
 
             // Other expression types...

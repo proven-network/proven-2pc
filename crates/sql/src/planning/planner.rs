@@ -105,8 +105,8 @@ impl Planner {
             ast::Statement::Insert {
                 table,
                 columns,
-                values,
-            } => self.plan_insert(table, columns, values),
+                source,
+            } => self.plan_insert(table, columns, source),
 
             ast::Statement::Update {
                 table,
@@ -192,6 +192,9 @@ impl Planner {
         let has_aggregates = self.has_aggregates(&select);
         let group_by_count = group_by.len();
 
+        // Clone group_by before consuming it so we can use it later
+        let group_by_clone = group_by.clone();
+
         if !group_by.is_empty() || has_aggregates {
             let group_exprs = group_by
                 .into_iter()
@@ -264,6 +267,9 @@ impl Planner {
             let mut aliases = Vec::new();
             let mut col_idx = group_by_count; // Start after GROUP BY columns
 
+            // Use the cloned GROUP BY expressions for matching
+            let group_by_exprs = group_by_clone;
+
             for (expr, alias) in select {
                 if self.is_aggregate_expr(&expr) {
                     // For aggregate functions, project the corresponding aggregate result column
@@ -271,18 +277,36 @@ impl Planner {
                     col_idx += 1;
 
                     // Generate alias for aggregate function
-                    let func_alias = alias.or_else(|| {
-                        if let ast::Expression::Function(name, _) = &expr {
-                            Some(name.to_uppercase())
-                        } else {
-                            None
-                        }
-                    });
+                    let func_alias = alias.or_else(|| self.generate_aggregate_alias(&expr));
                     aliases.push(func_alias);
                 } else {
-                    // For GROUP BY expressions, project from the beginning columns
-                    expressions.push(context.resolve_expression(expr)?);
-                    aliases.push(alias);
+                    // Check if this expression matches a GROUP BY expression
+                    let mut found_group_by = false;
+                    for (i, group_expr) in group_by_exprs.iter().enumerate() {
+                        if Self::expressions_equal(&expr, group_expr) {
+                            // This is a GROUP BY column - project from the GROUP BY output
+                            expressions.push(Expression::Column(i));
+
+                            // Use the column name as alias if no explicit alias is provided
+                            let column_alias = alias.clone().or_else(|| {
+                                // Extract column name from the expression
+                                match &expr {
+                                    ast::Expression::Column(_, col_name) => Some(col_name.clone()),
+                                    _ => None,
+                                }
+                            });
+                            aliases.push(column_alias);
+                            found_group_by = true;
+                            break;
+                        }
+                    }
+
+                    if !found_group_by {
+                        // Not a GROUP BY expression - this shouldn't happen in valid SQL
+                        // but we'll handle it by resolving the expression
+                        expressions.push(context.resolve_expression(expr)?);
+                        aliases.push(alias);
+                    }
                 }
             }
             (expressions, aliases)
@@ -340,7 +364,7 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(prev),
                             right: Box::new(scan),
-                            predicate: Expression::Constant(crate::types::value::Value::Boolean(
+                            predicate: Expression::Constant(crate::types::value::Value::boolean(
                                 true,
                             )),
                             join_type: JoinType::Inner,
@@ -389,7 +413,7 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(left_node),
                             right: Box::new(right_node),
-                            predicate: Expression::Constant(crate::types::value::Value::Boolean(
+                            predicate: Expression::Constant(crate::types::value::Value::boolean(
                                 true,
                             )),
                             join_type: JoinType::Cross,
@@ -401,7 +425,7 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(prev),
                             right: Box::new(join_node),
-                            predicate: Expression::Constant(crate::types::value::Value::Boolean(
+                            predicate: Expression::Constant(crate::types::value::Value::boolean(
                                 true,
                             )),
                             join_type: JoinType::Inner,
@@ -421,7 +445,7 @@ impl Planner {
         &self,
         table: String,
         columns: Option<Vec<String>>,
-        values: Vec<Vec<ast::Expression>>,
+        source: ast::InsertSource,
     ) -> Result<Plan> {
         let schema = self
             .schemas
@@ -444,21 +468,45 @@ impl Planner {
             None
         };
 
-        // Build VALUES node with resolved expressions
-        let context = PlanContext::new(&self.schemas);
-        let rows = values
-            .into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .map(|e| context.resolve_expression(e))
-                    .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<_>>>()?;
+        // Build source node based on InsertSource
+        let source_node = match source {
+            ast::InsertSource::Values(values) => {
+                // Build VALUES node with resolved expressions
+                let context = PlanContext::new(&self.schemas);
+                let rows = values
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|e| context.resolve_expression(e))
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Box::new(Node::Values { rows })
+            }
+            ast::InsertSource::Select(select) => {
+                // Plan the SELECT statement as the source
+                let plan = self.plan_select(
+                    select.select,
+                    select.from,
+                    select.r#where,
+                    select.group_by,
+                    select.having,
+                    select.order_by,
+                    select.offset,
+                    select.limit,
+                )?;
+                // Extract the node from the Plan::Select
+                match plan {
+                    Plan::Select(node) => node,
+                    _ => return Err(Error::ExecutionError("Expected SELECT plan".into())),
+                }
+            }
+        };
 
         Ok(Plan::Insert {
             table,
             columns: column_indices,
-            source: Box::new(Node::Values { rows }),
+            source: source_node,
         })
     }
 
@@ -654,7 +702,20 @@ impl Planner {
             ast::Expression::Function(name, _) => {
                 matches!(
                     name.to_uppercase().as_str(),
-                    "COUNT" | "SUM" | "AVG" | "MIN" | "MAX"
+                    "COUNT"
+                        | "SUM"
+                        | "AVG"
+                        | "MIN"
+                        | "MAX"
+                        | "STDEV"
+                        | "VARIANCE"
+                        | "COUNT_DISTINCT"
+                        | "SUM_DISTINCT"
+                        | "AVG_DISTINCT"
+                        | "MIN_DISTINCT"
+                        | "MAX_DISTINCT"
+                        | "STDEV_DISTINCT"
+                        | "VARIANCE_DISTINCT"
                 )
             }
             _ => false,
@@ -675,20 +736,34 @@ impl Planner {
 
                 // Get the argument expression
                 let arg = if args.is_empty() {
-                    Expression::Constant(crate::types::value::Value::Integer(1)) // For COUNT(*)
+                    Expression::Constant(crate::types::value::Value::integer(1)) // For COUNT(*)
                 } else if args.len() == 1 && matches!(args[0], ast::Expression::All) {
-                    // Handle COUNT(*) - the * is parsed as Expression::All
-                    Expression::Constant(crate::types::value::Value::Integer(1))
+                    // Handle COUNT(*) and COUNT(DISTINCT *)
+                    // For DISTINCT *, we need to signal to count distinct rows
+                    if func_name.ends_with("_DISTINCT") {
+                        Expression::All // Special marker for COUNT(DISTINCT *)
+                    } else {
+                        Expression::Constant(crate::types::value::Value::integer(1))
+                    }
                 } else {
                     context.resolve_expression(args[0].clone())?
                 };
 
                 let agg = match func_name.as_str() {
                     "COUNT" => AggregateFunc::Count(arg),
+                    "COUNT_DISTINCT" => AggregateFunc::CountDistinct(arg),
                     "SUM" => AggregateFunc::Sum(arg),
+                    "SUM_DISTINCT" => AggregateFunc::SumDistinct(arg),
                     "AVG" => AggregateFunc::Avg(arg),
+                    "AVG_DISTINCT" => AggregateFunc::AvgDistinct(arg),
                     "MIN" => AggregateFunc::Min(arg),
+                    "MIN_DISTINCT" => AggregateFunc::MinDistinct(arg),
                     "MAX" => AggregateFunc::Max(arg),
+                    "MAX_DISTINCT" => AggregateFunc::MaxDistinct(arg),
+                    "STDEV" => AggregateFunc::StDev(arg),
+                    "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg),
+                    "VARIANCE" => AggregateFunc::Variance(arg),
+                    "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg),
                     _ => continue,
                 };
 
@@ -702,7 +777,11 @@ impl Planner {
     /// Evaluate a constant expression
     fn eval_constant(&self, expr: ast::Expression) -> Result<usize> {
         match expr {
-            ast::Expression::Literal(ast::Literal::Integer(n)) if n >= 0 => Ok(n as usize),
+            ast::Expression::Literal(ast::Literal::Integer(n))
+                if n >= 0 && n <= usize::MAX as i128 =>
+            {
+                Ok(n as usize)
+            }
             _ => Err(Error::ExecutionError(
                 "Expected non-negative integer constant".into(),
             )),
@@ -792,7 +871,13 @@ impl Planner {
                 if let Some(col_stats) = table_stats.columns.get(col_name) {
                     // Check if the value is in most common values
                     if let ast::Expression::Literal(ast::Literal::Integer(i)) = expr {
-                        let value = crate::types::value::Value::Integer(*i);
+                        let value = if *i >= i32::MIN as i128 && *i <= i32::MAX as i128 {
+                            crate::types::value::Value::I32(*i as i32)
+                        } else if *i >= i64::MIN as i128 && *i <= i64::MAX as i128 {
+                            crate::types::value::Value::I64(*i as i64)
+                        } else {
+                            crate::types::value::Value::I128(*i)
+                        };
 
                         // Check most common values first
                         let mut found_selectivity = None;
@@ -1182,13 +1267,23 @@ impl<'a> PlanContext<'a> {
             ast::Expression::Literal(lit) => {
                 let value = match lit {
                     ast::Literal::Null => crate::types::value::Value::Null,
-                    ast::Literal::Boolean(b) => crate::types::value::Value::Boolean(b),
-                    ast::Literal::Integer(i) => crate::types::value::Value::Integer(i),
+                    ast::Literal::Boolean(b) => crate::types::value::Value::boolean(b),
+                    ast::Literal::Integer(i) => {
+                        // Try to fit the integer in the smallest type possible
+                        // Type coercion will handle conversions during execution if needed
+                        if i >= i32::MIN as i128 && i <= i32::MAX as i128 {
+                            crate::types::value::Value::I32(i as i32)
+                        } else if i >= i64::MIN as i128 && i <= i64::MAX as i128 {
+                            crate::types::value::Value::I64(i as i64)
+                        } else {
+                            crate::types::value::Value::I128(i)
+                        }
+                    }
                     ast::Literal::Float(f) => crate::types::value::Value::Decimal(
                         rust_decimal::Decimal::from_f64_retain(f)
                             .ok_or_else(|| Error::InvalidValue("Invalid decimal".into()))?,
                     ),
-                    ast::Literal::String(s) => crate::types::value::Value::String(s),
+                    ast::Literal::String(s) => crate::types::value::Value::string(s),
                 };
                 Ok(Expression::Constant(value))
             }
@@ -1235,6 +1330,18 @@ impl<'a> PlanContext<'a> {
 
             ast::Expression::All => {
                 Err(Error::ExecutionError("* not valid in this context".into()))
+            }
+
+            ast::Expression::Case {
+                operand: _,
+                when_clauses: _,
+                else_clause: _,
+            } => {
+                // CASE expressions need to be resolved to internal Expression type
+                // For now, return an error as we need to implement this in the Expression type first
+                Err(Error::ExecutionError(
+                    "CASE expressions not yet implemented in planner".into(),
+                ))
             }
         }
     }
@@ -1708,6 +1815,211 @@ impl Planner {
         Predicate {
             table: table.to_string(),
             condition,
+        }
+    }
+
+    /// Convert an expression to a string for column naming
+    fn expr_to_string(expr: &ast::Expression) -> String {
+        match expr {
+            ast::Expression::Column(_, col) => col.clone(),
+            ast::Expression::Literal(ast::Literal::Integer(i)) => i.to_string(),
+            ast::Expression::Literal(ast::Literal::Float(f)) => f.to_string(),
+            _ => "?".to_string(),
+        }
+    }
+
+    /// Generate a proper alias for an aggregate function expression
+    fn generate_aggregate_alias(&self, expr: &ast::Expression) -> Option<String> {
+        match expr {
+            ast::Expression::Function(name, args) => {
+                let func_name = name.to_uppercase();
+
+                // Handle DISTINCT functions
+                let (base_func, is_distinct) = if func_name.ends_with("_DISTINCT") {
+                    (func_name.trim_end_matches("_DISTINCT"), true)
+                } else {
+                    (func_name.as_str(), false)
+                };
+
+                // Build the argument list representation
+                let arg_str = if args.is_empty() {
+                    String::new()
+                } else if args.len() == 1 {
+                    match &args[0] {
+                        ast::Expression::All => "*".to_string(),
+                        ast::Expression::Column(table, col) => {
+                            if let Some(t) = table {
+                                format!("{}.{}", t, col)
+                            } else {
+                                col.clone()
+                            }
+                        }
+                        ast::Expression::Literal(ast::Literal::Null) => "NULL".to_string(),
+                        ast::Expression::Literal(ast::Literal::Integer(i)) => i.to_string(),
+                        ast::Expression::Literal(ast::Literal::Float(f)) => f.to_string(),
+                        ast::Expression::Literal(ast::Literal::String(s)) => format!("'{}'", s),
+                        ast::Expression::Function(fname, fargs) => {
+                            // For functions, show the function name and arguments
+                            let farg_str = fargs
+                                .iter()
+                                .map(|arg| match arg {
+                                    ast::Expression::Column(_, col) => col.clone(),
+                                    ast::Expression::Literal(ast::Literal::Integer(i)) => {
+                                        i.to_string()
+                                    }
+                                    _ => "?".to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("{}({})", fname.to_uppercase(), farg_str)
+                        }
+                        ast::Expression::Operator(op) => {
+                            // For operators, try to reconstruct the expression
+                            use crate::parsing::ast::Operator;
+                            match op {
+                                Operator::Add(l, r) => format!(
+                                    "{} + {}",
+                                    Self::expr_to_string(l),
+                                    Self::expr_to_string(r)
+                                ),
+                                Operator::Subtract(l, r) => format!(
+                                    "{} - {}",
+                                    Self::expr_to_string(l),
+                                    Self::expr_to_string(r)
+                                ),
+                                Operator::Multiply(l, r) => format!(
+                                    "{} * {}",
+                                    Self::expr_to_string(l),
+                                    Self::expr_to_string(r)
+                                ),
+                                Operator::Divide(l, r) => format!(
+                                    "{} / {}",
+                                    Self::expr_to_string(l),
+                                    Self::expr_to_string(r)
+                                ),
+                                _ => "expr".to_string(),
+                            }
+                        }
+                        _ => "expr".to_string(), // For other complex expressions
+                    }
+                } else {
+                    // Multiple arguments - join them
+                    args.iter()
+                        .map(|arg| match arg {
+                            ast::Expression::Column(_, col) => col.clone(),
+                            _ => "expr".to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+
+                if is_distinct {
+                    Some(format!("{}(DISTINCT {})", base_func, arg_str))
+                } else {
+                    Some(format!("{}({})", base_func, arg_str))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if two AST expressions are equal
+    fn expressions_equal(expr1: &ast::Expression, expr2: &ast::Expression) -> bool {
+        match (expr1, expr2) {
+            // Column references must match exactly
+            (ast::Expression::Column(t1, c1), ast::Expression::Column(t2, c2)) => {
+                t1 == t2 && c1 == c2
+            }
+            // Literals must match
+            (ast::Expression::Literal(l1), ast::Expression::Literal(l2)) => l1 == l2,
+            // All expressions match
+            (ast::Expression::All, ast::Expression::All) => true,
+            // Parameters must have the same index
+            (ast::Expression::Parameter(i1), ast::Expression::Parameter(i2)) => i1 == i2,
+            // Functions must have the same name and arguments
+            (ast::Expression::Function(n1, args1), ast::Expression::Function(n2, args2)) => {
+                n1 == n2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| Self::expressions_equal(a1, a2))
+            }
+            // Operators must match and have equal operands
+            (ast::Expression::Operator(op1), ast::Expression::Operator(op2)) => {
+                use crate::parsing::Operator;
+                match (op1, op2) {
+                    (Operator::Add(l1, r1), Operator::Add(l2, r2))
+                    | (Operator::Subtract(l1, r1), Operator::Subtract(l2, r2))
+                    | (Operator::Multiply(l1, r1), Operator::Multiply(l2, r2))
+                    | (Operator::Divide(l1, r1), Operator::Divide(l2, r2))
+                    | (Operator::Remainder(l1, r1), Operator::Remainder(l2, r2))
+                    | (Operator::And(l1, r1), Operator::And(l2, r2))
+                    | (Operator::Or(l1, r1), Operator::Or(l2, r2))
+                    | (Operator::Equal(l1, r1), Operator::Equal(l2, r2))
+                    | (Operator::NotEqual(l1, r1), Operator::NotEqual(l2, r2))
+                    | (Operator::LessThan(l1, r1), Operator::LessThan(l2, r2))
+                    | (Operator::LessThanOrEqual(l1, r1), Operator::LessThanOrEqual(l2, r2))
+                    | (Operator::GreaterThan(l1, r1), Operator::GreaterThan(l2, r2))
+                    | (
+                        Operator::GreaterThanOrEqual(l1, r1),
+                        Operator::GreaterThanOrEqual(l2, r2),
+                    )
+                    | (Operator::Like(l1, r1), Operator::Like(l2, r2))
+                    | (Operator::Exponentiate(l1, r1), Operator::Exponentiate(l2, r2)) => {
+                        Self::expressions_equal(l1, l2) && Self::expressions_equal(r1, r2)
+                    }
+                    (Operator::Not(e1), Operator::Not(e2))
+                    | (Operator::Negate(e1), Operator::Negate(e2))
+                    | (Operator::Identity(e1), Operator::Identity(e2))
+                    | (Operator::Factorial(e1), Operator::Factorial(e2)) => {
+                        Self::expressions_equal(e1, e2)
+                    }
+                    (Operator::Is(e1, t1), Operator::Is(e2, t2)) => {
+                        t1 == t2 && Self::expressions_equal(e1, e2)
+                    }
+                    _ => false,
+                }
+            }
+            // Case expressions
+            (
+                ast::Expression::Case {
+                    operand: o1,
+                    when_clauses: w1,
+                    else_clause: e1,
+                },
+                ast::Expression::Case {
+                    operand: o2,
+                    when_clauses: w2,
+                    else_clause: e2,
+                },
+            ) => {
+                // Check operands match (if present)
+                match (o1, o2) {
+                    (Some(op1), Some(op2)) if !Self::expressions_equal(op1, op2) => return false,
+                    (None, None) => {}
+                    _ => return false,
+                }
+                // Check when clauses
+                if w1.len() != w2.len() {
+                    return false;
+                }
+                for ((cond1, res1), (cond2, res2)) in w1.iter().zip(w2.iter()) {
+                    if !Self::expressions_equal(cond1, cond2)
+                        || !Self::expressions_equal(res1, res2)
+                    {
+                        return false;
+                    }
+                }
+                // Check else clause
+                match (e1, e2) {
+                    (Some(else1), Some(else2)) => Self::expressions_equal(else1, else2),
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
+            // Different expression types don't match
+            _ => false,
         }
     }
 }

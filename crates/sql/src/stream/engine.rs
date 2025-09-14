@@ -355,7 +355,7 @@ impl TransactionEngine for SqlTransactionEngine {
 
 /// Count the number of parameter placeholders in an AST statement (before planning)
 fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
-    use crate::parsing::{Expression, Statement};
+    use crate::parsing::{Expression, Statement, ast::InsertSource};
 
     let mut max_idx = 0;
 
@@ -402,6 +402,22 @@ fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
                 }
             }
             Expression::All | Expression::Column(_, _) | Expression::Literal(_) => {}
+            Expression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                if let Some(op) = operand {
+                    count_expr_params(op, max_idx);
+                }
+                for (cond, result) in when_clauses {
+                    count_expr_params(cond, max_idx);
+                    count_expr_params(result, max_idx);
+                }
+                if let Some(else_expr) = else_clause {
+                    count_expr_params(else_expr, max_idx);
+                }
+            }
         }
     }
 
@@ -424,10 +440,38 @@ fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
                 count_expr_params(expr, &mut max_idx);
             }
         }
-        Statement::Insert { values, .. } => {
-            for row in values {
-                for expr in row {
-                    count_expr_params(expr, &mut max_idx);
+        Statement::Insert { source, .. } => {
+            match source {
+                InsertSource::Values(values) => {
+                    for row in values {
+                        for expr in row {
+                            count_expr_params(expr, &mut max_idx);
+                        }
+                    }
+                }
+                InsertSource::Select(select) => {
+                    // Count params in the SELECT statement
+                    for (expr, _) in &select.select {
+                        count_expr_params(expr, &mut max_idx);
+                    }
+                    if let Some(where_expr) = &select.r#where {
+                        count_expr_params(where_expr, &mut max_idx);
+                    }
+                    for expr in &select.group_by {
+                        count_expr_params(expr, &mut max_idx);
+                    }
+                    if let Some(having_expr) = &select.having {
+                        count_expr_params(having_expr, &mut max_idx);
+                    }
+                    for (expr, _) in &select.order_by {
+                        count_expr_params(expr, &mut max_idx);
+                    }
+                    if let Some(limit_expr) = &select.limit {
+                        count_expr_params(limit_expr, &mut max_idx);
+                    }
+                    if let Some(offset_expr) = &select.offset {
+                        count_expr_params(offset_expr, &mut max_idx);
+                    }
                 }
             }
         }

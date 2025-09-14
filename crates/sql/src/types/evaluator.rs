@@ -1,0 +1,806 @@
+//! Value evaluation operations
+//!
+//! This module provides arithmetic and comparison operations for SQL values,
+//! keeping the Value type as pure data representation.
+
+use super::value::Value;
+use crate::error::{Error, Result};
+use rust_decimal::Decimal;
+use std::cmp::Ordering;
+
+/// Macro to handle mixed integer type arithmetic operations
+macro_rules! mixed_int_op {
+    ($left:expr, $right:expr, $op:tt, $checked_op:ident, $op_name:expr) => {
+        match ($left, $right) {
+            // Mixed integer types - promote to larger type
+            (Value::I8(a), Value::I16(b)) => (*a as i16)
+                .$checked_op(*b)
+                .map(Value::I16)
+                .ok_or_else(|| Error::InvalidValue(format!("I16 {}", $op_name))),
+            (Value::I16(a), Value::I8(b)) => a
+                .$checked_op(*b as i16)
+                .map(Value::I16)
+                .ok_or_else(|| Error::InvalidValue(format!("I16 {}", $op_name))),
+            (Value::I8(a), Value::I32(b)) => (*a as i32)
+                .$checked_op(*b)
+                .map(Value::I32)
+                .ok_or_else(|| Error::InvalidValue(format!("I32 {}", $op_name))),
+            (Value::I32(a), Value::I8(b)) => a
+                .$checked_op(*b as i32)
+                .map(Value::I32)
+                .ok_or_else(|| Error::InvalidValue(format!("I32 {}", $op_name))),
+            (Value::I8(a), Value::I64(b)) => (*a as i64)
+                .$checked_op(*b)
+                .map(Value::I64)
+                .ok_or_else(|| Error::InvalidValue(format!("I64 {}", $op_name))),
+            (Value::I64(a), Value::I8(b)) => a
+                .$checked_op(*b as i64)
+                .map(Value::I64)
+                .ok_or_else(|| Error::InvalidValue(format!("I64 {}", $op_name))),
+            (Value::I16(a), Value::I32(b)) => (*a as i32)
+                .$checked_op(*b)
+                .map(Value::I32)
+                .ok_or_else(|| Error::InvalidValue(format!("I32 {}", $op_name))),
+            (Value::I32(a), Value::I16(b)) => a
+                .$checked_op(*b as i32)
+                .map(Value::I32)
+                .ok_or_else(|| Error::InvalidValue(format!("I32 {}", $op_name))),
+            (Value::I16(a), Value::I64(b)) => (*a as i64)
+                .$checked_op(*b)
+                .map(Value::I64)
+                .ok_or_else(|| Error::InvalidValue(format!("I64 {}", $op_name))),
+            (Value::I64(a), Value::I16(b)) => a
+                .$checked_op(*b as i64)
+                .map(Value::I64)
+                .ok_or_else(|| Error::InvalidValue(format!("I64 {}", $op_name))),
+            (Value::I32(a), Value::I64(b)) => (*a as i64)
+                .$checked_op(*b)
+                .map(Value::I64)
+                .ok_or_else(|| Error::InvalidValue(format!("I64 {}", $op_name))),
+            (Value::I64(a), Value::I32(b)) => a
+                .$checked_op(*b as i64)
+                .map(Value::I64)
+                .ok_or_else(|| Error::InvalidValue(format!("I64 {}", $op_name))),
+            _ => Err(Error::TypeMismatch {
+                expected: "matching integer types".into(),
+                found: format!("{:?} and {:?}", $left, $right),
+            }),
+        }
+    };
+}
+
+/// Helper to convert any numeric value to Decimal for mixed-type operations
+fn to_decimal(value: &Value) -> Option<Decimal> {
+    match value {
+        Value::I8(n) => Some(Decimal::from(*n)),
+        Value::I16(n) => Some(Decimal::from(*n)),
+        Value::I32(n) => Some(Decimal::from(*n)),
+        Value::I64(n) => Some(Decimal::from(*n)),
+        Value::I128(n) => Some(Decimal::from(*n)),
+        Value::U8(n) => Some(Decimal::from(*n)),
+        Value::U16(n) => Some(Decimal::from(*n)),
+        Value::U32(n) => Some(Decimal::from(*n)),
+        Value::U64(n) => Some(Decimal::from(*n)),
+        Value::U128(n) => Some(Decimal::from(*n)),
+        Value::F32(n) => Decimal::from_f32_retain(*n),
+        Value::F64(n) => Decimal::from_f64_retain(*n),
+        Value::Decimal(d) => Some(*d),
+        _ => None,
+    }
+}
+
+/// Check if a value is numeric
+fn is_numeric(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::I8(_)
+            | Value::I16(_)
+            | Value::I32(_)
+            | Value::I64(_)
+            | Value::I128(_)
+            | Value::U8(_)
+            | Value::U16(_)
+            | Value::U32(_)
+            | Value::U64(_)
+            | Value::U128(_)
+            | Value::F32(_)
+            | Value::F64(_)
+            | Value::Decimal(_)
+    )
+}
+
+/// Performs addition on two values
+pub fn add(left: &Value, right: &Value) -> Result<Value> {
+    match (left, right) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+
+        // String concatenation
+        (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{}{}", a, b))),
+
+        // Same-type integer operations with overflow checking
+        (Value::I8(a), Value::I8(b)) => a
+            .checked_add(*b)
+            .map(Value::I8)
+            .ok_or_else(|| Error::InvalidValue("I8 overflow".into())),
+        (Value::I16(a), Value::I16(b)) => a
+            .checked_add(*b)
+            .map(Value::I16)
+            .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
+        (Value::I32(a), Value::I32(b)) => a
+            .checked_add(*b)
+            .map(Value::I32)
+            .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
+        (Value::I64(a), Value::I64(b)) => a
+            .checked_add(*b)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+        (Value::I128(a), Value::I128(b)) => a
+            .checked_add(*b)
+            .map(Value::I128)
+            .ok_or_else(|| Error::InvalidValue("I128 overflow".into())),
+        (Value::U8(a), Value::U8(b)) => a
+            .checked_add(*b)
+            .map(Value::U8)
+            .ok_or_else(|| Error::InvalidValue("U8 overflow".into())),
+        (Value::U16(a), Value::U16(b)) => a
+            .checked_add(*b)
+            .map(Value::U16)
+            .ok_or_else(|| Error::InvalidValue("U16 overflow".into())),
+        (Value::U32(a), Value::U32(b)) => a
+            .checked_add(*b)
+            .map(Value::U32)
+            .ok_or_else(|| Error::InvalidValue("U32 overflow".into())),
+        (Value::U64(a), Value::U64(b)) => a
+            .checked_add(*b)
+            .map(Value::U64)
+            .ok_or_else(|| Error::InvalidValue("U64 overflow".into())),
+        (Value::U128(a), Value::U128(b)) => a
+            .checked_add(*b)
+            .map(Value::U128)
+            .ok_or_else(|| Error::InvalidValue("U128 overflow".into())),
+
+        // Float operations
+        (Value::F32(a), Value::F32(b)) => Ok(Value::F32(a + b)),
+        (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a + b)),
+
+        // Decimal operations
+        (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a + b)),
+
+        // Mixed integer types - use macro
+        (l, r)
+            if matches!(
+                (l, r),
+                (Value::I8(_), Value::I16(_))
+                    | (Value::I16(_), Value::I8(_))
+                    | (Value::I8(_), Value::I32(_))
+                    | (Value::I32(_), Value::I8(_))
+                    | (Value::I8(_), Value::I64(_))
+                    | (Value::I64(_), Value::I8(_))
+                    | (Value::I16(_), Value::I32(_))
+                    | (Value::I32(_), Value::I16(_))
+                    | (Value::I16(_), Value::I64(_))
+                    | (Value::I64(_), Value::I16(_))
+                    | (Value::I32(_), Value::I64(_))
+                    | (Value::I64(_), Value::I32(_))
+            ) =>
+        {
+            mixed_int_op!(l, r, +, checked_add, "overflow")
+        }
+
+        // Mixed numeric types - convert to Decimal
+        (l, r) if is_numeric(l) && is_numeric(r) => {
+            let l_dec = to_decimal(l)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            let r_dec = to_decimal(r)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            Ok(Value::Decimal(l_dec + r_dec))
+        }
+
+        _ => Err(Error::TypeMismatch {
+            expected: "numeric or string".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Performs subtraction on two values
+pub fn subtract(left: &Value, right: &Value) -> Result<Value> {
+    match (left, right) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+
+        // Same-type integer operations with overflow checking
+        (Value::I8(a), Value::I8(b)) => a
+            .checked_sub(*b)
+            .map(Value::I8)
+            .ok_or_else(|| Error::InvalidValue("I8 underflow".into())),
+        (Value::I16(a), Value::I16(b)) => a
+            .checked_sub(*b)
+            .map(Value::I16)
+            .ok_or_else(|| Error::InvalidValue("I16 underflow".into())),
+        (Value::I32(a), Value::I32(b)) => a
+            .checked_sub(*b)
+            .map(Value::I32)
+            .ok_or_else(|| Error::InvalidValue("I32 underflow".into())),
+        (Value::I64(a), Value::I64(b)) => a
+            .checked_sub(*b)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
+        (Value::I128(a), Value::I128(b)) => a
+            .checked_sub(*b)
+            .map(Value::I128)
+            .ok_or_else(|| Error::InvalidValue("I128 underflow".into())),
+        (Value::U8(a), Value::U8(b)) => a
+            .checked_sub(*b)
+            .map(Value::U8)
+            .ok_or_else(|| Error::InvalidValue("U8 underflow".into())),
+        (Value::U16(a), Value::U16(b)) => a
+            .checked_sub(*b)
+            .map(Value::U16)
+            .ok_or_else(|| Error::InvalidValue("U16 underflow".into())),
+        (Value::U32(a), Value::U32(b)) => a
+            .checked_sub(*b)
+            .map(Value::U32)
+            .ok_or_else(|| Error::InvalidValue("U32 underflow".into())),
+        (Value::U64(a), Value::U64(b)) => a
+            .checked_sub(*b)
+            .map(Value::U64)
+            .ok_or_else(|| Error::InvalidValue("U64 underflow".into())),
+        (Value::U128(a), Value::U128(b)) => a
+            .checked_sub(*b)
+            .map(Value::U128)
+            .ok_or_else(|| Error::InvalidValue("U128 underflow".into())),
+
+        // Float operations
+        (Value::F32(a), Value::F32(b)) => Ok(Value::F32(a - b)),
+        (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a - b)),
+
+        // Decimal operations
+        (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a - b)),
+
+        // Mixed integer types - use macro
+        (l, r)
+            if matches!(
+                (l, r),
+                (Value::I8(_), Value::I16(_))
+                    | (Value::I16(_), Value::I8(_))
+                    | (Value::I8(_), Value::I32(_))
+                    | (Value::I32(_), Value::I8(_))
+                    | (Value::I8(_), Value::I64(_))
+                    | (Value::I64(_), Value::I8(_))
+                    | (Value::I16(_), Value::I32(_))
+                    | (Value::I32(_), Value::I16(_))
+                    | (Value::I16(_), Value::I64(_))
+                    | (Value::I64(_), Value::I16(_))
+                    | (Value::I32(_), Value::I64(_))
+                    | (Value::I64(_), Value::I32(_))
+            ) =>
+        {
+            mixed_int_op!(l, r, -, checked_sub, "underflow")
+        }
+
+        // Mixed numeric types - convert to Decimal
+        (l, r) if is_numeric(l) && is_numeric(r) => {
+            let l_dec = to_decimal(l)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            let r_dec = to_decimal(r)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            Ok(Value::Decimal(l_dec - r_dec))
+        }
+
+        _ => Err(Error::TypeMismatch {
+            expected: "numeric".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Performs multiplication on two values
+pub fn multiply(left: &Value, right: &Value) -> Result<Value> {
+    match (left, right) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+
+        // Same-type integer operations with overflow checking
+        (Value::I8(a), Value::I8(b)) => a
+            .checked_mul(*b)
+            .map(Value::I8)
+            .ok_or_else(|| Error::InvalidValue("I8 overflow".into())),
+        (Value::I16(a), Value::I16(b)) => a
+            .checked_mul(*b)
+            .map(Value::I16)
+            .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
+        (Value::I32(a), Value::I32(b)) => a
+            .checked_mul(*b)
+            .map(Value::I32)
+            .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
+        (Value::I64(a), Value::I64(b)) => a
+            .checked_mul(*b)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+        (Value::I128(a), Value::I128(b)) => a
+            .checked_mul(*b)
+            .map(Value::I128)
+            .ok_or_else(|| Error::InvalidValue("I128 overflow".into())),
+        (Value::U8(a), Value::U8(b)) => a
+            .checked_mul(*b)
+            .map(Value::U8)
+            .ok_or_else(|| Error::InvalidValue("U8 overflow".into())),
+        (Value::U16(a), Value::U16(b)) => a
+            .checked_mul(*b)
+            .map(Value::U16)
+            .ok_or_else(|| Error::InvalidValue("U16 overflow".into())),
+        (Value::U32(a), Value::U32(b)) => a
+            .checked_mul(*b)
+            .map(Value::U32)
+            .ok_or_else(|| Error::InvalidValue("U32 overflow".into())),
+        (Value::U64(a), Value::U64(b)) => a
+            .checked_mul(*b)
+            .map(Value::U64)
+            .ok_or_else(|| Error::InvalidValue("U64 overflow".into())),
+        (Value::U128(a), Value::U128(b)) => a
+            .checked_mul(*b)
+            .map(Value::U128)
+            .ok_or_else(|| Error::InvalidValue("U128 overflow".into())),
+
+        // Float operations
+        (Value::F32(a), Value::F32(b)) => Ok(Value::F32(a * b)),
+        (Value::F64(a), Value::F64(b)) => Ok(Value::F64(a * b)),
+
+        // Decimal operations
+        (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(a * b)),
+
+        // Mixed integer types - promote to larger type
+        (Value::I8(a), Value::I16(b)) => (*a as i16)
+            .checked_mul(*b)
+            .map(Value::I16)
+            .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
+        (Value::I16(a), Value::I8(b)) => a
+            .checked_mul(*b as i16)
+            .map(Value::I16)
+            .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
+        (Value::I8(a), Value::I32(b)) => (*a as i32)
+            .checked_mul(*b)
+            .map(Value::I32)
+            .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
+        (Value::I32(a), Value::I8(b)) => a
+            .checked_mul(*b as i32)
+            .map(Value::I32)
+            .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
+        (Value::I8(a), Value::I64(b)) => (*a as i64)
+            .checked_mul(*b)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+        (Value::I64(a), Value::I8(b)) => a
+            .checked_mul(*b as i64)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+        (Value::I16(a), Value::I32(b)) => (*a as i32)
+            .checked_mul(*b)
+            .map(Value::I32)
+            .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
+        (Value::I32(a), Value::I16(b)) => a
+            .checked_mul(*b as i32)
+            .map(Value::I32)
+            .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
+        (Value::I16(a), Value::I64(b)) => (*a as i64)
+            .checked_mul(*b)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+        (Value::I64(a), Value::I16(b)) => a
+            .checked_mul(*b as i64)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+        (Value::I32(a), Value::I64(b)) => (*a as i64)
+            .checked_mul(*b)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+        (Value::I64(a), Value::I32(b)) => a
+            .checked_mul(*b as i64)
+            .map(Value::I64)
+            .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
+
+        // Mixed numeric types involving floats or decimals - convert to appropriate type
+        (l, r) if is_numeric(l) && is_numeric(r) => {
+            // If either is a decimal, convert both to decimal
+            if matches!(l, Value::Decimal(_)) || matches!(r, Value::Decimal(_)) {
+                let l_dec = to_decimal(l)
+                    .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                let r_dec = to_decimal(r)
+                    .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                Ok(Value::Decimal(l_dec * r_dec))
+            }
+            // If either is a float, use float
+            else if matches!(l, Value::F64(_)) || matches!(r, Value::F64(_)) {
+                let l_f64 = match l {
+                    Value::F64(f) => *f,
+                    Value::F32(f) => *f as f64,
+                    Value::I8(i) => *i as f64,
+                    Value::I16(i) => *i as f64,
+                    Value::I32(i) => *i as f64,
+                    Value::I64(i) => *i as f64,
+                    Value::I128(i) => *i as f64,
+                    _ => return Err(Error::InvalidValue("Cannot convert to f64".into())),
+                };
+                let r_f64 = match r {
+                    Value::F64(f) => *f,
+                    Value::F32(f) => *f as f64,
+                    Value::I8(i) => *i as f64,
+                    Value::I16(i) => *i as f64,
+                    Value::I32(i) => *i as f64,
+                    Value::I64(i) => *i as f64,
+                    Value::I128(i) => *i as f64,
+                    _ => return Err(Error::InvalidValue("Cannot convert to f64".into())),
+                };
+                Ok(Value::F64(l_f64 * r_f64))
+            } else if matches!(l, Value::F32(_)) || matches!(r, Value::F32(_)) {
+                let l_f32 = match l {
+                    Value::F32(f) => *f,
+                    Value::I8(i) => *i as f32,
+                    Value::I16(i) => *i as f32,
+                    Value::I32(i) => *i as f32,
+                    _ => return Err(Error::InvalidValue("Cannot convert to f32".into())),
+                };
+                let r_f32 = match r {
+                    Value::F32(f) => *f,
+                    Value::I8(i) => *i as f32,
+                    Value::I16(i) => *i as f32,
+                    Value::I32(i) => *i as f32,
+                    _ => return Err(Error::InvalidValue("Cannot convert to f32".into())),
+                };
+                Ok(Value::F32(l_f32 * r_f32))
+            } else {
+                // Shouldn't reach here if we've handled all cases correctly
+                let l_dec = to_decimal(l)
+                    .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                let r_dec = to_decimal(r)
+                    .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                Ok(Value::Decimal(l_dec * r_dec))
+            }
+        }
+
+        _ => Err(Error::TypeMismatch {
+            expected: "numeric".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Performs division on two values
+pub fn divide(left: &Value, right: &Value) -> Result<Value> {
+    match (left, right) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+
+        // Check for division by zero for integers
+        (_, Value::I8(0))
+        | (_, Value::I16(0))
+        | (_, Value::I32(0))
+        | (_, Value::I64(0))
+        | (_, Value::I128(0))
+        | (_, Value::U8(0))
+        | (_, Value::U16(0))
+        | (_, Value::U32(0))
+        | (_, Value::U64(0))
+        | (_, Value::U128(0)) => Err(Error::InvalidValue("Division by zero".into())),
+
+        // Integer division (truncating)
+        (Value::I8(a), Value::I8(b)) => Ok(Value::I8(a / b)),
+        (Value::I16(a), Value::I16(b)) => Ok(Value::I16(a / b)),
+        (Value::I32(a), Value::I32(b)) => Ok(Value::I32(a / b)),
+        (Value::I64(a), Value::I64(b)) => Ok(Value::I64(a / b)),
+        (Value::I128(a), Value::I128(b)) => Ok(Value::I128(a / b)),
+        (Value::U8(a), Value::U8(b)) => Ok(Value::U8(a / b)),
+        (Value::U16(a), Value::U16(b)) => Ok(Value::U16(a / b)),
+        (Value::U32(a), Value::U32(b)) => Ok(Value::U32(a / b)),
+        (Value::U64(a), Value::U64(b)) => Ok(Value::U64(a / b)),
+        (Value::U128(a), Value::U128(b)) => Ok(Value::U128(a / b)),
+
+        // Float division
+        (Value::F32(a), Value::F32(b)) => {
+            if *b == 0.0 {
+                Err(Error::InvalidValue("Division by zero".into()))
+            } else {
+                Ok(Value::F32(a / b))
+            }
+        }
+        (Value::F64(a), Value::F64(b)) => {
+            if *b == 0.0 {
+                Err(Error::InvalidValue("Division by zero".into()))
+            } else {
+                Ok(Value::F64(a / b))
+            }
+        }
+
+        // Decimal division
+        (Value::Decimal(a), Value::Decimal(b)) => {
+            if b.is_zero() {
+                Err(Error::InvalidValue("Division by zero".into()))
+            } else {
+                Ok(Value::Decimal(a / b))
+            }
+        }
+
+        // Mixed numeric types - convert to Decimal
+        (l, r) if is_numeric(l) && is_numeric(r) => {
+            let r_dec = to_decimal(r)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            if r_dec.is_zero() {
+                return Err(Error::InvalidValue("Division by zero".into()));
+            }
+            let l_dec = to_decimal(l)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            Ok(Value::Decimal(l_dec / r_dec))
+        }
+
+        _ => Err(Error::TypeMismatch {
+            expected: "numeric".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Performs remainder/modulo operation on two values
+pub fn remainder(left: &Value, right: &Value) -> Result<Value> {
+    match (left, right) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+
+        // Check for modulo by zero
+        (_, Value::I8(0))
+        | (_, Value::I16(0))
+        | (_, Value::I32(0))
+        | (_, Value::I64(0))
+        | (_, Value::I128(0))
+        | (_, Value::U8(0))
+        | (_, Value::U16(0))
+        | (_, Value::U32(0))
+        | (_, Value::U64(0))
+        | (_, Value::U128(0)) => Err(Error::InvalidValue("Division by zero".into())),
+
+        // Integer remainder
+        (Value::I8(a), Value::I8(b)) => Ok(Value::I8(a % b)),
+        (Value::I16(a), Value::I16(b)) => Ok(Value::I16(a % b)),
+        (Value::I32(a), Value::I32(b)) => Ok(Value::I32(a % b)),
+        (Value::I64(a), Value::I64(b)) => Ok(Value::I64(a % b)),
+        (Value::I128(a), Value::I128(b)) => Ok(Value::I128(a % b)),
+        (Value::U8(a), Value::U8(b)) => Ok(Value::U8(a % b)),
+        (Value::U16(a), Value::U16(b)) => Ok(Value::U16(a % b)),
+        (Value::U32(a), Value::U32(b)) => Ok(Value::U32(a % b)),
+        (Value::U64(a), Value::U64(b)) => Ok(Value::U64(a % b)),
+        (Value::U128(a), Value::U128(b)) => Ok(Value::U128(a % b)),
+
+        // Float remainder
+        (Value::F32(a), Value::F32(b)) => {
+            if *b == 0.0 {
+                Err(Error::InvalidValue("Division by zero".into()))
+            } else {
+                Ok(Value::F32(a % b))
+            }
+        }
+        (Value::F64(a), Value::F64(b)) => {
+            if *b == 0.0 {
+                Err(Error::InvalidValue("Division by zero".into()))
+            } else {
+                Ok(Value::F64(a % b))
+            }
+        }
+
+        // Decimal remainder
+        (Value::Decimal(a), Value::Decimal(b)) => {
+            if b.is_zero() {
+                Err(Error::InvalidValue("Division by zero".into()))
+            } else {
+                Ok(Value::Decimal(a % b))
+            }
+        }
+
+        // Mixed numeric types - convert to appropriate type
+        (l, r) if is_numeric(l) && is_numeric(r) => {
+            // For mixed integer types, promote to larger type
+            match (l, r) {
+                (Value::I8(a), Value::I16(b)) => Ok(Value::I16(*a as i16 % b)),
+                (Value::I16(a), Value::I8(b)) => Ok(Value::I16(a % *b as i16)),
+                (Value::I8(a), Value::I32(b)) => Ok(Value::I32(*a as i32 % b)),
+                (Value::I32(a), Value::I8(b)) => Ok(Value::I32(a % *b as i32)),
+                (Value::I8(a), Value::I64(b)) => Ok(Value::I64(*a as i64 % b)),
+                (Value::I64(a), Value::I8(b)) => Ok(Value::I64(a % *b as i64)),
+                (Value::I16(a), Value::I32(b)) => Ok(Value::I32(*a as i32 % b)),
+                (Value::I32(a), Value::I16(b)) => Ok(Value::I32(a % *b as i32)),
+                (Value::I16(a), Value::I64(b)) => Ok(Value::I64(*a as i64 % b)),
+                (Value::I64(a), Value::I16(b)) => Ok(Value::I64(a % *b as i64)),
+                (Value::I32(a), Value::I64(b)) => Ok(Value::I64(*a as i64 % b)),
+                (Value::I64(a), Value::I32(b)) => Ok(Value::I64(a % *b as i64)),
+                _ => {
+                    // Fall back to decimal for complex cases
+                    let l_dec = to_decimal(l)
+                        .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                    let r_dec = to_decimal(r)
+                        .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                    if r_dec.is_zero() {
+                        return Err(Error::InvalidValue("Division by zero".into()));
+                    }
+                    Ok(Value::Decimal(l_dec % r_dec))
+                }
+            }
+        }
+
+        _ => Err(Error::TypeMismatch {
+            expected: "numeric".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Performs logical AND on two values
+pub fn and(left: &Value, right: &Value) -> Result<Value> {
+    match (left, right) {
+        (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
+        (Value::Bool(false), Value::Null) | (Value::Null, Value::Bool(false)) => {
+            Ok(Value::Bool(false))
+        }
+        (Value::Bool(true), Value::Null) | (Value::Null, Value::Bool(true)) => Ok(Value::Null),
+        (Value::Null, Value::Null) => Ok(Value::Null),
+        _ => Err(Error::TypeMismatch {
+            expected: "boolean".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Performs logical OR on two values
+pub fn or(left: &Value, right: &Value) -> Result<Value> {
+    match (left, right) {
+        (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a || *b)),
+        (Value::Bool(true), Value::Null) | (Value::Null, Value::Bool(true)) => {
+            Ok(Value::Bool(true))
+        }
+        (Value::Bool(false), Value::Null) | (Value::Null, Value::Bool(false)) => Ok(Value::Null),
+        (Value::Null, Value::Null) => Ok(Value::Null),
+        _ => Err(Error::TypeMismatch {
+            expected: "boolean".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Performs logical NOT on a value
+pub fn not(value: &Value) -> Result<Value> {
+    match value {
+        Value::Bool(b) => Ok(Value::Bool(!b)),
+        Value::Null => Ok(Value::Null),
+        _ => Err(Error::TypeMismatch {
+            expected: "boolean".into(),
+            found: format!("{:?}", value),
+        }),
+    }
+}
+
+/// Compares two values for ordering
+pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
+    match (left, right) {
+        // NULL comparisons - NULL is less than any value
+        (Value::Null, Value::Null) => Ok(Ordering::Equal),
+        (Value::Null, _) => Ok(Ordering::Less),
+        (_, Value::Null) => Ok(Ordering::Greater),
+
+        // Boolean comparisons (false < true)
+        (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
+
+        // Same-type integer comparisons
+        (Value::I8(a), Value::I8(b)) => Ok(a.cmp(b)),
+        (Value::I16(a), Value::I16(b)) => Ok(a.cmp(b)),
+        (Value::I32(a), Value::I32(b)) => Ok(a.cmp(b)),
+        (Value::I64(a), Value::I64(b)) => Ok(a.cmp(b)),
+        (Value::I128(a), Value::I128(b)) => Ok(a.cmp(b)),
+        (Value::U8(a), Value::U8(b)) => Ok(a.cmp(b)),
+        (Value::U16(a), Value::U16(b)) => Ok(a.cmp(b)),
+        (Value::U32(a), Value::U32(b)) => Ok(a.cmp(b)),
+        (Value::U64(a), Value::U64(b)) => Ok(a.cmp(b)),
+        (Value::U128(a), Value::U128(b)) => Ok(a.cmp(b)),
+
+        // Float comparisons
+        (Value::F32(a), Value::F32(b)) => Ok(a.partial_cmp(b).unwrap_or(Ordering::Equal)),
+        (Value::F64(a), Value::F64(b)) => Ok(a.partial_cmp(b).unwrap_or(Ordering::Equal)),
+
+        // Decimal comparisons
+        (Value::Decimal(a), Value::Decimal(b)) => Ok(a.cmp(b)),
+
+        // Mixed numeric comparisons - convert to Decimal
+        (l, r) if is_numeric(l) && is_numeric(r) => {
+            let l_dec = to_decimal(l)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            let r_dec = to_decimal(r)
+                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+            Ok(l_dec.cmp(&r_dec))
+        }
+
+        // String comparisons
+        (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
+
+        // Timestamp comparisons
+        (Value::Timestamp(a), Value::Timestamp(b)) => Ok(a.cmp(b)),
+
+        // UUID comparisons
+        (Value::Uuid(a), Value::Uuid(b)) => Ok(a.cmp(b)),
+
+        // Bytea comparisons
+        (Value::Bytea(a), Value::Bytea(b)) => Ok(a.cmp(b)),
+
+        // Type mismatches
+        _ => Err(Error::TypeMismatch {
+            expected: "comparable types".into(),
+            found: format!("{:?} and {:?}", left, right),
+        }),
+    }
+}
+
+/// Compares composite keys (multiple values)
+pub fn compare_composite(left: &[Value], right: &[Value]) -> Result<Ordering> {
+    for (l, r) in left.iter().zip(right.iter()) {
+        match compare(l, r)? {
+            Ordering::Equal => continue,
+            other => return Ok(other),
+        }
+    }
+    Ok(left.len().cmp(&right.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_add() {
+        // Integer addition
+        assert_eq!(add(&Value::I64(5), &Value::I64(3)).unwrap(), Value::I64(8));
+
+        // Mixed types
+        assert_eq!(
+            add(&Value::I32(5), &Value::F32(3.5)).unwrap(),
+            Value::Decimal(Decimal::from_str("8.5").unwrap())
+        );
+
+        // String concatenation
+        assert_eq!(
+            add(
+                &Value::Str("hello".to_string()),
+                &Value::Str(" world".to_string())
+            )
+            .unwrap(),
+            Value::Str("hello world".to_string())
+        );
+
+        // NULL handling
+        assert_eq!(add(&Value::Null, &Value::I64(5)).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn test_compare() {
+        // Integer comparison
+        assert_eq!(
+            compare(&Value::I64(5), &Value::I64(3)).unwrap(),
+            Ordering::Greater
+        );
+
+        // Mixed numeric comparison
+        assert_eq!(
+            compare(&Value::I32(5), &Value::F64(5.0)).unwrap(),
+            Ordering::Equal
+        );
+
+        // String comparison
+        assert_eq!(
+            compare(
+                &Value::Str("apple".to_string()),
+                &Value::Str("banana".to_string())
+            )
+            .unwrap(),
+            Ordering::Less
+        );
+
+        // NULL comparison
+        assert_eq!(
+            compare(&Value::Null, &Value::I64(5)).unwrap(),
+            Ordering::Less
+        );
+    }
+}

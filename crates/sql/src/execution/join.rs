@@ -103,12 +103,12 @@ impl NestedLoopJoiner {
 
                     // Check join predicate
                     match self.evaluate_predicate(&joined_row)? {
-                        Value::Boolean(true) => {
+                        Value::Bool(true) => {
                             self.right_matched = true;
                             self.matched_right_indices.insert(right_idx);
                             return Ok(Some(joined_row));
                         }
-                        Value::Boolean(false) | Value::Null => continue,
+                        Value::Bool(false) | Value::Null => continue,
                         v => {
                             return Err(Error::InvalidValue(format!(
                                 "join predicate returned {}, expected boolean",
@@ -457,14 +457,14 @@ mod tests {
 
         // Create test data: left table with id, name
         let left_rows: Vec<RowRef> = vec![
-            Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]),
-            Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]),
+            Arc::new(vec![Value::integer(1), Value::string("Alice".to_string())]),
+            Arc::new(vec![Value::integer(2), Value::string("Bob".to_string())]),
         ];
 
         // Right table with id, age
         let right_rows: Vec<RowRef> = vec![
-            Arc::new(vec![Value::Integer(1), Value::Integer(25)]),
-            Arc::new(vec![Value::Integer(3), Value::Integer(30)]),
+            Arc::new(vec![Value::integer(1), Value::integer(25)]),
+            Arc::new(vec![Value::integer(3), Value::integer(30)]),
         ];
 
         // Join predicate: left.id = right.id (columns 0 and 2)
@@ -490,10 +490,10 @@ mod tests {
         assert_eq!(
             result[0],
             Arc::new(vec![
-                Value::Integer(1),
-                Value::String("Alice".to_string()),
-                Value::Integer(1),
-                Value::Integer(25)
+                Value::integer(1),
+                Value::string("Alice".to_string()),
+                Value::integer(1),
+                Value::integer(25)
             ])
         );
     }
@@ -502,14 +502,14 @@ mod tests {
     fn test_hash_join_inner() {
         // Create test data: left table with id, name
         let left_rows: Vec<RowRef> = vec![
-            Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]),
-            Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]),
+            Arc::new(vec![Value::integer(1), Value::string("Alice".to_string())]),
+            Arc::new(vec![Value::integer(2), Value::string("Bob".to_string())]),
         ];
 
         // Right table with id, age
         let right_rows: Vec<RowRef> = vec![
-            Arc::new(vec![Value::Integer(1), Value::Integer(25)]),
-            Arc::new(vec![Value::Integer(2), Value::Integer(30)]),
+            Arc::new(vec![Value::integer(1), Value::integer(25)]),
+            Arc::new(vec![Value::integer(2), Value::integer(30)]),
         ];
 
         let joiner = HashJoiner::new(
@@ -531,10 +531,10 @@ mod tests {
         assert_eq!(
             result[0],
             Arc::new(vec![
-                Value::Integer(1),
-                Value::String("Alice".to_string()),
-                Value::Integer(1),
-                Value::Integer(25)
+                Value::integer(1),
+                Value::string("Alice".to_string()),
+                Value::integer(1),
+                Value::integer(25)
             ])
         );
 
@@ -542,10 +542,10 @@ mod tests {
         assert_eq!(
             result[1],
             Arc::new(vec![
-                Value::Integer(2),
-                Value::String("Bob".to_string()),
-                Value::Integer(2),
-                Value::Integer(30)
+                Value::integer(2),
+                Value::string("Bob".to_string()),
+                Value::integer(2),
+                Value::integer(30)
             ])
         );
     }
@@ -554,12 +554,12 @@ mod tests {
     fn test_left_outer_join() {
         // Create test data: left table with id, name
         let left_rows: Vec<RowRef> = vec![
-            Arc::new(vec![Value::Integer(1), Value::String("Alice".to_string())]),
-            Arc::new(vec![Value::Integer(2), Value::String("Bob".to_string())]),
+            Arc::new(vec![Value::integer(1), Value::string("Alice".to_string())]),
+            Arc::new(vec![Value::integer(2), Value::string("Bob".to_string())]),
         ];
 
         // Right table with id, age (only one matching row)
-        let right_rows: Vec<RowRef> = vec![Arc::new(vec![Value::Integer(1), Value::Integer(25)])];
+        let right_rows: Vec<RowRef> = vec![Arc::new(vec![Value::integer(1), Value::integer(25)])];
 
         let joiner = HashJoiner::new(
             Box::new(left_rows.into_iter().map(Ok)),
@@ -579,10 +579,10 @@ mod tests {
         assert_eq!(
             result[0],
             Arc::new(vec![
-                Value::Integer(1),
-                Value::String("Alice".to_string()),
-                Value::Integer(1),
-                Value::Integer(25)
+                Value::integer(1),
+                Value::string("Alice".to_string()),
+                Value::integer(1),
+                Value::integer(25)
             ])
         );
 
@@ -590,8 +590,8 @@ mod tests {
         assert_eq!(
             result[1],
             Arc::new(vec![
-                Value::Integer(2),
-                Value::String("Bob".to_string()),
+                Value::integer(2),
+                Value::string("Bob".to_string()),
                 Value::Null,
                 Value::Null
             ])

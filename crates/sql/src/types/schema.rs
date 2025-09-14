@@ -3,7 +3,8 @@
 //! Adapted from toydb for proven-sql's PCC architecture.
 //! Tables are immutable after creation - no ALTER TABLE support.
 
-use super::value::{DataType, Row, Value};
+use super::data_type::DataType;
+use super::value::{Row, Value};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
@@ -29,11 +30,7 @@ impl Table {
         if name.is_empty() {
             return Err(Error::InvalidValue("Table name cannot be empty".into()));
         }
-        if columns.is_empty() {
-            return Err(Error::InvalidValue(
-                "Table must have at least one column".into(),
-            ));
-        }
+        // Allow tables without columns (as per SQL standard)
 
         // Find the primary key column (optional)
         let primary_keys: Vec<_> = columns
@@ -282,9 +279,9 @@ mod tests {
     #[test]
     fn test_table_creation() {
         let columns = vec![
-            Column::new("id".into(), DataType::Integer).primary_key(),
-            Column::new("name".into(), DataType::String).nullable(false),
-            Column::new("email".into(), DataType::String).unique(),
+            Column::new("id".into(), DataType::I64).primary_key(),
+            Column::new("name".into(), DataType::Str).nullable(false),
+            Column::new("email".into(), DataType::Str).unique(),
         ];
 
         let table = Table::new("users".into(), columns).unwrap();
@@ -299,20 +296,17 @@ mod tests {
 
     #[test]
     fn test_table_validation_errors() {
-        // No columns
-        assert!(Table::new("empty".into(), vec![]).is_err());
-
         // No primary key is now allowed
         let columns = vec![
-            Column::new("id".into(), DataType::Integer),
-            Column::new("name".into(), DataType::String),
+            Column::new("id".into(), DataType::I64),
+            Column::new("name".into(), DataType::Str),
         ];
         assert!(Table::new("nopk".into(), columns).is_ok());
 
         // Multiple primary keys
         let columns = vec![
-            Column::new("id1".into(), DataType::Integer).primary_key(),
-            Column::new("id2".into(), DataType::Integer).primary_key(),
+            Column::new("id1".into(), DataType::I64).primary_key(),
+            Column::new("id2".into(), DataType::I64).primary_key(),
         ];
         assert!(Table::new("multipk".into(), columns).is_err());
     }
@@ -320,33 +314,33 @@ mod tests {
     #[test]
     fn test_row_validation() {
         let columns = vec![
-            Column::new("id".into(), DataType::Integer).primary_key(),
-            Column::new("name".into(), DataType::String).nullable(false),
-            Column::new("age".into(), DataType::Integer).nullable(true),
+            Column::new("id".into(), DataType::I64).primary_key(),
+            Column::new("name".into(), DataType::Str).nullable(false),
+            Column::new("age".into(), DataType::I64).nullable(true),
         ];
         let table = Table::new("users".into(), columns).unwrap();
 
         // Valid row
         let row = vec![
-            Value::Integer(1),
-            Value::String("Alice".into()),
-            Value::Integer(30),
+            Value::integer(1),
+            Value::string("Alice".into()),
+            Value::integer(30),
         ];
         assert!(table.validate_row(&row).is_ok());
 
         // Wrong number of columns
-        let row = vec![Value::Integer(1), Value::String("Bob".into())];
+        let row = vec![Value::integer(1), Value::string("Bob".into())];
         assert!(table.validate_row(&row).is_err());
 
         // Null in non-nullable column
-        let row = vec![Value::Integer(2), Value::Null, Value::Integer(25)];
+        let row = vec![Value::integer(2), Value::Null, Value::integer(25)];
         assert!(table.validate_row(&row).is_err());
 
         // Wrong type
         let row = vec![
-            Value::String("not_an_int".into()),
-            Value::String("Charlie".into()),
-            Value::Integer(35),
+            Value::string("not_an_int".into()),
+            Value::string("Charlie".into()),
+            Value::integer(35),
         ];
         assert!(table.validate_row(&row).is_err());
     }

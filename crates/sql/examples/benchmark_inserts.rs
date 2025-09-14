@@ -63,10 +63,10 @@ fn main() {
         let insert = SqlOperation::Execute {
             sql: "INSERT INTO bench (id, value, data, timestamp) VALUES (?, ?, ?, ?)".to_string(),
             params: Some(vec![
-                Value::Integer(i as i64),                    // id
-                Value::Integer((i * 2) as i64),              // value (some computation)
-                Value::String(format!("data_{}", i % 1000)), // data (repeating pattern)
-                Value::Integer((2000000000 + i) as i64),     // timestamp
+                Value::integer(i as i64),                    // id
+                Value::integer((i * 2) as i64),              // value (some computation)
+                Value::string(format!("data_{}", i % 1000)), // data (repeating pattern)
+                Value::integer((2000000000 + i) as i64),     // timestamp
             ]),
         };
 

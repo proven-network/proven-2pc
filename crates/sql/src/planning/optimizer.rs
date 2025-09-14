@@ -177,11 +177,11 @@ impl Optimizer {
         Ok(match node {
             Node::Filter { source, predicate } => {
                 // Check for constant true/false predicates
-                if let Expression::Constant(Value::Boolean(false)) = predicate {
+                if let Expression::Constant(Value::Bool(false)) = predicate {
                     // Filter is always false - return empty
                     return Ok(Node::Nothing);
                 }
-                if let Expression::Constant(Value::Boolean(true)) = predicate {
+                if let Expression::Constant(Value::Bool(true)) = predicate {
                     // Filter is always true - remove it
                     return Ok(*source);
                 }
@@ -232,7 +232,7 @@ impl Optimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::value::DataType;
+    use crate::types::data_type::DataType;
 
     fn test_schemas() -> HashMap<String, Table> {
         let mut schemas = HashMap::new();
@@ -241,10 +241,10 @@ mod tests {
             Table::new(
                 "users".to_string(),
                 vec![
-                    crate::types::schema::Column::new("id".to_string(), DataType::Integer)
+                    crate::types::schema::Column::new("id".to_string(), DataType::I64)
                         .primary_key(),
-                    crate::types::schema::Column::new("name".to_string(), DataType::String),
-                    crate::types::schema::Column::new("age".to_string(), DataType::Integer),
+                    crate::types::schema::Column::new("name".to_string(), DataType::Str),
+                    crate::types::schema::Column::new("age".to_string(), DataType::I64),
                 ],
             )
             .unwrap(),
@@ -262,7 +262,7 @@ mod tests {
                 table: "users".to_string(),
                 alias: None,
             }),
-            predicate: Expression::Constant(Value::Boolean(false)),
+            predicate: Expression::Constant(Value::Bool(false)),
         };
 
         let optimized = optimizer.optimize_node(node).unwrap();
@@ -279,7 +279,7 @@ mod tests {
                 table: "users".to_string(),
                 alias: None,
             }),
-            predicate: Expression::Constant(Value::Boolean(true)),
+            predicate: Expression::Constant(Value::Bool(true)),
         };
 
         let optimized = optimizer.optimize_node(node).unwrap();
@@ -299,12 +299,12 @@ mod tests {
                 }),
                 predicate: Expression::GreaterThan(
                     Box::new(Expression::Column(2)),
-                    Box::new(Expression::Constant(Value::Integer(18))),
+                    Box::new(Expression::Constant(Value::integer(18))),
                 ),
             }),
             predicate: Expression::LessThan(
                 Box::new(Expression::Column(2)),
-                Box::new(Expression::Constant(Value::Integer(65))),
+                Box::new(Expression::Constant(Value::integer(65))),
             ),
         };
 

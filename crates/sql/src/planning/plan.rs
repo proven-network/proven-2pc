@@ -262,10 +262,19 @@ impl Node {
                 for (i, agg) in aggregates.iter().enumerate() {
                     let name = match agg {
                         AggregateFunc::Count(_) => format!("COUNT_{}", i),
+                        AggregateFunc::CountDistinct(_) => format!("COUNT_DISTINCT_{}", i),
                         AggregateFunc::Sum(_) => format!("SUM_{}", i),
+                        AggregateFunc::SumDistinct(_) => format!("SUM_DISTINCT_{}", i),
                         AggregateFunc::Avg(_) => format!("AVG_{}", i),
+                        AggregateFunc::AvgDistinct(_) => format!("AVG_DISTINCT_{}", i),
                         AggregateFunc::Min(_) => format!("MIN_{}", i),
+                        AggregateFunc::MinDistinct(_) => format!("MIN_DISTINCT_{}", i),
                         AggregateFunc::Max(_) => format!("MAX_{}", i),
+                        AggregateFunc::MaxDistinct(_) => format!("MAX_DISTINCT_{}", i),
+                        AggregateFunc::StDev(_) => format!("STDEV_{}", i),
+                        AggregateFunc::StDevDistinct(_) => format!("STDEV_DISTINCT_{}", i),
+                        AggregateFunc::Variance(_) => format!("VARIANCE_{}", i),
+                        AggregateFunc::VarianceDistinct(_) => format!("VARIANCE_DISTINCT_{}", i),
                     };
                     names.push(name);
                 }
@@ -294,10 +303,19 @@ impl Node {
 #[derive(Debug, Clone)]
 pub enum AggregateFunc {
     Count(Expression),
+    CountDistinct(Expression),
     Sum(Expression),
+    SumDistinct(Expression),
     Avg(Expression),
+    AvgDistinct(Expression),
     Min(Expression),
+    MinDistinct(Expression),
     Max(Expression),
+    MaxDistinct(Expression),
+    StDev(Expression),
+    StDevDistinct(Expression),
+    Variance(Expression),
+    VarianceDistinct(Expression),
 }
 
 /// Row iterator type returned by node execution

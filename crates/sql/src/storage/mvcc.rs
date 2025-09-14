@@ -4,12 +4,38 @@
 //! with PCC for conflict prevention.
 
 use crate::error::{Error, Result};
+use crate::types::data_type::DataType;
 use crate::types::schema::Table;
-use crate::types::value::{StorageRow, StorageRow as Row, Value};
+use crate::types::value::Value;
 use proven_hlc::HlcTimestamp;
 use rust_decimal::prelude::ToPrimitive;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+
+/// A versioned row in storage with metadata
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageRow {
+    /// Primary key (deterministic ID)
+    pub id: u64,
+    /// Column values
+    pub values: Vec<Value>,
+    /// Soft delete flag
+    pub deleted: bool,
+}
+
+impl StorageRow {
+    pub fn new(id: u64, values: Vec<Value>) -> Self {
+        Self {
+            id,
+            values,
+            deleted: false,
+        }
+    }
+}
+
+// Alias for compatibility
+type Row = StorageRow;
 
 /// Key for identifying an index
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -883,11 +909,7 @@ impl VersionedTable {
                 col_stats.max_value = Some(all_values.last().unwrap().clone());
 
                 // Create histogram for numeric columns
-                if matches!(
-                    column.datatype,
-                    crate::types::value::DataType::Integer
-                        | crate::types::value::DataType::Decimal(_, _)
-                ) {
+                if matches!(column.datatype, DataType::I64 | DataType::Decimal(_, _)) {
                     col_stats.histogram = self.create_histogram(&all_values, 10);
                 }
             }
@@ -924,20 +946,12 @@ impl VersionedTable {
 
             // Calculate pairwise correlations for numeric columns
             for (i, col1) in self.schema.columns.iter().enumerate() {
-                if !matches!(
-                    col1.datatype,
-                    crate::types::value::DataType::Integer
-                        | crate::types::value::DataType::Decimal(_, _)
-                ) {
+                if !matches!(col1.datatype, DataType::I64 | DataType::Decimal(_, _)) {
                     continue;
                 }
 
                 for (j, col2) in self.schema.columns.iter().enumerate().skip(i + 1) {
-                    if !matches!(
-                        col2.datatype,
-                        crate::types::value::DataType::Integer
-                            | crate::types::value::DataType::Decimal(_, _)
-                    ) {
+                    if !matches!(col2.datatype, DataType::I64 | DataType::Decimal(_, _)) {
                         continue;
                     }
 
@@ -1040,12 +1054,12 @@ impl VersionedTable {
         for row in sampled_rows {
             if col1 < row.len() && col2 < row.len() {
                 let x_val = match &row[col1] {
-                    Value::Integer(i) => *i as f64,
+                    Value::I64(i) => *i as f64,
                     Value::Decimal(d) => d.to_f64().unwrap_or(0.0),
                     _ => continue,
                 };
                 let y_val = match &row[col2] {
-                    Value::Integer(i) => *i as f64,
+                    Value::I64(i) => *i as f64,
                     Value::Decimal(d) => d.to_f64().unwrap_or(0.0),
                     _ => continue,
                 };
@@ -1815,16 +1829,16 @@ pub struct CompactedTableData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::data_type::DataType;
     use crate::types::schema::Column;
-    use crate::types::value::DataType;
     use proven_hlc::{HlcTimestamp, NodeId};
 
     fn create_test_schema() -> Table {
         Table::new(
             "test".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("name".to_string(), DataType::String),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("name".to_string(), DataType::Str),
             ],
         )
         .unwrap()
@@ -1846,7 +1860,7 @@ mod tests {
             .insert(
                 txn1,
                 timestamp1,
-                vec![Value::Integer(1), Value::String("Alice".to_string())],
+                vec![Value::integer(1), Value::string("Alice".to_string())],
             )
             .unwrap();
 
@@ -1876,7 +1890,7 @@ mod tests {
             .insert(
                 txn1,
                 timestamp1,
-                vec![Value::Integer(1), Value::String("Alice".to_string())],
+                vec![Value::integer(1), Value::string("Alice".to_string())],
             )
             .unwrap();
         table.commit_transaction(txn1).unwrap();
@@ -1891,7 +1905,7 @@ mod tests {
                 txn2,
                 timestamp2,
                 row_id,
-                vec![Value::Integer(1), Value::String("Bob".to_string())],
+                vec![Value::integer(1), Value::string("Bob".to_string())],
             )
             .unwrap();
 
@@ -1901,11 +1915,11 @@ mod tests {
         table.register_transaction(txn3, timestamp3);
 
         let row = table.read(txn3, timestamp3, row_id).unwrap();
-        assert_eq!(row.values[1], Value::String("Alice".to_string()));
+        assert_eq!(row.values[1], Value::string("Alice".to_string()));
 
         // But txn2 sees its own update
         let row = table.read(txn2, timestamp2, row_id).unwrap();
-        assert_eq!(row.values[1], Value::String("Bob".to_string()));
+        assert_eq!(row.values[1], Value::string("Bob".to_string()));
     }
 
     #[test]
@@ -1921,7 +1935,7 @@ mod tests {
             .insert(
                 txn1,
                 timestamp1,
-                vec![Value::Integer(1), Value::String("Alice".to_string())],
+                vec![Value::integer(1), Value::string("Alice".to_string())],
             )
             .unwrap();
         table.commit_transaction(txn1).unwrap();
@@ -1936,7 +1950,7 @@ mod tests {
                 txn2,
                 timestamp2,
                 row_id,
-                vec![Value::Integer(1), Value::String("Bob".to_string())],
+                vec![Value::integer(1), Value::string("Bob".to_string())],
             )
             .unwrap();
 
@@ -1949,7 +1963,7 @@ mod tests {
         table.register_transaction(txn3, timestamp3);
 
         let row = table.read(txn3, timestamp3, row_id).unwrap();
-        assert_eq!(row.values[1], Value::String("Alice".to_string()));
+        assert_eq!(row.values[1], Value::string("Alice".to_string()));
     }
 
     #[test]
@@ -1957,9 +1971,9 @@ mod tests {
         let schema = Table::new(
             "users".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("email".to_string(), DataType::String),
-                Column::new("age".to_string(), DataType::Integer),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("email".to_string(), DataType::Str),
+                Column::new("age".to_string(), DataType::I64),
             ],
         )
         .unwrap();
@@ -1976,9 +1990,9 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(1),
-                    Value::String("alice@example.com".to_string()),
-                    Value::Integer(25),
+                    Value::integer(1),
+                    Value::string("alice@example.com".to_string()),
+                    Value::integer(25),
                 ],
             )
             .unwrap();
@@ -1988,9 +2002,9 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(2),
-                    Value::String("bob@example.com".to_string()),
-                    Value::Integer(30),
+                    Value::integer(2),
+                    Value::string("bob@example.com".to_string()),
+                    Value::integer(30),
                 ],
             )
             .unwrap();
@@ -2014,12 +2028,12 @@ mod tests {
 
         let results = table.index_lookup(
             "email",
-            vec![Value::String("alice@example.com".to_string())],
+            vec![Value::string("alice@example.com".to_string())],
             txn2,
             timestamp2,
         );
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].values[0], Value::Integer(1));
+        assert_eq!(results[0].values[0], Value::integer(1));
     }
 
     #[test]
@@ -2027,9 +2041,9 @@ mod tests {
         let schema = Table::new(
             "products".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("name".to_string(), DataType::String).with_index(true),
-                Column::new("price".to_string(), DataType::Decimal(10, 2)),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("name".to_string(), DataType::Str).with_index(true),
+                Column::new("price".to_string(), DataType::Decimal(Some(10), Some(2))),
             ],
         )
         .unwrap();
@@ -2046,8 +2060,8 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(1),
-                    Value::String("Laptop".to_string()),
+                    Value::integer(1),
+                    Value::string("Laptop".to_string()),
                     Value::Decimal(rust_decimal::Decimal::from(999)),
                 ],
             )
@@ -2060,7 +2074,7 @@ mod tests {
 
         let results = table.index_lookup(
             "name",
-            vec![Value::String("Laptop".to_string())],
+            vec![Value::string("Laptop".to_string())],
             txn2,
             timestamp2,
         );
@@ -2069,7 +2083,7 @@ mod tests {
         // Transaction 1 can see its own data
         let results = table.index_lookup(
             "name",
-            vec![Value::String("Laptop".to_string())],
+            vec![Value::string("Laptop".to_string())],
             txn1,
             timestamp1,
         );
@@ -2081,7 +2095,7 @@ mod tests {
         // Now transaction 2 can see it
         let results = table.index_lookup(
             "name",
-            vec![Value::String("Laptop".to_string())],
+            vec![Value::string("Laptop".to_string())],
             txn2,
             timestamp2,
         );
@@ -2093,8 +2107,8 @@ mod tests {
         let schema = Table::new(
             "items".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("category".to_string(), DataType::String).with_index(true),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("category".to_string(), DataType::Str).with_index(true),
             ],
         )
         .unwrap();
@@ -2110,7 +2124,7 @@ mod tests {
             .insert(
                 txn1,
                 timestamp1,
-                vec![Value::Integer(1), Value::String("Electronics".to_string())],
+                vec![Value::integer(1), Value::string("Electronics".to_string())],
             )
             .unwrap();
 
@@ -2126,14 +2140,14 @@ mod tests {
                 txn2,
                 timestamp2,
                 row_id,
-                vec![Value::Integer(1), Value::String("Computers".to_string())],
+                vec![Value::integer(1), Value::string("Computers".to_string())],
             )
             .unwrap();
 
         // Transaction 2 sees new value
         let results = table.index_lookup(
             "category",
-            vec![Value::String("Computers".to_string())],
+            vec![Value::string("Computers".to_string())],
             txn2,
             timestamp2,
         );
@@ -2146,7 +2160,7 @@ mod tests {
 
         let results = table.index_lookup(
             "category",
-            vec![Value::String("Electronics".to_string())],
+            vec![Value::string("Electronics".to_string())],
             txn3,
             timestamp3,
         );
@@ -2154,7 +2168,7 @@ mod tests {
 
         let results = table.index_lookup(
             "category",
-            vec![Value::String("Computers".to_string())],
+            vec![Value::string("Computers".to_string())],
             txn3,
             timestamp3,
         );
@@ -2166,8 +2180,8 @@ mod tests {
         let schema = Table::new(
             "records".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("status".to_string(), DataType::String).with_index(true),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("status".to_string(), DataType::Str).with_index(true),
             ],
         )
         .unwrap();
@@ -2183,7 +2197,7 @@ mod tests {
             .insert(
                 txn1,
                 timestamp1,
-                vec![Value::Integer(1), Value::String("active".to_string())],
+                vec![Value::integer(1), Value::string("active".to_string())],
             )
             .unwrap();
 
@@ -2199,7 +2213,7 @@ mod tests {
         // Transaction 2 should not see the deleted row in index
         let results = table.index_lookup(
             "status",
-            vec![Value::String("active".to_string())],
+            vec![Value::string("active".to_string())],
             txn2,
             timestamp2,
         );
@@ -2212,7 +2226,7 @@ mod tests {
 
         let results = table.index_lookup(
             "status",
-            vec![Value::String("active".to_string())],
+            vec![Value::string("active".to_string())],
             txn3,
             timestamp3,
         );
@@ -2232,7 +2246,7 @@ mod tests {
 
         let results = table.index_lookup(
             "status",
-            vec![Value::String("active".to_string())],
+            vec![Value::string("active".to_string())],
             txn4,
             timestamp4,
         );
@@ -2244,8 +2258,8 @@ mod tests {
         let schema = Table::new(
             "test".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("value".to_string(), DataType::String).with_index(true),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("value".to_string(), DataType::Str).with_index(true),
             ],
         )
         .unwrap();
@@ -2261,14 +2275,14 @@ mod tests {
             .insert(
                 txn1,
                 timestamp1,
-                vec![Value::Integer(1), Value::String("test_value".to_string())],
+                vec![Value::integer(1), Value::string("test_value".to_string())],
             )
             .unwrap();
 
         // Verify txn1 can see via index
         let results = table.index_lookup(
             "value",
-            vec![Value::String("test_value".to_string())],
+            vec![Value::string("test_value".to_string())],
             txn1,
             timestamp1,
         );
@@ -2284,7 +2298,7 @@ mod tests {
 
         let results = table.index_lookup(
             "value",
-            vec![Value::String("test_value".to_string())],
+            vec![Value::string("test_value".to_string())],
             txn2,
             timestamp2,
         );
@@ -2296,8 +2310,8 @@ mod tests {
         let schema = Table::new(
             "users".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("email".to_string(), DataType::String).unique(),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("email".to_string(), DataType::Str).unique(),
             ],
         )
         .unwrap();
@@ -2314,8 +2328,8 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(1),
-                    Value::String("user@example.com".to_string()),
+                    Value::integer(1),
+                    Value::string("user@example.com".to_string()),
                 ],
             )
             .unwrap();
@@ -2331,8 +2345,8 @@ mod tests {
             txn2,
             timestamp2,
             vec![
-                Value::Integer(2),
-                Value::String("user@example.com".to_string()),
+                Value::integer(2),
+                Value::string("user@example.com".to_string()),
             ],
         );
 
@@ -2350,8 +2364,8 @@ mod tests {
         let schema = Table::new(
             "scores".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("score".to_string(), DataType::Integer).with_index(true),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("score".to_string(), DataType::I64).with_index(true),
             ],
         )
         .unwrap();
@@ -2369,8 +2383,8 @@ mod tests {
                     txn1,
                     timestamp1,
                     vec![
-                        Value::Integer(i),
-                        Value::Integer(i * 10), // scores: 10, 20, 30, ..., 100
+                        Value::integer(i),
+                        Value::integer(i * 10), // scores: 10, 20, 30, ..., 100
                     ],
                 )
                 .unwrap();
@@ -2386,9 +2400,9 @@ mod tests {
         // Range: score >= 30 AND score <= 70
         let results = table.index_range_lookup(
             "score",
-            Some(vec![Value::Integer(30)]),
+            Some(vec![Value::integer(30)]),
             true, // inclusive
-            Some(vec![Value::Integer(70)]),
+            Some(vec![Value::integer(70)]),
             true, // inclusive
             txn2,
             timestamp2,
@@ -2399,7 +2413,7 @@ mod tests {
         // Range: score > 50
         let results = table.index_range_lookup(
             "score",
-            Some(vec![Value::Integer(50)]),
+            Some(vec![Value::integer(50)]),
             false, // exclusive
             None,
             false,
@@ -2415,10 +2429,10 @@ mod tests {
         let schema = Table::new(
             "orders".to_string(),
             vec![
-                Column::new("id".to_string(), DataType::Integer).primary_key(),
-                Column::new("customer_id".to_string(), DataType::Integer),
-                Column::new("status".to_string(), DataType::String),
-                Column::new("amount".to_string(), DataType::Integer),
+                Column::new("id".to_string(), DataType::I64).primary_key(),
+                Column::new("customer_id".to_string(), DataType::I64),
+                Column::new("status".to_string(), DataType::Str),
+                Column::new("amount".to_string(), DataType::I64),
             ],
         )
         .unwrap();
@@ -2436,10 +2450,10 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(1),
-                    Value::Integer(1),
-                    Value::String("pending".to_string()),
-                    Value::Integer(100),
+                    Value::integer(1),
+                    Value::integer(1),
+                    Value::string("pending".to_string()),
+                    Value::integer(100),
                 ],
             )
             .unwrap();
@@ -2449,10 +2463,10 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(2),
-                    Value::Integer(1),
-                    Value::String("shipped".to_string()),
-                    Value::Integer(200),
+                    Value::integer(2),
+                    Value::integer(1),
+                    Value::string("shipped".to_string()),
+                    Value::integer(200),
                 ],
             )
             .unwrap();
@@ -2463,10 +2477,10 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(3),
-                    Value::Integer(2),
-                    Value::String("pending".to_string()),
-                    Value::Integer(150),
+                    Value::integer(3),
+                    Value::integer(2),
+                    Value::string("pending".to_string()),
+                    Value::integer(150),
                 ],
             )
             .unwrap();
@@ -2476,10 +2490,10 @@ mod tests {
                 txn1,
                 timestamp1,
                 vec![
-                    Value::Integer(4),
-                    Value::Integer(2),
-                    Value::String("shipped".to_string()),
-                    Value::Integer(300),
+                    Value::integer(4),
+                    Value::integer(2),
+                    Value::string("shipped".to_string()),
+                    Value::integer(300),
                 ],
             )
             .unwrap();
@@ -2503,17 +2517,17 @@ mod tests {
 
         let results = table.index_lookup(
             "idx_customer_status",
-            vec![Value::Integer(1), Value::String("pending".to_string())],
+            vec![Value::integer(1), Value::string("pending".to_string())],
             txn2,
             timestamp2,
         );
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].values[0], Value::Integer(1)); // Order ID 1
+        assert_eq!(results[0].values[0], Value::integer(1)); // Order ID 1
 
         // Test prefix lookup (customer_id = 2)
         let results = table.index_prefix_lookup(
             "idx_customer_status",
-            vec![Value::Integer(2)],
+            vec![Value::integer(2)],
             txn2,
             timestamp2,
         );
@@ -2523,13 +2537,13 @@ mod tests {
         let results = table.index_range_lookup(
             "idx_customer_status",
             Some(vec![
-                Value::Integer(1),
-                Value::String("pending".to_string()),
+                Value::integer(1),
+                Value::string("pending".to_string()),
             ]),
             true,
             Some(vec![
-                Value::Integer(2),
-                Value::String("pending".to_string()),
+                Value::integer(2),
+                Value::string("pending".to_string()),
             ]),
             true,
             txn2,
@@ -2543,9 +2557,9 @@ mod tests {
             Table::new(
                 "unique_test".to_string(),
                 vec![
-                    Column::new("id".to_string(), DataType::Integer).primary_key(),
-                    Column::new("col1".to_string(), DataType::String),
-                    Column::new("col2".to_string(), DataType::Integer),
+                    Column::new("id".to_string(), DataType::I64).primary_key(),
+                    Column::new("col1".to_string(), DataType::Str),
+                    Column::new("col2".to_string(), DataType::I64),
                 ],
             )
             .unwrap(),
@@ -2560,9 +2574,9 @@ mod tests {
                 txn3,
                 timestamp3,
                 vec![
-                    Value::Integer(1),
-                    Value::String("a".to_string()),
-                    Value::Integer(1),
+                    Value::integer(1),
+                    Value::string("a".to_string()),
+                    Value::integer(1),
                 ],
             )
             .unwrap();
@@ -2598,9 +2612,9 @@ mod tests {
             txn4,
             timestamp4,
             vec![
-                Value::Integer(2),
-                Value::String("a".to_string()),
-                Value::Integer(1),
+                Value::integer(2),
+                Value::string("a".to_string()),
+                Value::integer(1),
             ],
         );
         assert!(result.is_err());

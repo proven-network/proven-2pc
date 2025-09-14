@@ -310,10 +310,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // Use parameterized query for better performance and safety
                     let params = vec![
-                        SqlValue::Integer(unique_id as i64),
-                        SqlValue::Integer((i * 2) as i64),
-                        SqlValue::String(format!("data_{}", i % 1000)),
-                        SqlValue::Integer(start_time_clone.elapsed().as_millis() as i64),
+                        SqlValue::integer(unique_id as i64),
+                        SqlValue::integer((i * 2) as i64),
+                        SqlValue::string(format!("data_{}", i % 1000)),
+                        SqlValue::integer(start_time_clone.elapsed().as_millis() as i64),
                     ];
 
                     if let Err(e) = sql

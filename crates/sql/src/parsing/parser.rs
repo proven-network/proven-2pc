@@ -3,7 +3,7 @@ use std::ops::Add;
 
 use super::{Keyword, Lexer, Token, ast};
 use crate::error::{Error, Result};
-use crate::types::value::DataType;
+use crate::types::data_type::DataType;
 
 /// The SQL parser takes tokens from the lexer and parses the SQL syntax into an
 /// Abstract Syntax Tree (AST).
@@ -229,15 +229,25 @@ impl Parser<'_> {
         };
 
         let name = self.next_ident()?;
-        self.expect(Token::OpenParen)?;
-        let mut columns = Vec::new();
-        loop {
-            columns.push(self.parse_create_table_column()?);
-            if !self.next_is(Token::Comma) {
-                break;
+
+        // Check if there's a column list
+        let columns = if self.next_is(Token::OpenParen) {
+            let mut columns = Vec::new();
+            // Check for empty column list
+            if !self.next_is(Token::CloseParen) {
+                loop {
+                    columns.push(self.parse_create_table_column()?);
+                    if !self.next_is(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::CloseParen)?;
             }
-        }
-        self.expect(Token::CloseParen)?;
+            columns
+        } else {
+            // Table without columns
+            Vec::new()
+        };
         Ok(ast::Statement::CreateTable {
             name,
             columns,
@@ -249,20 +259,41 @@ impl Parser<'_> {
     fn parse_create_table_column(&mut self) -> Result<ast::Column> {
         let name = self.next_ident_or_keyword()?;
         let datatype = match self.next()? {
-            Token::Keyword(Keyword::Bool | Keyword::Boolean) => DataType::Boolean,
-            Token::Keyword(Keyword::Int | Keyword::Integer) => DataType::Integer,
-            Token::Keyword(Keyword::String | Keyword::Text | Keyword::Varchar) => DataType::String,
-            Token::Keyword(Keyword::Float | Keyword::Double) => {
-                // For now, map Float to Decimal with default precision
-                DataType::Decimal(38, 10)
+            // Boolean types
+            Token::Keyword(Keyword::Bool | Keyword::Boolean) => DataType::Bool,
+
+            // Integer types - conventional SQL names
+            Token::Keyword(Keyword::Tinyint) => DataType::I8,
+            Token::Keyword(Keyword::Smallint) => DataType::I16,
+            Token::Keyword(Keyword::Int | Keyword::Integer) => DataType::I32,
+            Token::Keyword(Keyword::Bigint) => DataType::I64,
+            Token::Keyword(Keyword::Hugeint) => DataType::I128,
+
+            // Floating point types
+            Token::Keyword(Keyword::Real) => DataType::F32, // SQL standard single precision
+            Token::Keyword(Keyword::Float | Keyword::Double) => DataType::F64, // FLOAT defaults to double
+
+            // Decimal types
+            Token::Keyword(Keyword::Decimal) => {
+                // TODO: Parse precision and scale from DECIMAL(p,s)
+                DataType::Decimal(Some(38), Some(10))
             }
+
+            // String types
+            Token::Keyword(Keyword::String | Keyword::Text | Keyword::Varchar) => DataType::Str,
+
+            // Other types as identifiers (for now)
             Token::Ident(s) if s.to_uppercase() == "UUID" => DataType::Uuid,
             Token::Ident(s) if s.to_uppercase() == "TIMESTAMP" => DataType::Timestamp,
-            Token::Ident(s) if s.to_uppercase() == "BLOB" => DataType::Blob,
-            Token::Ident(s) if s.to_uppercase() == "DECIMAL" => {
-                // TODO: Parse precision and scale from DECIMAL(p,s)
-                DataType::Decimal(38, 10)
+            Token::Ident(s) if s.to_uppercase() == "DATE" => DataType::Date,
+            Token::Ident(s) if s.to_uppercase() == "TIME" => DataType::Time,
+            Token::Ident(s) if s.to_uppercase() == "INTERVAL" => DataType::Interval,
+            Token::Ident(s) if s.to_uppercase() == "BLOB" || s.to_uppercase() == "BYTEA" => {
+                DataType::Bytea
             }
+            Token::Ident(s) if s.to_uppercase() == "INET" => DataType::Inet,
+            Token::Ident(s) if s.to_uppercase() == "POINT" => DataType::Point,
+
             token => {
                 return Err(Error::ParseError(format!(
                     "unexpected token {}, expected data type",
@@ -406,29 +437,48 @@ impl Parser<'_> {
             self.expect(Token::CloseParen)?;
         }
 
-        self.expect(Keyword::Values.into())?;
-
-        let mut values = Vec::new();
-        loop {
-            let mut row = Vec::new();
-            self.expect(Token::OpenParen)?;
+        // Check for VALUES or SELECT
+        let source = if self.next_is(Keyword::Values.into()) {
+            let mut values = Vec::new();
             loop {
-                row.push(self.parse_expression()?);
+                let mut row = Vec::new();
+                self.expect(Token::OpenParen)?;
+                loop {
+                    row.push(self.parse_expression()?);
+                    if !self.next_is(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::CloseParen)?;
+                values.push(row);
                 if !self.next_is(Token::Comma) {
                     break;
                 }
             }
-            self.expect(Token::CloseParen)?;
-            values.push(row);
-            if !self.next_is(Token::Comma) {
-                break;
-            }
-        }
+            ast::InsertSource::Values(values)
+        } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
+            // Parse the SELECT statement - parse_select_clause will consume SELECT
+            let select = Box::new(ast::SelectStatement {
+                select: self.parse_select_clause()?,
+                from: self.parse_from_clause()?,
+                r#where: self.parse_where_clause()?,
+                group_by: self.parse_group_by_clause()?,
+                having: self.parse_having_clause()?,
+                order_by: self.parse_order_by_clause()?,
+                limit: self.parse_limit_clause()?,
+                offset: self.parse_offset_clause()?,
+            });
+            ast::InsertSource::Select(select)
+        } else {
+            return Err(Error::ParseError(
+                "expected token VALUES or SELECT after INSERT INTO".to_string(),
+            ));
+        };
 
         Ok(ast::Statement::Insert {
             table,
             columns,
-            values,
+            source,
         })
     }
 
@@ -533,6 +583,14 @@ impl Parser<'_> {
     // Parses a FROM table.
     fn parse_from_table(&mut self) -> Result<ast::FromClause> {
         let name = self.next_ident()?;
+
+        // Check for compound object notation (schema.table)
+        if matches!(self.peek()?, Some(Token::Period)) {
+            self.next()?; // consume the period
+            let _object = self.next_ident()?; // consume the object name
+            return Err(Error::CompoundObjectNotSupported);
+        }
+
         let mut alias = None;
         if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
             alias = Some(self.next_ident()?)
@@ -802,11 +860,24 @@ impl Parser<'_> {
             Token::Asterisk => ast::Expression::All,
 
             // Literal value.
-            Token::Number(n) if n.chars().all(|c| c.is_ascii_digit()) => ast::Literal::Integer(
-                n.parse()
-                    .map_err(|e| Error::ParseError(format!("invalid integer: {}", e)))?,
-            )
-            .into(),
+            Token::Number(n) if n.chars().all(|c| c.is_ascii_digit()) => {
+                // Try to parse as i128. If it fails due to being exactly 1 over i128::MAX,
+                // this means it's meant to be i128::MIN when negated, so we'll handle it
+                // in the expression evaluator when we see the unary minus.
+                match n.parse::<i128>() {
+                    Ok(val) => ast::Literal::Integer(val).into(),
+                    Err(_) if n == "170141183460469231731687303715884105728" => {
+                        // This special value is i128::MIN's absolute value
+                        // We can't represent it as positive, so we use a marker
+                        // Actually, for now let's just fail - we'll need a better solution
+                        return Err(Error::ParseError(
+                            "Integer literal too large. For i128::MIN, use the constant directly."
+                                .into(),
+                        ));
+                    }
+                    Err(e) => return Err(Error::ParseError(format!("invalid integer: {}", e))),
+                }
+            }
             Token::Number(n) => ast::Literal::Float(
                 n.parse()
                     .map_err(|e| Error::ParseError(format!("invalid float: {}", e)))?,
@@ -819,16 +890,79 @@ impl Parser<'_> {
             Token::Keyword(Keyword::NaN) => ast::Literal::Float(f64::NAN).into(),
             Token::Keyword(Keyword::Null) => ast::Literal::Null.into(),
 
+            // CAST expression: CAST(expr AS type)
+            Token::Keyword(Keyword::Cast) => {
+                self.expect(Token::OpenParen)?;
+                let expr = self.parse_expression()?;
+                self.expect(Token::Keyword(Keyword::As))?;
+
+                // Parse the target type
+                let type_name = match self.next()? {
+                    Token::Keyword(Keyword::Tinyint) => "TINYINT",
+                    Token::Keyword(Keyword::Smallint) => "SMALLINT",
+                    Token::Keyword(Keyword::Int) | Token::Keyword(Keyword::Integer) => "INT",
+                    Token::Keyword(Keyword::Bigint) => "BIGINT",
+                    Token::Keyword(Keyword::Hugeint) => "HUGEINT",
+                    Token::Keyword(Keyword::Real) | Token::Keyword(Keyword::Float) => "FLOAT",
+                    Token::Keyword(Keyword::Double) => "DOUBLE",
+                    Token::Keyword(Keyword::Decimal) => "DECIMAL",
+                    Token::Keyword(Keyword::Text)
+                    | Token::Keyword(Keyword::String)
+                    | Token::Keyword(Keyword::Varchar) => "TEXT",
+                    Token::Keyword(Keyword::Bool) | Token::Keyword(Keyword::Boolean) => "BOOLEAN",
+                    token => {
+                        return Err(Error::ParseError(format!(
+                            "expected type name after AS, found {}",
+                            token
+                        )));
+                    }
+                };
+
+                self.expect(Token::CloseParen)?;
+
+                // Use the Function expression with a special CAST function name
+                // We'll encode the type as the second argument
+                ast::Expression::Function(
+                    "CAST".to_string(),
+                    vec![
+                        expr,
+                        ast::Expression::Literal(ast::Literal::String(type_name.to_string())),
+                    ],
+                )
+            }
+
             // Function call.
             Token::Ident(name) if self.next_is(Token::OpenParen) => {
                 let mut args = Vec::new();
+
+                // Check for DISTINCT keyword in aggregate functions
+                let is_distinct = if matches!(
+                    name.to_uppercase().as_str(),
+                    "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" | "STDEV" | "VARIANCE"
+                ) {
+                    if let Ok(Some(Token::Keyword(Keyword::Distinct))) = self.peek() {
+                        let _ = self.next(); // consume DISTINCT
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
                 while !self.next_is(Token::CloseParen) {
                     if !args.is_empty() {
                         self.expect(Token::Comma)?;
                     }
                     args.push(self.parse_expression()?);
                 }
-                ast::Expression::Function(name, args)
+
+                // If DISTINCT was used, create a special function name
+                if is_distinct {
+                    ast::Expression::Function(format!("{}_DISTINCT", name.to_uppercase()), args)
+                } else {
+                    ast::Expression::Function(name, args)
+                }
             }
 
             // Column name, either qualified as table.column or unqualified.

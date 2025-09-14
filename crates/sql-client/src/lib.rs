@@ -273,7 +273,7 @@ impl SqlClient {
             && let Some(value) = row.first()
         {
             // Try to extract integer value
-            if let Value::Integer(i) = value {
+            if let Value::I64(i) = value {
                 return Ok(*i as u64);
             }
             // Try to parse string representation

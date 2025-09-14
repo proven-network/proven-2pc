@@ -5,6 +5,7 @@
 //! - Added TransactionContext for deterministic function evaluation
 //! - Integrated with our Value types (including UUID, Timestamp, Blob)
 
+use super::evaluator;
 use super::value::{Row, Value};
 use crate::error::{Error, Result};
 use crate::stream::transaction::TransactionContext;
@@ -24,6 +25,8 @@ pub enum Expression {
     Column(usize),
     /// A parameter placeholder for prepared statements (0-indexed).
     Parameter(usize),
+    /// All columns - used for COUNT(DISTINCT *)
+    All,
 
     /// a AND b: logical AND of two booleans.
     And(Box<Expression>, Box<Expression>),
@@ -80,6 +83,7 @@ impl Expression {
         use Expression::*;
         Ok(match self {
             Constant(value) => value.clone(),
+            All => Value::integer(1), // Placeholder - should be handled at higher level
 
             Column(i) => row
                 .and_then(|row| row.get(*i))
@@ -98,85 +102,85 @@ impl Expression {
             And(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                lhs.and(&rhs)?
+                evaluator::and(&lhs, &rhs)?
             }
             Or(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                lhs.or(&rhs)?
+                evaluator::or(&lhs, &rhs)?
             }
             Not(expr) => {
                 let value = expr.evaluate(row, context)?;
-                value.not()?
+                evaluator::not(&value)?
             }
 
             // Comparison operations
             Equal(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                Value::Boolean(lhs == rhs)
+                Value::boolean(lhs == rhs)
             }
             NotEqual(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                Value::Boolean(lhs != rhs)
+                Value::boolean(lhs != rhs)
             }
             GreaterThan(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                Value::Boolean(lhs > rhs)
+                Value::boolean(lhs > rhs)
             }
             GreaterThanOrEqual(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                Value::Boolean(lhs >= rhs)
+                Value::boolean(lhs >= rhs)
             }
             LessThan(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                Value::Boolean(lhs < rhs)
+                Value::boolean(lhs < rhs)
             }
             LessThanOrEqual(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                Value::Boolean(lhs <= rhs)
+                Value::boolean(lhs <= rhs)
             }
             Is(expr, check_value) => {
                 let value = expr.evaluate(row, context)?;
-                Value::Boolean(value == *check_value)
+                Value::boolean(value == *check_value)
             }
 
             // Arithmetic operations
             Add(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                lhs.add(&rhs)?
+                evaluator::add(&lhs, &rhs)?
             }
             Subtract(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                lhs.subtract(&rhs)?
+                evaluator::subtract(&lhs, &rhs)?
             }
             Multiply(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                lhs.multiply(&rhs)?
+                evaluator::multiply(&lhs, &rhs)?
             }
             Divide(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
-                lhs.divide(&rhs)?
+                evaluator::divide(&lhs, &rhs)?
             }
             Remainder(lhs, rhs) => {
                 let lhs = lhs.evaluate(row, context)?;
                 let rhs = rhs.evaluate(row, context)?;
                 // TODO: Implement remainder in Value
                 match (&lhs, &rhs) {
-                    (Value::Integer(a), Value::Integer(b)) => {
+                    (Value::I64(a), Value::I64(b)) => {
                         if *b == 0 {
                             return Err(Error::InvalidValue("Division by zero".into()));
                         }
-                        Value::Integer(a % b)
+                        Value::I64(a % b)
                     }
                     _ => {
                         return Err(Error::TypeMismatch {
@@ -191,14 +195,14 @@ impl Expression {
                 let rhs = rhs.evaluate(row, context)?;
                 // TODO: Implement exponentiation in Value
                 match (&lhs, &rhs) {
-                    (Value::Integer(a), Value::Integer(b)) => {
+                    (Value::I64(a), Value::I64(b)) => {
                         if *b < 0 {
                             return Err(Error::InvalidValue("Negative exponent".into()));
                         }
                         let result = (*a as f64).powi(*b as i32);
-                        Value::Integer(result as i64)
+                        Value::I64(result as i64)
                     }
-                    (Value::Decimal(a), Value::Integer(b)) => {
+                    (Value::Decimal(a), Value::I64(b)) => {
                         // Convert to f64 for exponentiation, then back to Decimal
                         let base = a.to_f64().ok_or_else(|| {
                             Error::InvalidValue("Decimal conversion failed".into())
@@ -223,14 +227,14 @@ impl Expression {
             Factorial(expr) => {
                 let value = expr.evaluate(row, context)?;
                 match value {
-                    Value::Integer(n) if (0..=20).contains(&n) => {
+                    Value::I64(n) if (0..=20).contains(&n) => {
                         let mut result = 1i64;
                         for i in 2..=n {
                             result = result.saturating_mul(i);
                         }
-                        Value::Integer(result)
+                        Value::I64(result)
                     }
-                    Value::Integer(_) => {
+                    Value::I64(_) => {
                         return Err(Error::InvalidValue("Factorial out of range".into()));
                     }
                     _ => {
@@ -245,7 +249,13 @@ impl Expression {
             Negate(expr) => {
                 let value = expr.evaluate(row, context)?;
                 match value {
-                    Value::Integer(i) => Value::Integer(-i),
+                    Value::I8(i) => Value::I8(-i),
+                    Value::I16(i) => Value::I16(-i),
+                    Value::I32(i) => Value::I32(-i),
+                    Value::I64(i) => Value::I64(-i),
+                    Value::I128(i) => Value::I128(-i),
+                    Value::F32(f) => Value::F32(-f),
+                    Value::F64(f) => Value::F64(-f),
                     Value::Decimal(d) => Value::Decimal(-d),
                     _ => {
                         return Err(Error::TypeMismatch {
@@ -262,13 +272,13 @@ impl Expression {
                 let pattern_value = pattern.evaluate(row, context)?;
 
                 match (&value, &pattern_value) {
-                    (Value::String(s), Value::String(p)) => {
+                    (Value::Str(s), Value::Str(p)) => {
                         // Convert SQL LIKE pattern to regex
                         let regex_pattern = p.replace('%', ".*").replace('_', ".");
                         let regex = Regex::new(&format!("^{}$", regex_pattern)).map_err(|e| {
                             Error::ExecutionError(format!("Invalid pattern: {}", e))
                         })?;
-                        Value::Boolean(regex.is_match(s))
+                        Value::boolean(regex.is_match(s))
                     }
                     (Value::Null, _) | (_, Value::Null) => Value::Null,
                     _ => {
@@ -298,7 +308,7 @@ impl Expression {
         }
 
         match self {
-            Constant(_) | Column(_) | Parameter(_) => true,
+            Constant(_) | Column(_) | Parameter(_) | All => true,
 
             And(lhs, rhs)
             | Or(lhs, rhs)
@@ -333,6 +343,7 @@ impl Expression {
                 .and_then(|i| i.map(Column))
                 .unwrap_or(Constant(Value::Null)),
             Parameter(idx) => Parameter(idx),
+            All => All,
 
             And(lhs, rhs) => And(
                 Box::new(lhs.remap_columns(map)),
@@ -421,6 +432,7 @@ impl Display for Expression {
             Constant(value) => write!(f, "{}", value),
             Column(i) => write!(f, "#{}", i),
             Parameter(idx) => write!(f, "?{}", idx),
+            All => write!(f, "*"),
 
             And(lhs, rhs) => write!(f, "({} AND {})", lhs, rhs),
             Or(lhs, rhs) => write!(f, "({} OR {})", lhs, rhs),
@@ -476,41 +488,41 @@ mod tests {
     #[test]
     fn test_constant_evaluation() {
         let ctx = test_context();
-        let expr = Expression::Constant(Value::Integer(42));
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Integer(42));
+        let expr = Expression::Constant(Value::I64(42));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::I64(42));
 
-        let expr = Expression::Constant(Value::String("hello".to_string()));
+        let expr = Expression::Constant(Value::string("hello".to_string()));
         assert_eq!(
             expr.evaluate(None, &ctx).unwrap(),
-            Value::String("hello".to_string())
+            Value::string("hello".to_string())
         );
 
-        let expr = Expression::Constant(Value::Boolean(true));
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        let expr = Expression::Constant(Value::boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
     }
 
     #[test]
     fn test_column_evaluation() {
         let ctx = test_context();
         let row: Row = vec![
-            Value::Integer(1),
-            Value::String("test".to_string()),
-            Value::Boolean(false),
+            Value::I64(1),
+            Value::string("test".to_string()),
+            Value::boolean(false),
         ];
 
         let expr = Expression::Column(0);
-        assert_eq!(expr.evaluate(Some(&row), &ctx).unwrap(), Value::Integer(1));
+        assert_eq!(expr.evaluate(Some(&row), &ctx).unwrap(), Value::I64(1));
 
         let expr = Expression::Column(1);
         assert_eq!(
             expr.evaluate(Some(&row), &ctx).unwrap(),
-            Value::String("test".to_string())
+            Value::string("test".to_string())
         );
 
         let expr = Expression::Column(2);
         assert_eq!(
             expr.evaluate(Some(&row), &ctx).unwrap(),
-            Value::Boolean(false)
+            Value::boolean(false)
         );
 
         // Test column out of bounds
@@ -524,21 +536,21 @@ mod tests {
 
         // AND
         let expr = Expression::And(
-            Box::new(Expression::Constant(Value::Boolean(true))),
-            Box::new(Expression::Constant(Value::Boolean(false))),
+            Box::new(Expression::Constant(Value::boolean(true))),
+            Box::new(Expression::Constant(Value::boolean(false))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(false));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(false));
 
         // OR
         let expr = Expression::Or(
-            Box::new(Expression::Constant(Value::Boolean(true))),
-            Box::new(Expression::Constant(Value::Boolean(false))),
+            Box::new(Expression::Constant(Value::boolean(true))),
+            Box::new(Expression::Constant(Value::boolean(false))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         // NOT
-        let expr = Expression::Not(Box::new(Expression::Constant(Value::Boolean(true))));
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(false));
+        let expr = Expression::Not(Box::new(Expression::Constant(Value::boolean(true))));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(false));
     }
 
     #[test]
@@ -547,31 +559,31 @@ mod tests {
 
         // Equal
         let expr = Expression::Equal(
-            Box::new(Expression::Constant(Value::Integer(5))),
-            Box::new(Expression::Constant(Value::Integer(5))),
+            Box::new(Expression::Constant(Value::I64(5))),
+            Box::new(Expression::Constant(Value::I64(5))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         // NotEqual
         let expr = Expression::NotEqual(
-            Box::new(Expression::Constant(Value::Integer(5))),
-            Box::new(Expression::Constant(Value::Integer(3))),
+            Box::new(Expression::Constant(Value::I64(5))),
+            Box::new(Expression::Constant(Value::I64(3))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         // GreaterThan
         let expr = Expression::GreaterThan(
-            Box::new(Expression::Constant(Value::Integer(5))),
-            Box::new(Expression::Constant(Value::Integer(3))),
+            Box::new(Expression::Constant(Value::I64(5))),
+            Box::new(Expression::Constant(Value::I64(3))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         // LessThanOrEqual
         let expr = Expression::LessThanOrEqual(
-            Box::new(Expression::Constant(Value::Integer(3))),
-            Box::new(Expression::Constant(Value::Integer(5))),
+            Box::new(Expression::Constant(Value::I64(3))),
+            Box::new(Expression::Constant(Value::I64(5))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
     }
 
     #[test]
@@ -580,38 +592,38 @@ mod tests {
 
         // Add
         let expr = Expression::Add(
-            Box::new(Expression::Constant(Value::Integer(10))),
-            Box::new(Expression::Constant(Value::Integer(5))),
+            Box::new(Expression::Constant(Value::I64(10))),
+            Box::new(Expression::Constant(Value::I64(5))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Integer(15));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::I64(15));
 
         // Subtract
         let expr = Expression::Subtract(
-            Box::new(Expression::Constant(Value::Integer(10))),
-            Box::new(Expression::Constant(Value::Integer(3))),
+            Box::new(Expression::Constant(Value::I64(10))),
+            Box::new(Expression::Constant(Value::I64(3))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Integer(7));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::I64(7));
 
         // Multiply
         let expr = Expression::Multiply(
-            Box::new(Expression::Constant(Value::Integer(4))),
-            Box::new(Expression::Constant(Value::Integer(5))),
+            Box::new(Expression::Constant(Value::I64(4))),
+            Box::new(Expression::Constant(Value::I64(5))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Integer(20));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::I64(20));
 
         // Divide
         let expr = Expression::Divide(
-            Box::new(Expression::Constant(Value::Integer(20))),
-            Box::new(Expression::Constant(Value::Integer(4))),
+            Box::new(Expression::Constant(Value::I64(20))),
+            Box::new(Expression::Constant(Value::I64(4))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Integer(5));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::I64(5));
 
         // Remainder
         let expr = Expression::Remainder(
-            Box::new(Expression::Constant(Value::Integer(17))),
-            Box::new(Expression::Constant(Value::Integer(5))),
+            Box::new(Expression::Constant(Value::I64(17))),
+            Box::new(Expression::Constant(Value::I64(5))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Integer(2));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::I64(2));
     }
 
     #[test]
@@ -620,12 +632,12 @@ mod tests {
 
         // String concatenation
         let expr = Expression::Add(
-            Box::new(Expression::Constant(Value::String("hello".to_string()))),
-            Box::new(Expression::Constant(Value::String(" world".to_string()))),
+            Box::new(Expression::Constant(Value::string("hello".to_string()))),
+            Box::new(Expression::Constant(Value::string(" world".to_string()))),
         );
         assert_eq!(
             expr.evaluate(None, &ctx).unwrap(),
-            Value::String("hello world".to_string())
+            Value::string("hello world".to_string())
         );
     }
 
@@ -635,32 +647,32 @@ mod tests {
 
         // Basic pattern matching
         let expr = Expression::Like(
-            Box::new(Expression::Constant(Value::String(
+            Box::new(Expression::Constant(Value::string(
                 "hello world".to_string(),
             ))),
-            Box::new(Expression::Constant(Value::String("hello%".to_string()))),
+            Box::new(Expression::Constant(Value::string("hello%".to_string()))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         let expr = Expression::Like(
-            Box::new(Expression::Constant(Value::String(
+            Box::new(Expression::Constant(Value::string(
                 "hello world".to_string(),
             ))),
-            Box::new(Expression::Constant(Value::String("%world".to_string()))),
+            Box::new(Expression::Constant(Value::string("%world".to_string()))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         let expr = Expression::Like(
-            Box::new(Expression::Constant(Value::String("hello".to_string()))),
-            Box::new(Expression::Constant(Value::String("h_llo".to_string()))),
+            Box::new(Expression::Constant(Value::string("hello".to_string()))),
+            Box::new(Expression::Constant(Value::string("h_llo".to_string()))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         let expr = Expression::Like(
-            Box::new(Expression::Constant(Value::String("hello".to_string()))),
-            Box::new(Expression::Constant(Value::String("goodbye".to_string()))),
+            Box::new(Expression::Constant(Value::string("hello".to_string()))),
+            Box::new(Expression::Constant(Value::string("goodbye".to_string()))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(false));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(false));
     }
 
     #[test]
@@ -670,27 +682,27 @@ mod tests {
         // NULL in AND
         let expr = Expression::And(
             Box::new(Expression::Constant(Value::Null)),
-            Box::new(Expression::Constant(Value::Boolean(true))),
+            Box::new(Expression::Constant(Value::boolean(true))),
         );
         assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Null);
 
         // NULL in OR with false
         let expr = Expression::Or(
             Box::new(Expression::Constant(Value::Null)),
-            Box::new(Expression::Constant(Value::Boolean(false))),
+            Box::new(Expression::Constant(Value::boolean(false))),
         );
         assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Null);
 
         // NULL in OR with true
         let expr = Expression::Or(
             Box::new(Expression::Constant(Value::Null)),
-            Box::new(Expression::Constant(Value::Boolean(true))),
+            Box::new(Expression::Constant(Value::boolean(true))),
         );
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
 
         // IS NULL check
         let expr = Expression::Is(Box::new(Expression::Constant(Value::Null)), Value::Null);
-        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Boolean(true));
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
     }
 
     #[test]
@@ -700,7 +712,10 @@ mod tests {
         // Test NOW() function - should return the transaction timestamp
         let expr = Expression::Function("NOW".to_string(), vec![]);
         let result = expr.evaluate(None, &ctx).unwrap();
-        assert_eq!(result, Value::Timestamp(1000)); // Should match ctx.tx_id.global_id.physical
+        // Convert the expected timestamp to NaiveDateTime
+        use chrono::DateTime;
+        let expected = DateTime::from_timestamp(0, 1_000_000).unwrap().naive_utc();
+        assert_eq!(result, Value::Timestamp(expected)); // Should match ctx.tx_id.global_id.physical (1000 microseconds = 0 secs + 1000000 nanos)
 
         // Test UUID() function - should be deterministic based on tx_id
         let expr1 = Expression::Function("UUID".to_string(), vec![]);
@@ -714,7 +729,7 @@ mod tests {
         // Different sequence should produce different UUID
         let expr3 = Expression::Function(
             "UUID".to_string(),
-            vec![Expression::Constant(Value::Integer(1))],
+            vec![Expression::Constant(Value::I64(1))],
         );
         let uuid3 = expr3.evaluate(None, &ctx).unwrap();
         assert_ne!(uuid1, uuid3);
@@ -724,9 +739,9 @@ mod tests {
     fn test_complex_expression() {
         let ctx = test_context();
         let row: Row = vec![
-            Value::Integer(10),
-            Value::Integer(5),
-            Value::String("test".to_string()),
+            Value::I64(10),
+            Value::I64(5),
+            Value::string("test".to_string()),
         ];
 
         // (column[0] + column[1]) * 2 > 20
@@ -736,15 +751,15 @@ mod tests {
                     Box::new(Expression::Column(0)),
                     Box::new(Expression::Column(1)),
                 )),
-                Box::new(Expression::Constant(Value::Integer(2))),
+                Box::new(Expression::Constant(Value::I64(2))),
             )),
-            Box::new(Expression::Constant(Value::Integer(20))),
+            Box::new(Expression::Constant(Value::I64(20))),
         );
 
         // (10 + 5) * 2 = 30, which is > 20
         assert_eq!(
             expr.evaluate(Some(&row), &ctx).unwrap(),
-            Value::Boolean(true)
+            Value::boolean(true)
         );
     }
 
@@ -767,7 +782,7 @@ mod tests {
 
         // Mixed integer and decimal
         let expr = Expression::Multiply(
-            Box::new(Expression::Constant(Value::Integer(3))),
+            Box::new(Expression::Constant(Value::I64(3))),
             Box::new(Expression::Constant(Value::Decimal(
                 Decimal::from_str("2.5").unwrap(),
             ))),

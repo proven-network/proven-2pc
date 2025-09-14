@@ -9,8 +9,17 @@ use std::collections::BTreeMap;
 use std::convert::From;
 use std::hash::{Hash, Hasher};
 
-use crate::types::value::DataType;
+use crate::types::data_type::DataType;
 pub use crate::types::{Direction, JoinType};
+
+/// Source of data for INSERT statements.
+#[derive(Debug, Clone)]
+pub enum InsertSource {
+    /// VALUES: explicit values to insert.
+    Values(Vec<Vec<Expression>>),
+    /// SELECT: values from a SELECT query.
+    Select(Box<SelectStatement>),
+}
 
 /// SQL statements represented as an Abstract Syntax Tree (AST).
 /// The statement is the root node of this tree, describing the syntactic
@@ -69,8 +78,8 @@ pub enum Statement {
         table: String,
         /// Columns to insert values into. If None, all columns are used.
         columns: Option<Vec<String>>,
-        /// Row values to insert.
-        values: Vec<Vec<Expression>>,
+        /// Source of data to insert.
+        source: InsertSource,
     },
     /// UPDATE: updates rows in a table.
     Update {
@@ -165,6 +174,15 @@ pub enum Expression {
     Operator(Operator),
     /// A parameter placeholder (? in SQL), with its position (0-indexed).
     Parameter(usize),
+    /// CASE WHEN expression
+    Case {
+        /// Optional expression to compare against (for simple CASE)
+        operand: Option<Box<Expression>>,
+        /// List of WHEN conditions and their results
+        when_clauses: Vec<(Expression, Expression)>,
+        /// Optional ELSE result
+        else_clause: Option<Box<Expression>>,
+    },
 }
 
 /// Expression literal values.
@@ -172,7 +190,7 @@ pub enum Expression {
 pub enum Literal {
     Null,
     Boolean(bool),
-    Integer(i64),
+    Integer(i128),
     Float(f64),
     String(String),
 }
@@ -287,6 +305,32 @@ impl Expression {
 
             Self::Function(_, exprs) => exprs.iter().all(|expr| expr.walk(visitor)),
 
+            Self::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                // Walk operand if present
+                if let Some(op) = operand
+                    && !op.walk(visitor)
+                {
+                    return false;
+                }
+                // Walk all when clauses
+                for (cond, result) in when_clauses {
+                    if !cond.walk(visitor) || !result.walk(visitor) {
+                        return false;
+                    }
+                }
+                // Walk else clause if present
+                if let Some(else_expr) = else_clause
+                    && !else_expr.walk(visitor)
+                {
+                    return false;
+                }
+                true
+            }
+
             Self::All | Self::Column(_, _) | Self::Literal(_) | Self::Parameter(_) => true,
         }
     }
@@ -336,6 +380,26 @@ impl Expression {
             Self::Function(_, fexprs) => {
                 for expr in fexprs {
                     expr.collect(visitor, exprs);
+                }
+            }
+
+            Self::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                // Collect from operand if present
+                if let Some(op) = operand {
+                    op.collect(visitor, exprs);
+                }
+                // Collect from all when clauses
+                for (cond, result) in when_clauses {
+                    cond.collect(visitor, exprs);
+                    result.collect(visitor, exprs);
+                }
+                // Collect from else clause if present
+                if let Some(else_expr) = else_clause {
+                    else_expr.collect(visitor, exprs);
                 }
             }
 

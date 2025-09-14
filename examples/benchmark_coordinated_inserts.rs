@@ -105,10 +105,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Use parameterized insert (matching the data from benchmark_inserts.rs)
             let params = vec![
-                SqlValue::Integer(i as i64),                    // id
-                SqlValue::Integer((i * 2) as i64),              // value (some computation)
-                SqlValue::String(format!("data_{}", i % 1000)), // data (repeating pattern)
-                SqlValue::Integer((2000000000 + i) as i64),     // timestamp
+                SqlValue::integer(i as i64),                    // id
+                SqlValue::integer((i * 2) as i64),              // value (some computation)
+                SqlValue::string(format!("data_{}", i % 1000)), // data (repeating pattern)
+                SqlValue::integer((2000000000 + i) as i64),     // timestamp
             ];
 
             match sql

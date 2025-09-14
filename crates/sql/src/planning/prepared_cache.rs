@@ -323,6 +323,7 @@ fn bind_expression_parameters(
         }
         Expression::Constant(v) => Expression::Constant(v.clone()),
         Expression::Column(i) => Expression::Column(*i),
+        Expression::All => Expression::All,
 
         // Recursively bind parameters in nested expressions
         Expression::And(l, r) => Expression::And(
@@ -420,9 +421,18 @@ fn bind_aggregate_parameters(
 
     Ok(match agg {
         AggregateFunc::Count(e) => AggregateFunc::Count(bind_expression_parameters(e, params)?),
+        AggregateFunc::CountDistinct(e) => AggregateFunc::CountDistinct(bind_expression_parameters(e, params)?),
         AggregateFunc::Sum(e) => AggregateFunc::Sum(bind_expression_parameters(e, params)?),
+        AggregateFunc::SumDistinct(e) => AggregateFunc::SumDistinct(bind_expression_parameters(e, params)?),
         AggregateFunc::Avg(e) => AggregateFunc::Avg(bind_expression_parameters(e, params)?),
+        AggregateFunc::AvgDistinct(e) => AggregateFunc::AvgDistinct(bind_expression_parameters(e, params)?),
         AggregateFunc::Min(e) => AggregateFunc::Min(bind_expression_parameters(e, params)?),
+        AggregateFunc::MinDistinct(e) => AggregateFunc::MinDistinct(bind_expression_parameters(e, params)?),
         AggregateFunc::Max(e) => AggregateFunc::Max(bind_expression_parameters(e, params)?),
+        AggregateFunc::MaxDistinct(e) => AggregateFunc::MaxDistinct(bind_expression_parameters(e, params)?),
+        AggregateFunc::StDev(e) => AggregateFunc::StDev(bind_expression_parameters(e, params)?),
+        AggregateFunc::StDevDistinct(e) => AggregateFunc::StDevDistinct(bind_expression_parameters(e, params)?),
+        AggregateFunc::Variance(e) => AggregateFunc::Variance(bind_expression_parameters(e, params)?),
+        AggregateFunc::VarianceDistinct(e) => AggregateFunc::VarianceDistinct(bind_expression_parameters(e, params)?),
     })
 }

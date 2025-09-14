@@ -136,10 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Insert with parameterized values
                 let params = vec![
-                    SqlValue::Integer(i as i64),
-                    SqlValue::Integer((i * 2) as i64),
-                    SqlValue::String(format!("data_{}", i % 1000)),
-                    SqlValue::Integer((2000000000 + i) as i64),
+                    SqlValue::integer(i as i64),
+                    SqlValue::integer((i * 2) as i64),
+                    SqlValue::string(format!("data_{}", i % 1000)),
+                    SqlValue::integer((2000000000 + i) as i64),
                 ];
 
                 match sql
