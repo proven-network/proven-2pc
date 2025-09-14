@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{setup_test, TableBuilder};
+use common::{TableBuilder, setup_test};
 
 #[test]
 fn test_min_nullable_column() {
@@ -62,7 +62,11 @@ fn test_min_with_expression() {
         );
 
     // MIN(id + quantity) = MIN(11, 2, 12, 7, 30) = 2
-    ctx.assert_query_contains("SELECT MIN(id + quantity) FROM Item", "MIN(id + quantity)", "I32(2)");
+    ctx.assert_query_contains(
+        "SELECT MIN(id + quantity) FROM Item",
+        "MIN(id + quantity)",
+        "I32(2)",
+    );
 
     ctx.commit();
 }
@@ -137,7 +141,11 @@ fn test_min_distinct_values() {
         );
 
     // MIN(DISTINCT value) should be same as MIN(value) = 10
-    ctx.assert_query_contains("SELECT MIN(DISTINCT value) FROM Item", "MIN(DISTINCT value)", "I32(10)");
+    ctx.assert_query_contains(
+        "SELECT MIN(DISTINCT value) FROM Item",
+        "MIN(DISTINCT value)",
+        "I32(10)",
+    );
 
     ctx.commit();
 }
@@ -159,7 +167,11 @@ fn test_min_distinct_nullable_column() {
         );
 
     // MIN(DISTINCT age) = MIN(11, 90, 3) = 3
-    ctx.assert_query_contains("SELECT MIN(DISTINCT age) FROM Item", "MIN(DISTINCT age)", "I32(3)");
+    ctx.assert_query_contains(
+        "SELECT MIN(DISTINCT age) FROM Item",
+        "MIN(DISTINCT age)",
+        "I32(3)",
+    );
 
     ctx.commit();
 }

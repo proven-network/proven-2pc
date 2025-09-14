@@ -1,80 +1,306 @@
 //! FLOAT32 data type tests
 //! Based on gluesql/test-suite/src/data_type/float32.rs
+//! Note: In our SQL engine, REAL maps to F32 (32-bit float)
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::setup_test;
+
 #[test]
 fn test_create_table_with_float32_columns() {
-    // TODO: Test CREATE TABLE Float32Test (id INTEGER, value FLOAT, rate FLOAT)
+    let mut ctx = setup_test();
+
+    // REAL is the SQL type for 32-bit floats (F32)
+    ctx.exec("CREATE TABLE line (x REAL, y REAL)");
+    ctx.exec("INSERT INTO line VALUES (0.3134, 0.156)");
+
+    let results = ctx.query("SELECT x, y FROM line");
+    assert_eq!(results.len(), 1);
+
+    // Check that values are stored as F32
+    let x = results[0].get("x").unwrap();
+    let y = results[0].get("y").unwrap();
+
+    // F32 values might have slight precision differences
+    assert!(x.starts_with("F32(0.3134"));
+    assert!(y.starts_with("F32(0.156"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_insert_float32_values() {
-    // TODO: Test INSERT INTO Float32Test with various float values
-    // TODO: Test INSERT with scientific notation values
-    // TODO: Test INSERT with negative float values
-    // TODO: Test INSERT with very small and very large float values
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE float_test (id INT, value REAL)");
+
+    // Test various float values
+    ctx.exec("INSERT INTO float_test VALUES (1, 3.14159)");
+    ctx.exec("INSERT INTO float_test VALUES (2, -2.71828)");
+    ctx.exec("INSERT INTO float_test VALUES (3, 0.0)");
+    ctx.exec("INSERT INTO float_test VALUES (4, 1000000.5)");
+    ctx.exec("INSERT INTO float_test VALUES (5, 0.0000001)");
+
+    let results = ctx.query("SELECT id, value FROM float_test ORDER BY id");
+    assert_eq!(results.len(), 5);
+
+    // F32 has limited precision, so exact matches might not work
+    assert!(results[0].get("value").unwrap().starts_with("F32(3.14"));
+    assert!(results[1].get("value").unwrap().starts_with("F32(-2.71"));
+    // F32 might display 0 as either "F32(0)" or "F32(0.0)"
+    let zero = results[2].get("value").unwrap();
+    assert!(zero == "F32(0)" || zero == "F32(0.0)");
+    assert!(results[3].get("value").unwrap().contains("1000000"));
+    assert!(results[4].get("value").unwrap().starts_with("F32("));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_select_float32_values() {
-    // TODO: Test SELECT * FROM Float32Test - verify float values are stored and retrieved correctly
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE line (x REAL, y REAL)");
+    ctx.exec("INSERT INTO line VALUES (0.3134, 0.156)");
+
+    let results = ctx.query("SELECT x, y FROM line");
+    assert_eq!(results.len(), 1);
+
+    // Verify values can be selected correctly
+    assert!(results[0].get("x").unwrap().starts_with("F32("));
+    assert!(results[0].get("y").unwrap().starts_with("F32("));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_float32_arithmetic_operations() {
-    // TODO: Test SELECT value + rate FROM Float32Test - float addition
-    // TODO: Test SELECT value - rate FROM Float32Test - float subtraction
-    // TODO: Test SELECT value * rate FROM Float32Test - float multiplication
-    // TODO: Test SELECT value / rate FROM Float32Test - float division
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE floats (a REAL, b REAL)");
+    ctx.exec("INSERT INTO floats VALUES (10.5, 2.5)");
+
+    // Test addition
+    let results = ctx.query("SELECT a + b AS sum FROM floats");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("sum").unwrap().contains("13"));
+
+    // Test subtraction
+    let results = ctx.query("SELECT a - b AS diff FROM floats");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("diff").unwrap().contains("8"));
+
+    // Test multiplication
+    let results = ctx.query("SELECT a * b AS product FROM floats");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("product").unwrap().contains("26.25"));
+
+    // Test division
+    let results = ctx.query("SELECT a / b AS quotient FROM floats");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("quotient").unwrap().contains("4.2"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_float32_comparison_operations() {
-    // TODO: Test SELECT * FROM Float32Test WHERE value = 3.14 - float equality (with precision considerations)
-    // TODO: Test SELECT * FROM Float32Test WHERE value > 1.0 - float greater than
-    // TODO: Test SELECT * FROM Float32Test WHERE value < 10.0 - float less than
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE line (x REAL, y REAL)");
+    ctx.exec("INSERT INTO line VALUES (2.0, 1.0)");
+    ctx.exec("INSERT INTO line VALUES (3.5, 2.5)");
+    ctx.exec("INSERT INTO line VALUES (1.0, 3.0)");
+
+    // Test equality
+    let results = ctx.query("SELECT x, y FROM line WHERE x = 2.0");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("y").unwrap().contains("1"));
+
+    // Test greater than
+    let results = ctx.query("SELECT x FROM line WHERE x > 2.0 ORDER BY x");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("x").unwrap().contains("3.5"));
+
+    // Test less than
+    let results = ctx.query("SELECT x FROM line WHERE x < 2.0");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("x").unwrap().contains("1"));
+
+    // Test UPDATE with WHERE
+    ctx.exec("UPDATE line SET x = 5.0, y = 4.0 WHERE x = 2.0 AND y = 1.0");
+
+    let results = ctx.query("SELECT x, y FROM line WHERE x = 5.0");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("y").unwrap().contains("4"));
+
+    // Test DELETE with WHERE
+    ctx.exec("DELETE FROM line WHERE x = 5.0 AND y = 4.0");
+
+    let results = ctx.query("SELECT COUNT(*) as cnt FROM line");
+    assert_eq!(results[0].get("cnt").unwrap(), "I64(2)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_float32_ordering() {
-    // TODO: Test SELECT * FROM Float32Test ORDER BY value ASC - ascending float order
-    // TODO: Test SELECT * FROM Float32Test ORDER BY value DESC - descending float order
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE floats (value REAL)");
+    ctx.exec("INSERT INTO floats VALUES (3.5), (1.2), (2.8), (0.5), (4.1)");
+
+    // Test ascending order
+    let results = ctx.query("SELECT value FROM floats ORDER BY value ASC");
+    assert_eq!(results.len(), 5);
+
+    // Check order (values should be 0.5, 1.2, 2.8, 3.5, 4.1)
+    assert!(results[0].get("value").unwrap().contains("0.5"));
+    assert!(results[1].get("value").unwrap().contains("1.2"));
+    assert!(results[2].get("value").unwrap().contains("2.8"));
+    assert!(results[3].get("value").unwrap().contains("3.5"));
+    assert!(results[4].get("value").unwrap().contains("4.1"));
+
+    // Test descending order
+    let results = ctx.query("SELECT value FROM floats ORDER BY value DESC");
+    assert_eq!(results.len(), 5);
+    assert!(results[0].get("value").unwrap().contains("4.1"));
+    assert!(results[4].get("value").unwrap().contains("0.5"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_float32_precision_and_rounding() {
-    // TODO: Test float precision handling and rounding behavior
-    // TODO: Test floating point precision limitations
-}
-
-#[ignore = "not yet implemented"]
 #[test]
 fn test_float32_special_values() {
-    // TODO: Test INSERT and handling of special float values (if supported): NaN, Infinity, -Infinity
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE special_floats (id INT, value REAL)");
+
+    // Test special float values - use keywords, not strings
+    ctx.exec("INSERT INTO special_floats VALUES (1, NaN)");
+    ctx.exec("INSERT INTO special_floats VALUES (2, Infinity)");
+    ctx.exec("INSERT INTO special_floats VALUES (3, -Infinity)");
+
+    let results = ctx.query("SELECT id, value FROM special_floats ORDER BY id");
+    assert_eq!(results.len(), 3);
+
+    // NaN
+    assert!(results[0].get("value").unwrap().contains("NaN"));
+
+    // Infinity
+    assert!(results[1].get("value").unwrap().contains("inf"));
+
+    // -Infinity
+    assert!(results[2].get("value").unwrap().contains("inf"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_float32_with_aggregate_functions() {
-    // TODO: Test SUM(value) with float values
-    // TODO: Test AVG(value) with float values
-    // TODO: Test MIN/MAX with float values
+fn test_cast_to_float32() {
+    let mut ctx = setup_test();
+
+    // Test CAST from string to REAL (F32)
+    let results = ctx.query("SELECT CAST('-71.064544' AS REAL) AS float32");
+    assert_eq!(results.len(), 1);
+
+    let value = results[0].get("float32").unwrap();
+    assert!(value.starts_with("F32("));
+    assert!(value.contains("-71.06"));
+
+    // Test CAST from integer to REAL
+    let results = ctx.query("SELECT CAST(42 AS REAL) AS float32");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("float32").unwrap().contains("42"));
+
+    // Test CAST from decimal to REAL
+    ctx.exec("CREATE TABLE test (d DECIMAL)");
+    ctx.exec("INSERT INTO test VALUES (3.14159265359)");
+
+    let results = ctx.query("SELECT CAST(d AS REAL) AS float32 FROM test");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("float32").unwrap().starts_with("F32(3.14"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_float32_conversion() {
-    // TODO: Test conversion between FLOAT and other numeric types
+fn test_float32_with_null() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE float_nulls (id INT, value REAL)");
+    ctx.exec("INSERT INTO float_nulls VALUES (1, 1.5), (2, NULL), (3, 2.5)");
+
+    let results =
+        ctx.query("SELECT id, value FROM float_nulls WHERE value IS NOT NULL ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert!(results[0].get("value").unwrap().contains("1.5"));
+    assert!(results[1].get("value").unwrap().contains("2.5"));
+
+    // Test NULL propagation in arithmetic
+    let results = ctx.query("SELECT id, value + 1.0 as result FROM float_nulls ORDER BY id");
+    assert_eq!(results.len(), 3);
+    assert!(results[0].get("result").unwrap().contains("2.5"));
+    assert_eq!(results[1].get("result").unwrap(), "Null");
+    assert!(results[2].get("result").unwrap().contains("3.5"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_invalid_float32_values() {
-    // TODO: Test INSERT with invalid float format - should error appropriately
+fn test_float32_precision() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE precision_test (value REAL)");
+
+    // F32 has about 7 decimal digits of precision
+    ctx.exec("INSERT INTO precision_test VALUES (1234567.8)");
+    ctx.exec("INSERT INTO precision_test VALUES (0.12345678)");
+
+    let results = ctx.query("SELECT value FROM precision_test ORDER BY value");
+    assert_eq!(results.len(), 2);
+
+    // Small number should maintain some precision
+    assert!(results[0].get("value").unwrap().starts_with("F32(0.123"));
+
+    // Large number might lose precision in least significant digits
+    assert!(results[1].get("value").unwrap().contains("1234567"));
+
+    ctx.commit();
+}
+
+#[test]
+fn test_nan_comparison_behavior() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE nan_test (id INT, value REAL)");
+    ctx.exec("INSERT INTO nan_test VALUES (1, NaN), (2, 1.0), (3, NaN)");
+
+    // NaN = NaN should return false (or NULL in SQL)
+    let results = ctx.query("SELECT id FROM nan_test WHERE value = NaN");
+    assert_eq!(results.len(), 0, "NaN = NaN should not match any rows");
+
+    // NaN comparisons with regular numbers
+    let results = ctx.query("SELECT id FROM nan_test WHERE value > 0");
+    assert_eq!(
+        results.len(),
+        1,
+        "Only regular numbers should match comparisons"
+    );
+    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+
+    // IS NULL vs IS NOT NULL for NaN
+    let results = ctx.query("SELECT id FROM nan_test WHERE value IS NULL");
+    assert_eq!(results.len(), 0, "NaN is not NULL");
+
+    let results = ctx.query("SELECT id FROM nan_test WHERE value IS NOT NULL");
+    assert_eq!(results.len(), 3, "NaN is not NULL");
+
+    // ORDER BY with NaN values
+    let results = ctx.query("SELECT id, value FROM nan_test ORDER BY value");
+    assert_eq!(results.len(), 3);
+    // NaN values typically sort last or first depending on implementation
+    // Just verify we get all 3 rows back
+
+    ctx.commit();
 }

@@ -30,7 +30,7 @@ fn test_insert_decimal_values() {
     assert_eq!(results.len(), 4);
     assert_eq!(results[0].get("v").unwrap(), "Decimal(1)");
     assert_eq!(results[1].get("v").unwrap(), "Decimal(1.5)");
-    assert_eq!(results[2].get("v").unwrap(), "Decimal(2)");  // Decimal normalizes 2.0 to 2
+    assert_eq!(results[2].get("v").unwrap(), "Decimal(2)"); // Decimal normalizes 2.0 to 2
     assert_eq!(results[3].get("v").unwrap(), "Decimal(25.12)");
 
     ctx.commit();
@@ -47,10 +47,11 @@ fn test_select_decimal_values() {
     assert_eq!(results.len(), 2);
 
     // Results should be 2.0 and 25.12 (in some order)
-    let values: Vec<String> = results.iter()
+    let values: Vec<String> = results
+        .iter()
         .map(|r| r.get("v").unwrap().clone())
         .collect();
-    assert!(values.contains(&"Decimal(2)".to_string()));  // Decimal normalizes 2.0 to 2
+    assert!(values.contains(&"Decimal(2)".to_string())); // Decimal normalizes 2.0 to 2
     assert!(values.contains(&"Decimal(25.12)".to_string()));
 
     ctx.commit();
@@ -124,15 +125,15 @@ fn test_decimal_ordering() {
     // Test ascending order
     let results = ctx.query("SELECT v FROM DECIMAL_ITEM ORDER BY v ASC");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("v").unwrap(), "Decimal(1)");      // Decimal normalizes 1.00 to 1
+    assert_eq!(results[0].get("v").unwrap(), "Decimal(1)"); // Decimal normalizes 1.00 to 1
     assert_eq!(results[1].get("v").unwrap(), "Decimal(10.25)");
     assert_eq!(results[2].get("v").unwrap(), "Decimal(50.75)");
-    assert_eq!(results[3].get("v").unwrap(), "Decimal(100.5)");  // Decimal normalizes 100.50 to 100.5
+    assert_eq!(results[3].get("v").unwrap(), "Decimal(100.5)"); // Decimal normalizes 100.50 to 100.5
 
     // Test descending order
     let results = ctx.query("SELECT v FROM DECIMAL_ITEM ORDER BY v DESC");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("v").unwrap(), "Decimal(100.5)");  // Decimal normalizes 100.50 to 100.5
+    assert_eq!(results[0].get("v").unwrap(), "Decimal(100.5)"); // Decimal normalizes 100.50 to 100.5
     assert_eq!(results[1].get("v").unwrap(), "Decimal(50.75)");
     assert_eq!(results[2].get("v").unwrap(), "Decimal(10.25)");
     assert_eq!(results[3].get("v").unwrap(), "Decimal(1)");
@@ -149,7 +150,8 @@ fn test_mixed_numeric_type_operations() {
 
     // Unlike gluesql, our implementation always returns Decimal when one operand is Decimal,
     // regardless of operand order. This is more consistent behavior.
-    let results = ctx.query("
+    let results = ctx.query(
+        "
         SELECT
             v AS a,
             v + 1 AS b,
@@ -159,18 +161,19 @@ fn test_mixed_numeric_type_operations() {
             v * 2 AS f,
             2 * v AS g
         FROM DECIMAL_ITEM
-    ");
+    ",
+    );
 
     assert_eq!(results.len(), 1);
     let row = &results[0];
 
     assert_eq!(row.get("a").unwrap(), "Decimal(1)");
-    assert_eq!(row.get("b").unwrap(), "Decimal(2)");  // v + 1
-    assert_eq!(row.get("c").unwrap(), "Decimal(2)");  // 1 + v (also Decimal, unlike gluesql)
-    assert_eq!(row.get("d").unwrap(), "Decimal(0)");  // v - 1
-    assert_eq!(row.get("e").unwrap(), "Decimal(0)");  // 1 - v (also Decimal, unlike gluesql)
-    assert_eq!(row.get("f").unwrap(), "Decimal(2)");  // v * 2
-    assert_eq!(row.get("g").unwrap(), "Decimal(2)");  // 2 * v (also Decimal, unlike gluesql)
+    assert_eq!(row.get("b").unwrap(), "Decimal(2)"); // v + 1
+    assert_eq!(row.get("c").unwrap(), "Decimal(2)"); // 1 + v (also Decimal, unlike gluesql)
+    assert_eq!(row.get("d").unwrap(), "Decimal(0)"); // v - 1
+    assert_eq!(row.get("e").unwrap(), "Decimal(0)"); // 1 - v (also Decimal, unlike gluesql)
+    assert_eq!(row.get("f").unwrap(), "Decimal(2)"); // v * 2
+    assert_eq!(row.get("g").unwrap(), "Decimal(2)"); // 2 * v (also Decimal, unlike gluesql)
 
     ctx.commit();
 }

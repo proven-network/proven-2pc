@@ -404,7 +404,8 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             }),
         },
 
-        "FLOAT" => match value {
+        // REAL is F32 (single precision)
+        "REAL" => match value {
             Value::I8(v) => Ok(Value::F32(*v as f32)),
             Value::I16(v) => Ok(Value::F32(*v as f32)),
             Value::I32(v) => Ok(Value::F32(*v as f32)),
@@ -415,12 +416,36 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             Value::Decimal(d) => {
                 use rust_decimal::prelude::ToPrimitive;
                 d.to_f32().map(Value::F32).ok_or_else(|| {
-                    Error::InvalidValue(format!("Cannot cast decimal {} to FLOAT", d))
+                    Error::InvalidValue(format!("Cannot cast decimal {} to REAL", d))
                 })
             }
             Value::Str(s) => s
                 .parse::<f32>()
                 .map(Value::F32)
+                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to REAL", s))),
+            _ => Err(Error::TypeMismatch {
+                expected: "REAL".into(),
+                found: value.data_type().to_string(),
+            }),
+        },
+        // FLOAT is F64 (double precision) - matching column type behavior
+        "FLOAT" => match value {
+            Value::I8(v) => Ok(Value::F64(*v as f64)),
+            Value::I16(v) => Ok(Value::F64(*v as f64)),
+            Value::I32(v) => Ok(Value::F64(*v as f64)),
+            Value::I64(v) => Ok(Value::F64(*v as f64)),
+            Value::I128(v) => Ok(Value::F64(*v as f64)),
+            Value::F32(v) => Ok(Value::F64(*v as f64)),
+            Value::F64(v) => Ok(Value::F64(*v)),
+            Value::Decimal(d) => {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64().map(Value::F64).ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot cast decimal {} to FLOAT", d))
+                })
+            }
+            Value::Str(s) => s
+                .parse::<f64>()
+                .map(Value::F64)
                 .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to FLOAT", s))),
             Value::Null => Ok(Value::Null),
             _ => Err(Error::TypeMismatch {

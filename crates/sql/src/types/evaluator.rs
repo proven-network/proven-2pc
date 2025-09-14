@@ -6,6 +6,7 @@
 use super::value::Value;
 use crate::error::{Error, Result};
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use std::cmp::Ordering;
 
 /// Macro to handle mixed integer type arithmetic operations
@@ -85,6 +86,46 @@ fn to_decimal(value: &Value) -> Option<Decimal> {
         Value::F32(n) => Decimal::from_f32_retain(*n),
         Value::F64(n) => Decimal::from_f64_retain(*n),
         Value::Decimal(d) => Some(*d),
+        _ => None,
+    }
+}
+
+/// Helper to convert any numeric value to f64
+fn to_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::I8(n) => Some(*n as f64),
+        Value::I16(n) => Some(*n as f64),
+        Value::I32(n) => Some(*n as f64),
+        Value::I64(n) => Some(*n as f64),
+        Value::I128(n) => Some(*n as f64),
+        Value::U8(n) => Some(*n as f64),
+        Value::U16(n) => Some(*n as f64),
+        Value::U32(n) => Some(*n as f64),
+        Value::U64(n) => Some(*n as f64),
+        Value::U128(n) => Some(*n as f64),
+        Value::F32(n) => Some(*n as f64),
+        Value::F64(n) => Some(*n),
+        Value::Decimal(d) => d.to_f64(),
+        _ => None,
+    }
+}
+
+/// Helper to convert any numeric value to f32
+fn to_f32(value: &Value) -> Option<f32> {
+    match value {
+        Value::I8(n) => Some(*n as f32),
+        Value::I16(n) => Some(*n as f32),
+        Value::I32(n) => Some(*n as f32),
+        Value::I64(n) => Some(*n as f32),
+        Value::I128(n) => Some(*n as f32),
+        Value::U8(n) => Some(*n as f32),
+        Value::U16(n) => Some(*n as f32),
+        Value::U32(n) => Some(*n as f32),
+        Value::U64(n) => Some(*n as f32),
+        Value::U128(n) => Some(*n as f32),
+        Value::F32(n) => Some(*n),
+        Value::F64(n) => Some(*n as f32),
+        Value::Decimal(d) => d.to_f32(),
         _ => None,
     }
 }
@@ -695,20 +736,95 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         (Value::U64(a), Value::U64(b)) => Ok(a.cmp(b)),
         (Value::U128(a), Value::U128(b)) => Ok(a.cmp(b)),
 
-        // Float comparisons
-        (Value::F32(a), Value::F32(b)) => Ok(a.partial_cmp(b).unwrap_or(Ordering::Equal)),
-        (Value::F64(a), Value::F64(b)) => Ok(a.partial_cmp(b).unwrap_or(Ordering::Equal)),
+        // Float comparisons - handle NaN specially
+        (Value::F32(a), Value::F32(b)) => {
+            // NaN comparisons: NaN is never equal to anything, including itself
+            // For ordering (ORDER BY), treat NaN as greater than all other values
+            match a.partial_cmp(b) {
+                Some(ord) => Ok(ord),
+                None => {
+                    // One or both are NaN
+                    if a.is_nan() && b.is_nan() {
+                        Ok(Ordering::Equal) // Two NaNs are considered equal for sorting
+                    } else if a.is_nan() {
+                        Ok(Ordering::Greater) // NaN sorts after regular numbers
+                    } else {
+                        Ok(Ordering::Less) // Regular number sorts before NaN
+                    }
+                }
+            }
+        }
+        (Value::F64(a), Value::F64(b)) => {
+            // Same NaN handling for F64
+            match a.partial_cmp(b) {
+                Some(ord) => Ok(ord),
+                None => {
+                    if a.is_nan() && b.is_nan() {
+                        Ok(Ordering::Equal)
+                    } else if a.is_nan() {
+                        Ok(Ordering::Greater)
+                    } else {
+                        Ok(Ordering::Less)
+                    }
+                }
+            }
+        }
 
         // Decimal comparisons
         (Value::Decimal(a), Value::Decimal(b)) => Ok(a.cmp(b)),
 
-        // Mixed numeric comparisons - convert to Decimal
+        // Mixed numeric comparisons
+        // If either side is a float, convert both to float for comparison
+        // This preserves float semantics and avoids precision issues
         (l, r) if is_numeric(l) && is_numeric(r) => {
-            let l_dec = to_decimal(l)
-                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
-            let r_dec = to_decimal(r)
-                .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
-            Ok(l_dec.cmp(&r_dec))
+            // Check if either value is F64
+            if matches!(l, Value::F64(_)) || matches!(r, Value::F64(_)) {
+                let l_f64 =
+                    to_f64(l).ok_or_else(|| Error::InvalidValue("Cannot convert to f64".into()))?;
+                let r_f64 =
+                    to_f64(r).ok_or_else(|| Error::InvalidValue("Cannot convert to f64".into()))?;
+                // Handle NaN properly
+                match l_f64.partial_cmp(&r_f64) {
+                    Some(ord) => Ok(ord),
+                    None => {
+                        if l_f64.is_nan() && r_f64.is_nan() {
+                            Ok(Ordering::Equal)
+                        } else if l_f64.is_nan() {
+                            Ok(Ordering::Greater)
+                        } else {
+                            Ok(Ordering::Less)
+                        }
+                    }
+                }
+            }
+            // Check if either value is F32
+            else if matches!(l, Value::F32(_)) || matches!(r, Value::F32(_)) {
+                let l_f32 =
+                    to_f32(l).ok_or_else(|| Error::InvalidValue("Cannot convert to f32".into()))?;
+                let r_f32 =
+                    to_f32(r).ok_or_else(|| Error::InvalidValue("Cannot convert to f32".into()))?;
+                // Handle NaN properly
+                match l_f32.partial_cmp(&r_f32) {
+                    Some(ord) => Ok(ord),
+                    None => {
+                        if l_f32.is_nan() && r_f32.is_nan() {
+                            Ok(Ordering::Equal)
+                        } else if l_f32.is_nan() {
+                            Ok(Ordering::Greater)
+                        } else {
+                            Ok(Ordering::Less)
+                        }
+                    }
+                }
+            }
+            // Otherwise convert to Decimal for exact comparison
+            else {
+                let l_dec = to_decimal(l)
+                    .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                let r_dec = to_decimal(r)
+                    .ok_or_else(|| Error::InvalidValue("Cannot convert to decimal".into()))?;
+                Ok(l_dec.cmp(&r_dec))
+            }
         }
 
         // String comparisons

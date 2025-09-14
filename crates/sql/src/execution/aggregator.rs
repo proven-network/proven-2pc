@@ -472,10 +472,7 @@ impl Accumulator for StDevAccumulator {
         let mean = self.values.iter().sum::<f64>() / n;
 
         // Calculate sample standard deviation (n-1 denominator)
-        let variance = self.values
-            .iter()
-            .map(|x| (x - mean).powi(2))
-            .sum::<f64>() / (n - 1.0);
+        let variance = self.values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
 
         let stdev = variance.sqrt();
         Ok(Value::F64(stdev))
@@ -546,10 +543,7 @@ impl Accumulator for VarianceAccumulator {
         let mean = self.values.iter().sum::<f64>() / n;
 
         // Calculate sample variance (n-1 denominator)
-        let variance = self.values
-            .iter()
-            .map(|x| (x - mean).powi(2))
-            .sum::<f64>() / (n - 1.0);
+        let variance = self.values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
 
         Ok(Value::F64(variance))
     }

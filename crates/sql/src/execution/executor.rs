@@ -705,6 +705,18 @@ impl Executor {
                 if l.is_null() || r.is_null() {
                     return Ok(Value::Null);
                 }
+                // IEEE 754 semantics: NaN is never equal to anything, including itself
+                // Check for any float NaN values
+                let has_nan = match (&l, &r) {
+                    (Value::F32(a), _) if a.is_nan() => true,
+                    (_, Value::F32(b)) if b.is_nan() => true,
+                    (Value::F64(a), _) if a.is_nan() => true,
+                    (_, Value::F64(b)) if b.is_nan() => true,
+                    _ => false,
+                };
+                if has_nan {
+                    return Ok(Value::boolean(false));
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Equal) => Ok(Value::boolean(true)),
@@ -719,6 +731,18 @@ impl Executor {
                 // SQL semantics: any comparison with NULL returns NULL
                 if l.is_null() || r.is_null() {
                     return Ok(Value::Null);
+                }
+                // IEEE 754 semantics: NaN is never equal to anything, so always not equal
+                // Check for any float NaN values
+                let has_nan = match (&l, &r) {
+                    (Value::F32(a), _) if a.is_nan() => true,
+                    (_, Value::F32(b)) if b.is_nan() => true,
+                    (Value::F64(a), _) if a.is_nan() => true,
+                    (_, Value::F64(b)) if b.is_nan() => true,
+                    _ => false,
+                };
+                if has_nan {
+                    return Ok(Value::boolean(true));
                 }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
@@ -735,6 +759,17 @@ impl Executor {
                 if l.is_null() || r.is_null() {
                     return Ok(Value::Null);
                 }
+                // IEEE 754 semantics: comparisons with NaN return false
+                let has_nan = match (&l, &r) {
+                    (Value::F32(a), _) if a.is_nan() => true,
+                    (_, Value::F32(b)) if b.is_nan() => true,
+                    (Value::F64(a), _) if a.is_nan() => true,
+                    (_, Value::F64(b)) if b.is_nan() => true,
+                    _ => false,
+                };
+                if has_nan {
+                    return Ok(Value::boolean(false));
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Less) => Ok(Value::boolean(true)),
@@ -749,6 +784,17 @@ impl Executor {
                 // SQL semantics: any comparison with NULL returns NULL
                 if l.is_null() || r.is_null() {
                     return Ok(Value::Null);
+                }
+                // IEEE 754 semantics: comparisons with NaN return false
+                let has_nan = match (&l, &r) {
+                    (Value::F32(a), _) if a.is_nan() => true,
+                    (_, Value::F32(b)) if b.is_nan() => true,
+                    (Value::F64(a), _) if a.is_nan() => true,
+                    (_, Value::F64(b)) if b.is_nan() => true,
+                    _ => false,
+                };
+                if has_nan {
+                    return Ok(Value::boolean(false));
                 }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
@@ -767,6 +813,17 @@ impl Executor {
                 if l.is_null() || r.is_null() {
                     return Ok(Value::Null);
                 }
+                // IEEE 754 semantics: comparisons with NaN return false
+                let has_nan = match (&l, &r) {
+                    (Value::F32(a), _) if a.is_nan() => true,
+                    (_, Value::F32(b)) if b.is_nan() => true,
+                    (Value::F64(a), _) if a.is_nan() => true,
+                    (_, Value::F64(b)) if b.is_nan() => true,
+                    _ => false,
+                };
+                if has_nan {
+                    return Ok(Value::boolean(false));
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Greater) => Ok(Value::boolean(true)),
@@ -781,6 +838,17 @@ impl Executor {
                 // SQL semantics: any comparison with NULL returns NULL
                 if l.is_null() || r.is_null() {
                     return Ok(Value::Null);
+                }
+                // IEEE 754 semantics: comparisons with NaN return false
+                let has_nan = match (&l, &r) {
+                    (Value::F32(a), _) if a.is_nan() => true,
+                    (_, Value::F32(b)) if b.is_nan() => true,
+                    (Value::F64(a), _) if a.is_nan() => true,
+                    (_, Value::F64(b)) if b.is_nan() => true,
+                    _ => false,
+                };
+                if has_nan {
+                    return Ok(Value::boolean(false));
                 }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {

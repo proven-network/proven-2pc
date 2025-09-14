@@ -349,9 +349,7 @@ impl Planner {
         if from.is_empty() {
             // For SELECT without FROM, return a single empty row
             // This allows expressions like SELECT 1, SELECT NULL IS NULL, etc.
-            return Ok(Node::Values {
-                rows: vec![vec![]],
-            });
+            return Ok(Node::Values { rows: vec![vec![]] });
         }
 
         let mut node = None;
@@ -1285,19 +1283,26 @@ impl<'a> PlanContext<'a> {
                         }
                     }
                     ast::Literal::Float(f) => {
-                        // Try to parse as a decimal string to avoid float precision issues
-                        // If the float is a simple value like 25.12, format with limited precision
-                        let decimal = if f.fract() != 0.0 && f.abs() < 1e10 {
-                            // Format with up to 10 decimal places, then parse
-                            let s = format!("{:.10}", f);
-                            // Trim trailing zeros and parse
-                            let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-                            rust_decimal::Decimal::from_str(trimmed)
-                                .unwrap_or_else(|_| rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default())
+                        // Handle special float values that can't be represented as Decimal
+                        if f.is_nan() || f.is_infinite() {
+                            // Keep as F64 for special values (will be coerced to F32 if needed)
+                            crate::types::value::Value::F64(f)
                         } else {
-                            rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default()
-                        };
-                        crate::types::value::Value::Decimal(decimal)
+                            // Try to parse as a decimal string to avoid float precision issues
+                            // If the float is a simple value like 25.12, format with limited precision
+                            let decimal = if f.fract() != 0.0 && f.abs() < 1e10 {
+                                // Format with up to 10 decimal places, then parse
+                                let s = format!("{:.10}", f);
+                                // Trim trailing zeros and parse
+                                let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                                rust_decimal::Decimal::from_str(trimmed).unwrap_or_else(|_| {
+                                    rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default()
+                                })
+                            } else {
+                                rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default()
+                            };
+                            crate::types::value::Value::Decimal(decimal)
+                        }
                     }
                     ast::Literal::String(s) => crate::types::value::Value::string(s),
                 };

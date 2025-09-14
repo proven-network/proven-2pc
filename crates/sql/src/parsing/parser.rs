@@ -903,7 +903,8 @@ impl Parser<'_> {
                     Token::Keyword(Keyword::Int) | Token::Keyword(Keyword::Integer) => "INT",
                     Token::Keyword(Keyword::Bigint) => "BIGINT",
                     Token::Keyword(Keyword::Hugeint) => "HUGEINT",
-                    Token::Keyword(Keyword::Real) | Token::Keyword(Keyword::Float) => "FLOAT",
+                    Token::Keyword(Keyword::Real) => "REAL", // REAL is F32
+                    Token::Keyword(Keyword::Float) => "FLOAT", // FLOAT is F64
                     Token::Keyword(Keyword::Double) => "DOUBLE",
                     Token::Keyword(Keyword::Decimal) => "DECIMAL",
                     Token::Keyword(Keyword::Text)

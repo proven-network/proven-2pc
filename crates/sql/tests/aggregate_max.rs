@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{setup_test, TableBuilder};
+use common::{TableBuilder, setup_test};
 
 #[test]
 fn test_max_nullable_column() {
@@ -62,7 +62,11 @@ fn test_max_with_expression() {
         );
 
     // MAX(id - quantity) = MAX(-9, 2, -6, 1, -20) = 2
-    ctx.assert_query_contains("SELECT MAX(id - quantity) FROM Item", "MAX(id - quantity)", "I32(2)");
+    ctx.assert_query_contains(
+        "SELECT MAX(id - quantity) FROM Item",
+        "MAX(id - quantity)",
+        "I32(2)",
+    );
 
     ctx.commit();
 }
@@ -112,7 +116,11 @@ fn test_max_distinct_values() {
         );
 
     // MAX(DISTINCT value) should be same as MAX(value) = 30
-    ctx.assert_query_contains("SELECT MAX(DISTINCT value) FROM Item", "MAX(DISTINCT value)", "I32(30)");
+    ctx.assert_query_contains(
+        "SELECT MAX(DISTINCT value) FROM Item",
+        "MAX(DISTINCT value)",
+        "I32(30)",
+    );
 
     ctx.commit();
 }
@@ -134,7 +142,11 @@ fn test_max_distinct_nullable_column() {
         );
 
     // MAX(DISTINCT age) = MAX(11, 90, 3) = 90
-    ctx.assert_query_contains("SELECT MAX(DISTINCT age) FROM Item", "MAX(DISTINCT age)", "I32(90)");
+    ctx.assert_query_contains(
+        "SELECT MAX(DISTINCT age) FROM Item",
+        "MAX(DISTINCT age)",
+        "I32(90)",
+    );
 
     ctx.commit();
 }
@@ -193,7 +205,11 @@ fn test_max_dates() {
         );
 
     // MAX on dates returns latest date
-    ctx.assert_query_contains("SELECT MAX(event_date) FROM Events", "MAX(event_date)", "Date(2024-12-25)");
+    ctx.assert_query_contains(
+        "SELECT MAX(event_date) FROM Events",
+        "MAX(event_date)",
+        "Date(2024-12-25)",
+    );
 
     ctx.commit();
 }
