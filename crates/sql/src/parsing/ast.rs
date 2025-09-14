@@ -38,10 +38,10 @@ pub enum Statement {
         /// IF NOT EXISTS: if true, don't error if the table already exists.
         if_not_exists: bool,
     },
-    /// DROP TABLE: drops a table.
+    /// DROP TABLE: drops one or more tables.
     DropTable {
-        /// The table to drop.
-        name: String,
+        /// The tables to drop.
+        names: Vec<String>,
         /// IF EXISTS: if true, don't error if the table doesn't exist.
         if_exists: bool,
     },

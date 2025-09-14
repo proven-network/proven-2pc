@@ -40,7 +40,7 @@ pub enum Plan {
     },
 
     /// DROP TABLE
-    DropTable { name: String, if_exists: bool },
+    DropTable { names: Vec<String>, if_exists: bool },
 
     /// CREATE INDEX
     CreateIndex {

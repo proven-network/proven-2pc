@@ -1496,14 +1496,36 @@ impl MvccStorage {
                 Err(e) => Err(e),
             },
 
-            Plan::DropTable { name, if_exists } => match self.drop_table(name) {
-                Ok(_) => Ok(format!("Table '{}' dropped", name)),
-                Err(Error::TableNotFound(_)) if *if_exists => Ok(format!(
-                    "Table '{}' does not exist (IF EXISTS specified)",
-                    name
-                )),
-                Err(e) => Err(e),
-            },
+            Plan::DropTable { names, if_exists } => {
+                let mut dropped_count = 0;
+                let mut errors = Vec::new();
+
+                for name in names {
+                    match self.drop_table(name) {
+                        Ok(_) => dropped_count += 1,
+                        Err(Error::TableNotFound(_)) if *if_exists => {
+                            // Silently skip non-existent tables when IF EXISTS is specified
+                        }
+                        Err(e) => {
+                            if !if_exists {
+                                return Err(e);
+                            }
+                            errors.push(format!("{}: {}", name, e));
+                        }
+                    }
+                }
+
+                if dropped_count == 0 && names.len() == 1 && *if_exists {
+                    Ok(format!(
+                        "Table '{}' does not exist (IF EXISTS specified)",
+                        names[0]
+                    ))
+                } else if dropped_count == 1 {
+                    Ok("1 table dropped".to_string())
+                } else {
+                    Ok(format!("{} tables dropped", dropped_count))
+                }
+            }
 
             Plan::CreateIndex {
                 name,

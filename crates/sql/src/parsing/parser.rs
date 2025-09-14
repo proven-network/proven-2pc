@@ -445,8 +445,14 @@ impl Parser<'_> {
             self.expect(Token::Keyword(Keyword::Exists))?;
             if_exists = true;
         }
-        let name = self.next_ident()?;
-        Ok(ast::Statement::DropTable { name, if_exists })
+
+        // Parse one or more table names separated by commas
+        let mut names = vec![self.next_ident()?];
+        while self.next_is(Token::Comma) {
+            names.push(self.next_ident()?);
+        }
+
+        Ok(ast::Statement::DropTable { names, if_exists })
     }
 
     /// Parses a DELETE statement.

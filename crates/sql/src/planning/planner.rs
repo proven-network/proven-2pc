@@ -123,8 +123,8 @@ impl Planner {
                 if_not_exists,
             } => self.plan_create_table(name, columns, if_not_exists),
 
-            ast::Statement::DropTable { name, if_exists } => {
-                Ok(Plan::DropTable { name, if_exists })
+            ast::Statement::DropTable { names, if_exists } => {
+                Ok(Plan::DropTable { names, if_exists })
             }
 
             ast::Statement::CreateIndex {
@@ -1603,11 +1603,14 @@ impl Planner {
                 QueryPredicates::default()
             }
 
-            Plan::DropTable { name, .. } => {
-                // Dropping a table is like writing to the entire table
+            Plan::DropTable { names, .. } => {
+                // Dropping tables is like writing to all of them
                 QueryPredicates {
                     reads: vec![],
-                    writes: vec![Predicate::full_table(name.clone())],
+                    writes: names
+                        .iter()
+                        .map(|name| Predicate::full_table(name.clone()))
+                        .collect(),
                     inserts: vec![],
                 }
             }
