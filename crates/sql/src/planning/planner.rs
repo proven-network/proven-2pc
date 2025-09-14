@@ -346,7 +346,11 @@ impl Planner {
     /// Plan FROM clause
     fn plan_from(&self, from: Vec<ast::FromClause>, context: &mut PlanContext) -> Result<Node> {
         if from.is_empty() {
-            return Ok(Node::Nothing);
+            // For SELECT without FROM, return a single empty row
+            // This allows expressions like SELECT 1, SELECT NULL IS NULL, etc.
+            return Ok(Node::Values {
+                rows: vec![vec![]],
+            });
         }
 
         let mut node = None;

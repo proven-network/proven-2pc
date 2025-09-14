@@ -701,6 +701,10 @@ impl Executor {
             Expression::Equal(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
+                // SQL semantics: any comparison with NULL returns NULL
+                if l.is_null() || r.is_null() {
+                    return Ok(Value::Null);
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Equal) => Ok(Value::boolean(true)),
@@ -712,6 +716,10 @@ impl Executor {
             Expression::NotEqual(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
+                // SQL semantics: any comparison with NULL returns NULL
+                if l.is_null() || r.is_null() {
+                    return Ok(Value::Null);
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Equal) => Ok(Value::boolean(false)),
@@ -723,6 +731,10 @@ impl Executor {
             Expression::LessThan(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
+                // SQL semantics: any comparison with NULL returns NULL
+                if l.is_null() || r.is_null() {
+                    return Ok(Value::Null);
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Less) => Ok(Value::boolean(true)),
@@ -734,6 +746,10 @@ impl Executor {
             Expression::LessThanOrEqual(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
+                // SQL semantics: any comparison with NULL returns NULL
+                if l.is_null() || r.is_null() {
+                    return Ok(Value::Null);
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
@@ -747,6 +763,10 @@ impl Executor {
             Expression::GreaterThan(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
+                // SQL semantics: any comparison with NULL returns NULL
+                if l.is_null() || r.is_null() {
+                    return Ok(Value::Null);
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Greater) => Ok(Value::boolean(true)),
@@ -758,6 +778,10 @@ impl Executor {
             Expression::GreaterThanOrEqual(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
                 let r = Self::evaluate_expression_static(right, row)?;
+                // SQL semantics: any comparison with NULL returns NULL
+                if l.is_null() || r.is_null() {
+                    return Ok(Value::Null);
+                }
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => {
@@ -823,6 +847,7 @@ impl Executor {
             Expression::Negate(expr) => {
                 let value = Self::evaluate_expression_static(expr, row)?;
                 match value {
+                    Value::Null => Ok(Value::Null),
                     Value::I8(i) => Ok(Value::I8(-i)),
                     Value::I16(i) => Ok(Value::I16(-i)),
                     Value::I32(i) => Ok(Value::I32(-i)),
@@ -836,6 +861,11 @@ impl Executor {
                         found: format!("{:?}", value),
                     }),
                 }
+            }
+
+            Expression::Identity(expr) => {
+                // Unary plus - just returns the value as-is
+                Self::evaluate_expression_static(expr, row)
             }
 
             Expression::Function(name, args) => {
