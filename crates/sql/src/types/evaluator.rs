@@ -3,6 +3,7 @@
 //! This module provides arithmetic and comparison operations for SQL values,
 //! keeping the Value type as pure data representation.
 
+use super::DataType;
 use super::value::Value;
 use crate::error::{Error, Result};
 use rust_decimal::Decimal;
@@ -1163,6 +1164,29 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
 
         // UUID comparisons
         (Value::Uuid(a), Value::Uuid(b)) => Ok(a.cmp(b)),
+
+        // UUID with String - try to parse the string as UUID
+        (Value::Uuid(a), Value::Str(s)) | (Value::Str(s), Value::Uuid(a)) => {
+            use uuid::Uuid;
+            match Uuid::parse_str(s) {
+                Ok(parsed_uuid) => {
+                    if left.data_type() == DataType::Uuid {
+                        Ok(a.cmp(&parsed_uuid))
+                    } else {
+                        Ok(parsed_uuid.cmp(a))
+                    }
+                }
+                Err(_) => {
+                    // If string cannot be parsed as UUID, treat as unequal
+                    // Return Greater/Less based on type ordering (UUID > String in type hierarchy)
+                    if left.data_type() == DataType::Uuid {
+                        Ok(Ordering::Greater)
+                    } else {
+                        Ok(Ordering::Less)
+                    }
+                }
+            }
+        }
 
         // Bytea comparisons
         (Value::Bytea(a), Value::Bytea(b)) => Ok(a.cmp(b)),

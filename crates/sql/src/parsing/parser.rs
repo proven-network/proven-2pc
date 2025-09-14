@@ -321,8 +321,10 @@ impl Parser<'_> {
             // String types
             Token::Keyword(Keyword::String | Keyword::Text | Keyword::Varchar) => DataType::Str,
 
+            // UUID is now a keyword
+            Token::Keyword(Keyword::Uuid) => DataType::Uuid,
+
             // Other types as identifiers (for now)
-            Token::Ident(s) if s.to_uppercase() == "UUID" => DataType::Uuid,
             Token::Ident(s) if s.to_uppercase() == "TIMESTAMP" => DataType::Timestamp,
             Token::Ident(s) if s.to_uppercase() == "DATE" => DataType::Date,
             Token::Ident(s) if s.to_uppercase() == "TIME" => DataType::Time,
@@ -988,6 +990,7 @@ impl Parser<'_> {
                     | Token::Keyword(Keyword::String)
                     | Token::Keyword(Keyword::Varchar) => "TEXT",
                     Token::Keyword(Keyword::Bool) | Token::Keyword(Keyword::Boolean) => "BOOLEAN",
+                    Token::Keyword(Keyword::Uuid) => "UUID",
                     token => {
                         return Err(Error::ParseError(format!(
                             "expected type name after AS, found {}",

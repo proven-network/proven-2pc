@@ -327,8 +327,27 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
         // String coercions (only between string types)
         (Value::Str(s), DataType::Text) => Ok(Value::Str(s.clone())),
 
+        // UUID coercions
+        (Value::Str(s), DataType::Uuid) => {
+            use uuid::Uuid;
+            // Try to parse the UUID string (supports standard, URN, and hex formats)
+            Uuid::parse_str(s)
+                .map(Value::Uuid)
+                .map_err(|_| Error::InvalidValue(format!("Failed to parse UUID: {}", s)))
+        }
+        (Value::Uuid(_), DataType::Uuid) => Ok(value),
+
         // Boolean remains strict - no implicit coercion
         (Value::Bool(_), DataType::Bool) => Ok(value),
+
+        // Integer literals to UUID are not allowed
+        (
+            Value::I8(_) | Value::I16(_) | Value::I32(_) | Value::I64(_) | Value::I128(_),
+            DataType::Uuid,
+        ) => Err(Error::InvalidValue(format!(
+            "Incompatible literal for UUID: {}",
+            value.data_type()
+        ))),
 
         // No coercion possible
         _ => Err(Error::TypeMismatch {

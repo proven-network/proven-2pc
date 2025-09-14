@@ -612,6 +612,25 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             }),
         },
 
+        "UUID" => {
+            use uuid::Uuid;
+
+            match value {
+                Value::Str(s) => {
+                    // Try to parse the UUID string (supports standard, URN, and hex formats)
+                    Uuid::parse_str(s)
+                        .map(Value::Uuid)
+                        .map_err(|_| Error::InvalidValue(format!("Failed to parse UUID: {}", s)))
+                }
+                Value::Uuid(u) => Ok(Value::Uuid(*u)),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to UUID",
+                    value.data_type()
+                ))),
+            }
+        }
+
         "DECIMAL" => {
             use rust_decimal::Decimal;
             use std::str::FromStr;
