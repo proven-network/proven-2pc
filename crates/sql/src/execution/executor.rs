@@ -720,8 +720,8 @@ impl Executor {
                 // Use evaluator::compare for type-aware comparison
                 match evaluator::compare(&l, &r) {
                     Ok(std::cmp::Ordering::Equal) => Ok(Value::boolean(true)),
-                    Ok(ordering) => Ok(Value::boolean(false)),
-                    Err(e) => Ok(Value::boolean(false)), // Type mismatch means not equal
+                    Ok(_ordering) => Ok(Value::boolean(false)),
+                    Err(_e) => Ok(Value::boolean(false)), // Type mismatch means not equal
                 }
             }
 

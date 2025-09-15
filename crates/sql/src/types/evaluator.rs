@@ -1162,11 +1162,80 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         // Date comparisons
         (Value::Date(a), Value::Date(b)) => Ok(a.cmp(b)),
 
+        // Date with String - try to parse the string as Date
+        (Value::Date(a), Value::Str(s)) | (Value::Str(s), Value::Date(a)) => {
+            use chrono::NaiveDate;
+            match NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                Ok(parsed_date) => {
+                    if left.data_type() == DataType::Date {
+                        Ok(a.cmp(&parsed_date))
+                    } else {
+                        Ok(parsed_date.cmp(a))
+                    }
+                }
+                Err(_) => {
+                    // If string cannot be parsed as Date, treat as type mismatch
+                    Err(Error::TypeMismatch {
+                        expected: "comparable types".into(),
+                        found: format!("Date and invalid date string '{}'", s),
+                    })
+                }
+            }
+        }
+
         // Time comparisons
         (Value::Time(a), Value::Time(b)) => Ok(a.cmp(b)),
 
+        // Time with String - try to parse the string as Time
+        (Value::Time(a), Value::Str(s)) | (Value::Str(s), Value::Time(a)) => {
+            use chrono::NaiveTime;
+            // Try multiple time formats
+            let parsed_time = NaiveTime::parse_from_str(s, "%H:%M:%S")
+                .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M:%S%.f"));
+
+            match parsed_time {
+                Ok(parsed) => {
+                    if left.data_type() == DataType::Time {
+                        Ok(a.cmp(&parsed))
+                    } else {
+                        Ok(parsed.cmp(a))
+                    }
+                }
+                Err(_) => {
+                    Err(Error::TypeMismatch {
+                        expected: "comparable types".into(),
+                        found: format!("Time and invalid time string '{}'", s),
+                    })
+                }
+            }
+        }
+
         // Timestamp comparisons
         (Value::Timestamp(a), Value::Timestamp(b)) => Ok(a.cmp(b)),
+
+        // Timestamp with String - try to parse the string as Timestamp
+        (Value::Timestamp(a), Value::Str(s)) | (Value::Str(s), Value::Timestamp(a)) => {
+            use chrono::NaiveDateTime;
+            // Try multiple timestamp formats
+            let parsed_timestamp = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f"));
+
+            match parsed_timestamp {
+                Ok(parsed) => {
+                    if left.data_type() == DataType::Timestamp {
+                        Ok(a.cmp(&parsed))
+                    } else {
+                        Ok(parsed.cmp(a))
+                    }
+                }
+                Err(_) => {
+                    Err(Error::TypeMismatch {
+                        expected: "comparable types".into(),
+                        found: format!("Timestamp and invalid timestamp string '{}'", s),
+                    })
+                }
+            }
+        }
 
         // Interval comparisons
         (Value::Interval(a), Value::Interval(b)) => Ok(a.cmp(b)),

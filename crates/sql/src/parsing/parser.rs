@@ -87,6 +87,8 @@ impl Parser<'_> {
             Token::Keyword(Keyword::Varchar) => Ok("varchar".to_string()),
             Token::Keyword(Keyword::Date) => Ok("date".to_string()),
             Token::Keyword(Keyword::Time) => Ok("time".to_string()),
+            Token::Keyword(Keyword::Timestamp) => Ok("timestamp".to_string()),
+            Token::Keyword(Keyword::Interval) => Ok("interval".to_string()),
             token => Err(Error::ParseError(format!(
                 "expected identifier, got {}",
                 token
