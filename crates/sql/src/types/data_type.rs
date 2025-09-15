@@ -139,3 +139,66 @@ pub struct Interval {
     pub days: i32,
     pub microseconds: i64,
 }
+
+impl std::fmt::Display for Interval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut parts = Vec::new();
+
+        if self.months != 0 {
+            if self.months == 1 {
+                parts.push("1 month".to_string());
+            } else {
+                parts.push(format!("{} months", self.months));
+            }
+        }
+
+        if self.days != 0 {
+            if self.days == 1 {
+                parts.push("1 day".to_string());
+            } else {
+                parts.push(format!("{} days", self.days));
+            }
+        }
+
+        if self.microseconds != 0 {
+            // Convert microseconds to appropriate units
+            let abs_micros = self.microseconds.abs();
+            let sign = if self.microseconds < 0 { "-" } else { "" };
+
+            if abs_micros % 1_000_000 == 0 {
+                // Full seconds
+                let seconds = abs_micros / 1_000_000;
+                if seconds % 60 == 0 {
+                    // Full minutes
+                    let minutes = seconds / 60;
+                    if minutes % 60 == 0 {
+                        // Full hours
+                        let hours = minutes / 60;
+                        if hours == 1 {
+                            parts.push(format!("{}1 hour", sign));
+                        } else {
+                            parts.push(format!("{}{} hours", sign, hours));
+                        }
+                    } else if minutes == 1 {
+                        parts.push(format!("{}1 minute", sign));
+                    } else {
+                        parts.push(format!("{}{} minutes", sign, minutes));
+                    }
+                } else if seconds == 1 {
+                    parts.push(format!("{}1 second", sign));
+                } else {
+                    parts.push(format!("{}{} seconds", sign, seconds));
+                }
+            } else {
+                // Has fractional seconds, show as microseconds
+                parts.push(format!("{}{} microseconds", sign, abs_micros));
+            }
+        }
+
+        if parts.is_empty() {
+            write!(f, "0")
+        } else {
+            write!(f, "{}", parts.join(" "))
+        }
+    }
+}

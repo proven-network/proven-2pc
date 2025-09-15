@@ -396,6 +396,46 @@ pub fn add(left: &Value, right: &Value) -> Result<Value> {
             mixed_int_op!(l, r, +, checked_add, "overflow")
         }
 
+        // Date/Time + Interval operations
+        (Value::Date(date), Value::Interval(interval))
+        | (Value::Interval(interval), Value::Date(date)) => {
+            use chrono::Duration;
+            let new_date = *date
+                + Duration::days(interval.days as i64)
+                + Duration::days((interval.months * 30) as i64); // Approximate month as 30 days
+            Ok(Value::Date(new_date))
+        }
+        (Value::Time(time), Value::Interval(interval))
+        | (Value::Interval(interval), Value::Time(time)) => {
+            use chrono::Duration;
+            let duration = Duration::microseconds(interval.microseconds)
+                + Duration::days(interval.days as i64)
+                + Duration::days((interval.months * 30) as i64);
+            let nanos = duration
+                .num_nanoseconds()
+                .ok_or_else(|| Error::InvalidValue("Interval too large".into()))?;
+            let new_time = *time + Duration::nanoseconds(nanos % (24 * 3600 * 1_000_000_000)); // Wrap around 24 hours
+            Ok(Value::Time(new_time))
+        }
+        (Value::Timestamp(ts), Value::Interval(interval))
+        | (Value::Interval(interval), Value::Timestamp(ts)) => {
+            use chrono::Duration;
+            let new_ts = *ts
+                + Duration::microseconds(interval.microseconds)
+                + Duration::days(interval.days as i64)
+                + Duration::days((interval.months * 30) as i64); // Approximate month as 30 days
+            Ok(Value::Timestamp(new_ts))
+        }
+
+        // Interval + Interval
+        (Value::Interval(a), Value::Interval(b)) => {
+            Ok(Value::Interval(super::data_type::Interval {
+                months: a.months + b.months,
+                days: a.days + b.days,
+                microseconds: a.microseconds + b.microseconds,
+            }))
+        }
+
         // Mixed numeric types - convert to Decimal
         (l, r) if is_numeric(l) && is_numeric(r) => {
             let l_dec = to_decimal(l)
@@ -406,7 +446,7 @@ pub fn add(left: &Value, right: &Value) -> Result<Value> {
         }
 
         _ => Err(Error::TypeMismatch {
-            expected: "numeric or string".into(),
+            expected: "numeric, string, or date/time with interval".into(),
             found: format!("{:?} and {:?}", left, right),
         }),
     }
@@ -648,6 +688,80 @@ pub fn subtract(left: &Value, right: &Value) -> Result<Value> {
             mixed_int_op!(l, r, -, checked_sub, "underflow")
         }
 
+        // Date/Time - Interval operations
+        (Value::Date(date), Value::Interval(interval)) => {
+            use chrono::Duration;
+            let new_date = *date
+                - Duration::days(interval.days as i64)
+                - Duration::days((interval.months * 30) as i64); // Approximate month as 30 days
+            Ok(Value::Date(new_date))
+        }
+        (Value::Time(time), Value::Interval(interval)) => {
+            use chrono::Duration;
+            let duration = Duration::microseconds(interval.microseconds)
+                + Duration::days(interval.days as i64)
+                + Duration::days((interval.months * 30) as i64);
+            let nanos = duration
+                .num_nanoseconds()
+                .ok_or_else(|| Error::InvalidValue("Interval too large".into()))?;
+            let new_time = *time - Duration::nanoseconds(nanos % (24 * 3600 * 1_000_000_000)); // Wrap around 24 hours
+            Ok(Value::Time(new_time))
+        }
+        (Value::Timestamp(ts), Value::Interval(interval)) => {
+            use chrono::Duration;
+            let new_ts = *ts
+                - Duration::microseconds(interval.microseconds)
+                - Duration::days(interval.days as i64)
+                - Duration::days((interval.months * 30) as i64); // Approximate month as 30 days
+            Ok(Value::Timestamp(new_ts))
+        }
+
+        // Date - Date = Interval (in days)
+        (Value::Date(a), Value::Date(b)) => {
+            let days = (*a - *b).num_days() as i32;
+            Ok(Value::Interval(super::data_type::Interval {
+                months: 0,
+                days,
+                microseconds: 0,
+            }))
+        }
+
+        // Timestamp - Timestamp = Interval
+        (Value::Timestamp(a), Value::Timestamp(b)) => {
+            let duration = *a - *b;
+            let days = duration.num_days() as i32;
+            let microseconds = (duration - chrono::Duration::days(days as i64))
+                .num_microseconds()
+                .ok_or_else(|| Error::InvalidValue("Duration too large".into()))?;
+            Ok(Value::Interval(super::data_type::Interval {
+                months: 0,
+                days,
+                microseconds,
+            }))
+        }
+
+        // Time - Time = Interval
+        (Value::Time(a), Value::Time(b)) => {
+            let duration = *a - *b;
+            let microseconds = duration
+                .num_microseconds()
+                .ok_or_else(|| Error::InvalidValue("Duration too large".into()))?;
+            Ok(Value::Interval(super::data_type::Interval {
+                months: 0,
+                days: 0,
+                microseconds,
+            }))
+        }
+
+        // Interval - Interval
+        (Value::Interval(a), Value::Interval(b)) => {
+            Ok(Value::Interval(super::data_type::Interval {
+                months: a.months - b.months,
+                days: a.days - b.days,
+                microseconds: a.microseconds - b.microseconds,
+            }))
+        }
+
         // Mixed numeric types - convert to Decimal
         (l, r) if is_numeric(l) && is_numeric(r) => {
             let l_dec = to_decimal(l)
@@ -658,7 +772,7 @@ pub fn subtract(left: &Value, right: &Value) -> Result<Value> {
         }
 
         _ => Err(Error::TypeMismatch {
-            expected: "numeric".into(),
+            expected: "numeric or date/time types".into(),
             found: format!("{:?} and {:?}", left, right),
         }),
     }

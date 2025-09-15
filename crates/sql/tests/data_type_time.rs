@@ -208,7 +208,6 @@ fn test_time_boundary_values() {
 }
 
 #[test]
-#[ignore = "Time arithmetic not yet implemented"]
 fn test_time_arithmetic() {
     let mut ctx = setup_test();
 

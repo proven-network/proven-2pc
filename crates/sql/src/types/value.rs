@@ -18,7 +18,7 @@ use uuid::Uuid;
 pub type Row = Vec<Value>;
 
 /// SQL values with GlueSQL-compatible format
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     // Null
     Null,
@@ -257,6 +257,59 @@ impl fmt::Display for Value {
             Value::Point(p) => write!(f, "POINT({} {})", p.x, p.y),
             Value::List(l) => write!(f, "{:?}", l),
             Value::Map(m) => write!(f, "{:?}", m),
+        }
+    }
+}
+
+// Implement Debug for Value to have nicer test output
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Null => write!(f, "Null"),
+            Value::Bool(b) => write!(f, "Bool({})", b),
+            Value::I8(i) => write!(f, "I8({})", i),
+            Value::I16(i) => write!(f, "I16({})", i),
+            Value::I32(i) => write!(f, "I32({})", i),
+            Value::I64(i) => write!(f, "I64({})", i),
+            Value::I128(i) => write!(f, "I128({})", i),
+            Value::U8(i) => write!(f, "U8({})", i),
+            Value::U16(i) => write!(f, "U16({})", i),
+            Value::U32(i) => write!(f, "U32({})", i),
+            Value::U64(i) => write!(f, "U64({})", i),
+            Value::U128(i) => write!(f, "U128({})", i),
+            Value::F32(v) => write!(f, "F32({})", v),
+            Value::F64(v) => write!(f, "F64({})", v),
+            Value::Decimal(d) => write!(f, "Decimal({})", d),
+            Value::Str(s) => write!(f, "Str({})", s),
+            Value::Date(d) => write!(f, "Date({})", d),
+            Value::Time(t) => write!(f, "Time({})", t),
+            Value::Timestamp(ts) => {
+                // Format timestamp in ISO format, removing fractional seconds if they're zero
+                let formatted = ts.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
+                // Only trim fractional seconds, not seconds themselves
+                let trimmed = if formatted.contains('.') {
+                    formatted.trim_end_matches('0').trim_end_matches('.')
+                } else {
+                    &formatted
+                };
+                write!(f, "Timestamp({})", trimmed)
+            }
+            Value::Interval(i) => write!(f, "Interval({})", i),
+            Value::Uuid(u) => write!(f, "Uuid({})", u),
+            Value::Bytea(b) => write!(f, "Bytea({})", hex::encode(b)),
+            Value::Inet(ip) => write!(f, "Inet({})", ip),
+            Value::Point(p) => write!(f, "Point({}, {})", p.x, p.y),
+            Value::List(l) => {
+                write!(f, "List[")?;
+                for (i, v) in l.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}", v)?;
+                }
+                write!(f, "]")
+            }
+            Value::Map(m) => write!(f, "Map({:?})", m),
         }
     }
 }

@@ -166,7 +166,6 @@ fn test_date_with_null_values() {
 }
 
 #[test]
-#[ignore = "Date arithmetic not yet implemented"]
 fn test_date_arithmetic() {
     let mut ctx = setup_test();
 

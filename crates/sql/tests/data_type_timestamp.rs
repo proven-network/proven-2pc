@@ -266,7 +266,6 @@ fn test_timestamp_date_only_format() {
 }
 
 #[test]
-#[ignore = "Timestamp arithmetic not yet implemented"]
 fn test_timestamp_arithmetic() {
     let mut ctx = setup_test();
 
