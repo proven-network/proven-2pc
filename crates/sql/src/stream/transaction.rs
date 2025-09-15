@@ -21,7 +21,6 @@ pub enum TransactionState {
 }
 
 /// Transaction execution state
-#[derive(Clone)]
 pub struct TransactionContext {
     /// Transaction ID (HLC timestamp provides total ordering across the distributed system)
     pub id: HlcTimestamp,
@@ -31,6 +30,8 @@ pub struct TransactionContext {
     pub state: TransactionState,
     /// Predicates for conflict detection
     pub predicates: QueryPredicates,
+    /// Sequence counter for generating unique UUIDs within the transaction
+    uuid_sequence: std::sync::atomic::AtomicU64,
 }
 
 impl TransactionContext {
@@ -41,6 +42,7 @@ impl TransactionContext {
             timestamp: hlc_timestamp,
             state: TransactionState::Active,
             predicates: QueryPredicates::new(),
+            uuid_sequence: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -66,8 +68,12 @@ impl TransactionContext {
         &self.timestamp
     }
 
-    /// Generate a deterministic UUID based on transaction ID and a sequence
-    pub fn deterministic_uuid(&self, sequence: u64) -> uuid::Uuid {
+    /// Generate a deterministic UUID based on transaction ID and an auto-incrementing sequence
+    pub fn deterministic_uuid(&self) -> uuid::Uuid {
+        // Ignore the passed sequence and use our internal counter
+        let sequence = self
+            .uuid_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -88,5 +94,20 @@ impl TransactionContext {
         uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
 
         uuid::Uuid::from_bytes(uuid_bytes)
+    }
+}
+
+impl Clone for TransactionContext {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            timestamp: self.timestamp,
+            state: self.state,
+            predicates: self.predicates.clone(),
+            // Create a new AtomicU64 with the current value
+            uuid_sequence: std::sync::atomic::AtomicU64::new(
+                self.uuid_sequence.load(std::sync::atomic::Ordering::SeqCst),
+            ),
+        }
     }
 }

@@ -154,7 +154,14 @@ impl Executor {
                         }
                     } else if let Some(ref default) = col.default {
                         // Use DEFAULT value
-                        reordered.push(default.clone());
+                        let value = match default {
+                            Value::Str(s) if s == "__GENERATE_UUID__" => {
+                                // Generate a deterministic UUID based on transaction context
+                                Value::Uuid(tx_ctx.deterministic_uuid())
+                            }
+                            _ => default.clone(),
+                        };
+                        reordered.push(value);
                     } else if col.nullable {
                         // No DEFAULT and nullable - use NULL
                         reordered.push(Value::Null);
@@ -169,7 +176,14 @@ impl Executor {
                 let mut default_row = Vec::with_capacity(schema.columns.len());
                 for col in &schema.columns {
                     if let Some(ref default) = col.default {
-                        default_row.push(default.clone());
+                        let value = match default {
+                            Value::Str(s) if s == "__GENERATE_UUID__" => {
+                                // Generate a deterministic UUID based on transaction context
+                                Value::Uuid(tx_ctx.deterministic_uuid())
+                            }
+                            _ => default.clone(),
+                        };
+                        default_row.push(value);
                     } else if col.nullable {
                         default_row.push(Value::Null);
                     } else {

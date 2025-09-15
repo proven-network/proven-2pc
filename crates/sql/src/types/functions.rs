@@ -104,26 +104,14 @@ pub fn evaluate_function(
         }
 
         // UUID generation - deterministic based on transaction ID
-        "GEN_UUID" | "UUID" => {
-            if args.len() > 1 {
+        "GEN_UUID" | "UUID" | "GENERATE_UUID" => {
+            if !args.is_empty() {
                 return Err(Error::ExecutionError(format!(
-                    "{} takes at most 1 argument",
+                    "{} takes no arguments",
                     name
                 )));
             }
-
-            // Use provided sequence or default to 0
-            let sequence = match args.first() {
-                Some(Value::I64(i)) => *i as u64,
-                Some(_) => {
-                    return Err(Error::ExecutionError(
-                        "UUID sequence must be an integer".into(),
-                    ));
-                }
-                None => 0,
-            };
-
-            Ok(Value::Uuid(context.deterministic_uuid(sequence)))
+            Ok(Value::Uuid(context.deterministic_uuid()))
         }
 
         // Math functions (already deterministic)
@@ -227,7 +215,7 @@ pub fn evaluate_function(
 }
 
 /// Cast a value to a target type
-fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
+pub fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
     match target_type {
         "TINYINT" => match value {
             Value::I8(v) => Ok(Value::I8(*v)),
@@ -696,13 +684,23 @@ mod tests {
         let timestamp = HlcTimestamp::new(1_000_000_000, 0, NodeId::new(1));
         let context = TransactionContext::new(timestamp);
 
-        // UUIDs with same sequence should be identical
+        // Each call should produce a different UUID (auto-incrementing sequence)
         let uuid1 = evaluate_function("UUID", &[], &context).unwrap();
         let uuid2 = evaluate_function("UUID", &[], &context).unwrap();
-        assert_eq!(uuid1, uuid2);
+        let uuid3 = evaluate_function("UUID", &[], &context).unwrap();
 
-        // Different sequences should produce different UUIDs
-        let uuid3 = evaluate_function("UUID", &[Value::I64(1)], &context).unwrap();
+        // All UUIDs should be different
+        assert_ne!(uuid1, uuid2);
+        assert_ne!(uuid2, uuid3);
         assert_ne!(uuid1, uuid3);
+
+        // But they should be deterministic - same context produces same sequence
+        let context2 = TransactionContext::new(timestamp);
+        let uuid1_again = evaluate_function("UUID", &[], &context2).unwrap();
+        let uuid2_again = evaluate_function("UUID", &[], &context2).unwrap();
+
+        // Same sequence from a fresh context with same timestamp
+        assert_eq!(uuid1, uuid1_again);
+        assert_eq!(uuid2, uuid2_again);
     }
 }

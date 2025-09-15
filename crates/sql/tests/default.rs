@@ -199,13 +199,12 @@ fn test_select_all_with_default_values() {
 }
 
 #[test]
-#[ignore = "UUID type and GENERATE_UUID() function not yet implemented"]
 fn test_default_with_stateless_functions() {
     let mut ctx = setup_test();
 
     ctx.exec(
         "CREATE TABLE FunctionTest (
-            uuid UUID DEFAULT GENERATE_UUID(),
+            id UUID DEFAULT GENERATE_UUID(),
             num FLOAT
         )",
     );
@@ -217,8 +216,8 @@ fn test_default_with_stateless_functions() {
     assert_eq!(results.len(), 2);
 
     // UUIDs should be generated and different
-    let uuid1 = results[0].get("uuid").unwrap();
-    let uuid2 = results[1].get("uuid").unwrap();
+    let uuid1 = results[0].get("id").unwrap();
+    let uuid2 = results[1].get("id").unwrap();
     assert_ne!(uuid1, uuid2);
 
     ctx.commit();
@@ -234,7 +233,7 @@ fn test_invalid_stateless_expression_in_default() {
 
     ctx.exec(
         "CREATE TABLE FunctionTest (
-            uuid UUID,
+            id UUID,
             num FLOAT
         )",
     );
@@ -310,7 +309,6 @@ fn test_default_date_literal() {
 }
 
 #[test]
-#[ignore = "Complex arithmetic expressions in DEFAULT not yet implemented"]
 fn test_default_arithmetic_expression() {
     let mut ctx = setup_test();
 
@@ -332,7 +330,6 @@ fn test_default_arithmetic_expression() {
 }
 
 #[test]
-#[ignore = "CAST expression in DEFAULT not yet implemented"]
 fn test_default_cast_expression() {
     let mut ctx = setup_test();
 
@@ -398,7 +395,6 @@ fn test_default_between_expression() {
 }
 
 #[test]
-#[ignore = "Complex boolean logic in DEFAULT not yet implemented"]
 fn test_default_boolean_logic_expression() {
     let mut ctx = setup_test();
 

@@ -759,7 +759,7 @@ impl Planner {
                 let resolved_expr = context.resolve_expression(default_expr.clone())?;
 
                 // Evaluate the expression to a constant value
-                let default_value = self.evaluate_default_expression(resolved_expr)?;
+                let default_value = evaluate_default_expression(resolved_expr)?;
                 schema_col = schema_col.default(default_value);
             }
 
@@ -917,18 +917,6 @@ impl Planner {
             }
             _ => Err(Error::ExecutionError(
                 "Expected non-negative integer constant".into(),
-            )),
-        }
-    }
-
-    /// Evaluates a DEFAULT expression to a constant Value
-    fn evaluate_default_expression(&self, expr: Expression) -> Result<crate::types::value::Value> {
-        match expr {
-            Expression::Constant(value) => Ok(value),
-            // For now, only support constant DEFAULT values
-            // TODO: Support more complex expressions like arithmetic, functions, etc.
-            _ => Err(Error::ExecutionError(
-                "Only constant DEFAULT values are currently supported".into(),
             )),
         }
     }
@@ -1643,6 +1631,168 @@ impl<'a> PlanContext<'a> {
                 Box::new(self.resolve_expression(*r)?),
             ),
         })
+    }
+}
+
+/// Evaluates a DEFAULT expression to a constant Value
+fn evaluate_default_expression(expr: Expression) -> Result<crate::types::value::Value> {
+    use crate::types::evaluator;
+    use crate::types::value::Value;
+
+    match expr {
+        Expression::Constant(value) => Ok(value),
+
+        // Arithmetic operations
+        Expression::Add(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            evaluator::add(&l, &r)
+        }
+        Expression::Subtract(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            evaluator::subtract(&l, &r)
+        }
+        Expression::Multiply(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            evaluator::multiply(&l, &r)
+        }
+        Expression::Divide(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            evaluator::divide(&l, &r)
+        }
+        Expression::Remainder(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            // Use simple modulo for now
+            match (&l, &r) {
+                (Value::I32(a), Value::I32(b)) if *b != 0 => Ok(Value::I32(a % b)),
+                (Value::I64(a), Value::I64(b)) if *b != 0 => Ok(Value::I64(a % b)),
+                _ => Err(Error::ExecutionError(
+                    "Modulo not supported for these types".into(),
+                )),
+            }
+        }
+
+        // Unary operations
+        Expression::Negate(expr) => {
+            let val = evaluate_default_expression(*expr)?;
+            match val {
+                Value::I8(v) => Ok(Value::I8(-v)),
+                Value::I16(v) => Ok(Value::I16(-v)),
+                Value::I32(v) => Ok(Value::I32(-v)),
+                Value::I64(v) => Ok(Value::I64(-v)),
+                Value::I128(v) => Ok(Value::I128(-v)),
+                Value::F32(v) => Ok(Value::F32(-v)),
+                Value::F64(v) => Ok(Value::F64(-v)),
+                _ => Err(Error::ExecutionError("Cannot negate this type".into())),
+            }
+        }
+        Expression::Identity(expr) => {
+            // Identity just returns the value as-is
+            evaluate_default_expression(*expr)
+        }
+
+        // Boolean operations
+        Expression::And(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            match (&l, &r) {
+                (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
+                _ => Err(Error::ExecutionError(
+                    "AND requires boolean operands".into(),
+                )),
+            }
+        }
+        Expression::Or(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            match (&l, &r) {
+                (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a || *b)),
+                _ => Err(Error::ExecutionError("OR requires boolean operands".into())),
+            }
+        }
+        Expression::Not(expr) => {
+            let val = evaluate_default_expression(*expr)?;
+            match val {
+                Value::Bool(b) => Ok(Value::Bool(!b)),
+                _ => Err(Error::ExecutionError("NOT requires boolean operand".into())),
+            }
+        }
+
+        // Comparison operations
+        Expression::Equal(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            Ok(Value::Bool(l == r))
+        }
+        Expression::NotEqual(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            Ok(Value::Bool(l != r))
+        }
+        Expression::GreaterThan(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            Ok(Value::Bool(l > r))
+        }
+        Expression::GreaterThanOrEqual(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            Ok(Value::Bool(l >= r))
+        }
+        Expression::LessThan(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            Ok(Value::Bool(l < r))
+        }
+        Expression::LessThanOrEqual(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            Ok(Value::Bool(l <= r))
+        }
+
+        // IS checks (for NULL and NAN)
+        Expression::Is(expr, check_val) => {
+            let val = evaluate_default_expression(*expr)?;
+            match check_val {
+                Value::Null => Ok(Value::Bool(val == Value::Null)),
+                _ => Err(Error::ExecutionError(
+                    "IS only supports NULL checks in DEFAULT".into(),
+                )),
+            }
+        }
+
+        // Functions
+        Expression::Function(name, args) => {
+            match name.to_uppercase().as_str() {
+                "GENERATE_UUID" | "GEN_UUID" | "UUID" if args.is_empty() => {
+                    // Special marker for UUID generation at INSERT time
+                    Ok(Value::Str("__GENERATE_UUID__".to_string()))
+                }
+                "CAST" if args.len() == 2 => {
+                    // Evaluate CAST at CREATE TABLE time
+                    let val = evaluate_default_expression(args[0].clone())?;
+                    if let Expression::Constant(Value::Str(type_name)) = &args[1] {
+                        crate::types::functions::cast_value(&val, type_name)
+                    } else {
+                        Err(Error::ExecutionError(
+                            "CAST requires a type name as second argument".into(),
+                        ))
+                    }
+                }
+                _ => Err(Error::ExecutionError(format!(
+                    "Function {} not supported in DEFAULT expressions",
+                    name
+                ))),
+            }
+        }
+
+        _ => Err(Error::ExecutionError(
+            "Expression type not supported in DEFAULT values".into(),
+        )),
     }
 }
 
