@@ -247,6 +247,66 @@ pub fn setup_test() -> TestContext {
     ctx
 }
 
+/// Test a query and verify the expected results
+pub fn test_query(sql: &str, expected: Vec<Vec<&str>>) {
+    let mut ctx = setup_test();
+    let results = ctx.query(sql);
+
+    // Check row count
+    assert_eq!(
+        results.len(),
+        expected.len(),
+        "Row count mismatch for query: {}",
+        sql
+    );
+
+    // Check each row
+    for (i, (result_row, expected_row)) in results.iter().zip(expected.iter()).enumerate() {
+        // For simple single-column results, check the first column
+        if expected_row.len() == 1 {
+            // The value is already a string (formatted from Value with Debug on line 122)
+            // Don't format it again with Debug
+            let actual = result_row.values().next().unwrap().clone();
+            let expected_val = expected_row[0];
+
+            // Handle different result formats
+            if expected_val == "true" {
+                assert!(
+                    actual == "Bool(true)" || actual == "true",
+                    "Row {} mismatch: expected 'true', got '{}'",
+                    i,
+                    actual
+                );
+            } else if expected_val == "false" {
+                assert!(
+                    actual == "Bool(false)" || actual == "false",
+                    "Row {} mismatch: expected 'false', got '{}'",
+                    i,
+                    actual
+                );
+            } else if expected_val == "NULL" {
+                assert!(
+                    actual == "Null" || actual == "NULL",
+                    "Row {} mismatch: expected 'NULL', got '{}'",
+                    i,
+                    actual
+                );
+            } else {
+                // For other values, just check if the expected value is contained
+                assert!(
+                    actual.contains(expected_val),
+                    "Row {} mismatch: expected '{}', got '{}'",
+                    i,
+                    expected_val,
+                    actual
+                );
+            }
+        }
+    }
+
+    ctx.commit();
+}
+
 /// Helper to create test context with tables
 pub fn setup_with_tables() -> TestContext {
     let mut ctx = setup_test();

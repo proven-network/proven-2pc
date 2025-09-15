@@ -72,6 +72,12 @@ pub enum Expression {
     /// a LIKE pattern: SQL pattern matching.
     Like(Box<Expression>, Box<Expression>),
 
+    /// a IN (list): checks if value is in list.
+    InList(Box<Expression>, Vec<Expression>, bool), // expr, list, negated
+
+    /// a BETWEEN low AND high: checks if value is in range.
+    Between(Box<Expression>, Box<Expression>, Box<Expression>, bool), // expr, low, high, negated
+
     /// Function call with deterministic evaluation.
     Function(String, Vec<Expression>),
 }
@@ -296,6 +302,68 @@ impl Expression {
                     args.iter().map(|arg| arg.evaluate(row, context)).collect();
                 crate::types::functions::evaluate_function(name, &arg_values?, context)?
             }
+
+            // IN list operator
+            InList(expr, list, negated) => {
+                let value = expr.evaluate(row, context)?;
+
+                // If value is NULL, return NULL
+                if value == Value::Null {
+                    return Ok(Value::Null);
+                }
+
+                let mut found = false;
+                let mut has_null = false;
+
+                for item in list {
+                    let item_value = item.evaluate(row, context)?;
+                    if item_value == Value::Null {
+                        has_null = true;
+                    } else {
+                        // Use evaluator::compare for type-aware comparison
+                        // Two values are equal if compare returns Ordering::Equal
+                        if let Ok(std::cmp::Ordering::Equal) =
+                            evaluator::compare(&value, &item_value)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                // SQL three-valued logic:
+                // - If found, return !negated
+                // - If not found and list has NULL, return NULL
+                // - Otherwise return negated
+                if found {
+                    Value::boolean(!negated)
+                } else if has_null {
+                    Value::Null
+                } else {
+                    Value::boolean(*negated)
+                }
+            }
+
+            // BETWEEN operator
+            Between(expr, low, high, negated) => {
+                let value = expr.evaluate(row, context)?;
+                let low_value = low.evaluate(row, context)?;
+                let high_value = high.evaluate(row, context)?;
+
+                // If any value is NULL, return NULL
+                if value == Value::Null || low_value == Value::Null || high_value == Value::Null {
+                    return Ok(Value::Null);
+                }
+
+                // Check if value is between low and high (inclusive)
+                let in_range = value >= low_value && value <= high_value;
+
+                if *negated {
+                    Value::boolean(!in_range)
+                } else {
+                    Value::boolean(in_range)
+                }
+            }
         })
     }
 
@@ -331,6 +399,12 @@ impl Expression {
             }
 
             Function(_, args) => args.iter().all(|arg| arg.walk(visitor)),
+
+            InList(expr, list, _) => expr.walk(visitor) && list.iter().all(|e| e.walk(visitor)),
+
+            Between(expr, low, high, _) => {
+                expr.walk(visitor) && low.walk(visitor) && high.walk(visitor)
+            }
         }
     }
 
@@ -420,6 +494,19 @@ impl Expression {
                 args.into_iter().map(|arg| arg.remap_columns(map)).collect(),
             ),
 
+            InList(expr, list, negated) => InList(
+                Box::new(expr.remap_columns(map)),
+                list.into_iter().map(|e| e.remap_columns(map)).collect(),
+                negated,
+            ),
+
+            Between(expr, low, high, negated) => Between(
+                Box::new(expr.remap_columns(map)),
+                Box::new(low.remap_columns(map)),
+                Box::new(high.remap_columns(map)),
+                negated,
+            ),
+
             Constant(value) => Constant(value),
         }
     }
@@ -467,6 +554,29 @@ impl Display for Expression {
                     write!(f, "{}", arg)?;
                 }
                 write!(f, ")")
+            }
+
+            InList(expr, list, negated) => {
+                write!(f, "{}", expr)?;
+                if *negated {
+                    write!(f, " NOT")?;
+                }
+                write!(f, " IN (")?;
+                for (i, item) in list.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
+            }
+
+            Between(expr, low, high, negated) => {
+                write!(f, "{}", expr)?;
+                if *negated {
+                    write!(f, " NOT")?;
+                }
+                write!(f, " BETWEEN {} AND {}", low, high)
             }
         }
     }
@@ -789,5 +899,125 @@ mod tests {
             expr.evaluate(None, &ctx).unwrap(),
             Value::Decimal(Decimal::from_str("7.5").unwrap())
         );
+    }
+
+    #[test]
+    fn test_in_list_evaluation() {
+        let ctx = test_context();
+
+        // Test: 1 IN (1, 2, 3) should return true
+        // Use I32 since that's what the parser creates for small integers
+        let expr = Expression::InList(
+            Box::new(Expression::Constant(Value::I32(1))),
+            vec![
+                Expression::Constant(Value::I32(1)),
+                Expression::Constant(Value::I32(2)),
+                Expression::Constant(Value::I32(3)),
+            ],
+            false,
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Bool(true));
+
+        // Test with mixed types - should match thanks to type coercion
+        let expr = Expression::InList(
+            Box::new(Expression::Constant(Value::I32(1))),
+            vec![
+                Expression::Constant(Value::I64(1)),
+                Expression::Constant(Value::I64(2)),
+                Expression::Constant(Value::I64(3)),
+            ],
+            false,
+        );
+        // This should return true because evaluator::compare handles type coercion
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Bool(true));
+
+        // Test: 4 IN (1, 2, 3) should return false
+        let expr = Expression::InList(
+            Box::new(Expression::Constant(Value::I64(4))),
+            vec![
+                Expression::Constant(Value::I64(1)),
+                Expression::Constant(Value::I64(2)),
+                Expression::Constant(Value::I64(3)),
+            ],
+            false,
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Bool(false));
+
+        // Test: 1 NOT IN (2, 3, 4) should return true
+        let expr = Expression::InList(
+            Box::new(Expression::Constant(Value::I64(1))),
+            vec![
+                Expression::Constant(Value::I64(2)),
+                Expression::Constant(Value::I64(3)),
+                Expression::Constant(Value::I64(4)),
+            ],
+            true, // negated
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Bool(true));
+
+        // Test: NULL IN (1, 2, 3) should return NULL
+        let expr = Expression::InList(
+            Box::new(Expression::Constant(Value::Null)),
+            vec![
+                Expression::Constant(Value::I64(1)),
+                Expression::Constant(Value::I64(2)),
+                Expression::Constant(Value::I64(3)),
+            ],
+            false,
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Null);
+
+        // Test: 4 IN (1, NULL, 3) should return NULL (not found, but list has NULL)
+        let expr = Expression::InList(
+            Box::new(Expression::Constant(Value::I64(4))),
+            vec![
+                Expression::Constant(Value::I64(1)),
+                Expression::Constant(Value::Null),
+                Expression::Constant(Value::I64(3)),
+            ],
+            false,
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn test_between_evaluation() {
+        let ctx = test_context();
+
+        // Test: 2 BETWEEN 1 AND 3 should return true
+        let expr = Expression::Between(
+            Box::new(Expression::Constant(Value::I64(2))),
+            Box::new(Expression::Constant(Value::I64(1))),
+            Box::new(Expression::Constant(Value::I64(3))),
+            false,
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Bool(true));
+
+        // Test: 4 BETWEEN 1 AND 3 should return false
+        let expr = Expression::Between(
+            Box::new(Expression::Constant(Value::I64(4))),
+            Box::new(Expression::Constant(Value::I64(1))),
+            Box::new(Expression::Constant(Value::I64(3))),
+            false,
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Bool(false));
+
+        // Test: 4 NOT BETWEEN 1 AND 3 should return true
+        let expr = Expression::Between(
+            Box::new(Expression::Constant(Value::I64(4))),
+            Box::new(Expression::Constant(Value::I64(1))),
+            Box::new(Expression::Constant(Value::I64(3))),
+            true, // negated
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Bool(true));
+
+        // Test: NULL BETWEEN 1 AND 3 should return NULL
+        let expr = Expression::Between(
+            Box::new(Expression::Constant(Value::Null)),
+            Box::new(Expression::Constant(Value::I64(1))),
+            Box::new(Expression::Constant(Value::I64(3))),
+            false,
+        );
+        assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::Null);
     }
 }

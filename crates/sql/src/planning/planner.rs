@@ -1630,6 +1630,29 @@ impl<'a> PlanContext<'a> {
                 Box::new(self.resolve_expression(*l)?),
                 Box::new(self.resolve_expression(*r)?),
             ),
+            InList {
+                expr,
+                list,
+                negated,
+            } => {
+                let resolved_expr = Box::new(self.resolve_expression(*expr)?);
+                let resolved_list = list
+                    .into_iter()
+                    .map(|e| self.resolve_expression(e))
+                    .collect::<Result<Vec<_>>>()?;
+                Expression::InList(resolved_expr, resolved_list, negated)
+            }
+            Between {
+                expr,
+                low,
+                high,
+                negated,
+            } => Expression::Between(
+                Box::new(self.resolve_expression(*expr)?),
+                Box::new(self.resolve_expression(*low)?),
+                Box::new(self.resolve_expression(*high)?),
+                negated,
+            ),
         })
     }
 }

@@ -1041,6 +1041,73 @@ impl Executor {
                 crate::types::functions::evaluate_function(name, &arg_values?, &context)
             }
 
+            Expression::InList(expr, list, negated) => {
+                let value = Self::evaluate_expression_static(expr, row)?;
+
+                // If value is NULL, return NULL
+                if value == Value::Null {
+                    return Ok(Value::Null);
+                }
+
+                let mut found = false;
+                let mut has_null = false;
+
+                for item in list {
+                    let item_value = Self::evaluate_expression_static(item, row)?;
+                    if item_value == Value::Null {
+                        has_null = true;
+                    } else {
+                        // Use evaluator::compare for type-aware comparison
+                        // Two values are equal if compare returns Ordering::Equal
+                        if let Ok(std::cmp::Ordering::Equal) =
+                            evaluator::compare(&value, &item_value)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                // SQL three-valued logic:
+                // - If found, return !negated
+                // - If not found and list has NULL, return NULL
+                // - Otherwise return negated
+                if found {
+                    Ok(Value::boolean(!negated))
+                } else if has_null {
+                    Ok(Value::Null)
+                } else {
+                    Ok(Value::boolean(*negated))
+                }
+            }
+
+            Expression::Between(expr, low, high, negated) => {
+                let value = Self::evaluate_expression_static(expr, row)?;
+                let low_value = Self::evaluate_expression_static(low, row)?;
+                let high_value = Self::evaluate_expression_static(high, row)?;
+
+                // If any value is NULL, return NULL
+                if value == Value::Null || low_value == Value::Null || high_value == Value::Null {
+                    return Ok(Value::Null);
+                }
+
+                // Check if value is between low and high (inclusive)
+                // Use evaluator::compare for proper type handling
+                let low_cmp =
+                    evaluator::compare(&value, &low_value).unwrap_or(std::cmp::Ordering::Less);
+                let high_cmp =
+                    evaluator::compare(&value, &high_value).unwrap_or(std::cmp::Ordering::Greater);
+
+                let in_range =
+                    low_cmp != std::cmp::Ordering::Less && high_cmp != std::cmp::Ordering::Greater;
+
+                if *negated {
+                    Ok(Value::boolean(!in_range))
+                } else {
+                    Ok(Value::boolean(in_range))
+                }
+            }
+
             // Other expression types...
             _ => Ok(Value::Null),
         }

@@ -282,6 +282,19 @@ pub enum Operator {
     Subtract(Box<Expression>, Box<Expression>),     // a - b
 
     Like(Box<Expression>, Box<Expression>), // a LIKE b
+
+    // IN and BETWEEN operators
+    InList {
+        expr: Box<Expression>,
+        list: Vec<Expression>,
+        negated: bool,
+    }, // a IN (b, c, d) or a NOT IN (b, c, d)
+    Between {
+        expr: Box<Expression>,
+        low: Box<Expression>,
+        high: Box<Expression>,
+        negated: bool,
+    }, // a BETWEEN b AND c or a NOT BETWEEN b AND c
 }
 
 impl From<Literal> for Expression {
@@ -327,6 +340,14 @@ impl Expression {
                 Factorial(expr) | Identity(expr) | Is(expr, _) | Negate(expr) | Not(expr) => {
                     expr.walk(visitor)
                 }
+
+                InList { expr, list, .. } => {
+                    expr.walk(visitor) && list.iter().all(|e| e.walk(visitor))
+                }
+
+                Between {
+                    expr, low, high, ..
+                } => expr.walk(visitor) && low.walk(visitor) && high.walk(visitor),
             },
 
             Self::Function(_, exprs) => exprs.iter().all(|expr| expr.walk(visitor)),
@@ -400,6 +421,21 @@ impl Expression {
 
                 Factorial(expr) | Identity(expr) | Is(expr, _) | Negate(expr) | Not(expr) => {
                     expr.collect(visitor, exprs);
+                }
+
+                InList { expr, list, .. } => {
+                    expr.collect(visitor, exprs);
+                    for e in list {
+                        e.collect(visitor, exprs);
+                    }
+                }
+
+                Between {
+                    expr, low, high, ..
+                } => {
+                    expr.collect(visitor, exprs);
+                    low.collect(visitor, exprs);
+                    high.collect(visitor, exprs);
                 }
             },
 

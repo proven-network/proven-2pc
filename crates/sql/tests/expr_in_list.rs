@@ -1,77 +1,127 @@
 //! IN list expression tests
 //! Based on gluesql/test-suite/src/expr/in_list.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+use common::test_query;
+
 #[test]
 fn test_in_with_integer_list() {
-    // TODO: Test SELECT 1 IN (1, 2, 3) - should return true
-    // TODO: Test SELECT 4 IN (1, 2, 3) - should return false
+    // Test value in list - should return true
+    test_query("SELECT 1 IN (1, 2, 3) AS result", vec![vec!["true"]]);
+
+    // Test value not in list - should return false
+    test_query("SELECT 4 IN (1, 2, 3) AS result", vec![vec!["false"]]);
+
+    // Test with negative numbers
+    test_query(
+        "SELECT -1 IN (-3, -2, -1, 0, 1) AS result",
+        vec![vec!["true"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_string_list() {
-    // TODO: Test SELECT 'apple' IN ('apple', 'banana', 'cherry') - should return true
-    // TODO: Test SELECT 'grape' IN ('apple', 'banana', 'cherry') - should return false
+    // Test string in list - should return true
+    test_query(
+        "SELECT 'apple' IN ('apple', 'banana', 'cherry') AS result",
+        vec![vec!["true"]],
+    );
+
+    // Test string not in list - should return false
+    test_query(
+        "SELECT 'grape' IN ('apple', 'banana', 'cherry') AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_float_list() {
-    // TODO: Test SELECT 2.5 IN (1.5, 2.5, 3.5) - should return true
-    // TODO: Test SELECT 4.5 IN (1.5, 2.5, 3.5) - should return false
+    // Test float in list - should return true
+    test_query(
+        "SELECT 2.5 IN (1.5, 2.5, 3.5) AS result",
+        vec![vec!["true"]],
+    );
+
+    // Test float not in list - should return false
+    test_query(
+        "SELECT 4.5 IN (1.5, 2.5, 3.5) AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_not_in_with_list() {
-    // TODO: Test SELECT 1 NOT IN (2, 3, 4) - should return true
-    // TODO: Test SELECT 1 NOT IN (1, 2, 3) - should return false
+    // Test value not in list - should return true
+    test_query("SELECT 1 NOT IN (2, 3, 4) AS result", vec![vec!["true"]]);
+
+    // Test value in list with NOT IN - should return false
+    test_query("SELECT 1 NOT IN (1, 2, 3) AS result", vec![vec!["false"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_null_values() {
-    // TODO: Test SELECT NULL IN (1, 2, 3) - should return NULL
-    // TODO: Test SELECT 1 IN (1, NULL, 3) - should return true (found match before NULL)
-    // TODO: Test SELECT 4 IN (1, NULL, 3) - should return NULL (no match, but NULL present)
+    // NULL IN (...) should return NULL
+    test_query("SELECT NULL IN (1, 2, 3) AS result", vec![vec!["NULL"]]);
+
+    // Value found in list with NULL - should return true
+    test_query("SELECT 1 IN (1, NULL, 3) AS result", vec![vec!["true"]]);
+
+    // Value not found in list with NULL - should return NULL
+    test_query("SELECT 4 IN (1, NULL, 3) AS result", vec![vec!["NULL"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_single_value() {
-    // TODO: Test SELECT 1 IN (1) - single value list, should return true
-    // TODO: Test SELECT 2 IN (1) - single value list, should return false
+    // Single value list - match
+    test_query("SELECT 1 IN (1) AS result", vec![vec!["true"]]);
+
+    // Single value list - no match
+    test_query("SELECT 2 IN (1) AS result", vec![vec!["false"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_empty_list() {
-    // TODO: Test SELECT 1 IN () - empty list, should return false (if supported)
+    // Empty list should always return false
+    test_query("SELECT 1 IN () AS result", vec![vec!["false"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_duplicate_values() {
-    // TODO: Test SELECT 1 IN (1, 1, 2) - list with duplicates, should return true
+    // List with duplicates - value found
+    test_query("SELECT 1 IN (1, 1, 2) AS result", vec![vec!["true"]]);
+
+    // List with duplicates - value not found
+    test_query("SELECT 3 IN (1, 1, 2, 2) AS result", vec![vec!["false"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_expressions() {
-    // TODO: Test SELECT (1 + 1) IN (2, 3, 4) - expression on left side
-    // TODO: Test SELECT 2 IN (1 + 1, 2 + 1, 3 + 1) - expressions in list
+    // Expression on left side
+    test_query("SELECT (1 + 1) IN (2, 3, 4) AS result", vec![vec!["true"]]);
+
+    // Expressions in list
+    test_query(
+        "SELECT 2 IN (1 + 1, 2 + 1, 3 + 1) AS result",
+        vec![vec!["true"]],
+    );
+    test_query(
+        "SELECT 5 IN (1 + 1, 2 + 1, 3 + 1) AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "IN with subquery not yet implemented"]
 #[test]
 fn test_in_with_subquery() {
+    // This test would need table setup first
     // TODO: Test SELECT 1 IN (SELECT id FROM table) - subquery in IN clause
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_in_with_different_data_types() {
-    // TODO: Test type coercion in IN lists if supported
-    // TODO: Test error cases with incompatible types
+    // Test implicit type conversion if supported
+    test_query("SELECT 1 IN (1.0, 2.0, 3.0) AS result", vec![vec!["true"]]);
+
+    // Test with mixed numeric types
+    test_query("SELECT 2.0 IN (1, 2, 3) AS result", vec![vec!["true"]]);
 }

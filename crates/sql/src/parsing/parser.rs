@@ -1441,6 +1441,75 @@ impl Parser<'_> {
             return Ok(Some(operator));
         }
 
+        // Handle (NOT) IN and (NOT) BETWEEN
+        // Check if we have NOT followed by IN or BETWEEN
+        let negated = if self.peek()? == Some(&Token::Keyword(Keyword::Not)) {
+            // Consume NOT and check next token
+            self.next()?;
+
+            // If next token is IN or BETWEEN, this is negated form
+            // Otherwise we consumed NOT incorrectly - but since we're in postfix position
+            // after an expression, NOT shouldn't appear here anyway except for NOT IN/BETWEEN
+            match self.peek()? {
+                Some(&Token::Keyword(Keyword::In)) | Some(&Token::Keyword(Keyword::Between)) => {
+                    true
+                }
+                _ => {
+                    return Err(Error::ParseError("expected IN or BETWEEN after NOT".into()));
+                }
+            }
+        } else {
+            false
+        };
+
+        // Handle IN
+        if self.peek()? == Some(&Token::Keyword(Keyword::In)) {
+            // Check precedence before consuming
+            if PostfixOperator::InList(vec![], false).precedence() < min_precedence {
+                return Ok(None);
+            }
+            self.expect(Keyword::In.into())?;
+            self.expect(Token::OpenParen)?;
+
+            // Handle empty list
+            let mut list = Vec::new();
+            if self.peek()? != Some(&Token::CloseParen) {
+                // Parse first expression
+                list.push(self.parse_expression()?);
+                // Parse remaining expressions
+                while self.next_is(Token::Comma) {
+                    list.push(self.parse_expression()?);
+                }
+            }
+            self.expect(Token::CloseParen)?;
+
+            return Ok(Some(PostfixOperator::InList(list, negated)));
+        }
+
+        // Handle BETWEEN
+        if self.peek()? == Some(&Token::Keyword(Keyword::Between)) {
+            // Check precedence before consuming
+            if PostfixOperator::Between(
+                ast::Expression::Literal(ast::Literal::Null),
+                ast::Expression::Literal(ast::Literal::Null),
+                false,
+            )
+            .precedence()
+                < min_precedence
+            {
+                return Ok(None);
+            }
+            self.expect(Keyword::Between.into())?;
+            // Parse low value - use higher precedence to stop at AND
+            // AND has precedence 2, so we use 3 to stop before it
+            let low = self.parse_expression_at(3)?;
+            self.expect(Keyword::And.into())?;
+            // Parse high value - also use higher precedence to be consistent
+            let high = self.parse_expression_at(3)?;
+
+            return Ok(Some(PostfixOperator::Between(low, high, negated)));
+        }
+
         Ok(self.next_if_map(|token| {
             let operator = match token {
                 Token::Exclamation => PostfixOperator::Factorial,
@@ -1579,16 +1648,18 @@ impl InfixOperator {
 
 /// Postfix operators.
 enum PostfixOperator {
-    Factorial,           // a!
-    Is(ast::Literal),    // a IS NULL | NAN
-    IsNot(ast::Literal), // a IS NOT NULL | NAN
+    Factorial,                                       // a!
+    Is(ast::Literal),                                // a IS NULL | NAN
+    IsNot(ast::Literal),                             // a IS NOT NULL | NAN
+    InList(Vec<ast::Expression>, bool),              // a IN (list) or a NOT IN (list)
+    Between(ast::Expression, ast::Expression, bool), // a BETWEEN low AND high or a NOT BETWEEN low AND high
 }
 
 impl PostfixOperator {
     // The operator precedence.
     fn precedence(&self) -> Precedence {
         match self {
-            Self::Is(_) | Self::IsNot(_) => 4,
+            Self::Is(_) | Self::IsNot(_) | Self::InList(_, _) | Self::Between(_, _, _) => 4,
             Self::Factorial => 9,
         }
     }
@@ -1600,6 +1671,19 @@ impl PostfixOperator {
             Self::Factorial => ast::Operator::Factorial(lhs).into(),
             Self::Is(v) => ast::Operator::Is(lhs, v).into(),
             Self::IsNot(v) => ast::Operator::Not(Box::new(ast::Operator::Is(lhs, v).into())).into(),
+            Self::InList(list, negated) => ast::Operator::InList {
+                expr: lhs,
+                list,
+                negated,
+            }
+            .into(),
+            Self::Between(low, high, negated) => ast::Operator::Between {
+                expr: lhs,
+                low: Box::new(low),
+                high: Box::new(high),
+                negated,
+            }
+            .into(),
         }
     }
 }

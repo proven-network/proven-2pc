@@ -403,6 +403,19 @@ fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
                     Operator::Is(e, _) => {
                         count_expr_params(e, max_idx);
                     }
+                    Operator::InList { expr, list, .. } => {
+                        count_expr_params(expr, max_idx);
+                        for e in list {
+                            count_expr_params(e, max_idx);
+                        }
+                    }
+                    Operator::Between {
+                        expr, low, high, ..
+                    } => {
+                        count_expr_params(expr, max_idx);
+                        count_expr_params(low, max_idx);
+                        count_expr_params(high, max_idx);
+                    }
                 }
             }
             Expression::Function(_, args) => {

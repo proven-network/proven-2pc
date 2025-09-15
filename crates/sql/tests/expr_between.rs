@@ -1,82 +1,164 @@
 //! BETWEEN expression tests
 //! Based on gluesql/test-suite/src/expr/between.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+use common::test_query;
+
 #[test]
 fn test_between_with_equal_values() {
-    // TODO: Test SELECT 0 BETWEEN 0 AND 0 - should return true
-    // TODO: Test SELECT 1 BETWEEN 1 AND 1 - should return true
+    // Value equals both bounds
+    test_query("SELECT 0 BETWEEN 0 AND 0 AS result", vec![vec!["true"]]);
+    test_query("SELECT 1 BETWEEN 1 AND 1 AS result", vec![vec!["true"]]);
+
+    // Value not equal to single-value range
+    test_query("SELECT 2 BETWEEN 1 AND 1 AS result", vec![vec!["false"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_within_range() {
-    // TODO: Test SELECT 2 BETWEEN 1 AND 3 - should return true (within range)
-    // TODO: Test SELECT -1 BETWEEN -1 AND 1 - should return true (negative range)
+    // Value within range
+    test_query("SELECT 2 BETWEEN 1 AND 3 AS result", vec![vec!["true"]]);
+
+    // Negative range
+    test_query("SELECT -1 BETWEEN -1 AND 1 AS result", vec![vec!["true"]]);
+    test_query("SELECT 0 BETWEEN -1 AND 1 AS result", vec![vec!["true"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_outside_range() {
-    // TODO: Test SELECT 1 BETWEEN 2 AND 3 - should return false (outside range)
+    // Value below range
+    test_query("SELECT 1 BETWEEN 2 AND 3 AS result", vec![vec!["false"]]);
+
+    // Value above range
+    test_query("SELECT 4 BETWEEN 1 AND 3 AS result", vec![vec!["false"]]);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_boundary_cases() {
-    // TODO: Test SELECT i128::MIN BETWEEN i128::MIN AND i128::MAX - should return true
-    // TODO: Test SELECT i128::MAX BETWEEN i128::MIN AND i128::MAX - should return true
+    // Test with extreme values
+    test_query(
+        "SELECT -9223372036854775808 BETWEEN -9223372036854775808 AND 9223372036854775807 AS result",
+        vec![vec!["true"]],
+    );
+    test_query(
+        "SELECT 9223372036854775807 BETWEEN -9223372036854775808 AND 9223372036854775807 AS result",
+        vec![vec!["true"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_with_float_values() {
-    // TODO: Test SELECT 2.5 BETWEEN 1.0 AND 3.0 - float between test
-    // TODO: Test SELECT 0.5 BETWEEN 1.0 AND 3.0 - float outside range
+    // Float within range
+    test_query(
+        "SELECT 2.5 BETWEEN 1.0 AND 3.0 AS result",
+        vec![vec!["true"]],
+    );
+
+    // Float outside range
+    test_query(
+        "SELECT 0.5 BETWEEN 1.0 AND 3.0 AS result",
+        vec![vec!["false"]],
+    );
+    test_query(
+        "SELECT 3.5 BETWEEN 1.0 AND 3.0 AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_with_date_values() {
-    // TODO: Test SELECT '2020-06-15' BETWEEN '2020-01-01' AND '2020-12-31' - date between test
+    // Date within range
+    test_query(
+        "SELECT DATE '2020-06-15' BETWEEN DATE '2020-01-01' AND DATE '2020-12-31' AS result",
+        vec![vec!["true"]],
+    );
+
+    // Date outside range
+    test_query(
+        "SELECT DATE '2019-12-31' BETWEEN DATE '2020-01-01' AND DATE '2020-12-31' AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_with_string_values() {
-    // TODO: Test SELECT 'B' BETWEEN 'A' AND 'C' - string between test (alphabetical order)
+    // String within alphabetical range
+    test_query(
+        "SELECT 'B' BETWEEN 'A' AND 'C' AS result",
+        vec![vec!["true"]],
+    );
+    test_query(
+        "SELECT 'Bob' BETWEEN 'Alice' AND 'Charlie' AS result",
+        vec![vec!["true"]],
+    );
+
+    // String outside alphabetical range
+    test_query(
+        "SELECT 'D' BETWEEN 'A' AND 'C' AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_not_between_expressions() {
-    // TODO: Test SELECT 1 NOT BETWEEN 2 AND 3 - should return true
-    // TODO: Test SELECT 2 NOT BETWEEN 1 AND 3 - should return false
+    // Value not in range - should return true
+    test_query("SELECT 1 NOT BETWEEN 2 AND 3 AS result", vec![vec!["true"]]);
+    test_query("SELECT 4 NOT BETWEEN 1 AND 3 AS result", vec![vec!["true"]]);
+
+    // Value in range with NOT BETWEEN - should return false
+    test_query(
+        "SELECT 2 NOT BETWEEN 1 AND 3 AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_with_null_values() {
-    // TODO: Test SELECT NULL BETWEEN 1 AND 3 - should return NULL
-    // TODO: Test SELECT 2 BETWEEN NULL AND 3 - should return NULL
-    // TODO: Test SELECT 2 BETWEEN 1 AND NULL - should return NULL
+    // NULL as test value
+    test_query("SELECT NULL BETWEEN 1 AND 3 AS result", vec![vec!["NULL"]]);
+
+    // NULL as lower bound
+    test_query("SELECT 2 BETWEEN NULL AND 3 AS result", vec![vec!["NULL"]]);
+
+    // NULL as upper bound
+    test_query("SELECT 2 BETWEEN 1 AND NULL AS result", vec![vec!["NULL"]]);
+
+    // Both bounds NULL
+    test_query(
+        "SELECT 2 BETWEEN NULL AND NULL AS result",
+        vec![vec!["NULL"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "BETWEEN with columns not yet implemented"]
 #[test]
 fn test_between_with_column_references() {
+    // This test would need table setup first
     // TODO: Test BETWEEN with table column references
-    // TODO: Test BETWEEN where bounds come from other columns
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_between_with_expressions() {
-    // TODO: Test SELECT (1 + 1) BETWEEN (0 + 1) AND (2 + 1) - expressions in BETWEEN
+    // Expressions in all positions
+    test_query(
+        "SELECT (1 + 1) BETWEEN (0 + 1) AND (2 + 1) AS result",
+        vec![vec!["true"]],
+    );
+    test_query(
+        "SELECT (5 - 3) BETWEEN (1 * 1) AND (1 + 2) AS result",
+        vec![vec!["true"]],
+    );
+
+    // Expression result outside range
+    test_query(
+        "SELECT (10 / 2) BETWEEN 1 AND 3 AS result",
+        vec![vec!["false"]],
+    );
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "BETWEEN with subqueries not yet implemented"]
 #[test]
 fn test_between_with_subqueries() {
+    // This test would need table setup first
     // TODO: Test BETWEEN with subqueries as bounds if supported
 }

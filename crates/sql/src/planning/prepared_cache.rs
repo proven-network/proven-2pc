@@ -411,6 +411,21 @@ fn bind_expression_parameters(
                 .map(|arg| bind_expression_parameters(arg, params))
                 .collect::<Result<Vec<_>>>()?,
         ),
+
+        Expression::InList(expr, list, negated) => Expression::InList(
+            Box::new(bind_expression_parameters(expr, params)?),
+            list.iter()
+                .map(|e| bind_expression_parameters(e, params))
+                .collect::<Result<Vec<_>>>()?,
+            *negated,
+        ),
+
+        Expression::Between(expr, low, high, negated) => Expression::Between(
+            Box::new(bind_expression_parameters(expr, params)?),
+            Box::new(bind_expression_parameters(low, params)?),
+            Box::new(bind_expression_parameters(high, params)?),
+            *negated,
+        ),
     })
 }
 
