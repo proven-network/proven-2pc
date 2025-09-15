@@ -194,6 +194,20 @@ pub enum Expression {
         /// Optional ELSE result
         else_clause: Option<Box<Expression>>,
     },
+    /// Array or list element access: base[index]
+    ArrayAccess {
+        base: Box<Expression>,
+        index: Box<Expression>,
+    },
+    /// Struct field access: base.field
+    FieldAccess {
+        base: Box<Expression>,
+        field: String,
+    },
+    /// Array literal: [1, 2, 3]
+    ArrayLiteral(Vec<Expression>),
+    /// Map literal: {key1: value1, key2: value2}
+    MapLiteral(Vec<(Expression, Expression)>),
 }
 
 /// Expression literal values.
@@ -378,6 +392,16 @@ impl Expression {
                 true
             }
 
+            Self::ArrayAccess { base, index } => base.walk(visitor) && index.walk(visitor),
+
+            Self::FieldAccess { base, field: _ } => base.walk(visitor),
+
+            Self::ArrayLiteral(elements) => elements.iter().all(|e| e.walk(visitor)),
+
+            Self::MapLiteral(pairs) => pairs
+                .iter()
+                .all(|(k, v)| k.walk(visitor) && v.walk(visitor)),
+
             Self::All | Self::Column(_, _) | Self::Literal(_) | Self::Parameter(_) => true,
         }
     }
@@ -462,6 +486,28 @@ impl Expression {
                 // Collect from else clause if present
                 if let Some(else_expr) = else_clause {
                     else_expr.collect(visitor, exprs);
+                }
+            }
+
+            Self::ArrayAccess { base, index } => {
+                base.collect(visitor, exprs);
+                index.collect(visitor, exprs);
+            }
+
+            Self::FieldAccess { base, field: _ } => {
+                base.collect(visitor, exprs);
+            }
+
+            Self::ArrayLiteral(elements) => {
+                for e in elements {
+                    e.collect(visitor, exprs);
+                }
+            }
+
+            Self::MapLiteral(pairs) => {
+                for (k, v) in pairs {
+                    k.collect(visitor, exprs);
+                    v.collect(visitor, exprs);
                 }
             }
 

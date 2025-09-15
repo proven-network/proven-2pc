@@ -440,6 +440,24 @@ fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
                     count_expr_params(else_expr, max_idx);
                 }
             }
+            Expression::ArrayAccess { base, index } => {
+                count_expr_params(base, max_idx);
+                count_expr_params(index, max_idx);
+            }
+            Expression::FieldAccess { base, field: _ } => {
+                count_expr_params(base, max_idx);
+            }
+            Expression::ArrayLiteral(elements) => {
+                for e in elements {
+                    count_expr_params(e, max_idx);
+                }
+            }
+            Expression::MapLiteral(pairs) => {
+                for (k, v) in pairs {
+                    count_expr_params(k, max_idx);
+                    count_expr_params(v, max_idx);
+                }
+            }
         }
     }
 

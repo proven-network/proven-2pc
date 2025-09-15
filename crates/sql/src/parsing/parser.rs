@@ -344,6 +344,27 @@ impl Parser<'_> {
             Token::Ident(s) if s.to_uppercase() == "INET" => DataType::Inet,
             Token::Ident(s) if s.to_uppercase() == "POINT" => DataType::Point,
 
+            // Collection types
+            Token::Keyword(Keyword::Array) => {
+                // ARRAY can be standalone or have element type
+                // For now, default to Array of I64
+                DataType::Array(Box::new(DataType::I64), None)
+            }
+            Token::Keyword(Keyword::List) => {
+                // LIST is variable-size, default to List of I64
+                DataType::List(Box::new(DataType::I64))
+            }
+            Token::Keyword(Keyword::Map) => {
+                // MAP defaults to String keys and I64 values
+                // TODO: Parse MAP(key_type, value_type) syntax
+                DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64))
+            }
+            Token::Keyword(Keyword::Struct) => {
+                // STRUCT needs field definitions
+                // TODO: Parse STRUCT(field1 TYPE1, field2 TYPE2) syntax
+                DataType::Struct(Vec::new())
+            }
+
             token => {
                 return Err(Error::ParseError(format!(
                     "unexpected token {}, expected data type",
@@ -351,6 +372,24 @@ impl Parser<'_> {
                 )));
             }
         };
+
+        // Check for array size specification with TYPE[SIZE] syntax
+        let datatype = if self.next_if(|t| t == &Token::OpenBracket).is_some() {
+            // Parse array size
+            let size = if let Token::Number(n) = self.next()? {
+                n.parse::<usize>()
+                    .map_err(|_| Error::ParseError(format!("invalid array size: {}", n)))?
+            } else {
+                return Err(Error::ParseError("expected array size".into()));
+            };
+            self.expect(Token::CloseBracket)?;
+
+            // Convert the base type to a fixed-size array
+            DataType::Array(Box::new(datatype), Some(size))
+        } else {
+            datatype
+        };
+
         let mut column = ast::Column {
             name,
             datatype,
@@ -1364,6 +1403,41 @@ impl Parser<'_> {
                 expr
             }
 
+            // Array literal: [1, 2, 3]
+            Token::OpenBracket => {
+                let mut elements = Vec::new();
+                if self.peek()? != Some(&Token::CloseBracket) {
+                    elements.push(self.parse_expression()?);
+                    while self.next_is(Token::Comma) {
+                        elements.push(self.parse_expression()?);
+                    }
+                }
+                self.expect(Token::CloseBracket)?;
+                ast::Expression::ArrayLiteral(elements)
+            }
+
+            // Map literal: {key1: value1, key2: value2}
+            Token::OpenBrace => {
+                let mut pairs = Vec::new();
+                if self.peek()? != Some(&Token::CloseBrace) {
+                    // Parse first key-value pair
+                    let key = self.parse_expression()?;
+                    self.expect(Token::Colon)?;
+                    let value = self.parse_expression()?;
+                    pairs.push((key, value));
+
+                    // Parse remaining pairs
+                    while self.next_is(Token::Comma) {
+                        let key = self.parse_expression()?;
+                        self.expect(Token::Colon)?;
+                        let value = self.parse_expression()?;
+                        pairs.push((key, value));
+                    }
+                }
+                self.expect(Token::CloseBrace)?;
+                ast::Expression::MapLiteral(pairs)
+            }
+
             token => {
                 return Err(Error::ParseError(format!(
                     "expected expression atom, found {}",
@@ -1510,6 +1584,32 @@ impl Parser<'_> {
             return Ok(Some(PostfixOperator::Between(low, high, negated)));
         }
 
+        // Handle bracket notation for array/list/map access
+        if self.peek()? == Some(&Token::OpenBracket) {
+            // Check precedence before consuming
+            if PostfixOperator::ArrayAccess(ast::Expression::Literal(ast::Literal::Null))
+                .precedence()
+                < min_precedence
+            {
+                return Ok(None);
+            }
+            self.expect(Token::OpenBracket)?;
+            let index = self.parse_expression()?;
+            self.expect(Token::CloseBracket)?;
+            return Ok(Some(PostfixOperator::ArrayAccess(index)));
+        }
+
+        // Handle dot notation for struct field access
+        if self.peek()? == Some(&Token::Period) {
+            // Check precedence before consuming
+            if PostfixOperator::FieldAccess(String::new()).precedence() < min_precedence {
+                return Ok(None);
+            }
+            self.expect(Token::Period)?;
+            let field = self.next_ident()?;
+            return Ok(Some(PostfixOperator::FieldAccess(field)));
+        }
+
         Ok(self.next_if_map(|token| {
             let operator = match token {
                 Token::Exclamation => PostfixOperator::Factorial,
@@ -1653,6 +1753,8 @@ enum PostfixOperator {
     IsNot(ast::Literal),                             // a IS NOT NULL | NAN
     InList(Vec<ast::Expression>, bool),              // a IN (list) or a NOT IN (list)
     Between(ast::Expression, ast::Expression, bool), // a BETWEEN low AND high or a NOT BETWEEN low AND high
+    ArrayAccess(ast::Expression),                    // a[index]
+    FieldAccess(String),                             // a.field
 }
 
 impl PostfixOperator {
@@ -1661,6 +1763,7 @@ impl PostfixOperator {
         match self {
             Self::Is(_) | Self::IsNot(_) | Self::InList(_, _) | Self::Between(_, _, _) => 4,
             Self::Factorial => 9,
+            Self::ArrayAccess(_) | Self::FieldAccess(_) => 10, // Highest precedence
         }
     }
 
@@ -1684,6 +1787,11 @@ impl PostfixOperator {
                 negated,
             }
             .into(),
+            Self::ArrayAccess(index) => ast::Expression::ArrayAccess {
+                base: lhs,
+                index: Box::new(index),
+            },
+            Self::FieldAccess(field) => ast::Expression::FieldAccess { base: lhs, field },
         }
     }
 }
@@ -1818,5 +1926,103 @@ impl Parser<'_> {
             "Unsupported complex interval format: '{}' {} TO ...",
             interval_str, start_upper
         )))
+    }
+}
+
+#[test]
+fn test_parse_collection_types() {
+    use crate::types::DataType;
+
+    // Test LIST type
+    let sql = "CREATE TABLE test (items LIST)";
+    let stmt = Parser::parse(sql).unwrap();
+    if let ast::Statement::CreateTable { columns, .. } = stmt {
+        assert!(matches!(columns[0].datatype, DataType::List(_)));
+        println!("✓ LIST parsing works");
+    }
+
+    // Test ARRAY with size
+    let sql = "CREATE TABLE test (coords INT[3])";
+    let stmt = Parser::parse(sql).unwrap();
+    if let ast::Statement::CreateTable { columns, .. } = stmt {
+        assert!(matches!(columns[0].datatype, DataType::Array(_, Some(3))));
+        println!("✓ ARRAY[SIZE] parsing works");
+    }
+
+    // Test MAP type
+    let sql = "CREATE TABLE test (settings MAP)";
+    let stmt = Parser::parse(sql).unwrap();
+    if let ast::Statement::CreateTable { columns, .. } = stmt {
+        assert!(matches!(columns[0].datatype, DataType::Map(_, _)));
+        println!("✓ MAP parsing works");
+    }
+}
+
+#[test]
+fn test_parse_collection_expressions() {
+    // Test array literal
+    let expr = Parser::parse_expr("[1, 2, 3]").unwrap();
+    match expr {
+        ast::Expression::ArrayLiteral(elements) => {
+            assert_eq!(elements.len(), 3);
+            println!("✓ Array literal parsing works");
+        }
+        _ => panic!("Expected ArrayLiteral"),
+    }
+
+    // Test map literal
+    let expr = Parser::parse_expr("{'key1': 'value1', 'key2': 'value2'}").unwrap();
+    match expr {
+        ast::Expression::MapLiteral(pairs) => {
+            assert_eq!(pairs.len(), 2);
+            println!("✓ Map literal parsing works");
+        }
+        _ => panic!("Expected MapLiteral"),
+    }
+
+    // Test array access
+    let expr = Parser::parse_expr("arr[0]").unwrap();
+    match expr {
+        ast::Expression::ArrayAccess { base, index } => {
+            assert!(matches!(*base, ast::Expression::Column(None, _)));
+            assert!(matches!(
+                *index,
+                ast::Expression::Literal(ast::Literal::Integer(0))
+            ));
+            println!("✓ Array access parsing works");
+        }
+        _ => panic!("Expected ArrayAccess"),
+    }
+
+    // Test struct field access - need to use parentheses or array access to disambiguate from table.column
+    let expr = Parser::parse_expr("(person).name").unwrap();
+    match expr {
+        ast::Expression::FieldAccess { base, field } => {
+            assert!(matches!(*base, ast::Expression::Column(None, _)));
+            assert_eq!(field, "name");
+            println!("✓ Field access parsing works");
+        }
+        _ => panic!("Expected FieldAccess, got: {:?}", expr),
+    }
+
+    // Test nested access
+    let expr = Parser::parse_expr("users[0].address.city").unwrap();
+    match expr {
+        ast::Expression::FieldAccess { base, field } => {
+            assert_eq!(field, "city");
+            // Check nested structure
+            match *base {
+                ast::Expression::FieldAccess {
+                    base: inner_base,
+                    field: inner_field,
+                } => {
+                    assert_eq!(inner_field, "address");
+                    assert!(matches!(*inner_base, ast::Expression::ArrayAccess { .. }));
+                    println!("✓ Nested access parsing works");
+                }
+                _ => panic!("Expected nested FieldAccess"),
+            }
+        }
+        _ => panic!("Expected FieldAccess"),
     }
 }

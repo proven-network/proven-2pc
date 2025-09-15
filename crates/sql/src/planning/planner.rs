@@ -1537,6 +1537,22 @@ impl<'a> PlanContext<'a> {
                     "CASE expressions not yet implemented in planner".into(),
                 ))
             }
+
+            ast::Expression::ArrayAccess { base: _, index: _ } => Err(Error::ExecutionError(
+                "Array access not yet implemented in planner".into(),
+            )),
+
+            ast::Expression::FieldAccess { base: _, field: _ } => Err(Error::ExecutionError(
+                "Field access not yet implemented in planner".into(),
+            )),
+
+            ast::Expression::ArrayLiteral(_) => Err(Error::ExecutionError(
+                "Array literals not yet implemented in planner".into(),
+            )),
+
+            ast::Expression::MapLiteral(_) => Err(Error::ExecutionError(
+                "Map literals not yet implemented in planner".into(),
+            )),
         }
     }
 

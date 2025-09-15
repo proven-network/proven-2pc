@@ -45,6 +45,11 @@ pub enum Token {
     Semicolon,          // ;
     OpenParen,          // (
     CloseParen,         // )
+    OpenBracket,        // [
+    CloseBracket,       // ]
+    OpenBrace,          // {
+    CloseBrace,         // }
+    Colon,              // :
 }
 
 impl Display for Token {
@@ -75,6 +80,11 @@ impl Display for Token {
             Self::Semicolon => ";",
             Self::OpenParen => "(",
             Self::CloseParen => ")",
+            Self::OpenBracket => "[",
+            Self::CloseBracket => "]",
+            Self::OpenBrace => "{",
+            Self::CloseBrace => "}",
+            Self::Colon => ":",
         })
     }
 }
@@ -89,6 +99,7 @@ impl From<Keyword> for Token {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Keyword {
     And,
+    Array,
     As,
     Asc,
     Between,
@@ -136,6 +147,8 @@ pub enum Keyword {
     Left,
     Like,
     Limit,
+    List,
+    Map,
     NaN,
     Not,
     Null,
@@ -155,6 +168,7 @@ pub enum Keyword {
     Set,
     Smallint,
     String,
+    Struct,
     System,
     Table,
     Text,
@@ -186,9 +200,10 @@ impl TryFrom<&str> for Keyword {
             "keyword must be lowercase"
         );
         Ok(match value {
+            "and" => Self::And,
+            "array" => Self::Array,
             "as" => Self::As,
             "asc" => Self::Asc,
-            "and" => Self::And,
             "between" => Self::Between,
             "bigint" => Self::Bigint,
             "bool" => Self::Bool,
@@ -234,6 +249,8 @@ impl TryFrom<&str> for Keyword {
             "left" => Self::Left,
             "like" => Self::Like,
             "limit" => Self::Limit,
+            "list" => Self::List,
+            "map" => Self::Map,
             "nan" => Self::NaN,
             "not" => Self::Not,
             "null" => Self::Null,
@@ -253,6 +270,7 @@ impl TryFrom<&str> for Keyword {
             "set" => Self::Set,
             "smallint" => Self::Smallint,
             "string" => Self::String,
+            "struct" => Self::Struct,
             "system" => Self::System,
             "table" => Self::Table,
             "text" => Self::Text,
@@ -279,9 +297,10 @@ impl Display for Keyword {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         // Display keywords as uppercase.
         f.write_str(match self {
+            Self::And => "AND",
+            Self::Array => "ARRAY",
             Self::As => "AS",
             Self::Asc => "ASC",
-            Self::And => "AND",
             Self::Between => "BETWEEN",
             Self::Bigint => "BIGINT",
             Self::Bool => "BOOL",
@@ -327,6 +346,8 @@ impl Display for Keyword {
             Self::Left => "LEFT",
             Self::Like => "LIKE",
             Self::Limit => "LIMIT",
+            Self::List => "LIST",
+            Self::Map => "MAP",
             Self::NaN => "NAN",
             Self::Not => "NOT",
             Self::Null => "NULL",
@@ -346,6 +367,7 @@ impl Display for Keyword {
             Self::Set => "SET",
             Self::Smallint => "SMALLINT",
             Self::String => "STRING",
+            Self::Struct => "STRUCT",
             Self::System => "SYSTEM",
             Self::Table => "TABLE",
             Self::Text => "TEXT",
@@ -589,6 +611,11 @@ impl<'a> Lexer<'a> {
                 ';' => Token::Semicolon,
                 '(' => Token::OpenParen,
                 ')' => Token::CloseParen,
+                '[' => Token::OpenBracket,
+                ']' => Token::CloseBracket,
+                '{' => Token::OpenBrace,
+                '}' => Token::CloseBrace,
+                ':' => Token::Colon,
                 _ => return None,
             })
         })?;
