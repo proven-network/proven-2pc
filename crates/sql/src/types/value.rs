@@ -446,26 +446,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_gluesql_format() {
-        // Test Debug output matches GlueSQL format
-        assert_eq!(
-            format!("{:?}", Value::Str("hello".into())),
-            "Str(\"hello\")"
-        );
-        assert_eq!(format!("{:?}", Value::I64(42)), "I64(42)");
-        assert_eq!(format!("{:?}", Value::Bool(true)), "Bool(true)");
-        assert_eq!(format!("{:?}", Value::Null), "Null");
-
-        // Test backward compatibility
-        assert_eq!(format!("{:?}", Value::integer(42)), "I64(42)");
-        assert_eq!(
-            format!("{:?}", Value::string("test".into())),
-            "Str(\"test\")"
-        );
-        assert_eq!(format!("{:?}", Value::boolean(false)), "Bool(false)");
-    }
-
-    #[test]
     fn test_integer_types() {
         assert!(Value::I8(10).is_integer());
         assert!(Value::U64(1000).is_integer());

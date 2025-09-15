@@ -1080,17 +1080,83 @@ impl Parser<'_> {
                         // It's an INTERVAL literal
                         match self.next()? {
                             Token::String(interval_str) => {
-                                // Parse the interval value
-                                let value: i32 = interval_str.parse().map_err(|_| {
-                                    Error::ParseError(format!(
-                                        "Invalid interval value: '{}'. Expected a number",
-                                        interval_str
-                                    ))
-                                })?;
+                                // Check for TO keyword (complex interval formats)
+                                if self.peek()?.is_some_and(|t| matches!(t, Token::Ident(s) if s.to_uppercase().ends_with("S") || s.to_uppercase().ends_with("R") || s.to_uppercase().ends_with("H") || s.to_uppercase().ends_with("Y") || s.to_uppercase().ends_with("E"))) {
+                                    let unit = self.next_ident_or_keyword()?;
+                                    if self.next_if_map(|t| match t {
+                                        Token::Keyword(Keyword::To) => Some(()),
+                                        Token::Ident(s) if s.to_uppercase() == "TO" => Some(()),
+                                        _ => None
+                                    }).is_some() {
+                                        // Complex format with TO keyword
+                                        let _end_unit = self.next_ident_or_keyword()?;
+                                        return self.parse_complex_interval_format(&interval_str, &unit);
+                                    }
+                                    // Not a TO format, process as simple interval
+                                    // Put the unit back for normal processing
+                                    let unit_upper = unit.to_uppercase();
 
-                                // Parse the interval unit (DAY, MONTH, YEAR, etc.)
-                                let unit = self.next_ident_or_keyword()?;
-                                let unit_upper = unit.to_uppercase();
+                                    // Parse the interval value (possibly negative)
+                                    let value: i32 = interval_str.parse().map_err(|_| {
+                                        Error::ParseError(format!(
+                                            "Invalid interval value: '{}'. Expected a number",
+                                            interval_str
+                                        ))
+                                    })?;
+
+                                    use crate::types::data_type::Interval;
+                                    let interval = match unit_upper.as_str() {
+                                        "DAY" | "DAYS" => Interval {
+                                            months: 0,
+                                            days: value,
+                                            microseconds: 0,
+                                        },
+                                        "MONTH" | "MONTHS" => Interval {
+                                            months: value,
+                                            days: 0,
+                                            microseconds: 0,
+                                        },
+                                        "YEAR" | "YEARS" => Interval {
+                                            months: value * 12,
+                                            days: 0,
+                                            microseconds: 0,
+                                        },
+                                        "HOUR" | "HOURS" => Interval {
+                                            months: 0,
+                                            days: 0,
+                                            microseconds: value as i64 * 3_600_000_000,
+                                        },
+                                        "MINUTE" | "MINUTES" => Interval {
+                                            months: 0,
+                                            days: 0,
+                                            microseconds: value as i64 * 60_000_000,
+                                        },
+                                        "SECOND" | "SECONDS" => Interval {
+                                            months: 0,
+                                            days: 0,
+                                            microseconds: value as i64 * 1_000_000,
+                                        },
+                                        _ => {
+                                            return Err(Error::ParseError(format!(
+                                                "Invalid interval unit: {}",
+                                                unit_upper
+                                            )))
+                                        }
+                                    };
+                                    ast::Literal::Interval(interval).into()
+                                } else {
+                                    // Simple format - parse as before
+                                    // Parse the interval value (possibly negative)
+                                    let value: i32 = interval_str.parse().map_err(|_| {
+                                        Error::ParseError(format!(
+                                            "Invalid interval value: '{}'. Expected a number",
+                                            interval_str
+                                        ))
+                                    })?;
+
+                                    // Parse the interval unit (DAY, MONTH, YEAR, etc.)
+                                    let unit = self.next_ident_or_keyword()?;
+                                    let unit_upper = unit.to_uppercase();
 
                                 use crate::types::data_type::Interval;
                                 let interval = match unit_upper.as_str() {
@@ -1132,6 +1198,7 @@ impl Parser<'_> {
                                     }
                                 };
                                 ast::Literal::Interval(interval).into()
+                                }
                             }
                             _ => unreachable!(),
                         }
@@ -1507,5 +1574,138 @@ impl PostfixOperator {
             Self::Is(v) => ast::Operator::Is(lhs, v).into(),
             Self::IsNot(v) => ast::Operator::Not(Box::new(ast::Operator::Is(lhs, v).into())).into(),
         }
+    }
+}
+
+impl Parser<'_> {
+    /// Parse complex interval formats like '1-2' YEAR TO MONTH or '3 14' DAY TO HOUR
+    fn parse_complex_interval_format(
+        &mut self,
+        interval_str: &str,
+        start_unit: &str,
+    ) -> Result<ast::Expression> {
+        use crate::types::data_type::Interval;
+
+        let start_upper = start_unit.to_uppercase();
+
+        // Check if the whole interval is negative
+        let (is_negative, abs_interval_str) = if let Some(stripped) = interval_str.strip_prefix('-')
+        {
+            (true, stripped)
+        } else {
+            (false, interval_str)
+        };
+
+        // Handle YEAR TO MONTH format: '1-2' means 1 year 2 months
+        if start_upper == "YEAR" && abs_interval_str.contains('-') {
+            let parts: Vec<&str> = abs_interval_str.split('-').collect();
+            if parts.len() == 2 {
+                let years: i32 = parts[0].parse().map_err(|_| {
+                    Error::ParseError(format!("Invalid year value in interval: '{}'", parts[0]))
+                })?;
+                let months: i32 = parts[1].parse().map_err(|_| {
+                    Error::ParseError(format!("Invalid month value in interval: '{}'", parts[1]))
+                })?;
+                let total_months = years * 12 + months;
+                let interval = Interval {
+                    months: if is_negative {
+                        -total_months
+                    } else {
+                        total_months
+                    },
+                    days: 0,
+                    microseconds: 0,
+                };
+                return Ok(ast::Literal::Interval(interval).into());
+            }
+        }
+
+        // Handle DAY TO SECOND format first (before DAY TO HOUR): '3 14:30:12.5' means 3 days 14 hours 30 minutes 12.5 seconds
+        if start_upper == "DAY" && abs_interval_str.contains(':') {
+            let parts: Vec<&str> = abs_interval_str.splitn(2, ' ').collect();
+            let mut days = 0;
+            let time_part;
+
+            if parts.len() == 2 {
+                days = parts[0].parse().map_err(|_| {
+                    Error::ParseError(format!("Invalid day value in interval: '{}'", parts[0]))
+                })?;
+                time_part = parts[1];
+            } else {
+                time_part = abs_interval_str;
+            }
+
+            // Parse time part (HH:MM:SS.fff)
+            let time_parts: Vec<&str> = time_part.split(':').collect();
+            if time_parts.len() >= 2 {
+                let hours: i32 = time_parts[0].parse().map_err(|_| {
+                    Error::ParseError(format!(
+                        "Invalid hour value in interval: '{}'",
+                        time_parts[0]
+                    ))
+                })?;
+                let minutes: i32 = time_parts[1].parse().map_err(|_| {
+                    Error::ParseError(format!(
+                        "Invalid minute value in interval: '{}'",
+                        time_parts[1]
+                    ))
+                })?;
+
+                let mut seconds = 0.0;
+                if time_parts.len() >= 3 {
+                    seconds = time_parts[2].parse().map_err(|_| {
+                        Error::ParseError(format!(
+                            "Invalid second value in interval: '{}'",
+                            time_parts[2]
+                        ))
+                    })?;
+                }
+
+                let total_microseconds = (hours as i64 * 3_600_000_000)
+                    + (minutes as i64 * 60_000_000)
+                    + ((seconds * 1_000_000.0) as i64);
+
+                let interval = Interval {
+                    months: 0,
+                    days: if is_negative { -days } else { days },
+                    microseconds: if is_negative {
+                        -total_microseconds
+                    } else {
+                        total_microseconds
+                    },
+                };
+                return Ok(ast::Literal::Interval(interval).into());
+            }
+        }
+
+        // Handle DAY TO HOUR format: '3 14' means 3 days 14 hours
+        if start_upper == "DAY" && abs_interval_str.contains(' ') && !abs_interval_str.contains(':')
+        {
+            let parts: Vec<&str> = abs_interval_str.split_whitespace().collect();
+            if parts.len() == 2 {
+                let days: i32 = parts[0].parse().map_err(|_| {
+                    Error::ParseError(format!("Invalid day value in interval: '{}'", parts[0]))
+                })?;
+                let hours: i32 = parts[1].parse().map_err(|_| {
+                    Error::ParseError(format!("Invalid hour value in interval: '{}'", parts[1]))
+                })?;
+                let microseconds = hours as i64 * 3_600_000_000;
+                let interval = Interval {
+                    months: 0,
+                    days: if is_negative { -days } else { days },
+                    microseconds: if is_negative {
+                        -microseconds
+                    } else {
+                        microseconds
+                    },
+                };
+                return Ok(ast::Literal::Interval(interval).into());
+            }
+        }
+
+        Err(Error::ParseError(format!(
+            "Unsupported complex interval format: '{}' {} TO ...",
+            interval_str, start_upper
+        )))
     }
 }

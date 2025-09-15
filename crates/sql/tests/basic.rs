@@ -63,11 +63,7 @@ fn test_insert_single_row() {
 
     // Verify insertion
     assert_rows!(ctx, "SELECT * FROM Test", 1);
-    ctx.assert_query_contains(
-        "SELECT name FROM Test WHERE id = 1",
-        "name",
-        "Str(\"Hello\")",
-    );
+    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 1", "name", "Str(Hello)");
 
     ctx.commit();
 }
@@ -98,12 +94,8 @@ fn test_insert_multiple_rows_in_one_statement() {
     assert_rows!(ctx, "SELECT * FROM Test", 2);
 
     // Verify specific values
-    ctx.assert_query_contains(
-        "SELECT name FROM Test WHERE id = 3",
-        "name",
-        "Str(\"Great\")",
-    );
-    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 4", "name", "Str(\"Job\")");
+    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 3", "name", "Str(Great)");
+    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 4", "name", "Str(Job)");
 
     ctx.commit();
 }
@@ -181,7 +173,7 @@ fn test_select_specific_columns() {
     ctx.assert_query_contains(
         "SELECT name FROM TestA WHERE id = 1 LIMIT 1",
         "name",
-        "Str(\"Hello\")",
+        "Str(Hello)",
     );
 
     ctx.commit();

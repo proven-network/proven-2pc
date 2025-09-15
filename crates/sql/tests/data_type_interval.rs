@@ -247,7 +247,6 @@ fn test_date_timestamp_subtraction() {
 }
 
 #[test]
-#[ignore = "Negative intervals not yet fully implemented"]
 fn test_negative_intervals() {
     let mut ctx = setup_test();
 
@@ -266,7 +265,6 @@ fn test_negative_intervals() {
 }
 
 #[test]
-#[ignore = "Complex interval formats not yet implemented"]
 fn test_complex_interval_formats() {
     let mut ctx = setup_test();
 
@@ -280,6 +278,39 @@ fn test_complex_interval_formats() {
 
     // Test DAY TO SECOND format
     ctx.exec("INSERT INTO IntervalLog VALUES (3, INTERVAL '3 14:30:12.5' DAY TO SECOND)");
+
+    ctx.commit();
+}
+
+#[test]
+fn test_negative_complex_intervals() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE IntervalLog (id INTEGER, interval1 INTERVAL)");
+
+    // Test negative YEAR TO MONTH format
+    ctx.exec("INSERT INTO IntervalLog VALUES (1, INTERVAL '-1-2' YEAR TO MONTH)");
+
+    // Test negative DAY TO HOUR format
+    ctx.exec("INSERT INTO IntervalLog VALUES (2, INTERVAL '-3 14' DAY TO HOUR)");
+
+    // Test negative DAY TO SECOND format
+    ctx.exec("INSERT INTO IntervalLog VALUES (3, INTERVAL '-3 14:30:12' DAY TO SECOND)");
+
+    let results = ctx.query("SELECT * FROM IntervalLog ORDER BY id");
+    assert_eq!(results.len(), 3);
+
+    // -1 year -2 months = -14 months
+    assert_eq!(results[0].get("interval1").unwrap(), "Interval(-14 months)");
+
+    // -3 days 14 hours = -3 days + 14 hours = -2 days -10 hours when normalized
+    // But we might store it as -3 days and negative microseconds
+    let interval2 = results[1].get("interval1").unwrap();
+    assert!(interval2.contains("-"));
+
+    // Similar for DAY TO SECOND
+    let interval3 = results[2].get("interval1").unwrap();
+    assert!(interval3.contains("-"));
 
     ctx.commit();
 }

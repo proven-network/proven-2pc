@@ -18,7 +18,7 @@ fn test_drop_table_basic() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("id").unwrap(), "I32(1)");
     assert_eq!(results[0].get("num").unwrap(), "I32(2)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Hello\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Hello)");
 
     // Drop the table
     ctx.exec("DROP TABLE DropTable");

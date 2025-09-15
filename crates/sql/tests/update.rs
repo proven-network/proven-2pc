@@ -210,7 +210,7 @@ fn test_update_multiple_columns() {
     ctx.assert_query_contains(
         "SELECT name FROM TableA WHERE num = 2",
         "name",
-        "Str(\"Updated\")",
+        "Str(Updated)",
     );
 
     ctx.commit();

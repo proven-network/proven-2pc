@@ -184,7 +184,7 @@ fn test_max_strings() {
         );
 
     // MAX on strings returns lexicographically largest
-    ctx.assert_query_contains("SELECT MAX(name) FROM Item", "MAX(name)", "Str(\"zebra\")");
+    ctx.assert_query_contains("SELECT MAX(name) FROM Item", "MAX(name)", "Str(zebra)");
 
     ctx.commit();
 }

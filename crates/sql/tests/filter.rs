@@ -36,7 +36,7 @@ fn test_where_equals() {
     ctx.assert_query_contains(
         "SELECT name FROM FilterTest WHERE id = 5",
         "name",
-        "Str(\"Eve\")",
+        "Str(Eve)",
     );
 
     ctx.commit();

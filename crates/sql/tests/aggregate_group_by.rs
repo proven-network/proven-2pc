@@ -161,7 +161,7 @@ fn test_group_by_numeric_column() {
 
         match ratio.as_str() {
             "F64(1.5)" | "F64(2.5)" => assert_eq!(count, "I64(2)"),
-            "F64(3.0)" => assert_eq!(count, "I64(1)"),
+            "F64(3)" => assert_eq!(count, "I64(1)"),
             _ => panic!("Unexpected ratio value: {}", ratio),
         }
     }

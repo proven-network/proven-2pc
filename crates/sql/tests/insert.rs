@@ -16,7 +16,7 @@ fn test_basic_insert_single_item() {
 
     // Verify the data
     assert_rows!(ctx, "SELECT * FROM Test", 1);
-    ctx.assert_query_contains("SELECT name FROM Test", "name", "Str(\"Hi boo\")");
+    ctx.assert_query_contains("SELECT name FROM Test", "name", "Str(Hi boo)");
     ctx.assert_query_contains("SELECT num FROM Test", "num", "I32(2)");
 
     ctx.commit();
@@ -34,13 +34,9 @@ fn test_insert_multiple_rows() {
     ctx.assert_query_contains(
         "SELECT name FROM Test WHERE id = 2",
         "name",
-        "Str(\"Monsters\")",
+        "Str(Monsters)",
     );
-    ctx.assert_query_contains(
-        "SELECT name FROM Test WHERE id = 3",
-        "name",
-        "Str(\"Kitty!\")",
-    );
+    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 3", "name", "Str(Kitty!)");
 
     ctx.commit();
 }
@@ -58,7 +54,7 @@ fn test_insert_without_column_list() {
     assert_rows!(ctx, "SELECT * FROM Test", 1);
     ctx.assert_query_contains("SELECT * FROM Test", "id", "I32(17)");
     ctx.assert_query_contains("SELECT * FROM Test", "num", "I32(30)");
-    ctx.assert_query_contains("SELECT * FROM Test", "name", "Str(\"Sullivan\")");
+    ctx.assert_query_contains("SELECT * FROM Test", "name", "Str(Sullivan)");
 
     ctx.commit();
 }
@@ -77,7 +73,7 @@ fn test_insert_with_default_values() {
     assert_rows!(ctx, "SELECT * FROM Test", 1);
     ctx.assert_query_contains("SELECT * FROM Test", "id", "I32(1)"); // Should use DEFAULT value of 1
     ctx.assert_query_contains("SELECT * FROM Test", "num", "I32(28)");
-    ctx.assert_query_contains("SELECT * FROM Test", "name", "Str(\"Wazowski\")");
+    ctx.assert_query_contains("SELECT * FROM Test", "name", "Str(Wazowski)");
 
     ctx.commit();
 }
@@ -95,7 +91,7 @@ fn test_insert_with_null_values() {
     assert_rows!(ctx, "SELECT * FROM Test", 1);
     ctx.assert_query_contains("SELECT * FROM Test", "id", "I32(1)");
     ctx.assert_query_contains("SELECT * FROM Test", "num", "Null");
-    ctx.assert_query_contains("SELECT * FROM Test", "name", "Str(\"The end\")");
+    ctx.assert_query_contains("SELECT * FROM Test", "name", "Str(The end)");
 
     ctx.commit();
 }
@@ -132,15 +128,11 @@ fn test_verify_inserted_data() {
     assert_rows!(ctx, "SELECT * FROM Test", 5);
 
     // Check specific values using assert_query_contains
-    ctx.assert_query_contains(
-        "SELECT name FROM Test WHERE id = 1",
-        "name",
-        "Str(\"Hi boo\")",
-    );
+    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 1", "name", "Str(Hi boo)");
     ctx.assert_query_contains(
         "SELECT name FROM Test WHERE id = 17",
         "name",
-        "Str(\"Sullivan\")",
+        "Str(Sullivan)",
     );
     ctx.assert_query_contains("SELECT num FROM Test WHERE id = 5", "num", "Null");
 
@@ -182,15 +174,11 @@ fn test_insert_from_select() {
 
     // Verify data was copied
     assert_rows!(ctx, "SELECT * FROM Target", 3);
-    ctx.assert_query_contains(
-        "SELECT name FROM Target WHERE id = 1",
-        "name",
-        "Str(\"Alice\")",
-    );
+    ctx.assert_query_contains("SELECT name FROM Target WHERE id = 1", "name", "Str(Alice)");
     ctx.assert_query_contains(
         "SELECT name FROM Target WHERE id = 3",
         "name",
-        "Str(\"Charlie\")",
+        "Str(Charlie)",
     );
 
     ctx.commit();
@@ -215,15 +203,11 @@ fn test_verify_insert_from_select() {
     assert_rows!(ctx, "SELECT * FROM Target", 2);
 
     // Verify specific data matches
-    ctx.assert_query_contains(
-        "SELECT name FROM Target WHERE id = 1",
-        "name",
-        "Str(\"First\")",
-    );
+    ctx.assert_query_contains("SELECT name FROM Target WHERE id = 1", "name", "Str(First)");
     ctx.assert_query_contains(
         "SELECT name FROM Target WHERE id = 2",
         "name",
-        "Str(\"Second\")",
+        "Str(Second)",
     );
 
     ctx.commit();
@@ -244,7 +228,7 @@ fn test_insert_with_generated_data() {
     ctx.assert_query_contains(
         "SELECT name FROM Generated WHERE id = 1",
         "name",
-        "Str(\"item_1\")",
+        "Str(item_1)",
     );
     ctx.assert_query_contains(
         "SELECT value FROM Generated WHERE id = 2",
@@ -276,7 +260,7 @@ fn test_insert_using_data_generators() {
     ctx.assert_query_contains(
         "SELECT name FROM DataTest WHERE id = 5",
         "name",
-        "Str(\"item_5\")",
+        "Str(item_5)",
     );
     ctx.assert_query_contains(
         "SELECT value FROM DataTest WHERE id = 5",

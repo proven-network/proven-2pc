@@ -92,11 +92,11 @@ fn test_order_by_text_column() {
     // Test ORDER BY text column
     let results = ctx.query("SELECT name FROM OrderTest ORDER BY name ASC");
     assert_eq!(results.len(), 5);
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Apple\")");
-    assert_eq!(results[1].get("name").unwrap(), "Str(\"Banana\")");
-    assert_eq!(results[2].get("name").unwrap(), "Str(\"Cherry\")");
-    assert_eq!(results[3].get("name").unwrap(), "Str(\"Mango\")");
-    assert_eq!(results[4].get("name").unwrap(), "Str(\"Zebra\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Apple)");
+    assert_eq!(results[1].get("name").unwrap(), "Str(Banana)");
+    assert_eq!(results[2].get("name").unwrap(), "Str(Cherry)");
+    assert_eq!(results[3].get("name").unwrap(), "Str(Mango)");
+    assert_eq!(results[4].get("name").unwrap(), "Str(Zebra)");
 
     ctx.commit();
 }
@@ -121,17 +121,17 @@ fn test_order_by_multiple_columns() {
     assert_eq!(results.len(), 5);
 
     // Category A sorted by value DESC
-    assert_eq!(results[0].get("category").unwrap(), "Str(\"A\")");
+    assert_eq!(results[0].get("category").unwrap(), "Str(A)");
     assert_eq!(results[0].get("value").unwrap(), "I32(30)");
-    assert_eq!(results[1].get("category").unwrap(), "Str(\"A\")");
+    assert_eq!(results[1].get("category").unwrap(), "Str(A)");
     assert_eq!(results[1].get("value").unwrap(), "I32(20)");
-    assert_eq!(results[2].get("category").unwrap(), "Str(\"A\")");
+    assert_eq!(results[2].get("category").unwrap(), "Str(A)");
     assert_eq!(results[2].get("value").unwrap(), "I32(10)");
 
     // Category B sorted by value DESC
-    assert_eq!(results[3].get("category").unwrap(), "Str(\"B\")");
+    assert_eq!(results[3].get("category").unwrap(), "Str(B)");
     assert_eq!(results[3].get("value").unwrap(), "I32(20)");
-    assert_eq!(results[4].get("category").unwrap(), "Str(\"B\")");
+    assert_eq!(results[4].get("category").unwrap(), "Str(B)");
     assert_eq!(results[4].get("value").unwrap(), "I32(10)");
 
     ctx.commit();

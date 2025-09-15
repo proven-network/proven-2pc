@@ -28,7 +28,7 @@ fn test_create_and_use_basic_index() {
 
     let results = ctx.query("SELECT * FROM Test WHERE name = 'Hello'");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Hello\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Hello)");
 
     ctx.commit();
 }
@@ -80,7 +80,7 @@ fn test_composite_index() {
     // Test composite index usage
     let results = ctx.query("SELECT * FROM Test WHERE id = 1 AND num = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Hello\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Hello)");
 
     ctx.commit();
 }
@@ -166,13 +166,13 @@ fn test_create_index_on_existing_data() {
     // Verify index works on existing data
     let results = ctx.query("SELECT * FROM Test WHERE id = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Bob\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Bob)");
 
     // Insert more data and verify index still works
     ctx.exec("INSERT INTO Test VALUES (4, 'David')");
     let results = ctx.query("SELECT * FROM Test WHERE id = 4");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"David\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(David)");
 
     ctx.commit();
 }

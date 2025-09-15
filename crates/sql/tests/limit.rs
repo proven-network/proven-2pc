@@ -99,11 +99,11 @@ fn test_limit_with_offset() {
     let results = ctx.query("SELECT id, name FROM LimitTest ORDER BY id ASC LIMIT 3 OFFSET 3");
     assert_eq!(results.len(), 3);
     assert_eq!(results[0].get("id").unwrap(), "I32(4)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Item4\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Item4)");
     assert_eq!(results[1].get("id").unwrap(), "I32(5)");
-    assert_eq!(results[1].get("name").unwrap(), "Str(\"Item5\")");
+    assert_eq!(results[1].get("name").unwrap(), "Str(Item5)");
     assert_eq!(results[2].get("id").unwrap(), "I32(6)");
-    assert_eq!(results[2].get("name").unwrap(), "Str(\"Item6\")");
+    assert_eq!(results[2].get("name").unwrap(), "Str(Item6)");
 
     ctx.commit();
 }
@@ -206,9 +206,9 @@ fn test_limit_offset_with_complex_query() {
     );
 
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("item").unwrap(), "Str(\"Item3\")");
+    assert_eq!(results[0].get("item").unwrap(), "Str(Item3)");
     assert_eq!(results[0].get("price").unwrap(), "I32(150)");
-    assert_eq!(results[1].get("item").unwrap(), "Str(\"Item5\")");
+    assert_eq!(results[1].get("item").unwrap(), "Str(Item5)");
     assert_eq!(results[1].get("price").unwrap(), "I32(120)");
 
     ctx.commit();
@@ -246,11 +246,11 @@ fn test_top_n_queries() {
     // Top 3 scores
     let results = ctx.query("SELECT player, score FROM Scores ORDER BY score DESC LIMIT 3");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("player").unwrap(), "Str(\"Eve\")");
+    assert_eq!(results[0].get("player").unwrap(), "Str(Eve)");
     assert_eq!(results[0].get("score").unwrap(), "I32(96)");
-    assert_eq!(results[1].get("player").unwrap(), "Str(\"Alice\")");
+    assert_eq!(results[1].get("player").unwrap(), "Str(Alice)");
     assert_eq!(results[1].get("score").unwrap(), "I32(95)");
-    assert_eq!(results[2].get("player").unwrap(), "Str(\"Charlie\")");
+    assert_eq!(results[2].get("player").unwrap(), "Str(Charlie)");
     assert_eq!(results[2].get("score").unwrap(), "I32(92)");
 
     ctx.commit();

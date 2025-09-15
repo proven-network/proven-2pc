@@ -56,7 +56,7 @@ fn test_select_specific_columns() {
 
     // Verify values
     assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Alice\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Alice)");
 
     ctx.commit();
 }
@@ -72,9 +72,9 @@ fn test_select_single_column() {
     assert_eq!(results[0].len(), 1); // Only 1 column
     assert!(results[0].contains_key("name"));
 
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Alice\")");
-    assert_eq!(results[1].get("name").unwrap(), "Str(\"Bob\")");
-    assert_eq!(results[2].get("name").unwrap(), "Str(\"Charlie\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Alice)");
+    assert_eq!(results[1].get("name").unwrap(), "Str(Bob)");
+    assert_eq!(results[2].get("name").unwrap(), "Str(Charlie)");
 
     ctx.commit();
 }
@@ -90,7 +90,7 @@ fn test_select_column_ordering() {
 
     // Check the values are correct regardless of order
     assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Alice\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Alice)");
     assert_eq!(results[0].get("age").unwrap(), "I32(25)");
 
     ctx.commit();
@@ -124,7 +124,7 @@ fn test_select_with_alias() {
     assert!(results[0].contains_key("user_id"));
     assert!(results[0].contains_key("user_name"));
     assert_eq!(results[0].get("user_id").unwrap(), "I32(2)");
-    assert_eq!(results[0].get("user_name").unwrap(), "Str(\"Bob\")");
+    assert_eq!(results[0].get("user_name").unwrap(), "Str(Bob)");
 
     ctx.commit();
 }
@@ -139,7 +139,7 @@ fn test_select_literal_values() {
         ctx.query("SELECT 1 AS one, 'hello' AS greeting, TRUE AS flag FROM ProjectUser LIMIT 1");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("one").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("greeting").unwrap(), "Str(\"hello\")");
+    assert_eq!(results[0].get("greeting").unwrap(), "Str(hello)");
     assert_eq!(results[0].get("flag").unwrap(), "Bool(true)");
 
     ctx.commit();
@@ -154,8 +154,8 @@ fn test_select_mixed_columns_and_literals() {
     let results = ctx.query("SELECT id, name, 'USER' AS type FROM ProjectUser WHERE id = 1");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Alice\")");
-    assert_eq!(results[0].get("type").unwrap(), "Str(\"USER\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Alice)");
+    assert_eq!(results[0].get("type").unwrap(), "Str(USER)");
 
     ctx.commit();
 }
@@ -184,8 +184,8 @@ fn test_select_with_where_not_in_projection() {
     // Test that WHERE clause columns don't need to be in projection
     let results = ctx.query("SELECT name FROM ProjectUser WHERE age > 25 ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Bob\")");
-    assert_eq!(results[1].get("name").unwrap(), "Str(\"Charlie\")");
+    assert_eq!(results[0].get("name").unwrap(), "Str(Bob)");
+    assert_eq!(results[1].get("name").unwrap(), "Str(Charlie)");
 
     ctx.commit();
 }
@@ -286,9 +286,9 @@ fn test_select_case_expression() {
          FROM ProjectUser ORDER BY id",
     );
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("age_group").unwrap(), "Str(\"Young\")");
-    assert_eq!(results[1].get("age_group").unwrap(), "Str(\"Middle\")");
-    assert_eq!(results[2].get("age_group").unwrap(), "Str(\"Senior\")");
+    assert_eq!(results[0].get("age_group").unwrap(), "Str(Young)");
+    assert_eq!(results[1].get("age_group").unwrap(), "Str(Middle)");
+    assert_eq!(results[2].get("age_group").unwrap(), "Str(Senior)");
 
     ctx.commit();
 }
@@ -322,10 +322,7 @@ fn test_select_string_concatenation() {
     // Test string concatenation in projection
     let results = ctx.query("SELECT name || ' (User)' AS full_name FROM ProjectUser WHERE id = 1");
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].get("full_name").unwrap(),
-        "Str(\"Alice (User)\")"
-    );
+    assert_eq!(results[0].get("full_name").unwrap(), "Str(Alice (User))");
 
     ctx.commit();
 }
