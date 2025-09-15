@@ -19,6 +19,8 @@ pub enum InsertSource {
     Values(Vec<Vec<Expression>>),
     /// SELECT: values from a SELECT query.
     Select(Box<SelectStatement>),
+    /// DEFAULT VALUES: insert a row with all default values.
+    DefaultValues,
 }
 
 /// SQL statements represented as an Abstract Syntax Tree (AST).

@@ -517,8 +517,11 @@ impl Parser<'_> {
             self.expect(Token::CloseParen)?;
         }
 
-        // Check for VALUES or SELECT
-        let source = if self.next_is(Keyword::Values.into()) {
+        // Check for DEFAULT VALUES, VALUES, or SELECT
+        let source = if self.next_is(Keyword::Default.into()) {
+            self.expect(Keyword::Values.into())?;
+            ast::InsertSource::DefaultValues
+        } else if self.next_is(Keyword::Values.into()) {
             let mut values = Vec::new();
             loop {
                 let mut row = Vec::new();

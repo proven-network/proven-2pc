@@ -142,13 +142,41 @@ impl Executor {
         for row in rows_to_insert {
             // Reorder columns if specified
             let final_row = if let Some(ref col_indices) = columns {
-                let mut reordered = vec![Value::Null; schema.columns.len()];
-                for (src_idx, &dest_idx) in col_indices.iter().enumerate() {
-                    if src_idx < row.len() {
-                        reordered[dest_idx] = row[src_idx].clone();
+                // Build the row with DEFAULT values for missing columns
+                let mut reordered = Vec::with_capacity(schema.columns.len());
+                for (idx, col) in schema.columns.iter().enumerate() {
+                    if let Some(src_pos) = col_indices.iter().position(|&i| i == idx) {
+                        // Column was specified in INSERT
+                        if src_pos < row.len() {
+                            reordered.push(row[src_pos].clone());
+                        } else {
+                            reordered.push(Value::Null);
+                        }
+                    } else if let Some(ref default) = col.default {
+                        // Use DEFAULT value
+                        reordered.push(default.clone());
+                    } else if col.nullable {
+                        // No DEFAULT and nullable - use NULL
+                        reordered.push(Value::Null);
+                    } else {
+                        // No DEFAULT and NOT NULL - error
+                        return Err(Error::NullConstraintViolation(col.name.clone()));
                     }
                 }
                 reordered
+            } else if row.is_empty() {
+                // INSERT DEFAULT VALUES - fill all columns with defaults
+                let mut default_row = Vec::with_capacity(schema.columns.len());
+                for col in &schema.columns {
+                    if let Some(ref default) = col.default {
+                        default_row.push(default.clone());
+                    } else if col.nullable {
+                        default_row.push(Value::Null);
+                    } else {
+                        return Err(Error::NullConstraintViolation(col.name.clone()));
+                    }
+                }
+                default_row
             } else {
                 row.to_vec()
             };

@@ -458,6 +458,9 @@ fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
                         }
                     }
                 }
+                InsertSource::DefaultValues => {
+                    // No parameters in DEFAULT VALUES
+                }
                 InsertSource::Select(select) => {
                     // Count params in the SELECT statement
                     for (expr, _) in &select.select {

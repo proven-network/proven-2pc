@@ -595,6 +595,16 @@ impl Planner {
                     .collect::<Result<Vec<_>>>()?;
                 Box::new(Node::Values { rows })
             }
+            ast::InsertSource::DefaultValues => {
+                // Create an empty row - the executor will fill in default values
+                // Note: column_indices should be None when using DEFAULT VALUES
+                if column_indices.is_some() {
+                    return Err(Error::ExecutionError(
+                        "Cannot specify columns with DEFAULT VALUES".into(),
+                    ));
+                }
+                Box::new(Node::Values { rows: vec![vec![]] })
+            }
             ast::InsertSource::Select(select) => {
                 // Plan the SELECT statement as the source
                 let plan = self.plan_select(
@@ -740,6 +750,17 @@ impl Planner {
 
             if col.index {
                 schema_col = schema_col.with_index(true);
+            }
+
+            // Handle DEFAULT expression
+            if let Some(ref default_expr) = col.default {
+                // Create a temporary context for evaluating the DEFAULT expression
+                let context = PlanContext::new(&self.schemas);
+                let resolved_expr = context.resolve_expression(default_expr.clone())?;
+
+                // Evaluate the expression to a constant value
+                let default_value = self.evaluate_default_expression(resolved_expr)?;
+                schema_col = schema_col.default(default_value);
             }
 
             schema_columns.push(schema_col);
@@ -896,6 +917,18 @@ impl Planner {
             }
             _ => Err(Error::ExecutionError(
                 "Expected non-negative integer constant".into(),
+            )),
+        }
+    }
+
+    /// Evaluates a DEFAULT expression to a constant Value
+    fn evaluate_default_expression(&self, expr: Expression) -> Result<crate::types::value::Value> {
+        match expr {
+            Expression::Constant(value) => Ok(value),
+            // For now, only support constant DEFAULT values
+            // TODO: Support more complex expressions like arithmetic, functions, etc.
+            _ => Err(Error::ExecutionError(
+                "Only constant DEFAULT values are currently supported".into(),
             )),
         }
     }
