@@ -297,8 +297,8 @@ pub fn evaluate_function(
             }
         }
 
-        // KEYS - returns all keys from a map as a list
-        "KEYS" => {
+        // KEYS or MAP_KEYS - returns all keys from a map as a list
+        "KEYS" | "MAP_KEYS" => {
             if args.len() != 1 {
                 return Err(Error::ExecutionError(
                     "KEYS takes exactly 1 argument".into(),
@@ -317,8 +317,8 @@ pub fn evaluate_function(
             }
         }
 
-        // VALUES - returns all values from a map as a list
-        "VALUES" => {
+        // VALUES or MAP_VALUES - returns all values from a map as a list
+        "VALUES" | "MAP_VALUES" => {
             if args.len() != 1 {
                 return Err(Error::ExecutionError(
                     "VALUES takes exactly 1 argument".into(),
@@ -356,451 +356,1150 @@ pub fn evaluate_function(
             unwrap_value(&args[0], path)
         }
 
+        // APPEND - add element to end of list (LIST only, not fixed ARRAY)
+        "APPEND" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "APPEND takes exactly 2 arguments (list, element)".into(),
+                ));
+            }
+            match &args[0] {
+                Value::List(l) => {
+                    let mut new_list = l.clone();
+                    new_list.push(args[1].clone());
+                    Ok(Value::List(new_list))
+                }
+                Value::Array(_) => Err(Error::ExecutionError(
+                    "Cannot APPEND to fixed-size ARRAY, use LIST instead".into(),
+                )),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // PREPEND - add element to beginning of list
+        "PREPEND" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "PREPEND takes exactly 2 arguments (element, list)".into(),
+                ));
+            }
+            match &args[1] {
+                Value::List(l) => {
+                    let mut new_list = vec![args[0].clone()];
+                    new_list.extend_from_slice(l);
+                    Ok(Value::List(new_list))
+                }
+                Value::Array(_) => Err(Error::ExecutionError(
+                    "Cannot PREPEND to fixed-size ARRAY, use LIST instead".into(),
+                )),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list".into(),
+                    found: args[1].data_type().to_string(),
+                }),
+            }
+        }
+
+        // CONCAT - concatenate multiple lists/arrays or strings
+        "CONCAT" => {
+            if args.is_empty() {
+                return Err(Error::ExecutionError(
+                    "CONCAT requires at least one argument".into(),
+                ));
+            }
+
+            // Check first argument type to determine operation
+            match &args[0] {
+                Value::List(_) | Value::Array(_) => {
+                    let mut result = Vec::new();
+                    for arg in args {
+                        match arg {
+                            Value::List(l) | Value::Array(l) => result.extend_from_slice(l),
+                            Value::Null => {} // Skip nulls
+                            _ => {
+                                return Err(Error::TypeMismatch {
+                                    expected: "list or array".into(),
+                                    found: arg.data_type().to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                Value::Str(_) => {
+                    let mut result = String::new();
+                    for arg in args {
+                        match arg {
+                            Value::Str(s) => result.push_str(s),
+                            Value::Null => {} // Skip nulls
+                            _ => {
+                                return Err(Error::TypeMismatch {
+                                    expected: "string".into(),
+                                    found: arg.data_type().to_string(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(Value::Str(result))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list, array, or string".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // SORT - sort list elements
+        "SORT" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(Error::ExecutionError(
+                    "SORT takes 1 or 2 arguments (list, [order])".into(),
+                ));
+            }
+
+            let order = if args.len() == 2 {
+                match &args[1] {
+                    Value::Str(s) => s.to_uppercase(),
+                    _ => {
+                        return Err(Error::TypeMismatch {
+                            expected: "string ('ASC' or 'DESC')".into(),
+                            found: args[1].data_type().to_string(),
+                        });
+                    }
+                }
+            } else {
+                "ASC".to_string()
+            };
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    let mut sorted = l.clone();
+                    if order == "DESC" {
+                        sorted
+                            .sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                    } else {
+                        sorted
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    }
+                    Ok(Value::List(sorted))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list or array".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // SLICE - extract subset from list
+        "SLICE" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(Error::ExecutionError(
+                    "SLICE takes 2 or 3 arguments (list, start, [end])".into(),
+                ));
+            }
+
+            let start = match &args[1] {
+                Value::I32(i) => *i as usize,
+                Value::I64(i) => *i as usize,
+                _ => {
+                    return Err(Error::TypeMismatch {
+                        expected: "integer".into(),
+                        found: args[1].data_type().to_string(),
+                    });
+                }
+            };
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    let end = if args.len() == 3 {
+                        match &args[2] {
+                            Value::I32(i) => *i as usize,
+                            Value::I64(i) => *i as usize,
+                            _ => {
+                                return Err(Error::TypeMismatch {
+                                    expected: "integer".into(),
+                                    found: args[2].data_type().to_string(),
+                                });
+                            }
+                        }
+                    } else {
+                        l.len()
+                    };
+
+                    let start = start.min(l.len());
+                    let end = end.min(l.len());
+                    Ok(Value::List(l[start..end].to_vec()))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list or array".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // TAKE - get first N elements
+        "TAKE" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "TAKE takes exactly 2 arguments (list, count)".into(),
+                ));
+            }
+
+            let count = match &args[1] {
+                Value::I32(i) => *i as usize,
+                Value::I64(i) => *i as usize,
+                _ => {
+                    return Err(Error::TypeMismatch {
+                        expected: "integer".into(),
+                        found: args[1].data_type().to_string(),
+                    });
+                }
+            };
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    let take_count = count.min(l.len());
+                    Ok(Value::List(l[..take_count].to_vec()))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list or array".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // SKIP - skip first N elements
+        "SKIP" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "SKIP takes exactly 2 arguments (list, count)".into(),
+                ));
+            }
+
+            let count = match &args[1] {
+                Value::I32(i) => *i as usize,
+                Value::I64(i) => *i as usize,
+                _ => {
+                    return Err(Error::TypeMismatch {
+                        expected: "integer".into(),
+                        found: args[1].data_type().to_string(),
+                    });
+                }
+            };
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    let skip_count = count.min(l.len());
+                    Ok(Value::List(l[skip_count..].to_vec()))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list or array".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // FIND_IDX - find index of first occurrence
+        "FIND_IDX" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "FIND_IDX takes exactly 2 arguments (list, element)".into(),
+                ));
+            }
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    for (i, elem) in l.iter().enumerate() {
+                        if elem == &args[1] {
+                            return Ok(Value::I64(i as i64));
+                        }
+                    }
+                    Ok(Value::Null) // Not found
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list or array".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // REVERSE - reverse list order
+        "REVERSE" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "REVERSE takes exactly 1 argument".into(),
+                ));
+            }
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    let mut reversed = l.clone();
+                    reversed.reverse();
+                    Ok(Value::List(reversed))
+                }
+                Value::Str(s) => Ok(Value::Str(s.chars().rev().collect())),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list, array, or string".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // DISTINCT - remove duplicate elements
+        "DISTINCT" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "DISTINCT takes exactly 1 argument".into(),
+                ));
+            }
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    let mut seen = Vec::new();
+                    for elem in l {
+                        if !seen.contains(elem) {
+                            seen.push(elem.clone());
+                        }
+                    }
+                    Ok(Value::List(seen))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list or array".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // FLATTEN - flatten nested lists (one level)
+        "FLATTEN" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "FLATTEN takes exactly 1 argument".into(),
+                ));
+            }
+
+            match &args[0] {
+                Value::List(l) | Value::Array(l) => {
+                    let mut result = Vec::new();
+                    for elem in l {
+                        match elem {
+                            Value::List(inner) | Value::Array(inner) => {
+                                result.extend_from_slice(inner);
+                            }
+                            _ => result.push(elem.clone()),
+                        }
+                    }
+                    Ok(Value::List(result))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list or array".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // ENTRIES - get key-value pairs from map as list of lists
+        "ENTRIES" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "ENTRIES takes exactly 1 argument".into(),
+                ));
+            }
+
+            match &args[0] {
+                Value::Map(m) => {
+                    let entries: Vec<Value> = m
+                        .iter()
+                        .map(|(k, v)| Value::List(vec![Value::Str(k.clone()), v.clone()]))
+                        .collect();
+                    Ok(Value::List(entries))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "map".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // FIELDS - get field names from struct
+        "FIELDS" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "FIELDS takes exactly 1 argument".into(),
+                ));
+            }
+
+            match &args[0] {
+                Value::Struct(fields) => {
+                    let field_names: Vec<Value> = fields
+                        .iter()
+                        .map(|(name, _)| Value::Str(name.clone()))
+                        .collect();
+                    Ok(Value::List(field_names))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "struct".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // MERGE - merge multiple maps (later values override)
+        "MERGE" => {
+            if args.is_empty() {
+                return Err(Error::ExecutionError(
+                    "MERGE requires at least one argument".into(),
+                ));
+            }
+
+            use std::collections::HashMap;
+            let mut result = HashMap::new();
+
+            for arg in args {
+                match arg {
+                    Value::Map(m) => {
+                        for (k, v) in m {
+                            result.insert(k.clone(), v.clone());
+                        }
+                    }
+                    Value::Null => {} // Skip nulls
+                    _ => {
+                        return Err(Error::TypeMismatch {
+                            expected: "map".into(),
+                            found: arg.data_type().to_string(),
+                        });
+                    }
+                }
+            }
+
+            Ok(Value::Map(result))
+        }
+
+        // FROM_ENTRIES - create map from list of [key, value] pairs
+        "FROM_ENTRIES" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "FROM_ENTRIES takes exactly 1 argument".into(),
+                ));
+            }
+
+            match &args[0] {
+                Value::List(entries) | Value::Array(entries) => {
+                    use std::collections::HashMap;
+                    let mut map = HashMap::new();
+
+                    for entry in entries {
+                        match entry {
+                            Value::List(pair) | Value::Array(pair) if pair.len() == 2 => {
+                                let key = match &pair[0] {
+                                    Value::Str(s) => s.clone(),
+                                    _ => {
+                                        return Err(Error::TypeMismatch {
+                                            expected: "string key".into(),
+                                            found: pair[0].data_type().to_string(),
+                                        });
+                                    }
+                                };
+                                map.insert(key, pair[1].clone());
+                            }
+                            _ => {
+                                return Err(Error::ExecutionError(
+                                    "FROM_ENTRIES expects list of [key, value] pairs".into(),
+                                ));
+                            }
+                        }
+                    }
+
+                    Ok(Value::Map(map))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "list of pairs".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
         _ => Err(Error::ExecutionError(format!("Unknown function: {}", name))),
     }
 }
 
 /// Cast a value to a target type
 pub fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
-    match target_type {
-        "TINYINT" => match value {
-            Value::I8(v) => Ok(Value::I8(*v)),
-            Value::I16(v) => {
-                if *v >= i8::MIN as i16 && *v <= i8::MAX as i16 {
-                    Ok(Value::I8(*v as i8))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for TINYINT",
-                        v
-                    )))
+    // Check for typed array patterns like "INT[3]" or "VARCHAR[]"
+    if let Some(bracket_pos) = target_type.find('[') {
+        let base_type = &target_type[..bracket_pos];
+        let size_part = &target_type[bracket_pos + 1..];
+
+        // Parse the size if specified (e.g., "3]" or just "]")
+        let size = if size_part == "]" {
+            None
+        } else if let Some(close_pos) = size_part.find(']') {
+            let size_str = &size_part[..close_pos];
+            size_str.parse::<usize>().ok()
+        } else {
+            return Err(Error::ExecutionError(format!(
+                "Invalid array type syntax: {}",
+                target_type
+            )));
+        };
+
+        // Parse the input value to get array/list
+        let items = match value {
+            Value::Array(a) => a.clone(),
+            Value::List(l) => l.clone(),
+            Value::Str(s) => {
+                // Parse JSON array string
+                match Value::parse_json_array(s) {
+                    Ok(Value::List(items)) => items,
+                    _ => {
+                        return Err(Error::TypeMismatch {
+                            expected: format!("array of {}", base_type),
+                            found: value.data_type().to_string(),
+                        });
+                    }
                 }
             }
-            Value::I32(v) => {
-                if *v >= i8::MIN as i32 && *v <= i8::MAX as i32 {
-                    Ok(Value::I8(*v as i8))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for TINYINT",
-                        v
-                    )))
-                }
+            Value::Null => return Ok(Value::Null),
+            _ => {
+                return Err(Error::TypeMismatch {
+                    expected: format!("array of {}", base_type),
+                    found: value.data_type().to_string(),
+                });
             }
-            Value::I64(v) => {
-                if *v >= i8::MIN as i64 && *v <= i8::MAX as i64 {
-                    Ok(Value::I8(*v as i8))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for TINYINT",
-                        v
-                    )))
-                }
-            }
-            Value::I128(v) => {
-                if *v >= i8::MIN as i128 && *v <= i8::MAX as i128 {
-                    Ok(Value::I8(*v as i8))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for TINYINT",
-                        v
-                    )))
-                }
-            }
-            Value::Str(s) => s
-                .parse::<i8>()
-                .map(Value::I8)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to TINYINT", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
+        };
 
-        "SMALLINT" => match value {
-            Value::I8(v) => Ok(Value::I16(*v as i16)),
-            Value::I16(v) => Ok(Value::I16(*v)),
-            Value::I32(v) => {
-                if *v >= i16::MIN as i32 && *v <= i16::MAX as i32 {
-                    Ok(Value::I16(*v as i16))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for SMALLINT",
-                        v
-                    )))
-                }
-            }
-            Value::I64(v) => {
-                if *v >= i16::MIN as i64 && *v <= i16::MAX as i64 {
-                    Ok(Value::I16(*v as i16))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for SMALLINT",
-                        v
-                    )))
-                }
-            }
-            Value::I128(v) => {
-                if *v >= i16::MIN as i128 && *v <= i16::MAX as i128 {
-                    Ok(Value::I16(*v as i16))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for SMALLINT",
-                        v
-                    )))
-                }
-            }
-            Value::Str(s) => s
-                .parse::<i16>()
-                .map(Value::I16)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to SMALLINT", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        "INT" => match value {
-            Value::I8(v) => Ok(Value::I32(*v as i32)),
-            Value::I16(v) => Ok(Value::I32(*v as i32)),
-            Value::I32(v) => Ok(Value::I32(*v)),
-            Value::I64(v) => {
-                if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
-                    Ok(Value::I32(*v as i32))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for INT",
-                        v
-                    )))
-                }
-            }
-            Value::I128(v) => {
-                if *v >= i32::MIN as i128 && *v <= i32::MAX as i128 {
-                    Ok(Value::I32(*v as i32))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for INT",
-                        v
-                    )))
-                }
-            }
-            Value::Str(s) => s
-                .parse::<i32>()
-                .map(Value::I32)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to INT", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        "BIGINT" => match value {
-            Value::I8(v) => Ok(Value::I64(*v as i64)),
-            Value::I16(v) => Ok(Value::I64(*v as i64)),
-            Value::I32(v) => Ok(Value::I64(*v as i64)),
-            Value::I64(v) => Ok(Value::I64(*v)),
-            Value::I128(v) => {
-                if *v >= i64::MIN as i128 && *v <= i64::MAX as i128 {
-                    Ok(Value::I64(*v as i64))
-                } else {
-                    Err(Error::InvalidValue(format!(
-                        "Value {} out of range for BIGINT",
-                        v
-                    )))
-                }
-            }
-            Value::Str(s) => s
-                .parse::<i64>()
-                .map(Value::I64)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to BIGINT", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        "HUGEINT" => match value {
-            Value::I8(v) => Ok(Value::I128(*v as i128)),
-            Value::I16(v) => Ok(Value::I128(*v as i128)),
-            Value::I32(v) => Ok(Value::I128(*v as i128)),
-            Value::I64(v) => Ok(Value::I128(*v as i128)),
-            Value::I128(v) => Ok(Value::I128(*v)),
-            Value::Str(s) => s
-                .parse::<i128>()
-                .map(Value::I128)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to HUGEINT", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        // REAL is F32 (single precision)
-        "REAL" => match value {
-            Value::I8(v) => Ok(Value::F32(*v as f32)),
-            Value::I16(v) => Ok(Value::F32(*v as f32)),
-            Value::I32(v) => Ok(Value::F32(*v as f32)),
-            Value::I64(v) => Ok(Value::F32(*v as f32)),
-            Value::I128(v) => Ok(Value::F32(*v as f32)),
-            Value::F32(v) => Ok(Value::F32(*v)),
-            Value::F64(v) => Ok(Value::F32(*v as f32)),
-            Value::Decimal(d) => {
-                use rust_decimal::prelude::ToPrimitive;
-                d.to_f32().map(Value::F32).ok_or_else(|| {
-                    Error::InvalidValue(format!("Cannot cast decimal {} to REAL", d))
-                })
-            }
-            Value::Str(s) => s
-                .parse::<f32>()
-                .map(Value::F32)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to REAL", s))),
-            _ => Err(Error::TypeMismatch {
-                expected: "REAL".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-        // FLOAT is F64 (double precision) - matching column type behavior
-        "FLOAT" => match value {
-            Value::I8(v) => Ok(Value::F64(*v as f64)),
-            Value::I16(v) => Ok(Value::F64(*v as f64)),
-            Value::I32(v) => Ok(Value::F64(*v as f64)),
-            Value::I64(v) => Ok(Value::F64(*v as f64)),
-            Value::I128(v) => Ok(Value::F64(*v as f64)),
-            Value::F32(v) => Ok(Value::F64(*v as f64)),
-            Value::F64(v) => Ok(Value::F64(*v)),
-            Value::Decimal(d) => {
-                use rust_decimal::prelude::ToPrimitive;
-                d.to_f64().map(Value::F64).ok_or_else(|| {
-                    Error::InvalidValue(format!("Cannot cast decimal {} to FLOAT", d))
-                })
-            }
-            Value::Str(s) => s
-                .parse::<f64>()
-                .map(Value::F64)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to FLOAT", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        "DOUBLE" => match value {
-            Value::I8(v) => Ok(Value::F64(*v as f64)),
-            Value::I16(v) => Ok(Value::F64(*v as f64)),
-            Value::I32(v) => Ok(Value::F64(*v as f64)),
-            Value::I64(v) => Ok(Value::F64(*v as f64)),
-            Value::I128(v) => Ok(Value::F64(*v as f64)),
-            Value::F32(v) => Ok(Value::F64(*v as f64)),
-            Value::F64(v) => Ok(Value::F64(*v)),
-            Value::Decimal(d) => {
-                use rust_decimal::prelude::ToPrimitive;
-                d.to_f64().map(Value::F64).ok_or_else(|| {
-                    Error::InvalidValue(format!("Cannot cast decimal {} to DOUBLE", d))
-                })
-            }
-            Value::Str(s) => s
-                .parse::<f64>()
-                .map(Value::F64)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to DOUBLE", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        // Unsigned integer types
-        "TINYINT UNSIGNED" => match value {
-            Value::U8(v) => Ok(Value::U8(*v)),
-            Value::I8(v) if *v >= 0 => Ok(Value::U8(*v as u8)),
-            Value::I16(v) if *v >= 0 && *v <= u8::MAX as i16 => Ok(Value::U8(*v as u8)),
-            Value::I32(v) if *v >= 0 && *v <= u8::MAX as i32 => Ok(Value::U8(*v as u8)),
-            Value::I64(v) if *v >= 0 && *v <= u8::MAX as i64 => Ok(Value::U8(*v as u8)),
-            Value::Str(s) => s.parse::<u8>().map(Value::U8).map_err(|_| {
-                Error::InvalidValue(format!("Cannot cast '{}' to TINYINT UNSIGNED", s))
-            }),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::InvalidValue(format!(
-                "Cannot cast {} to TINYINT UNSIGNED",
-                value.data_type()
-            ))),
-        },
-
-        "SMALLINT UNSIGNED" => match value {
-            Value::U8(v) => Ok(Value::U16(*v as u16)),
-            Value::U16(v) => Ok(Value::U16(*v)),
-            Value::I8(v) if *v >= 0 => Ok(Value::U16(*v as u16)),
-            Value::I16(v) if *v >= 0 => Ok(Value::U16(*v as u16)),
-            Value::I32(v) if *v >= 0 && *v <= u16::MAX as i32 => Ok(Value::U16(*v as u16)),
-            Value::I64(v) if *v >= 0 && *v <= u16::MAX as i64 => Ok(Value::U16(*v as u16)),
-            Value::Str(s) => s.parse::<u16>().map(Value::U16).map_err(|_| {
-                Error::InvalidValue(format!("Cannot cast '{}' to SMALLINT UNSIGNED", s))
-            }),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::InvalidValue(format!(
-                "Cannot cast {} to SMALLINT UNSIGNED",
-                value.data_type()
-            ))),
-        },
-
-        "INT UNSIGNED" => match value {
-            Value::U8(v) => Ok(Value::U32(*v as u32)),
-            Value::U16(v) => Ok(Value::U32(*v as u32)),
-            Value::U32(v) => Ok(Value::U32(*v)),
-            Value::I8(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
-            Value::I16(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
-            Value::I32(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
-            Value::I64(v) if *v >= 0 && *v <= u32::MAX as i64 => Ok(Value::U32(*v as u32)),
-            Value::Str(s) => s
-                .parse::<u32>()
-                .map(Value::U32)
-                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to INT UNSIGNED", s))),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::InvalidValue(format!(
-                "Cannot cast {} to INT UNSIGNED",
-                value.data_type()
-            ))),
-        },
-
-        "BIGINT UNSIGNED" => match value {
-            Value::U8(v) => Ok(Value::U64(*v as u64)),
-            Value::U16(v) => Ok(Value::U64(*v as u64)),
-            Value::U32(v) => Ok(Value::U64(*v as u64)),
-            Value::U64(v) => Ok(Value::U64(*v)),
-            Value::I8(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
-            Value::I16(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
-            Value::I32(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
-            Value::I64(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
-            Value::Str(s) => s.parse::<u64>().map(Value::U64).map_err(|_| {
-                Error::InvalidValue(format!("Cannot cast '{}' to BIGINT UNSIGNED", s))
-            }),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::InvalidValue(format!(
-                "Cannot cast {} to BIGINT UNSIGNED",
-                value.data_type()
-            ))),
-        },
-
-        "HUGEINT UNSIGNED" => match value {
-            Value::U8(v) => Ok(Value::U128(*v as u128)),
-            Value::U16(v) => Ok(Value::U128(*v as u128)),
-            Value::U32(v) => Ok(Value::U128(*v as u128)),
-            Value::U64(v) => Ok(Value::U128(*v as u128)),
-            Value::U128(v) => Ok(Value::U128(*v)),
-            Value::I8(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
-            Value::I16(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
-            Value::I32(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
-            Value::I64(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
-            Value::I128(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
-            Value::Str(s) => s.parse::<u128>().map(Value::U128).map_err(|_| {
-                Error::InvalidValue(format!("Cannot cast '{}' to HUGEINT UNSIGNED", s))
-            }),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::InvalidValue(format!(
-                "Cannot cast {} to HUGEINT UNSIGNED",
-                value.data_type()
-            ))),
-        },
-
-        "TEXT" => match value {
-            Value::Str(s) => Ok(Value::Str(s.clone())),
-            Value::I8(v) => Ok(Value::Str(v.to_string())),
-            Value::I16(v) => Ok(Value::Str(v.to_string())),
-            Value::I32(v) => Ok(Value::Str(v.to_string())),
-            Value::I64(v) => Ok(Value::Str(v.to_string())),
-            Value::I128(v) => Ok(Value::Str(v.to_string())),
-            Value::F32(v) => Ok(Value::Str(v.to_string())),
-            Value::F64(v) => Ok(Value::Str(v.to_string())),
-            Value::Decimal(d) => Ok(Value::Str(d.to_string())),
-            Value::Bool(b) => Ok(Value::Str(b.to_string())),
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "castable to string".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        "BOOLEAN" => match value {
-            Value::Bool(b) => Ok(Value::Bool(*b)),
-            Value::I8(v) => Ok(Value::Bool(*v != 0)),
-            Value::I16(v) => Ok(Value::Bool(*v != 0)),
-            Value::I32(v) => Ok(Value::Bool(*v != 0)),
-            Value::I64(v) => Ok(Value::Bool(*v != 0)),
-            Value::I128(v) => Ok(Value::Bool(*v != 0)),
-            Value::Str(s) => match s.to_lowercase().as_str() {
-                "true" | "t" | "1" => Ok(Value::Bool(true)),
-                "false" | "f" | "0" => Ok(Value::Bool(false)),
-                _ => Err(Error::InvalidValue(format!(
-                    "Cannot cast '{}' to BOOLEAN",
-                    s
-                ))),
-            },
-            Value::Null => Ok(Value::Null),
-            _ => Err(Error::TypeMismatch {
-                expected: "castable to boolean".into(),
-                found: value.data_type().to_string(),
-            }),
-        },
-
-        "UUID" => {
-            use uuid::Uuid;
-
-            match value {
-                Value::Str(s) => {
-                    // Try to parse the UUID string (supports standard, URN, and hex formats)
-                    Uuid::parse_str(s)
-                        .map(Value::Uuid)
-                        .map_err(|_| Error::InvalidValue(format!("Failed to parse UUID: {}", s)))
-                }
-                Value::Uuid(u) => Ok(Value::Uuid(*u)),
-                Value::Null => Ok(Value::Null),
-                _ => Err(Error::InvalidValue(format!(
-                    "Cannot cast {} to UUID",
-                    value.data_type()
-                ))),
-            }
+        // Check size constraint if specified
+        if let Some(expected_size) = size
+            && items.len() != expected_size
+        {
+            return Err(Error::TypeMismatch {
+                expected: format!("array with {} elements", expected_size),
+                found: format!("array with {} elements", items.len()),
+            });
         }
 
-        "DECIMAL" => {
-            use rust_decimal::Decimal;
-            use std::str::FromStr;
+        // Cast each element to the target type
+        let mut casted_items = Vec::new();
+        for item in items {
+            casted_items.push(cast_value(&item, base_type)?);
+        }
 
-            match value {
-                Value::I8(v) => Ok(Value::Decimal(Decimal::from(*v))),
-                Value::I16(v) => Ok(Value::Decimal(Decimal::from(*v))),
-                Value::I32(v) => Ok(Value::Decimal(Decimal::from(*v))),
-                Value::I64(v) => Ok(Value::Decimal(Decimal::from(*v))),
-                Value::I128(v) => Ok(Value::Decimal(Decimal::from(*v))),
-                Value::F32(v) => Decimal::from_str(&v.to_string())
-                    .map(Value::Decimal)
-                    .map_err(|_| {
-                        Error::InvalidValue(format!("Cannot cast float {} to DECIMAL", v))
+        // Return as Array if size is specified, List otherwise
+        if size.is_some() {
+            Ok(Value::Array(casted_items))
+        } else {
+            Ok(Value::List(casted_items))
+        }
+    } else if target_type.starts_with("MAP(") && target_type.ends_with(')') {
+        // Handle MAP(key_type, value_type) syntax
+        let types_str = &target_type[4..target_type.len() - 1];
+        let parts: Vec<&str> = types_str.split(',').map(|s| s.trim()).collect();
+        if parts.len() != 2 {
+            return Err(Error::ExecutionError(format!(
+                "Invalid MAP type syntax: {}",
+                target_type
+            )));
+        }
+
+        let key_type = parts[0];
+        let value_type = parts[1];
+
+        match value {
+            Value::Map(m) => {
+                // Cast all keys and values
+                use std::collections::HashMap;
+                let mut casted_map = HashMap::new();
+                for (k, v) in m {
+                    // Keys must be strings for now
+                    if key_type != "TEXT" && key_type != "VARCHAR" {
+                        return Err(Error::TypeMismatch {
+                            expected: "MAP keys must be TEXT/VARCHAR".into(),
+                            found: key_type.to_string(),
+                        });
+                    }
+                    casted_map.insert(k.clone(), cast_value(v, value_type)?);
+                }
+                Ok(Value::Map(casted_map))
+            }
+            Value::Str(s) => {
+                // Parse JSON object and cast values
+                match Value::parse_json_object(s) {
+                    Ok(Value::Map(m)) => {
+                        use std::collections::HashMap;
+                        let mut casted_map = HashMap::new();
+                        for (k, v) in m {
+                            casted_map.insert(k, cast_value(&v, value_type)?);
+                        }
+                        Ok(Value::Map(casted_map))
+                    }
+                    _ => Err(Error::TypeMismatch {
+                        expected: "MAP".into(),
+                        found: value.data_type().to_string(),
                     }),
-                Value::F64(v) => Decimal::from_str(&v.to_string())
-                    .map(Value::Decimal)
-                    .map_err(|_| {
-                        Error::InvalidValue(format!("Cannot cast float {} to DECIMAL", v))
-                    }),
-                Value::Decimal(d) => Ok(Value::Decimal(*d)),
-                Value::Str(s) => Decimal::from_str(s)
-                    .map(Value::Decimal)
-                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to DECIMAL", s))),
+                }
+            }
+            Value::Null => Ok(Value::Null),
+            _ => Err(Error::TypeMismatch {
+                expected: "MAP".into(),
+                found: value.data_type().to_string(),
+            }),
+        }
+    } else {
+        // Original match statement for simple types
+        match target_type {
+            "TINYINT" => match value {
+                Value::I8(v) => Ok(Value::I8(*v)),
+                Value::I16(v) => {
+                    if *v >= i8::MIN as i16 && *v <= i8::MAX as i16 {
+                        Ok(Value::I8(*v as i8))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for TINYINT",
+                            v
+                        )))
+                    }
+                }
+                Value::I32(v) => {
+                    if *v >= i8::MIN as i32 && *v <= i8::MAX as i32 {
+                        Ok(Value::I8(*v as i8))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for TINYINT",
+                            v
+                        )))
+                    }
+                }
+                Value::I64(v) => {
+                    if *v >= i8::MIN as i64 && *v <= i8::MAX as i64 {
+                        Ok(Value::I8(*v as i8))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for TINYINT",
+                            v
+                        )))
+                    }
+                }
+                Value::I128(v) => {
+                    if *v >= i8::MIN as i128 && *v <= i8::MAX as i128 {
+                        Ok(Value::I8(*v as i8))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for TINYINT",
+                            v
+                        )))
+                    }
+                }
+                Value::Str(s) => s
+                    .parse::<i8>()
+                    .map(Value::I8)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to TINYINT", s))),
                 Value::Null => Ok(Value::Null),
                 _ => Err(Error::TypeMismatch {
                     expected: "numeric or string".into(),
                     found: value.data_type().to_string(),
                 }),
-            }
-        }
+            },
 
-        _ => Err(Error::ExecutionError(format!(
-            "Unknown cast target type: {}",
-            target_type
-        ))),
+            "SMALLINT" => match value {
+                Value::I8(v) => Ok(Value::I16(*v as i16)),
+                Value::I16(v) => Ok(Value::I16(*v)),
+                Value::I32(v) => {
+                    if *v >= i16::MIN as i32 && *v <= i16::MAX as i32 {
+                        Ok(Value::I16(*v as i16))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for SMALLINT",
+                            v
+                        )))
+                    }
+                }
+                Value::I64(v) => {
+                    if *v >= i16::MIN as i64 && *v <= i16::MAX as i64 {
+                        Ok(Value::I16(*v as i16))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for SMALLINT",
+                            v
+                        )))
+                    }
+                }
+                Value::I128(v) => {
+                    if *v >= i16::MIN as i128 && *v <= i16::MAX as i128 {
+                        Ok(Value::I16(*v as i16))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for SMALLINT",
+                            v
+                        )))
+                    }
+                }
+                Value::Str(s) => s
+                    .parse::<i16>()
+                    .map(Value::I16)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to SMALLINT", s))),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "numeric or string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "INT" => match value {
+                Value::I8(v) => Ok(Value::I32(*v as i32)),
+                Value::I16(v) => Ok(Value::I32(*v as i32)),
+                Value::I32(v) => Ok(Value::I32(*v)),
+                Value::I64(v) => {
+                    if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+                        Ok(Value::I32(*v as i32))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for INT",
+                            v
+                        )))
+                    }
+                }
+                Value::I128(v) => {
+                    if *v >= i32::MIN as i128 && *v <= i32::MAX as i128 {
+                        Ok(Value::I32(*v as i32))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for INT",
+                            v
+                        )))
+                    }
+                }
+                Value::Decimal(d) => {
+                    // Convert Decimal to i32
+                    use rust_decimal::prelude::ToPrimitive;
+                    d.to_i32().map(Value::I32).ok_or_else(|| {
+                        Error::InvalidValue(format!("Decimal {} out of range for INT", d))
+                    })
+                }
+                Value::Str(s) => s
+                    .parse::<i32>()
+                    .map(Value::I32)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to INT", s))),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "numeric or string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "BIGINT" => match value {
+                Value::I8(v) => Ok(Value::I64(*v as i64)),
+                Value::I16(v) => Ok(Value::I64(*v as i64)),
+                Value::I32(v) => Ok(Value::I64(*v as i64)),
+                Value::I64(v) => Ok(Value::I64(*v)),
+                Value::I128(v) => {
+                    if *v >= i64::MIN as i128 && *v <= i64::MAX as i128 {
+                        Ok(Value::I64(*v as i64))
+                    } else {
+                        Err(Error::InvalidValue(format!(
+                            "Value {} out of range for BIGINT",
+                            v
+                        )))
+                    }
+                }
+                Value::Str(s) => s
+                    .parse::<i64>()
+                    .map(Value::I64)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to BIGINT", s))),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "numeric or string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "HUGEINT" => match value {
+                Value::I8(v) => Ok(Value::I128(*v as i128)),
+                Value::I16(v) => Ok(Value::I128(*v as i128)),
+                Value::I32(v) => Ok(Value::I128(*v as i128)),
+                Value::I64(v) => Ok(Value::I128(*v as i128)),
+                Value::I128(v) => Ok(Value::I128(*v)),
+                Value::Str(s) => s
+                    .parse::<i128>()
+                    .map(Value::I128)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to HUGEINT", s))),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "numeric or string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            // REAL is F32 (single precision)
+            "REAL" => match value {
+                Value::I8(v) => Ok(Value::F32(*v as f32)),
+                Value::I16(v) => Ok(Value::F32(*v as f32)),
+                Value::I32(v) => Ok(Value::F32(*v as f32)),
+                Value::I64(v) => Ok(Value::F32(*v as f32)),
+                Value::I128(v) => Ok(Value::F32(*v as f32)),
+                Value::F32(v) => Ok(Value::F32(*v)),
+                Value::F64(v) => Ok(Value::F32(*v as f32)),
+                Value::Decimal(d) => {
+                    use rust_decimal::prelude::ToPrimitive;
+                    d.to_f32().map(Value::F32).ok_or_else(|| {
+                        Error::InvalidValue(format!("Cannot cast decimal {} to REAL", d))
+                    })
+                }
+                Value::Str(s) => s
+                    .parse::<f32>()
+                    .map(Value::F32)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to REAL", s))),
+                _ => Err(Error::TypeMismatch {
+                    expected: "REAL".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+            // FLOAT is F64 (double precision) - matching column type behavior
+            "FLOAT" => match value {
+                Value::I8(v) => Ok(Value::F64(*v as f64)),
+                Value::I16(v) => Ok(Value::F64(*v as f64)),
+                Value::I32(v) => Ok(Value::F64(*v as f64)),
+                Value::I64(v) => Ok(Value::F64(*v as f64)),
+                Value::I128(v) => Ok(Value::F64(*v as f64)),
+                Value::F32(v) => Ok(Value::F64(*v as f64)),
+                Value::F64(v) => Ok(Value::F64(*v)),
+                Value::Decimal(d) => {
+                    use rust_decimal::prelude::ToPrimitive;
+                    d.to_f64().map(Value::F64).ok_or_else(|| {
+                        Error::InvalidValue(format!("Cannot cast decimal {} to FLOAT", d))
+                    })
+                }
+                Value::Str(s) => s
+                    .parse::<f64>()
+                    .map(Value::F64)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to FLOAT", s))),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "numeric or string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "DOUBLE" => match value {
+                Value::I8(v) => Ok(Value::F64(*v as f64)),
+                Value::I16(v) => Ok(Value::F64(*v as f64)),
+                Value::I32(v) => Ok(Value::F64(*v as f64)),
+                Value::I64(v) => Ok(Value::F64(*v as f64)),
+                Value::I128(v) => Ok(Value::F64(*v as f64)),
+                Value::F32(v) => Ok(Value::F64(*v as f64)),
+                Value::F64(v) => Ok(Value::F64(*v)),
+                Value::Decimal(d) => {
+                    use rust_decimal::prelude::ToPrimitive;
+                    d.to_f64().map(Value::F64).ok_or_else(|| {
+                        Error::InvalidValue(format!("Cannot cast decimal {} to DOUBLE", d))
+                    })
+                }
+                Value::Str(s) => s
+                    .parse::<f64>()
+                    .map(Value::F64)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to DOUBLE", s))),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "numeric or string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            // Unsigned integer types
+            "TINYINT UNSIGNED" => match value {
+                Value::U8(v) => Ok(Value::U8(*v)),
+                Value::I8(v) if *v >= 0 => Ok(Value::U8(*v as u8)),
+                Value::I16(v) if *v >= 0 && *v <= u8::MAX as i16 => Ok(Value::U8(*v as u8)),
+                Value::I32(v) if *v >= 0 && *v <= u8::MAX as i32 => Ok(Value::U8(*v as u8)),
+                Value::I64(v) if *v >= 0 && *v <= u8::MAX as i64 => Ok(Value::U8(*v as u8)),
+                Value::Str(s) => s.parse::<u8>().map(Value::U8).map_err(|_| {
+                    Error::InvalidValue(format!("Cannot cast '{}' to TINYINT UNSIGNED", s))
+                }),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to TINYINT UNSIGNED",
+                    value.data_type()
+                ))),
+            },
+
+            "SMALLINT UNSIGNED" => match value {
+                Value::U8(v) => Ok(Value::U16(*v as u16)),
+                Value::U16(v) => Ok(Value::U16(*v)),
+                Value::I8(v) if *v >= 0 => Ok(Value::U16(*v as u16)),
+                Value::I16(v) if *v >= 0 => Ok(Value::U16(*v as u16)),
+                Value::I32(v) if *v >= 0 && *v <= u16::MAX as i32 => Ok(Value::U16(*v as u16)),
+                Value::I64(v) if *v >= 0 && *v <= u16::MAX as i64 => Ok(Value::U16(*v as u16)),
+                Value::Str(s) => s.parse::<u16>().map(Value::U16).map_err(|_| {
+                    Error::InvalidValue(format!("Cannot cast '{}' to SMALLINT UNSIGNED", s))
+                }),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to SMALLINT UNSIGNED",
+                    value.data_type()
+                ))),
+            },
+
+            "INT UNSIGNED" => match value {
+                Value::U8(v) => Ok(Value::U32(*v as u32)),
+                Value::U16(v) => Ok(Value::U32(*v as u32)),
+                Value::U32(v) => Ok(Value::U32(*v)),
+                Value::I8(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
+                Value::I16(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
+                Value::I32(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
+                Value::I64(v) if *v >= 0 && *v <= u32::MAX as i64 => Ok(Value::U32(*v as u32)),
+                Value::Str(s) => s.parse::<u32>().map(Value::U32).map_err(|_| {
+                    Error::InvalidValue(format!("Cannot cast '{}' to INT UNSIGNED", s))
+                }),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to INT UNSIGNED",
+                    value.data_type()
+                ))),
+            },
+
+            "BIGINT UNSIGNED" => match value {
+                Value::U8(v) => Ok(Value::U64(*v as u64)),
+                Value::U16(v) => Ok(Value::U64(*v as u64)),
+                Value::U32(v) => Ok(Value::U64(*v as u64)),
+                Value::U64(v) => Ok(Value::U64(*v)),
+                Value::I8(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+                Value::I16(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+                Value::I32(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+                Value::I64(v) if *v >= 0 => Ok(Value::U64(*v as u64)),
+                Value::Str(s) => s.parse::<u64>().map(Value::U64).map_err(|_| {
+                    Error::InvalidValue(format!("Cannot cast '{}' to BIGINT UNSIGNED", s))
+                }),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to BIGINT UNSIGNED",
+                    value.data_type()
+                ))),
+            },
+
+            "HUGEINT UNSIGNED" => match value {
+                Value::U8(v) => Ok(Value::U128(*v as u128)),
+                Value::U16(v) => Ok(Value::U128(*v as u128)),
+                Value::U32(v) => Ok(Value::U128(*v as u128)),
+                Value::U64(v) => Ok(Value::U128(*v as u128)),
+                Value::U128(v) => Ok(Value::U128(*v)),
+                Value::I8(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+                Value::I16(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+                Value::I32(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+                Value::I64(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+                Value::I128(v) if *v >= 0 => Ok(Value::U128(*v as u128)),
+                Value::Str(s) => s.parse::<u128>().map(Value::U128).map_err(|_| {
+                    Error::InvalidValue(format!("Cannot cast '{}' to HUGEINT UNSIGNED", s))
+                }),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to HUGEINT UNSIGNED",
+                    value.data_type()
+                ))),
+            },
+
+            "TEXT" => match value {
+                Value::Str(s) => Ok(Value::Str(s.clone())),
+                Value::I8(v) => Ok(Value::Str(v.to_string())),
+                Value::I16(v) => Ok(Value::Str(v.to_string())),
+                Value::I32(v) => Ok(Value::Str(v.to_string())),
+                Value::I64(v) => Ok(Value::Str(v.to_string())),
+                Value::I128(v) => Ok(Value::Str(v.to_string())),
+                Value::F32(v) => Ok(Value::Str(v.to_string())),
+                Value::F64(v) => Ok(Value::Str(v.to_string())),
+                Value::Decimal(d) => Ok(Value::Str(d.to_string())),
+                Value::Bool(b) => Ok(Value::Str(b.to_string())),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "castable to string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "BOOLEAN" => match value {
+                Value::Bool(b) => Ok(Value::Bool(*b)),
+                Value::I8(v) => Ok(Value::Bool(*v != 0)),
+                Value::I16(v) => Ok(Value::Bool(*v != 0)),
+                Value::I32(v) => Ok(Value::Bool(*v != 0)),
+                Value::I64(v) => Ok(Value::Bool(*v != 0)),
+                Value::I128(v) => Ok(Value::Bool(*v != 0)),
+                Value::Str(s) => match s.to_lowercase().as_str() {
+                    "true" | "t" | "1" => Ok(Value::Bool(true)),
+                    "false" | "f" | "0" => Ok(Value::Bool(false)),
+                    _ => Err(Error::InvalidValue(format!(
+                        "Cannot cast '{}' to BOOLEAN",
+                        s
+                    ))),
+                },
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "castable to boolean".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "UUID" => {
+                use uuid::Uuid;
+
+                match value {
+                    Value::Str(s) => {
+                        // Try to parse the UUID string (supports standard, URN, and hex formats)
+                        Uuid::parse_str(s).map(Value::Uuid).map_err(|_| {
+                            Error::InvalidValue(format!("Failed to parse UUID: {}", s))
+                        })
+                    }
+                    Value::Uuid(u) => Ok(Value::Uuid(*u)),
+                    Value::Null => Ok(Value::Null),
+                    _ => Err(Error::InvalidValue(format!(
+                        "Cannot cast {} to UUID",
+                        value.data_type()
+                    ))),
+                }
+            }
+
+            "DECIMAL" => {
+                use rust_decimal::Decimal;
+                use std::str::FromStr;
+
+                match value {
+                    Value::I8(v) => Ok(Value::Decimal(Decimal::from(*v))),
+                    Value::I16(v) => Ok(Value::Decimal(Decimal::from(*v))),
+                    Value::I32(v) => Ok(Value::Decimal(Decimal::from(*v))),
+                    Value::I64(v) => Ok(Value::Decimal(Decimal::from(*v))),
+                    Value::I128(v) => Ok(Value::Decimal(Decimal::from(*v))),
+                    Value::F32(v) => Decimal::from_str(&v.to_string())
+                        .map(Value::Decimal)
+                        .map_err(|_| {
+                            Error::InvalidValue(format!("Cannot cast float {} to DECIMAL", v))
+                        }),
+                    Value::F64(v) => Decimal::from_str(&v.to_string())
+                        .map(Value::Decimal)
+                        .map_err(|_| {
+                            Error::InvalidValue(format!("Cannot cast float {} to DECIMAL", v))
+                        }),
+                    Value::Decimal(d) => Ok(Value::Decimal(*d)),
+                    Value::Str(s) => Decimal::from_str(s).map(Value::Decimal).map_err(|_| {
+                        Error::InvalidValue(format!("Cannot cast '{}' to DECIMAL", s))
+                    }),
+                    Value::Null => Ok(Value::Null),
+                    _ => Err(Error::TypeMismatch {
+                        expected: "numeric or string".into(),
+                        found: value.data_type().to_string(),
+                    }),
+                }
+            }
+
+            // Collection type casts
+            "LIST" => match value {
+                Value::List(l) => Ok(Value::List(l.clone())),
+                Value::Array(a) => Ok(Value::List(a.clone())), // Array to List
+                Value::Str(s) => {
+                    // Parse JSON array string
+                    Value::parse_json_array(s)
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "array, list, or JSON string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "ARRAY" => match value {
+                Value::Array(a) => Ok(Value::Array(a.clone())),
+                Value::List(l) => Ok(Value::Array(l.clone())), // List to Array
+                Value::Str(s) => {
+                    // Parse JSON array string to array
+                    match Value::parse_json_array(s) {
+                        Ok(Value::List(items)) => Ok(Value::Array(items)),
+                        Ok(_) => Err(Error::TypeMismatch {
+                            expected: "JSON array".into(),
+                            found: "non-array JSON".into(),
+                        }),
+                        Err(e) => Err(e),
+                    }
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "array, list, or JSON string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "MAP" => match value {
+                Value::Map(m) => Ok(Value::Map(m.clone())),
+                Value::Str(s) => {
+                    // Parse JSON object string
+                    Value::parse_json_object(s)
+                }
+                Value::Struct(fields) => {
+                    // Convert struct to map
+                    use std::collections::HashMap;
+                    let mut map = HashMap::new();
+                    for (name, val) in fields {
+                        map.insert(name.clone(), val.clone());
+                    }
+                    Ok(Value::Map(map))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "map, struct, or JSON string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "STRUCT" => match value {
+                Value::Struct(s) => Ok(Value::Struct(s.clone())),
+                Value::Map(m) => {
+                    // Convert map to struct
+                    let fields: Vec<(String, Value)> =
+                        m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    Ok(Value::Struct(fields))
+                }
+                Value::Str(s) => {
+                    // Parse JSON object string to struct
+                    match Value::parse_json_object(s) {
+                        Ok(Value::Map(map)) => {
+                            let fields: Vec<(String, Value)> = map.into_iter().collect();
+                            Ok(Value::Struct(fields))
+                        }
+                        Ok(_) => Err(Error::TypeMismatch {
+                            expected: "JSON object".into(),
+                            found: "non-object JSON".into(),
+                        }),
+                        Err(e) => Err(e),
+                    }
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "struct, map, or JSON string".into(),
+                    found: value.data_type().to_string(),
+                }),
+            },
+
+            "JSON" | "JSONB" => {
+                // Convert any value to JSON string representation
+                Ok(Value::Str(value.to_json_string()))
+            }
+
+            _ => Err(Error::ExecutionError(format!(
+                "Unknown cast target type: {}",
+                target_type
+            ))),
+        }
     }
 }
 

@@ -253,6 +253,55 @@ impl Value {
             return Ok(());
         }
 
+        // Allow empty maps to match any Map type
+        if let Value::Map(m) = self
+            && m.is_empty()
+            && matches!(expected, DataType::Map(_, _))
+        {
+            return Ok(());
+        }
+
+        // Allow empty lists/arrays to match any List/Array type
+        if let Value::List(l) = self
+            && l.is_empty()
+            && matches!(expected, DataType::List(_))
+        {
+            return Ok(());
+        }
+        if let Value::Array(a) = self
+            && a.is_empty()
+            && matches!(expected, DataType::Array(_, _))
+        {
+            return Ok(());
+        }
+
+        // Special handling for structs with null fields
+        if let (Value::Struct(fields), DataType::Struct(schema_fields)) = (self, expected) {
+            // Check if struct fields match, ignoring NULL type mismatches
+            if fields.len() == schema_fields.len() {
+                let mut all_match = true;
+                for ((field_name, field_val), (schema_name, schema_type)) in
+                    fields.iter().zip(schema_fields.iter())
+                {
+                    if field_name != schema_name {
+                        all_match = false;
+                        break;
+                    }
+                    // NULL values are compatible with any type
+                    if !field_val.is_null() {
+                        // Recursively check non-null field types
+                        if field_val.check_type(schema_type).is_err() {
+                            all_match = false;
+                            break;
+                        }
+                    }
+                }
+                if all_match {
+                    return Ok(());
+                }
+            }
+        }
+
         Err(Error::TypeMismatch {
             expected: expected.to_string(),
             found: actual.to_string(),
@@ -543,14 +592,14 @@ impl Value {
 
     /// Parse JSON string to array/list value
     pub fn parse_json_array(s: &str) -> Result<Value> {
-        let parsed: serde_json::Value = serde_json::from_str(s)
-            .map_err(|e| Error::ParseError(format!("Invalid JSON array: {}", e)))?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(s).map_err(|e| Error::InvalidJsonString(e.to_string()))?;
 
         if let serde_json::Value::Array(arr) = parsed {
             let values: Result<Vec<Value>> = arr.into_iter().map(Self::from_json_value).collect();
             Ok(Value::List(values?))
         } else {
-            Err(Error::ParseError("Expected JSON array".into()))
+            Err(Error::JsonArrayTypeRequired)
         }
     }
 

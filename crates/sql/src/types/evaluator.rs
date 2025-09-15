@@ -1385,6 +1385,70 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         // Point comparisons
         (Value::Point(a), Value::Point(b)) => Ok(a.cmp(b)),
 
+        // Collection comparisons
+        (Value::List(a), Value::List(b)) => {
+            // Compare lists element by element
+            for (av, bv) in a.iter().zip(b.iter()) {
+                match compare(av, bv)? {
+                    Ordering::Equal => continue,
+                    other => return Ok(other),
+                }
+            }
+            Ok(a.len().cmp(&b.len()))
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            // Compare arrays element by element
+            for (av, bv) in a.iter().zip(b.iter()) {
+                match compare(av, bv)? {
+                    Ordering::Equal => continue,
+                    other => return Ok(other),
+                }
+            }
+            Ok(a.len().cmp(&b.len()))
+        }
+        // Allow comparing Array with List (common when comparing with parsed JSON)
+        (Value::Array(a), Value::List(b)) | (Value::List(a), Value::Array(b)) => {
+            // Compare element by element
+            for (av, bv) in a.iter().zip(b.iter()) {
+                match compare(av, bv)? {
+                    Ordering::Equal => continue,
+                    other => return Ok(other),
+                }
+            }
+            Ok(a.len().cmp(&b.len()))
+        }
+        (Value::Map(a), Value::Map(b)) => {
+            // For map equality, check if all key-value pairs match
+            // This is sufficient for equality comparison in WHERE clauses
+            if a.len() != b.len() {
+                return Ok(a.len().cmp(&b.len()));
+            }
+            for (key, aval) in a.iter() {
+                match b.get(key) {
+                    Some(bval) => match compare(aval, bval)? {
+                        Ordering::Equal => continue,
+                        other => return Ok(other),
+                    },
+                    None => return Ok(Ordering::Greater), // a has a key that b doesn't
+                }
+            }
+            Ok(Ordering::Equal)
+        }
+        (Value::Struct(a), Value::Struct(b)) => {
+            // Compare structs field by field
+            for ((aname, aval), (bname, bval)) in a.iter().zip(b.iter()) {
+                match aname.cmp(bname) {
+                    Ordering::Equal => {}
+                    other => return Ok(other),
+                }
+                match compare(aval, bval)? {
+                    Ordering::Equal => continue,
+                    other => return Ok(other),
+                }
+            }
+            Ok(a.len().cmp(&b.len()))
+        }
+
         // Type mismatches
         _ => Err(Error::TypeMismatch {
             expected: "comparable types".into(),

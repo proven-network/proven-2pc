@@ -1485,9 +1485,30 @@ impl<'a> PlanContext<'a> {
             ast::Expression::Column(table_ref, column_name) => {
                 // Find the table
                 let table = if let Some(ref tref) = table_ref {
-                    self.tables
+                    // First try to find a table with this name
+                    if let Some(table) = self
+                        .tables
                         .iter()
                         .find(|t| &t.name == tref || t.alias.as_ref() == Some(tref))
+                    {
+                        Some(table)
+                    } else {
+                        // If no table found, check if this might be struct field access
+                        // where tref is actually a column name and column_name is the field
+                        for table in &self.tables {
+                            if let Some(schema) = self.schemas.get(&table.name)
+                                && schema.columns.iter().any(|c| c.name == *tref)
+                            {
+                                // Found a column with the name tref, so this is struct field access
+                                let col_expr = self.resolve_column_in_table(table, tref)?;
+                                return Ok(Expression::FieldAccess(
+                                    Box::new(col_expr),
+                                    column_name,
+                                ));
+                            }
+                        }
+                        None
+                    }
                 } else if self.tables.len() == 1 {
                     // No table specified and only one table - use it
                     self.tables.first()
@@ -1501,10 +1522,13 @@ impl<'a> PlanContext<'a> {
                         }
                     }
                     return Err(Error::ColumnNotFound(column_name));
-                }
-                .ok_or_else(|| Error::TableNotFound(table_ref.unwrap_or_default()))?;
+                };
 
-                self.resolve_column_in_table(table, &column_name)
+                if let Some(table) = table {
+                    self.resolve_column_in_table(table, &column_name)
+                } else {
+                    Err(Error::TableNotFound(table_ref.unwrap_or_default()))
+                }
             }
 
             ast::Expression::Function(name, args) => {

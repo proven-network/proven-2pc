@@ -49,10 +49,10 @@ fn test_struct_field_access() {
     let results = ctx.query("SELECT id, details.name AS emp_name, details.salary AS emp_salary FROM Employees ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert_eq!(results[0].get("emp_name").unwrap(), "Str(\"Alice\")");
-    assert_eq!(results[0].get("emp_salary").unwrap(), "F64(75000.0)");
-    assert_eq!(results[1].get("emp_name").unwrap(), "Str(\"Bob\")");
-    assert_eq!(results[1].get("emp_salary").unwrap(), "F64(65000.0)");
+    assert_eq!(results[0].get("emp_name").unwrap(), "Str(Alice)");
+    assert_eq!(results[0].get("emp_salary").unwrap(), "F64(75000)");
+    assert_eq!(results[1].get("emp_name").unwrap(), "Str(Bob)");
+    assert_eq!(results[1].get("emp_salary").unwrap(), "F64(65000)");
 
     ctx.commit();
 }
@@ -145,7 +145,7 @@ fn test_nested_struct_field_access() {
     // Access nested struct fields
     let results = ctx.query("SELECT info.address.city AS city FROM Companies");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("city").unwrap(), "Str(\"SF\")");
+    assert_eq!(results[0].get("city").unwrap(), "Str(SF)");
 
     ctx.commit();
 }
@@ -196,7 +196,7 @@ fn test_struct_in_array() {
     ctx.exec(
         "CREATE TABLE Events (
         id INT,
-        participants LIST
+        participants STRUCT(name VARCHAR, role VARCHAR)[]
     )",
     );
 

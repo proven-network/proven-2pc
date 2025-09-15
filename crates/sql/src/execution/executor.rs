@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::planning::plan::{Node, Plan};
 use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
+use crate::types::DataType;
 use crate::types::evaluator;
 use crate::types::expression::Expression;
 use crate::types::query::Rows;
@@ -744,7 +745,123 @@ impl Executor {
 
             Expression::Equal(left, right) => {
                 let l = Self::evaluate_expression_static(left, row)?;
-                let r = Self::evaluate_expression_static(right, row)?;
+                let mut r = Self::evaluate_expression_static(right, row)?;
+
+                // Special case: if comparing collections with JSON strings, parse the strings
+                // Handle Map comparison
+                if matches!(l, Value::Map(_)) && matches!(r, Value::Str(_)) {
+                    if let Value::Str(s) = &r
+                        && s.starts_with('{')
+                        && s.ends_with('}')
+                    {
+                        // Try to parse as JSON map
+                        if let Ok(parsed) = Value::parse_json_object(s)
+                            && matches!(parsed, Value::Map(_))
+                        {
+                            r = parsed;
+                        }
+                    }
+                } else if matches!(r, Value::Map(_)) && matches!(l, Value::Str(_)) {
+                    // Handle the reverse case as well
+                    if let Value::Str(s) = &l
+                        && s.starts_with('{')
+                        && s.ends_with('}')
+                        && let Ok(parsed) = Value::parse_json_object(s)
+                        && matches!(parsed, Value::Map(_))
+                    {
+                        let l_parsed = parsed;
+                        let r_val = r;
+                        return Self::evaluate_expression_static(
+                            &Expression::Equal(
+                                Box::new(Expression::Constant(l_parsed)),
+                                Box::new(Expression::Constant(r_val)),
+                            ),
+                            row,
+                        );
+                    }
+                }
+                // Handle Array/List comparison
+                else if (matches!(l, Value::Array(_)) || matches!(l, Value::List(_)))
+                    && matches!(r, Value::Str(_))
+                {
+                    if let Value::Str(s) = &r
+                        && s.starts_with('[')
+                        && s.ends_with(']')
+                    {
+                        // Try to parse as JSON array
+                        if let Ok(parsed) = Value::parse_json_array(s) {
+                            r = parsed;
+                        }
+                    }
+                } else if (matches!(r, Value::Array(_)) || matches!(r, Value::List(_)))
+                    && matches!(l, Value::Str(_))
+                    && let Value::Str(s) = &l
+                    && s.starts_with('[')
+                    && s.ends_with(']')
+                    && let Ok(parsed) = Value::parse_json_array(s)
+                {
+                    let l_parsed = parsed;
+                    let r_val = r;
+                    return Self::evaluate_expression_static(
+                        &Expression::Equal(
+                            Box::new(Expression::Constant(l_parsed)),
+                            Box::new(Expression::Constant(r_val)),
+                        ),
+                        row,
+                    );
+                }
+                // Handle Struct comparison with JSON string
+                else if matches!(l, Value::Struct(_)) && matches!(r, Value::Str(_)) {
+                    if let Value::Str(s) = &r
+                        && s.starts_with('{')
+                        && s.ends_with('}')
+                    {
+                        // Try to parse as JSON object and coerce to struct
+                        if let Ok(parsed) = Value::parse_json_object(s) {
+                            // Get the struct's type for coercion
+                            if let Value::Struct(fields) = &l {
+                                // Build the struct's schema
+                                let schema: Vec<(String, DataType)> = fields
+                                    .iter()
+                                    .map(|(name, val)| (name.clone(), val.data_type()))
+                                    .collect();
+                                // Try to coerce the parsed map to struct
+                                if let Ok(coerced) = crate::types::coercion::coerce_value(
+                                    parsed,
+                                    &DataType::Struct(schema),
+                                ) {
+                                    r = coerced;
+                                }
+                            }
+                        }
+                    }
+                } else if matches!(r, Value::Struct(_)) && matches!(l, Value::Str(_)) {
+                    // Handle the reverse case
+                    if let Value::Str(s) = &l
+                        && s.starts_with('{')
+                        && s.ends_with('}')
+                        && let Ok(parsed) = Value::parse_json_object(s)
+                        && let Value::Struct(fields) = &r
+                    {
+                        let schema: Vec<(String, DataType)> = fields
+                            .iter()
+                            .map(|(name, val)| (name.clone(), val.data_type()))
+                            .collect();
+                        if let Ok(coerced) =
+                            crate::types::coercion::coerce_value(parsed, &DataType::Struct(schema))
+                        {
+                            let l_parsed = coerced;
+                            let r_val = r;
+                            return Self::evaluate_expression_static(
+                                &Expression::Equal(
+                                    Box::new(Expression::Constant(l_parsed)),
+                                    Box::new(Expression::Constant(r_val)),
+                                ),
+                                row,
+                            );
+                        }
+                    }
+                }
                 // SQL semantics: any comparison with NULL returns NULL
                 if l.is_null() || r.is_null() {
                     return Ok(Value::Null);
@@ -1106,6 +1223,63 @@ impl Executor {
                 } else {
                     Ok(Value::boolean(in_range))
                 }
+            }
+
+            // Collection access expressions
+            Expression::ArrayAccess(base, index) => {
+                let collection = Self::evaluate_expression_static(base, row)?;
+                let idx = Self::evaluate_expression_static(index, row)?;
+
+                match (collection, idx) {
+                    (Value::Array(arr), Value::I32(i)) if i >= 0 => {
+                        Ok(arr.get(i as usize).cloned().unwrap_or(Value::Null))
+                    }
+                    (Value::Array(arr), Value::I64(i)) if i >= 0 => {
+                        Ok(arr.get(i as usize).cloned().unwrap_or(Value::Null))
+                    }
+                    (Value::List(list), Value::I32(i)) if i >= 0 => {
+                        Ok(list.get(i as usize).cloned().unwrap_or(Value::Null))
+                    }
+                    (Value::List(list), Value::I64(i)) if i >= 0 => {
+                        Ok(list.get(i as usize).cloned().unwrap_or(Value::Null))
+                    }
+                    (Value::Map(map), Value::Str(key)) => {
+                        Ok(map.get(&key).cloned().unwrap_or(Value::Null))
+                    }
+                    _ => Ok(Value::Null),
+                }
+            }
+
+            Expression::FieldAccess(base, field) => {
+                let struct_val = Self::evaluate_expression_static(base, row)?;
+                match struct_val {
+                    Value::Struct(fields) => Ok(fields
+                        .iter()
+                        .find(|(name, _)| name == field)
+                        .map(|(_, val)| val.clone())
+                        .unwrap_or(Value::Null)),
+                    _ => Ok(Value::Null),
+                }
+            }
+
+            Expression::ArrayLiteral(elements) => {
+                let values: Result<Vec<_>> = elements
+                    .iter()
+                    .map(|e| Self::evaluate_expression_static(e, row))
+                    .collect();
+                Ok(Value::List(values?))
+            }
+
+            Expression::MapLiteral(pairs) => {
+                let mut map = std::collections::HashMap::new();
+                for (k, v) in pairs {
+                    let key = Self::evaluate_expression_static(k, row)?;
+                    let value = Self::evaluate_expression_static(v, row)?;
+                    if let Value::Str(key_str) = key {
+                        map.insert(key_str, value);
+                    }
+                }
+                Ok(Value::Map(map))
             }
 
             // Other expression types...

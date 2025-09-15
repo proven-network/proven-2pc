@@ -9,12 +9,18 @@ use std::collections::HashMap;
 /// This handles implicit type conversions that are safe and expected in SQL
 pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
     // If types already match, return as-is
-    if value.data_type() == *target_type {
+    // Special case: for structs, always try coercion in case field types need adjustment
+    if !matches!(value, Value::Struct(_)) && value.data_type() == *target_type {
         return Ok(value);
     }
 
     // Special handling for Map values that need element coercion
     if let (Value::Map(map), DataType::Map(_key_type, value_type)) = (&value, target_type) {
+        // Empty maps can be coerced to any map type
+        if map.is_empty() {
+            return Ok(Value::Map(HashMap::new()));
+        }
+
         let mut coerced_map = HashMap::new();
         for (key, val) in map.clone() {
             // Coerce the value to the expected type
@@ -427,12 +433,36 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             // Parse JSON array string to List
             match Value::parse_json_array(s) {
                 Ok(Value::List(items)) => {
-                    // Coerce each element to the expected type
-                    let mut coerced_items = Vec::new();
-                    for item in items {
-                        coerced_items.push(coerce_value(item, elem_type)?);
+                    // Special handling: if elem_type is I64 (the default) and coercion fails,
+                    // just use the values as-is (type inference from data)
+                    if **elem_type == DataType::I64 && !items.is_empty() {
+                        // Try to coerce to I64 first
+                        let mut coerced_items = Vec::new();
+                        let mut all_coercible = true;
+                        for item in &items {
+                            match coerce_value(item.clone(), elem_type) {
+                                Ok(coerced) => coerced_items.push(coerced),
+                                Err(_) => {
+                                    all_coercible = false;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if all_coercible {
+                            Ok(Value::List(coerced_items))
+                        } else {
+                            // Can't coerce to I64, use values as-is (inferred type)
+                            Ok(Value::List(items))
+                        }
+                    } else {
+                        // Not the default type, strict coercion
+                        let mut coerced_items = Vec::new();
+                        for item in items {
+                            coerced_items.push(coerce_value(item, elem_type)?);
+                        }
+                        Ok(Value::List(coerced_items))
                     }
-                    Ok(Value::List(coerced_items))
                 }
                 Ok(_) => Err(Error::TypeMismatch {
                     expected: "LIST".into(),
@@ -449,9 +479,9 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                     if let Some(expected_size) = size
                         && items.len() != *expected_size
                     {
-                        return Err(Error::TypeMismatch {
-                            expected: format!("ARRAY with {} elements", expected_size),
-                            found: format!("Array with {} elements", items.len()),
+                        return Err(Error::ArraySizeMismatch {
+                            expected: *expected_size,
+                            found: items.len(),
                         });
                     }
                     // Coerce each element to the expected type
@@ -497,13 +527,22 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                     for (field_name, field_type) in schema_fields {
                         if let Some(val) = map.remove(field_name) {
                             // Coerce the value to the expected field type
-                            let coerced_val = coerce_value(val, field_type)?;
+                            let coerced_val =
+                                coerce_value(val.clone(), field_type).map_err(|e| {
+                                    // If coercion fails, provide more specific error for struct fields
+                                    if let Error::TypeMismatch { expected, found } = e {
+                                        Error::StructFieldTypeMismatch {
+                                            field: field_name.clone(),
+                                            expected,
+                                            found,
+                                        }
+                                    } else {
+                                        e
+                                    }
+                                })?;
                             fields.push((field_name.clone(), coerced_val));
                         } else {
-                            return Err(Error::TypeMismatch {
-                                expected: format!("STRUCT field '{}'", field_name),
-                                found: "missing field".into(),
-                            });
+                            return Err(Error::StructFieldMissing(field_name.clone()));
                         }
                     }
                     // Check for extra fields
@@ -524,15 +563,119 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             }
         }
 
+        // Allow Struct to be coerced to Struct (for field type coercion)
+        (Value::Struct(fields), DataType::Struct(schema_fields)) => {
+            // First check if the struct is already compatible (considering NULLs)
+            if fields.len() == schema_fields.len() {
+                let mut all_match = true;
+                for ((field_name, _field_val), (schema_name, _schema_type)) in
+                    fields.iter().zip(schema_fields.iter())
+                {
+                    if field_name != schema_name {
+                        all_match = false;
+                        break;
+                    }
+                    // NULL values are compatible with any type - don't check their types
+                    // Non-NULL values will be coerced below if needed
+                }
+                if all_match {
+                    // Struct fields match by name, return as-is
+                    // NULL values are acceptable in any field
+                    return Ok(Value::Struct(fields.clone()));
+                }
+            }
+
+            // Coerce each field to match the schema
+            let mut coerced_fields = Vec::new();
+            for (field_name, field_type) in schema_fields {
+                // Find the corresponding field in the struct
+                let field_value = fields
+                    .iter()
+                    .find(|(name, _)| name == field_name)
+                    .map(|(_, val)| val.clone())
+                    .ok_or_else(|| Error::StructFieldMissing(field_name.clone()))?;
+
+                // Coerce the field value to the expected type
+                let coerced_val = coerce_value(field_value, field_type).map_err(|e| {
+                    // If coercion fails, provide more specific error for struct fields
+                    if let Error::TypeMismatch { expected, found } = e {
+                        Error::StructFieldTypeMismatch {
+                            field: field_name.clone(),
+                            expected,
+                            found,
+                        }
+                    } else {
+                        e
+                    }
+                })?;
+                coerced_fields.push((field_name.clone(), coerced_val));
+            }
+
+            // Check that we don't have extra fields
+            if fields.len() != schema_fields.len() {
+                return Err(Error::TypeMismatch {
+                    expected: "STRUCT".into(),
+                    found: format!(
+                        "struct with {} fields, expected {}",
+                        fields.len(),
+                        schema_fields.len()
+                    ),
+                });
+            }
+
+            Ok(Value::Struct(coerced_fields))
+        }
+
+        // Allow Map to be coerced to Struct
+        (Value::Map(map), DataType::Struct(schema_fields)) => {
+            // Convert Map to Struct with type coercion based on schema
+            let mut fields = Vec::new();
+            let mut used_keys = Vec::new();
+            for (field_name, field_type) in schema_fields {
+                if let Some(val) = map.get(field_name) {
+                    used_keys.push(field_name.clone());
+                    // Coerce the value to the expected field type
+                    let coerced_val = coerce_value(val.clone(), field_type).map_err(|e| {
+                        // If coercion fails, provide more specific error for struct fields
+                        if let Error::TypeMismatch { expected, found } = e {
+                            Error::StructFieldTypeMismatch {
+                                field: field_name.clone(),
+                                expected,
+                                found,
+                            }
+                        } else {
+                            e
+                        }
+                    })?;
+                    fields.push((field_name.clone(), coerced_val));
+                } else {
+                    return Err(Error::StructFieldMissing(field_name.clone()));
+                }
+            }
+            // Check for extra fields
+            let all_keys: Vec<String> = map.keys().cloned().collect();
+            let extra_fields: Vec<String> = all_keys
+                .into_iter()
+                .filter(|k| !used_keys.contains(k))
+                .collect();
+            if !extra_fields.is_empty() {
+                return Err(Error::TypeMismatch {
+                    expected: "STRUCT".into(),
+                    found: format!("extra fields: {:?}", extra_fields),
+                });
+            }
+            Ok(Value::Struct(fields))
+        }
+
         // Allow List to be used where Array is expected
         (Value::List(items), DataType::Array(elem_type, size)) => {
             // Check size constraint if specified
             if let Some(expected_size) = size
                 && items.len() != *expected_size
             {
-                return Err(Error::TypeMismatch {
-                    expected: format!("ARRAY with {} elements", expected_size),
-                    found: format!("List with {} elements", items.len()),
+                return Err(Error::ArraySizeMismatch {
+                    expected: *expected_size,
+                    found: items.len(),
                 });
             }
             // Coerce each element to the expected type
@@ -545,6 +688,16 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
 
         // Allow Array to be used where List is expected
         (Value::Array(items), DataType::List(elem_type)) => {
+            // Coerce each element to the expected type
+            let mut coerced_items = Vec::new();
+            for item in items {
+                coerced_items.push(coerce_value(item.clone(), elem_type)?);
+            }
+            Ok(Value::List(coerced_items))
+        }
+
+        // Allow List to List coercion with element type conversion
+        (Value::List(items), DataType::List(elem_type)) => {
             // Coerce each element to the expected type
             let mut coerced_items = Vec::new();
             for item in items {

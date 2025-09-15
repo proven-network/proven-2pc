@@ -75,7 +75,6 @@ fn test_array_2d_fixed_size() {
 }
 
 #[test]
-#[ignore = "Bracket notation not yet implemented"]
 fn test_array_bracket_access() {
     let mut ctx = setup_test();
 
@@ -134,7 +133,12 @@ fn test_array_comparison() {
     ctx.exec("INSERT INTO Vectors VALUES (3, '[1, 2]')"); // Duplicate
 
     // Arrays can be compared for equality
+    // First check what we have
+    let check = ctx.query("SELECT * FROM Vectors ORDER BY id");
+    eprintln!("Vectors table: {:?}", check);
+
     let results = ctx.query("SELECT id FROM Vectors WHERE vec = '[1, 2]' ORDER BY id");
+    eprintln!("Comparison results: {:?}", results);
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].get("id").unwrap(), "I32(1)");
     assert_eq!(results[1].get("id").unwrap(), "I32(3)");
@@ -189,14 +193,17 @@ fn test_group_by_array() {
 }
 
 #[test]
-#[ignore = "CAST to ARRAY not yet implemented"]
 fn test_cast_to_array() {
     let mut ctx = setup_test();
 
-    // CAST string to fixed-size array
+    // CAST string to typed fixed-size array (DuckDB style)
     let results = ctx.query("SELECT CAST('[1, 2, 3]' AS INT[3]) AS my_array");
     assert_eq!(results.len(), 1);
     assert!(results[0].get("my_array").unwrap().contains("Array"));
+
+    // Verify it rejects wrong size
+    let error = ctx.exec_error("SELECT CAST('[1, 2]' AS INT[3])");
+    assert!(error.contains("array with 3 elements") || error.contains("array with 2 elements"));
 
     ctx.commit();
 }

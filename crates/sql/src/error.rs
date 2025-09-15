@@ -24,6 +24,25 @@ pub enum Error {
     #[error("Type mismatch: expected {expected}, found {found}")]
     TypeMismatch { expected: String, found: String },
 
+    #[error("Array size mismatch: expected {expected} elements, found {found}")]
+    ArraySizeMismatch { expected: usize, found: usize },
+
+    #[error("JSON array type required for LIST column")]
+    JsonArrayTypeRequired,
+
+    #[error("Invalid JSON string: {0}")]
+    InvalidJsonString(String),
+
+    #[error("Struct field missing: {0}")]
+    StructFieldMissing(String),
+
+    #[error("Struct field type mismatch: field {field}, expected {expected}, found {found}")]
+    StructFieldTypeMismatch {
+        field: String,
+        expected: String,
+        found: String,
+    },
+
     #[error("Invalid value: {0}")]
     InvalidValue(String),
 

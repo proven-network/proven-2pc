@@ -382,19 +382,30 @@ impl Parser<'_> {
             }
         };
 
-        // Check for array size specification with TYPE[SIZE] syntax
-        if self.next_if(|t| t == &Token::OpenBracket).is_some() {
-            let size = if let Token::Number(n) = self.next()? {
-                n.parse::<usize>()
-                    .map_err(|_| Error::ParseError(format!("invalid array size: {}", n)))?
+        // Check for array size specification with TYPE[SIZE] or TYPE[SIZE][SIZE] syntax
+        // Handle multiple dimensions for multi-dimensional arrays
+        let mut result_type = datatype;
+        while self.next_if(|t| t == &Token::OpenBracket).is_some() {
+            // Check if we have a size or just empty brackets for variable-size list
+            let size = if self.next_if(|t| t == &Token::CloseBracket).is_some() {
+                // Empty brackets [] means variable-size list
+                result_type = DataType::List(Box::new(result_type));
+                continue;
+            } else if let Token::Number(n) = self.next()? {
+                // Fixed size array [N]
+                let size_val = n
+                    .parse::<usize>()
+                    .map_err(|_| Error::ParseError(format!("invalid array size: {}", n)))?;
+                self.expect(Token::CloseBracket)?;
+                Some(size_val)
             } else {
-                return Err(Error::ParseError("expected array size".into()));
+                return Err(Error::ParseError("expected array size or ]".into()));
             };
-            self.expect(Token::CloseBracket)?;
-            Ok(DataType::Array(Box::new(datatype), Some(size)))
-        } else {
-            Ok(datatype)
+
+            // Wrap the current type in an Array type with fixed size
+            result_type = DataType::Array(Box::new(result_type), size);
         }
+        Ok(result_type)
     }
 
     /// Parses a CREATE TABLE column definition.
@@ -1298,59 +1309,11 @@ impl Parser<'_> {
                 let expr = self.parse_expression()?;
                 self.expect(Token::Keyword(Keyword::As))?;
 
-                // Parse the target type (with support for UNSIGNED)
-                let type_name = match self.next()? {
-                    Token::Keyword(Keyword::Tinyint) => {
-                        if self.next_if_ident_eq("UNSIGNED") {
-                            "TINYINT UNSIGNED"
-                        } else {
-                            "TINYINT"
-                        }
-                    }
-                    Token::Keyword(Keyword::Smallint) => {
-                        if self.next_if_ident_eq("UNSIGNED") {
-                            "SMALLINT UNSIGNED"
-                        } else {
-                            "SMALLINT"
-                        }
-                    }
-                    Token::Keyword(Keyword::Int) | Token::Keyword(Keyword::Integer) => {
-                        if self.next_if_ident_eq("UNSIGNED") {
-                            "INT UNSIGNED"
-                        } else {
-                            "INT"
-                        }
-                    }
-                    Token::Keyword(Keyword::Bigint) => {
-                        if self.next_if_ident_eq("UNSIGNED") {
-                            "BIGINT UNSIGNED"
-                        } else {
-                            "BIGINT"
-                        }
-                    }
-                    Token::Keyword(Keyword::Hugeint) => {
-                        if self.next_if_ident_eq("UNSIGNED") {
-                            "HUGEINT UNSIGNED"
-                        } else {
-                            "HUGEINT"
-                        }
-                    }
-                    Token::Keyword(Keyword::Real) => "REAL", // REAL is F32
-                    Token::Keyword(Keyword::Float) => "FLOAT", // FLOAT is F64
-                    Token::Keyword(Keyword::Double) => "DOUBLE",
-                    Token::Keyword(Keyword::Decimal) => "DECIMAL",
-                    Token::Keyword(Keyword::Text)
-                    | Token::Keyword(Keyword::String)
-                    | Token::Keyword(Keyword::Varchar) => "TEXT",
-                    Token::Keyword(Keyword::Bool) | Token::Keyword(Keyword::Boolean) => "BOOLEAN",
-                    Token::Keyword(Keyword::Uuid) => "UUID",
-                    token => {
-                        return Err(Error::ParseError(format!(
-                            "expected type name after AS, found {}",
-                            token
-                        )));
-                    }
-                };
+                // Parse the target type using parse_type() to support complex types
+                let target_type = self.parse_type()?;
+
+                // Convert the DataType to a string representation for cast_value
+                let type_string = data_type_to_cast_string(&target_type);
 
                 self.expect(Token::CloseParen)?;
 
@@ -1360,7 +1323,7 @@ impl Parser<'_> {
                     "CAST".to_string(),
                     vec![
                         expr,
-                        ast::Expression::Literal(ast::Literal::String(type_name.to_string())),
+                        ast::Expression::Literal(ast::Literal::String(type_string)),
                     ],
                 )
             }
@@ -1808,6 +1771,62 @@ impl PostfixOperator {
                 index: Box::new(index),
             },
             Self::FieldAccess(field) => ast::Expression::FieldAccess { base: lhs, field },
+        }
+    }
+}
+
+/// Convert a DataType to a string representation for CAST function
+fn data_type_to_cast_string(data_type: &DataType) -> String {
+    use crate::types::DataType;
+    match data_type {
+        DataType::I8 => "TINYINT".to_string(),
+        DataType::I16 => "SMALLINT".to_string(),
+        DataType::I32 => "INT".to_string(),
+        DataType::I64 => "BIGINT".to_string(),
+        DataType::I128 => "HUGEINT".to_string(),
+        DataType::U8 => "TINYINT UNSIGNED".to_string(),
+        DataType::U16 => "SMALLINT UNSIGNED".to_string(),
+        DataType::U32 => "INT UNSIGNED".to_string(),
+        DataType::U64 => "BIGINT UNSIGNED".to_string(),
+        DataType::U128 => "HUGEINT UNSIGNED".to_string(),
+        DataType::F32 => "REAL".to_string(),
+        DataType::F64 => "FLOAT".to_string(),
+        DataType::Decimal(_, _) => "DECIMAL".to_string(),
+        DataType::Bool => "BOOLEAN".to_string(),
+        DataType::Str | DataType::Text => "TEXT".to_string(),
+        DataType::Date => "DATE".to_string(),
+        DataType::Time => "TIME".to_string(),
+        DataType::Timestamp => "TIMESTAMP".to_string(),
+        DataType::Interval => "INTERVAL".to_string(),
+        DataType::Uuid => "UUID".to_string(),
+        DataType::Bytea => "BYTEA".to_string(),
+        DataType::Inet => "INET".to_string(),
+        DataType::Point => "POINT".to_string(),
+        DataType::List(elem_type) => format!("{}[]", data_type_to_cast_string(elem_type)),
+        DataType::Array(elem_type, size) => {
+            if let Some(s) = size {
+                format!("{}[{}]", data_type_to_cast_string(elem_type), s)
+            } else {
+                format!("{}[]", data_type_to_cast_string(elem_type))
+            }
+        }
+        DataType::Map(key_type, val_type) => {
+            format!(
+                "MAP({}, {})",
+                data_type_to_cast_string(key_type),
+                data_type_to_cast_string(val_type)
+            )
+        }
+        DataType::Struct(fields) => {
+            let field_strs: Vec<String> = fields
+                .iter()
+                .map(|(name, dtype)| format!("{} {}", name, data_type_to_cast_string(dtype)))
+                .collect();
+            format!("STRUCT({})", field_strs.join(", "))
+        }
+        DataType::Nullable(inner) => {
+            // For CAST, nullable types are handled the same as their inner type
+            data_type_to_cast_string(inner)
         }
     }
 }
