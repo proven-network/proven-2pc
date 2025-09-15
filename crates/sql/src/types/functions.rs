@@ -202,12 +202,157 @@ pub fn evaluate_function(
             match &args[0] {
                 Value::Str(s) => Ok(Value::integer(s.len() as i64)),
                 Value::Bytea(b) => Ok(Value::integer(b.len() as i64)),
+                Value::Array(a) | Value::List(a) => Ok(Value::integer(a.len() as i64)),
+                Value::Map(m) => Ok(Value::integer(m.len() as i64)),
+                Value::Struct(fields) => Ok(Value::integer(fields.len() as i64)),
                 Value::Null => Ok(Value::Null),
                 _ => Err(Error::TypeMismatch {
-                    expected: "string or blob".into(),
+                    expected: "string, blob, or collection".into(),
                     found: args[0].data_type().to_string(),
                 }),
             }
+        }
+
+        // IS_EMPTY - checks if collection or string is empty
+        "IS_EMPTY" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "IS_EMPTY takes exactly 1 argument".into(),
+                ));
+            }
+            match &args[0] {
+                Value::Str(s) => Ok(Value::boolean(s.is_empty())),
+                Value::Array(a) | Value::List(a) => Ok(Value::boolean(a.is_empty())),
+                Value::Map(m) => Ok(Value::boolean(m.is_empty())),
+                Value::Struct(fields) => Ok(Value::boolean(fields.is_empty())),
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "string or collection".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // CONTAINS - checks if element/key exists in collection
+        "CONTAINS" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "CONTAINS takes exactly 2 arguments".into(),
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Value::Array(a) | Value::List(a), elem) => {
+                    // Check if element exists in array/list
+                    Ok(Value::boolean(a.contains(elem)))
+                }
+                (Value::Map(m), Value::Str(key)) => {
+                    // Check if key exists in map
+                    Ok(Value::boolean(m.contains_key(key)))
+                }
+                (Value::Str(s), Value::Str(substr)) => {
+                    // Check if substring exists in string
+                    Ok(Value::boolean(s.contains(substr.as_str())))
+                }
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "collection with element or map with string key".into(),
+                    found: format!("{} and {}", args[0].data_type(), args[1].data_type()),
+                }),
+            }
+        }
+
+        // EXTRACT - universal accessor function for collections
+        "EXTRACT" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "EXTRACT takes exactly 2 arguments".into(),
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Value::Array(a) | Value::List(a), Value::I32(idx)) => {
+                    // Access by index
+                    Ok(a.get(*idx as usize).cloned().unwrap_or(Value::Null))
+                }
+                (Value::Array(a) | Value::List(a), Value::I64(idx)) => {
+                    // Access by index
+                    Ok(a.get(*idx as usize).cloned().unwrap_or(Value::Null))
+                }
+                (Value::Map(m), Value::Str(key)) => {
+                    // Access by key
+                    Ok(m.get(key).cloned().unwrap_or(Value::Null))
+                }
+                (Value::Struct(fields), Value::Str(field)) => {
+                    // Access by field name
+                    Ok(fields.iter()
+                        .find(|(name, _)| name == field)
+                        .map(|(_, val)| val.clone())
+                        .unwrap_or(Value::Null))
+                }
+                (Value::Null, _) => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "collection with appropriate accessor".into(),
+                    found: format!("{} and {}", args[0].data_type(), args[1].data_type()),
+                }),
+            }
+        }
+
+        // KEYS - returns all keys from a map as a list
+        "KEYS" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "KEYS takes exactly 1 argument".into(),
+                ));
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    let keys: Vec<Value> = m.keys()
+                        .map(|k| Value::Str(k.clone()))
+                        .collect();
+                    Ok(Value::List(keys))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "map".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // VALUES - returns all values from a map as a list
+        "VALUES" => {
+            if args.len() != 1 {
+                return Err(Error::ExecutionError(
+                    "VALUES takes exactly 1 argument".into(),
+                ));
+            }
+            match &args[0] {
+                Value::Map(m) => {
+                    let values: Vec<Value> = m.values().cloned().collect();
+                    Ok(Value::List(values))
+                }
+                Value::Null => Ok(Value::Null),
+                _ => Err(Error::TypeMismatch {
+                    expected: "map".into(),
+                    found: args[0].data_type().to_string(),
+                }),
+            }
+        }
+
+        // UNWRAP - path-based nested access
+        "UNWRAP" => {
+            if args.len() != 2 {
+                return Err(Error::ExecutionError(
+                    "UNWRAP takes exactly 2 arguments (collection, path)".into(),
+                ));
+            }
+            let path = match &args[1] {
+                Value::Str(s) => s,
+                _ => return Err(Error::TypeMismatch {
+                    expected: "string path".into(),
+                    found: args[1].data_type().to_string(),
+                }),
+            };
+            unwrap_value(&args[0], path)
         }
 
         _ => Err(Error::ExecutionError(format!("Unknown function: {}", name))),
@@ -658,6 +803,40 @@ pub fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
     }
 }
 
+/// Helper function for UNWRAP - navigates through nested structures using a path
+fn unwrap_value(value: &Value, path: &str) -> Result<Value> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = value.clone();
+
+    for part in parts {
+        current = if let Ok(index) = part.parse::<usize>() {
+            // Numeric index for array/list
+            match current {
+                Value::Array(arr) | Value::List(arr) => {
+                    arr.get(index).cloned().unwrap_or(Value::Null)
+                }
+                _ => return Ok(Value::Null),
+            }
+        } else {
+            // String key for map/struct or field name
+            match current {
+                Value::Map(map) => {
+                    map.get(part).cloned().unwrap_or(Value::Null)
+                }
+                Value::Struct(fields) => {
+                    fields.iter()
+                        .find(|(name, _)| name == part)
+                        .map(|(_, val)| val.clone())
+                        .unwrap_or(Value::Null)
+                }
+                _ => return Ok(Value::Null),
+            }
+        };
+    }
+
+    Ok(current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,6 +856,104 @@ mod tests {
         use chrono::DateTime;
         let expected = DateTime::from_timestamp(1000, 0).unwrap().naive_utc();
         assert_eq!(now1, Value::Timestamp(expected));
+    }
+
+    #[test]
+    fn test_collection_functions() {
+        use crate::stream::transaction::TransactionContext;
+        use std::collections::HashMap;
+
+        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+
+        // Test LENGTH function with collections
+        let list = Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)]);
+        let result = evaluate_function("LENGTH", &[list], &context).unwrap();
+        assert_eq!(result, Value::I64(3));
+
+        let mut map = HashMap::new();
+        map.insert("a".to_string(), Value::I64(1));
+        map.insert("b".to_string(), Value::I64(2));
+        let map_val = Value::Map(map);
+        let result = evaluate_function("LENGTH", &[map_val.clone()], &context).unwrap();
+        assert_eq!(result, Value::I64(2));
+
+        // Test IS_EMPTY function
+        let empty_list = Value::List(vec![]);
+        let result = evaluate_function("IS_EMPTY", &[empty_list], &context).unwrap();
+        assert_eq!(result, Value::Bool(true));
+
+        let non_empty_list = Value::List(vec![Value::I64(1)]);
+        let result = evaluate_function("IS_EMPTY", &[non_empty_list], &context).unwrap();
+        assert_eq!(result, Value::Bool(false));
+
+        // Test CONTAINS function
+        let list = Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)]);
+        let result = evaluate_function("CONTAINS", &[list, Value::I64(2)], &context).unwrap();
+        assert_eq!(result, Value::Bool(true));
+
+        let list = Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)]);
+        let result = evaluate_function("CONTAINS", &[list, Value::I64(5)], &context).unwrap();
+        assert_eq!(result, Value::Bool(false));
+
+        // Test CONTAINS with map
+        let result = evaluate_function("CONTAINS", &[map_val.clone(), Value::Str("a".to_string())], &context).unwrap();
+        assert_eq!(result, Value::Bool(true));
+
+        let result = evaluate_function("CONTAINS", &[map_val.clone(), Value::Str("c".to_string())], &context).unwrap();
+        assert_eq!(result, Value::Bool(false));
+
+        // Test EXTRACT function
+        let list = Value::List(vec![Value::I64(10), Value::I64(20), Value::I64(30)]);
+        let result = evaluate_function("EXTRACT", &[list, Value::I32(1)], &context).unwrap();
+        assert_eq!(result, Value::I64(20));
+
+        let result = evaluate_function("EXTRACT", &[map_val.clone(), Value::Str("b".to_string())], &context).unwrap();
+        assert_eq!(result, Value::I64(2));
+
+        // Test KEYS function
+        let result = evaluate_function("KEYS", &[map_val.clone()], &context).unwrap();
+        match result {
+            Value::List(keys) => {
+                assert_eq!(keys.len(), 2);
+                assert!(keys.contains(&Value::Str("a".to_string())));
+                assert!(keys.contains(&Value::Str("b".to_string())));
+            }
+            _ => panic!("Expected List"),
+        }
+
+        // Test VALUES function
+        let result = evaluate_function("VALUES", &[map_val.clone()], &context).unwrap();
+        match result {
+            Value::List(values) => {
+                assert_eq!(values.len(), 2);
+                assert!(values.contains(&Value::I64(1)));
+                assert!(values.contains(&Value::I64(2)));
+            }
+            _ => panic!("Expected List"),
+        }
+
+        // Test UNWRAP function with nested structures
+        let nested = Value::Map({
+            let mut m = HashMap::new();
+            m.insert("user".to_string(), Value::Struct(vec![
+                ("name".to_string(), Value::Str("Alice".to_string())),
+                ("age".to_string(), Value::I64(30)),
+            ]));
+            m.insert("items".to_string(), Value::List(vec![
+                Value::Str("item1".to_string()),
+                Value::Str("item2".to_string()),
+            ]));
+            m
+        });
+
+        let result = evaluate_function("UNWRAP", &[nested.clone(), Value::Str("user.name".to_string())], &context).unwrap();
+        assert_eq!(result, Value::Str("Alice".to_string()));
+
+        let result = evaluate_function("UNWRAP", &[nested.clone(), Value::Str("items.0".to_string())], &context).unwrap();
+        assert_eq!(result, Value::Str("item1".to_string()));
+
+        let result = evaluate_function("UNWRAP", &[nested, Value::Str("user.unknown".to_string())], &context).unwrap();
+        assert_eq!(result, Value::Null);
     }
 
     #[test]
