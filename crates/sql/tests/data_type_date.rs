@@ -105,7 +105,8 @@ fn test_date_literal_comparisons() {
     assert_eq!(results[0].get("test_date").unwrap(), "Date(2020-01-01)");
 
     // Test DATE literal comparison in WHERE without table reference
-    let results = ctx.query("SELECT * FROM DateLog WHERE DATE '1999-01-03' < DATE '2000-01-01' ORDER BY id");
+    let results =
+        ctx.query("SELECT * FROM DateLog WHERE DATE '1999-01-03' < DATE '2000-01-01' ORDER BY id");
     assert_eq!(results.len(), 3); // All rows since condition is always true
 
     ctx.commit();

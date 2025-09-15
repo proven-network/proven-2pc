@@ -363,7 +363,9 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
         // String to Time conversion
         (Value::Str(s), DataType::Time) => {
             use chrono::NaiveTime;
+            // Try multiple time formats
             NaiveTime::parse_from_str(s, "%H:%M:%S")
+                .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M:%S%.f"))
                 .map(Value::Time)
                 .map_err(|_| Error::TypeMismatch {
                     expected: "TIME".into(),
@@ -373,8 +375,15 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
 
         // String to Timestamp conversion
         (Value::Str(s), DataType::Timestamp) => {
-            use chrono::NaiveDateTime;
+            use chrono::{NaiveDate, NaiveDateTime};
+            // Try multiple timestamp formats
             NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f"))
+                .or_else(|_| {
+                    // Try date-only format (add 00:00:00 time)
+                    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                        .map(|date| date.and_hms_opt(0, 0, 0).unwrap())
+                })
                 .map(Value::Timestamp)
                 .map_err(|_| Error::TypeMismatch {
                     expected: "TIMESTAMP".into(),

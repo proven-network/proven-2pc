@@ -1201,12 +1201,10 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
                         Ok(parsed.cmp(a))
                     }
                 }
-                Err(_) => {
-                    Err(Error::TypeMismatch {
-                        expected: "comparable types".into(),
-                        found: format!("Time and invalid time string '{}'", s),
-                    })
-                }
+                Err(_) => Err(Error::TypeMismatch {
+                    expected: "comparable types".into(),
+                    found: format!("Time and invalid time string '{}'", s),
+                }),
             }
         }
 
@@ -1228,12 +1226,10 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
                         Ok(parsed.cmp(a))
                     }
                 }
-                Err(_) => {
-                    Err(Error::TypeMismatch {
-                        expected: "comparable types".into(),
-                        found: format!("Timestamp and invalid timestamp string '{}'", s),
-                    })
-                }
+                Err(_) => Err(Error::TypeMismatch {
+                    expected: "comparable types".into(),
+                    found: format!("Timestamp and invalid timestamp string '{}'", s),
+                }),
             }
         }
 
