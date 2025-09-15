@@ -178,23 +178,23 @@ fn test_order_by_with_null_values() {
              (5, 20)",
         );
 
-    // Test ORDER BY with NULL values (NULLs should come first in ASC)
+    // Test ORDER BY with NULL values - SQL standard: NULLs come last in ASC
     let results = ctx.query("SELECT id, value FROM NullTest ORDER BY value ASC");
+    assert_eq!(results.len(), 5);
+    assert_eq!(results[0].get("value").unwrap(), "I32(10)");
+    assert_eq!(results[1].get("value").unwrap(), "I32(20)");
+    assert_eq!(results[2].get("value").unwrap(), "I32(30)");
+    assert_eq!(results[3].get("value").unwrap(), "Null");
+    assert_eq!(results[4].get("value").unwrap(), "Null");
+
+    // Test ORDER BY with NULL values DESC - SQL standard: NULLs come first
+    let results = ctx.query("SELECT id, value FROM NullTest ORDER BY value DESC");
     assert_eq!(results.len(), 5);
     assert_eq!(results[0].get("value").unwrap(), "Null");
     assert_eq!(results[1].get("value").unwrap(), "Null");
-    assert_eq!(results[2].get("value").unwrap(), "I32(10)");
+    assert_eq!(results[2].get("value").unwrap(), "I32(30)");
     assert_eq!(results[3].get("value").unwrap(), "I32(20)");
-    assert_eq!(results[4].get("value").unwrap(), "I32(30)");
-
-    // Test ORDER BY with NULL values DESC (NULLs should come last)
-    let results = ctx.query("SELECT id, value FROM NullTest ORDER BY value DESC");
-    assert_eq!(results.len(), 5);
-    assert_eq!(results[0].get("value").unwrap(), "I32(30)");
-    assert_eq!(results[1].get("value").unwrap(), "I32(20)");
-    assert_eq!(results[2].get("value").unwrap(), "I32(10)");
-    assert_eq!(results[3].get("value").unwrap(), "Null");
-    assert_eq!(results[4].get("value").unwrap(), "Null");
+    assert_eq!(results[4].get("value").unwrap(), "I32(10)");
 
     ctx.commit();
 }

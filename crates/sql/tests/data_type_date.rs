@@ -125,19 +125,20 @@ fn test_date_ordering() {
     // Test ORDER BY date ASC
     let results = ctx.query("SELECT * FROM DateLog ORDER BY date1 ASC");
     assert_eq!(results.len(), 4);
-    // NULL should come first in ASC order
-    assert_eq!(results[0].get("date1").unwrap(), "Null");
-    assert_eq!(results[1].get("date1").unwrap(), "Date(1989-01-01)");
-    assert_eq!(results[2].get("date1").unwrap(), "Date(2020-06-11)");
-    assert_eq!(results[3].get("date1").unwrap(), "Date(2021-05-01)");
+    // SQL standard: NULL should come last in ASC order
+    assert_eq!(results[0].get("date1").unwrap(), "Date(1989-01-01)");
+    assert_eq!(results[1].get("date1").unwrap(), "Date(2020-06-11)");
+    assert_eq!(results[2].get("date1").unwrap(), "Date(2021-05-01)");
+    assert_eq!(results[3].get("date1").unwrap(), "Null");
 
     // Test ORDER BY date DESC
     let results = ctx.query("SELECT * FROM DateLog ORDER BY date1 DESC");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("date1").unwrap(), "Date(2021-05-01)");
-    assert_eq!(results[1].get("date1").unwrap(), "Date(2020-06-11)");
-    assert_eq!(results[2].get("date1").unwrap(), "Date(1989-01-01)");
-    assert_eq!(results[3].get("date1").unwrap(), "Null");
+    // SQL standard: NULL should come first in DESC order
+    assert_eq!(results[0].get("date1").unwrap(), "Null");
+    assert_eq!(results[1].get("date1").unwrap(), "Date(2021-05-01)");
+    assert_eq!(results[2].get("date1").unwrap(), "Date(2020-06-11)");
+    assert_eq!(results[3].get("date1").unwrap(), "Date(1989-01-01)");
 
     ctx.commit();
 }

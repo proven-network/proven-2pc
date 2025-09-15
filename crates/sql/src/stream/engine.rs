@@ -101,7 +101,10 @@ impl SqlTransactionEngine {
                 // This ensures we always expect the same number of parameters the user wrote
                 let original_param_count = count_statement_parameters(&statement);
 
-                let planner = Planner::new(self.storage.get_schemas());
+                let planner = Planner::new(
+                    self.storage.get_schemas(),
+                    self.storage.get_index_metadata(),
+                );
                 let plan_template = match planner.plan(statement) {
                     Ok(p) => p,
                     Err(e) => {
@@ -153,7 +156,10 @@ impl SqlTransactionEngine {
                 }
             };
 
-            let planner = Planner::new(self.storage.get_schemas());
+            let planner = Planner::new(
+                self.storage.get_schemas(),
+                self.storage.get_index_metadata(),
+            );
             match planner.plan(statement) {
                 Ok(p) => p,
                 Err(e) => {
@@ -166,7 +172,10 @@ impl SqlTransactionEngine {
         };
 
         // Phase 3: Extract predicates from the plan
-        let planner = Planner::new(self.storage.get_schemas());
+        let planner = Planner::new(
+            self.storage.get_schemas(),
+            self.storage.get_index_metadata(),
+        );
         let plan_predicates = planner.extract_predicates(&plan);
 
         for (other_tx_id, other_tx) in &self.active_transactions {

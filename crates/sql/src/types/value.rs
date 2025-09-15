@@ -366,10 +366,11 @@ impl Ord for Value {
         use std::cmp::Ordering;
 
         match (self, other) {
-            // Null comparisons
+            // Null comparisons - SQL semantics: NULL sorts last in ASC, first in DESC
+            // To achieve this, NULL should be Greater than any non-NULL value
             (Value::Null, Value::Null) => Ordering::Equal,
-            (Value::Null, _) => Ordering::Less,
-            (_, Value::Null) => Ordering::Greater,
+            (Value::Null, _) => Ordering::Greater, // NULL is greater (sorts last in ASC)
+            (_, Value::Null) => Ordering::Less,    // Non-NULL is less than NULL
 
             // Boolean comparisons
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),

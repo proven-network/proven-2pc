@@ -193,7 +193,10 @@ fn test_decimal_with_null() {
     // Test NULL propagation in arithmetic
     let results = ctx.query("SELECT v + 1 as result FROM DECIMAL_ITEM ORDER BY v");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "Null"); // NULL + 1 = NULL
+    // SQL standard: NULL sorts last in ASC order
+    assert_eq!(results[0].get("result").unwrap(), "Decimal(2.5)"); // 1.5 + 1 = 2.5
+    assert_eq!(results[1].get("result").unwrap(), "Decimal(3.5)"); // 2.5 + 1 = 3.5
+    assert_eq!(results[2].get("result").unwrap(), "Null"); // NULL + 1 = NULL
 
     ctx.commit();
 }

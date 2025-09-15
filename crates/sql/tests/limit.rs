@@ -273,10 +273,10 @@ fn test_limit_with_null_values() {
     // LIMIT with NULL values in ORDER BY
     let results = ctx.query("SELECT id, value FROM NullTest ORDER BY value ASC LIMIT 3");
     assert_eq!(results.len(), 3);
-    // NULLs come first in ASC order
-    assert_eq!(results[0].get("value").unwrap(), "Null");
-    assert_eq!(results[1].get("value").unwrap(), "Null");
-    assert_eq!(results[2].get("value").unwrap(), "I32(10)");
+    // SQL standard: NULLs come last in ASC order
+    assert_eq!(results[0].get("value").unwrap(), "I32(10)");
+    assert_eq!(results[1].get("value").unwrap(), "I32(30)");
+    assert_eq!(results[2].get("value").unwrap(), "I32(50)");
 
     ctx.commit();
 }

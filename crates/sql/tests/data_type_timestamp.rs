@@ -173,45 +173,46 @@ fn test_timestamp_ordering() {
     // Test ORDER BY timestamp ASC
     let results = ctx.query("SELECT * FROM TimestampLog ORDER BY t1 ASC");
     assert_eq!(results.len(), 5);
-    // NULL should come first in ASC order
-    assert_eq!(results[0].get("t1").unwrap(), "Null");
+    // SQL standard: NULL should come last in ASC order
     assert_eq!(
-        results[1].get("t1").unwrap(),
+        results[0].get("t1").unwrap(),
         "Timestamp(1970-01-01T00:00:00)"
     );
     assert_eq!(
-        results[2].get("t1").unwrap(),
+        results[1].get("t1").unwrap(),
         "Timestamp(1988-01-01T08:15:00)"
     );
     assert_eq!(
-        results[3].get("t1").unwrap(),
+        results[2].get("t1").unwrap(),
         "Timestamp(2020-06-11T23:59:59)"
     );
     assert_eq!(
-        results[4].get("t1").unwrap(),
+        results[3].get("t1").unwrap(),
         "Timestamp(2021-05-01T14:30:00)"
     );
+    assert_eq!(results[4].get("t1").unwrap(), "Null");
 
     // Test ORDER BY timestamp DESC
     let results = ctx.query("SELECT * FROM TimestampLog ORDER BY t1 DESC");
     assert_eq!(results.len(), 5);
+    // SQL standard: NULL should come first in DESC order
+    assert_eq!(results[0].get("t1").unwrap(), "Null");
     assert_eq!(
-        results[0].get("t1").unwrap(),
+        results[1].get("t1").unwrap(),
         "Timestamp(2021-05-01T14:30:00)"
     );
     assert_eq!(
-        results[1].get("t1").unwrap(),
+        results[2].get("t1").unwrap(),
         "Timestamp(2020-06-11T23:59:59)"
     );
     assert_eq!(
-        results[2].get("t1").unwrap(),
+        results[3].get("t1").unwrap(),
         "Timestamp(1988-01-01T08:15:00)"
     );
     assert_eq!(
-        results[3].get("t1").unwrap(),
+        results[4].get("t1").unwrap(),
         "Timestamp(1970-01-01T00:00:00)"
     );
-    assert_eq!(results[4].get("t1").unwrap(), "Null");
 
     ctx.commit();
 }

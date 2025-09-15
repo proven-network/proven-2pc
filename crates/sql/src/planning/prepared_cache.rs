@@ -194,6 +194,7 @@ fn bind_node_parameters(node: &super::plan::Node, params: &[Value]) -> Result<su
             start_inclusive,
             end,
             end_inclusive,
+            reverse,
         } => Node::IndexRangeScan {
             table: table.clone(),
             alias: alias.clone(),
@@ -218,6 +219,7 @@ fn bind_node_parameters(node: &super::plan::Node, params: &[Value]) -> Result<su
                 })
                 .transpose()?,
             end_inclusive: *end_inclusive,
+            reverse: *reverse,
         },
         Node::Filter { source, predicate } => Node::Filter {
             source: Box::new(bind_node_parameters(source, params)?),

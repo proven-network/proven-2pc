@@ -145,21 +145,22 @@ fn test_time_ordering() {
     // Test ORDER BY time ASC
     let results = ctx.query("SELECT * FROM TimeLog ORDER BY time1 ASC");
     assert_eq!(results.len(), 5);
-    // NULL should come first in ASC order
-    assert_eq!(results[0].get("time1").unwrap(), "Null");
-    assert_eq!(results[1].get("time1").unwrap(), "Time(00:00:00)");
-    assert_eq!(results[2].get("time1").unwrap(), "Time(08:15:00)");
-    assert_eq!(results[3].get("time1").unwrap(), "Time(14:30:00)");
-    assert_eq!(results[4].get("time1").unwrap(), "Time(23:59:59)");
+    // SQL standard: NULL should come last in ASC order
+    assert_eq!(results[0].get("time1").unwrap(), "Time(00:00:00)");
+    assert_eq!(results[1].get("time1").unwrap(), "Time(08:15:00)");
+    assert_eq!(results[2].get("time1").unwrap(), "Time(14:30:00)");
+    assert_eq!(results[3].get("time1").unwrap(), "Time(23:59:59)");
+    assert_eq!(results[4].get("time1").unwrap(), "Null");
 
     // Test ORDER BY time DESC
     let results = ctx.query("SELECT * FROM TimeLog ORDER BY time1 DESC");
     assert_eq!(results.len(), 5);
-    assert_eq!(results[0].get("time1").unwrap(), "Time(23:59:59)");
-    assert_eq!(results[1].get("time1").unwrap(), "Time(14:30:00)");
-    assert_eq!(results[2].get("time1").unwrap(), "Time(08:15:00)");
-    assert_eq!(results[3].get("time1").unwrap(), "Time(00:00:00)");
-    assert_eq!(results[4].get("time1").unwrap(), "Null");
+    // SQL standard: NULL should come first in DESC order
+    assert_eq!(results[0].get("time1").unwrap(), "Null");
+    assert_eq!(results[1].get("time1").unwrap(), "Time(23:59:59)");
+    assert_eq!(results[2].get("time1").unwrap(), "Time(14:30:00)");
+    assert_eq!(results[3].get("time1").unwrap(), "Time(08:15:00)");
+    assert_eq!(results[4].get("time1").unwrap(), "Time(00:00:00)");
 
     ctx.commit();
 }

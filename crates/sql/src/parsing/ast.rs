@@ -51,8 +51,8 @@ pub enum Statement {
         name: String,
         /// The table to index.
         table: String,
-        /// The columns to index (supports composite indexes).
-        columns: Vec<String>,
+        /// The columns to index (supports composite indexes with expressions and ordering).
+        columns: Vec<IndexColumn>,
         /// UNIQUE: if true, create a unique index.
         unique: bool,
         /// INCLUDE: additional columns to store in the index (covering index).
@@ -146,6 +146,15 @@ pub struct Column {
     pub unique: bool,
     pub index: bool,
     pub references: Option<String>,
+}
+
+/// An index column definition, including the expression and sort direction
+#[derive(Debug, Clone)]
+pub struct IndexColumn {
+    /// The expression to index (can be a simple column or complex expression)
+    pub expression: Expression,
+    /// Sort direction for this column in the index
+    pub direction: Option<Direction>,
 }
 
 impl JoinType {

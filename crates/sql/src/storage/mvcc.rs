@@ -113,6 +113,10 @@ pub struct VersionedTable {
     pub indexes: HashMap<String, BTreeMap<CompositeKey, Vec<IndexEntry>>>,
     /// Map from index name to column names for that index
     pub index_columns: HashMap<String, Vec<String>>,
+    /// Map from index name to index column definitions (expressions and directions)
+    pub index_definitions: HashMap<String, Vec<crate::planning::plan::IndexColumn>>,
+    /// Map from index name to sort directions for each column (None means ASC default)
+    pub index_directions: HashMap<String, Vec<Option<crate::types::query::Direction>>>,
     /// Map from index name to included columns (for covering indexes)
     pub index_included_columns: HashMap<String, Vec<String>>,
     /// Map from index name to whether it's a unique index
@@ -130,6 +134,8 @@ impl VersionedTable {
         // Initialize indexes for columns marked as indexed
         let mut indexes = HashMap::new();
         let mut index_columns = HashMap::new();
+        let mut index_definitions = HashMap::new();
+        let mut index_directions = HashMap::new();
         let index_included_columns = HashMap::new();
         let mut unique_indexes = HashMap::new();
 
@@ -139,6 +145,14 @@ impl VersionedTable {
                 let index_name = column.name.clone();
                 indexes.insert(index_name.clone(), BTreeMap::new());
                 index_columns.insert(index_name.clone(), vec![column.name.clone()]);
+                // Create a simple column expression for the definition
+                let col_expr = crate::parsing::ast::Expression::Column(None, column.name.clone());
+                let index_col = crate::planning::plan::IndexColumn {
+                    expression: col_expr,
+                    direction: None, // Default ASC
+                };
+                index_definitions.insert(index_name.clone(), vec![index_col]);
+                index_directions.insert(index_name.clone(), vec![None]); // Default ASC
                 // Mark as unique if column is unique or primary key
                 if column.unique || column.primary_key {
                     unique_indexes.insert(index_name, true);
@@ -152,6 +166,8 @@ impl VersionedTable {
             versions: BTreeMap::new(),
             indexes,
             index_columns,
+            index_definitions,
+            index_directions,
             index_included_columns,
             unique_indexes,
             next_id: 1,
@@ -259,51 +275,63 @@ impl VersionedTable {
         let row_id = self.next_id;
         self.next_id += 1;
 
-        // Update indexes with versioned entries
-        for (index_name, column_names) in &self.index_columns.clone() {
-            if let Some(index) = self.indexes.get_mut(index_name) {
-                // Build composite key from values
-                let mut key_values = Vec::new();
-                let mut has_null = false;
-                for col_name in column_names {
-                    if let Some(col_idx) =
-                        self.schema.columns.iter().position(|c| c.name == *col_name)
-                    {
-                        let value = &values[col_idx];
-                        if value.is_null() {
-                            has_null = true;
-                            break;
-                        }
-                        key_values.push(value.clone());
+        // Create a temporary row for expression evaluation
+        let temp_row = Row::new(row_id, values.clone());
+
+        // Collect index updates first to avoid borrow conflicts
+        let mut index_updates: Vec<(String, CompositeKey, IndexEntry)> = Vec::new();
+
+        for (index_name, index_cols) in &self.index_definitions {
+            // Build composite key by evaluating expressions
+            let mut key_values = Vec::new();
+            let mut skip_index = false;
+            for col in index_cols {
+                // Evaluate the expression for this row
+                match self.evaluate_expression(&col.expression, &temp_row) {
+                    Ok(value) => {
+                        // Include NULL values in the index for ORDER BY support
+                        key_values.push(value);
+                    }
+                    Err(_) => {
+                        // Skip index update if expression evaluation fails
+                        skip_index = true;
+                        break;
                     }
                 }
+            }
 
-                if !has_null {
-                    let key = CompositeKey::from_values(key_values);
-                    // Collect included column values if any
-                    let included_values =
-                        if let Some(included_cols) = self.index_included_columns.get(index_name) {
-                            let mut vals = Vec::new();
-                            for col_name in included_cols {
-                                if let Some(col_idx) =
-                                    self.schema.columns.iter().position(|c| c.name == *col_name)
-                                {
-                                    vals.push(values[col_idx].clone());
-                                }
+            if !skip_index {
+                let key = CompositeKey::from_values(key_values);
+                // Collect included column values if any
+                let included_values =
+                    if let Some(included_cols) = self.index_included_columns.get(index_name) {
+                        let mut vals = Vec::new();
+                        for col_name in included_cols {
+                            if let Some(col_idx) =
+                                self.schema.columns.iter().position(|c| c.name == *col_name)
+                            {
+                                vals.push(values[col_idx].clone());
                             }
-                            Some(vals)
-                        } else {
-                            None
-                        };
-
-                    let entry = IndexEntry {
-                        row_id,
-                        added_by: txn_id,
-                        removed_by: None,
-                        included_values,
+                        }
+                        Some(vals)
+                    } else {
+                        None
                     };
-                    index.entry(key).or_insert_with(Vec::new).push(entry);
-                }
+
+                let entry = IndexEntry {
+                    row_id,
+                    added_by: txn_id,
+                    removed_by: None,
+                    included_values,
+                };
+                index_updates.push((index_name.clone(), key, entry));
+            }
+        }
+
+        // Now apply the index updates
+        for (index_name, key, entry) in index_updates {
+            if let Some(index) = self.indexes.get_mut(&index_name) {
+                index.entry(key).or_insert_with(Vec::new).push(entry);
             }
         }
 
@@ -584,21 +612,18 @@ impl VersionedTable {
             if let Some(index) = self.indexes.get_mut(index_name) {
                 // Build composite key from values
                 let mut key_values = Vec::new();
-                let mut has_null = false;
                 for col_name in column_names {
                     if let Some(col_idx) =
                         self.schema.columns.iter().position(|c| c.name == *col_name)
                     {
                         let value = &values[col_idx];
-                        if value.is_null() {
-                            has_null = true;
-                            break;
-                        }
+                        // Include NULL values in the key
                         key_values.push(value.clone());
                     }
                 }
 
-                if !has_null {
+                // Process all keys, including those with NULLs
+                {
                     let key = CompositeKey::from_values(key_values);
                     if let Some(entries) = index.get_mut(&key) {
                         // Find and mark the entry as removed
@@ -765,50 +790,125 @@ impl VersionedTable {
         Ok(())
     }
 
+    /// Evaluate an AST expression against a row
+    fn evaluate_expression(
+        &self,
+        expr: &crate::parsing::ast::Expression,
+        row: &Row,
+    ) -> Result<Value> {
+        use crate::parsing::ast::{Expression, Literal, Operator};
+
+        match expr {
+            Expression::Column(_, name) => {
+                // Find column index by name
+                let col_idx = self
+                    .schema
+                    .columns
+                    .iter()
+                    .position(|c| &c.name == name)
+                    .ok_or_else(|| Error::InvalidValue(format!("Column '{}' not found", name)))?;
+                row.values.get(col_idx).cloned().ok_or_else(|| {
+                    Error::InvalidValue(format!("Column index {} not found", col_idx))
+                })
+            }
+            Expression::Literal(lit) => {
+                // Convert AST literal to Value
+                match lit {
+                    Literal::Null => Ok(Value::Null),
+                    Literal::Boolean(b) => Ok(Value::Bool(*b)),
+                    Literal::Integer(i) => Ok(Value::I128(*i)),
+                    Literal::Float(f) => Ok(Value::F64(*f)),
+                    Literal::String(s) => Ok(Value::Str(s.clone())),
+                    _ => Err(Error::InvalidValue("Unsupported literal type".into())),
+                }
+            }
+            Expression::Operator(op) => match op {
+                Operator::Add(left, right) => {
+                    let left_val = self.evaluate_expression(left, row)?;
+                    let right_val = self.evaluate_expression(right, row)?;
+                    crate::types::evaluator::add(&left_val, &right_val)
+                }
+                Operator::Subtract(left, right) => {
+                    let left_val = self.evaluate_expression(left, row)?;
+                    let right_val = self.evaluate_expression(right, row)?;
+                    crate::types::evaluator::subtract(&left_val, &right_val)
+                }
+                Operator::Multiply(left, right) => {
+                    let left_val = self.evaluate_expression(left, row)?;
+                    let right_val = self.evaluate_expression(right, row)?;
+                    crate::types::evaluator::multiply(&left_val, &right_val)
+                }
+                Operator::Divide(left, right) => {
+                    let left_val = self.evaluate_expression(left, row)?;
+                    let right_val = self.evaluate_expression(right, row)?;
+                    crate::types::evaluator::divide(&left_val, &right_val)
+                }
+                _ => Err(Error::InvalidValue(
+                    "Unsupported operator type in index expression".into(),
+                )),
+            },
+            _ => Err(Error::InvalidValue(
+                "Unsupported expression type in index".into(),
+            )),
+        }
+    }
+
     /// Create an index on one or more columns (builds the index from existing data)
     pub fn create_index(
         &mut self,
         index_name: String,
-        column_names: Vec<String>,
+        columns: Vec<crate::planning::plan::IndexColumn>,
         included_columns: Option<Vec<String>>,
         unique: bool,
+        current_txn: HlcTimestamp, // Current transaction ID to include uncommitted data
     ) -> Result<()> {
-        // Check if all columns exist and get their indices
-        let mut col_indices = Vec::new();
-        for column_name in &column_names {
-            let col_idx = self
-                .schema
-                .columns
-                .iter()
-                .position(|c| &c.name == column_name)
-                .ok_or_else(|| {
-                    Error::InvalidValue(format!("Column '{}' not found", column_name))
-                })?;
-            col_indices.push(col_idx);
+        // Store column names for simple column references (used for metadata)
+        // For complex expressions, we'll store the expression string
+        let mut column_names = Vec::new();
+        for col in &columns {
+            match &col.expression {
+                crate::parsing::ast::Expression::Column(_, name) => {
+                    // Verify column exists
+                    self.schema
+                        .columns
+                        .iter()
+                        .position(|c| &c.name == name)
+                        .ok_or_else(|| {
+                            Error::InvalidValue(format!("Column '{}' not found", name))
+                        })?;
+                    column_names.push(name.clone());
+                }
+                _ => {
+                    // For complex expressions, store a string representation
+                    column_names.push(format!("{:?}", col.expression));
+                }
+            }
         }
 
         // Create new MVCC index
         let mut index: BTreeMap<CompositeKey, Vec<IndexEntry>> = BTreeMap::new();
 
-        // Build index from existing committed data
+        // Build index from existing data visible to current transaction
         for (&row_id, versions) in &self.versions {
-            // Find the latest committed version that's not deleted
-            if let Some(version) = versions.iter().rev().find(|v| {
-                self.committed_transactions.contains(&v.created_by) && v.deleted_by.is_none()
-            }) {
-                // Build composite key
+            // Find the latest version visible to the current transaction
+            // Include uncommitted data from current transaction OR committed data
+            let visible_version = versions.iter().rev().find(|v| {
+                (v.created_by == current_txn || self.committed_transactions.contains(&v.created_by))
+                    && (v.deleted_by.is_none() || v.deleted_by == Some(current_txn))
+            });
+
+            if let Some(version) = visible_version {
+                // Build composite key by evaluating expressions
                 let mut key_values = Vec::new();
-                let mut has_null = false;
-                for &col_idx in &col_indices {
-                    let value = &version.row.values[col_idx];
-                    if value.is_null() {
-                        has_null = true;
-                        break;
-                    }
-                    key_values.push(value.clone());
+                for col in &columns {
+                    // Evaluate the expression for this row
+                    let value = self.evaluate_expression(&col.expression, &version.row)?;
+                    key_values.push(value);
                 }
 
-                if !has_null {
+                // Include all rows in the index, even those with NULLs
+                // This is necessary for ORDER BY to work correctly
+                {
                     let key = CompositeKey::from_values(key_values);
 
                     // Check uniqueness if required
@@ -847,6 +947,14 @@ impl VersionedTable {
 
         self.indexes.insert(index_name.clone(), index);
         self.index_columns.insert(index_name.clone(), column_names);
+        self.index_definitions
+            .insert(index_name.clone(), columns.clone());
+
+        // Store sort directions from the columns
+        let directions: Vec<Option<crate::types::query::Direction>> =
+            columns.iter().map(|col| col.direction).collect();
+        self.index_directions.insert(index_name.clone(), directions);
+
         if let Some(included) = included_columns {
             self.index_included_columns
                 .insert(index_name.clone(), included);
@@ -1156,6 +1264,7 @@ impl VersionedTable {
         start_inclusive: bool,
         end: Option<Vec<Value>>,
         end_inclusive: bool,
+        reverse: bool,
         txn_id: HlcTimestamp,
         txn_timestamp: HlcTimestamp,
     ) -> Vec<Arc<Row>> {
@@ -1230,6 +1339,11 @@ impl VersionedTable {
                     }
                 }
             }
+        }
+
+        // Reverse the result if requested (for DESC ordering)
+        if reverse {
+            result.reverse();
         }
 
         result
@@ -1421,12 +1535,21 @@ impl VersionedTable {
     }
 }
 
+/// Index column metadata
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IndexColumnMeta {
+    /// The expression string (serialized form)
+    pub expression: String,
+    /// Sort direction for this column
+    pub direction: Option<crate::types::query::Direction>,
+}
+
 /// Index metadata for tracking index names
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexMetadata {
     pub name: String,
     pub table: String,
-    pub columns: Vec<String>, // Changed to support composite indexes
+    pub columns: Vec<IndexColumnMeta>, // Updated to support expressions and directions
     pub unique: bool,
 }
 
@@ -1479,7 +1602,11 @@ impl MvccStorage {
 
     /// Execute a DDL operation directly in storage
     /// This centralizes all DDL operations in storage where they belong
-    pub fn execute_ddl(&mut self, plan: &crate::planning::plan::Plan) -> Result<String> {
+    pub fn execute_ddl(
+        &mut self,
+        plan: &crate::planning::plan::Plan,
+        tx_id: HlcTimestamp,
+    ) -> Result<String> {
         use crate::planning::plan::Plan;
 
         match plan {
@@ -1540,8 +1667,21 @@ impl MvccStorage {
                     columns.clone(),
                     included_columns.clone(),
                     *unique,
+                    tx_id,
                 )?;
-                let column_list = columns.join(", ");
+                // Format column list for display
+                let column_list = columns
+                    .iter()
+                    .map(|col| {
+                        let expr_str = format!("{:?}", col.expression); // TODO: better formatting
+                        if let Some(dir) = &col.direction {
+                            format!("{} {:?}", expr_str, dir)
+                        } else {
+                            expr_str
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let result_msg = if let Some(included) = included_columns {
                     format!(
                         "Index '{}' created on {}({}) INCLUDE ({})",
@@ -1574,9 +1714,10 @@ impl MvccStorage {
         &mut self,
         index_name: String,
         table_name: &str,
-        column_names: Vec<String>,
+        columns: Vec<crate::planning::plan::IndexColumn>,
         included_columns: Option<Vec<String>>,
         unique: bool,
+        tx_id: HlcTimestamp,
     ) -> Result<()> {
         // Check if index name already exists
         if self.index_metadata.contains_key(&index_name) {
@@ -1594,18 +1735,41 @@ impl MvccStorage {
         // Create the actual index
         table.create_index(
             index_name.clone(),
-            column_names.clone(),
+            columns.clone(),
             included_columns,
             unique,
+            tx_id, // Include uncommitted data from current transaction
         )?;
 
-        // Store metadata
+        // Store metadata - convert IndexColumn to IndexColumnMeta
+        let column_meta: Vec<IndexColumnMeta> = columns
+            .iter()
+            .map(|col| {
+                // Serialize expression in a more structured way
+                let expression_str = match &col.expression {
+                    crate::parsing::ast::Expression::Column(None, name) => {
+                        // Simple column - just store the name
+                        name.clone()
+                    }
+                    expr => {
+                        // Complex expression - store as debug string for now
+                        // This will be improved to use proper serialization
+                        format!("{:?}", expr)
+                    }
+                };
+                IndexColumnMeta {
+                    expression: expression_str,
+                    direction: col.direction,
+                }
+            })
+            .collect();
+
         self.index_metadata.insert(
             index_name.clone(),
             IndexMetadata {
                 name: index_name,
                 table: table_name.to_string(),
-                columns: column_names,
+                columns: column_meta,
                 unique,
             },
         );
@@ -1636,6 +1800,21 @@ impl MvccStorage {
             schemas.insert(table_name.clone(), versioned_table.schema.clone());
         }
         schemas
+    }
+
+    /// Get index metadata for planning
+    pub fn get_index_metadata(&self) -> HashMap<String, Vec<IndexMetadata>> {
+        let mut table_indexes = HashMap::new();
+
+        // Group indexes by table
+        for metadata in self.index_metadata.values() {
+            table_indexes
+                .entry(metadata.table.clone())
+                .or_insert_with(Vec::new)
+                .push(metadata.clone());
+        }
+
+        table_indexes
     }
 
     /// Calculate current database statistics
@@ -2034,8 +2213,12 @@ mod tests {
         table.commit_transaction(txn1).unwrap();
 
         // Create an index on email
+        let email_col = crate::planning::plan::IndexColumn {
+            expression: crate::parsing::ast::Expression::Column(None, "email".to_string()),
+            direction: None,
+        };
         table
-            .create_index("email".to_string(), vec!["email".to_string()], None, false)
+            .create_index("email".to_string(), vec![email_col], None, false, txn1)
             .unwrap();
 
         // Verify index contains the data
@@ -2425,7 +2608,8 @@ mod tests {
             Some(vec![Value::integer(30)]),
             true, // inclusive
             Some(vec![Value::integer(70)]),
-            true, // inclusive
+            true,  // inclusive
+            false, // not reversed
             txn2,
             timestamp2,
         );
@@ -2439,6 +2623,7 @@ mod tests {
             false, // exclusive
             None,
             false,
+            false, // not reversed
             txn2,
             timestamp2,
         );
@@ -2523,12 +2708,21 @@ mod tests {
         table.commit_transaction(txn1).unwrap();
 
         // Create composite index on (customer_id, status)
+        let customer_col = crate::planning::plan::IndexColumn {
+            expression: crate::parsing::ast::Expression::Column(None, "customer_id".to_string()),
+            direction: None,
+        };
+        let status_col = crate::planning::plan::IndexColumn {
+            expression: crate::parsing::ast::Expression::Column(None, "status".to_string()),
+            direction: None,
+        };
         table
             .create_index(
                 "idx_customer_status".to_string(),
-                vec!["customer_id".to_string(), "status".to_string()],
+                vec![customer_col, status_col],
                 None,
                 false,
+                txn1,
             )
             .unwrap();
 
@@ -2568,6 +2762,7 @@ mod tests {
                 Value::string("pending".to_string()),
             ]),
             true,
+            false, // not reversed
             txn2,
             timestamp2,
         );
@@ -2606,12 +2801,21 @@ mod tests {
         unique_table.commit_transaction(txn3).unwrap();
 
         // Create unique composite index
+        let col1 = crate::planning::plan::IndexColumn {
+            expression: crate::parsing::ast::Expression::Column(None, "col1".to_string()),
+            direction: None,
+        };
+        let col2 = crate::planning::plan::IndexColumn {
+            expression: crate::parsing::ast::Expression::Column(None, "col2".to_string()),
+            direction: None,
+        };
         unique_table
             .create_index(
                 "idx_unique_composite".to_string(),
-                vec!["col1".to_string(), "col2".to_string()],
+                vec![col1, col2],
                 None,
                 true,
+                txn1,
             )
             .unwrap();
 

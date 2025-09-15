@@ -20,8 +20,16 @@ use std::str::FromStr;
 pub struct IndexInfo {
     pub name: String,
     pub table: String,
-    pub columns: Vec<String>,
+    pub columns: Vec<IndexColumn>,
     pub unique: bool,
+}
+
+/// Index column info for planning
+#[derive(Debug, Clone)]
+pub struct IndexColumn {
+    pub name: String,                        // Column name for simple columns
+    pub expression: Option<ast::Expression>, // Full expression if complex
+    pub direction: Option<ast::Direction>,
 }
 
 /// Query planner
@@ -36,25 +44,92 @@ pub struct Planner {
 
 impl Planner {
     /// Create a new planner
-    pub fn new(schemas: HashMap<String, Table>) -> Self {
+    pub fn new(
+        schemas: HashMap<String, Table>,
+        index_metadata: HashMap<String, Vec<crate::storage::mvcc::IndexMetadata>>,
+    ) -> Self {
         let optimizer = Optimizer::new(schemas.clone());
 
-        // Initialize indexes from schema columns
+        // Convert storage index metadata to planner IndexInfo
         let mut indexes = HashMap::new();
+        for (table_name, table_indexes) in index_metadata {
+            let mut index_infos = Vec::new();
+            for metadata in table_indexes {
+                let columns = metadata
+                    .columns
+                    .iter()
+                    .map(|col| {
+                        // Check if this is a simple column name or a complex expression
+                        if !col.expression.contains('(')
+                            && !col.expression.contains('+')
+                            && !col.expression.contains('-')
+                            && !col.expression.contains('*')
+                            && !col.expression.contains('/')
+                        {
+                            // Simple column name
+                            IndexColumn {
+                                name: col.expression.clone(),
+                                expression: Some(ast::Expression::Column(
+                                    None,
+                                    col.expression.clone(),
+                                )),
+                                direction: col.direction,
+                            }
+                        } else {
+                            // Complex expression - try to parse it
+                            // For debug strings like "Add(Column(None, \"id\"), Column(None, \"num\"))"
+                            // we need to reconstruct the AST
+                            let expr = if col.expression.starts_with("Add(") {
+                                // Try to extract operands for Add expression
+                                // This is a temporary hack - we should store expressions properly
+                                None // For now, we can't properly reconstruct
+                            } else {
+                                None
+                            };
+
+                            IndexColumn {
+                                name: col.expression.clone(),
+                                expression: expr,
+                                direction: col.direction,
+                            }
+                        }
+                    })
+                    .collect();
+
+                index_infos.push(IndexInfo {
+                    name: metadata.name,
+                    table: metadata.table,
+                    columns,
+                    unique: metadata.unique,
+                });
+            }
+            if !index_infos.is_empty() {
+                indexes.insert(table_name, index_infos);
+            }
+        }
+
+        // Also add schema-defined indexes
         for (table_name, schema) in &schemas {
-            let mut table_indexes = Vec::new();
+            let table_indexes = indexes.entry(table_name.clone()).or_insert_with(Vec::new);
             for column in &schema.columns {
                 if column.primary_key || column.unique || column.index {
-                    table_indexes.push(IndexInfo {
-                        name: column.name.clone(),
-                        table: table_name.clone(),
-                        columns: vec![column.name.clone()],
-                        unique: column.primary_key || column.unique,
-                    });
+                    // Check if this index already exists (from metadata)
+                    let exists = table_indexes
+                        .iter()
+                        .any(|idx| idx.columns.len() == 1 && idx.columns[0].name == column.name);
+                    if !exists {
+                        table_indexes.push(IndexInfo {
+                            name: column.name.clone(),
+                            table: table_name.clone(),
+                            columns: vec![IndexColumn {
+                                name: column.name.clone(),
+                                expression: None,
+                                direction: None,
+                            }],
+                            unique: column.primary_key || column.unique,
+                        });
+                    }
                 }
-            }
-            if !table_indexes.is_empty() {
-                indexes.insert(table_name.clone(), table_indexes);
             }
         }
 
@@ -138,17 +213,19 @@ impl Planner {
                 if !self.schemas.contains_key(&table) {
                     return Err(Error::TableNotFound(table));
                 }
-                // Verify all columns exist
-                let schema = &self.schemas[&table];
-                for column in &columns {
-                    if !schema.columns.iter().any(|c| &c.name == column) {
-                        return Err(Error::ColumnNotFound(column.clone()));
-                    }
-                }
+                // Convert AST IndexColumns to Plan IndexColumns
+                let plan_columns: Vec<crate::planning::plan::IndexColumn> = columns
+                    .into_iter()
+                    .map(|col| crate::planning::plan::IndexColumn {
+                        expression: col.expression,
+                        direction: col.direction,
+                    })
+                    .collect();
+
                 Ok(Plan::CreateIndex {
                     name,
                     table,
-                    columns,
+                    columns: plan_columns,
                     unique,
                     included_columns,
                 })
@@ -224,19 +301,51 @@ impl Planner {
         // Check if we can use an index to avoid sorting
         if !order_by.is_empty() {
             let mut can_use_index = false;
+            let mut matched_index: Option<&IndexInfo> = None;
 
             // Check if ORDER BY matches an existing index
-            if let Node::Scan { ref table, .. } = node
+            if let Node::Scan {
+                ref table,
+                ref alias,
+            } = node
                 && let Some(table_indexes) = self.indexes.get(table)
             {
                 for index in table_indexes {
                     // Check if ORDER BY columns match index columns (in order)
                     if self.order_by_matches_index(&order_by, &index.columns, table, &context) {
-                        // TODO: Transform node to use IndexScan with the matching index
-                        // For now, we'll mark that we could use it
+                        // Transform node to use IndexRangeScan with the matching index
+                        matched_index = Some(index);
                         can_use_index = true;
                         break;
                     }
+                }
+
+                // Transform to IndexRangeScan if we found a matching index
+                if let Some(index) = matched_index {
+                    // Determine if we need to reverse based on ORDER BY vs index direction
+                    let reverse = if !order_by.is_empty() && !index.columns.is_empty() {
+                        // Get the direction from ORDER BY and the index
+                        let order_dir = order_by[0].1;
+                        let index_dir = index.columns[0]
+                            .direction
+                            .unwrap_or(ast::Direction::Ascending);
+                        // Reverse if they don't match
+                        order_dir != index_dir
+                    } else {
+                        false
+                    };
+
+                    // Use IndexRangeScan to scan all rows but in index order
+                    node = Node::IndexRangeScan {
+                        table: table.clone(),
+                        alias: alias.clone(),
+                        index_name: index.name.clone(),
+                        start: None, // No start bound - scan from beginning
+                        start_inclusive: true,
+                        end: None, // No end bound - scan to end
+                        end_inclusive: true,
+                        reverse,
+                    };
                 }
             }
 
@@ -959,10 +1068,17 @@ impl Planner {
                 let mut matched_conditions = Vec::new();
 
                 for index_col in &index.columns {
-                    if let Some((col, expr)) = conditions.iter().find(|(col, _)| col == index_col) {
+                    if let Some((col, expr)) =
+                        conditions.iter().find(|(col, _)| **col == index_col.name)
+                    {
                         // Try to resolve the expression
-                        if let Ok(value) = context.resolve_expression(expr.clone()) {
-                            matched_values.push(value);
+                        if let Ok(resolved_expr) = context.resolve_expression(expr.clone()) {
+                            // Don't use index for NULL equality comparisons
+                            // (NULL = NULL is unknown in SQL, not true)
+                            if matches!(resolved_expr, Expression::Constant(ref v) if v.is_null()) {
+                                break;
+                            }
+                            matched_values.push(resolved_expr);
                             matched_conditions.push((col.clone(), expr.clone()));
                         } else {
                             break;
@@ -1055,7 +1171,7 @@ impl Planner {
     fn order_by_matches_index(
         &self,
         order_by: &[(ast::Expression, ast::Direction)],
-        index_columns: &[String],
+        index_columns: &[IndexColumn],
         _table_name: &str,
         _context: &PlanContext,
     ) -> bool {
@@ -1065,21 +1181,28 @@ impl Planner {
         }
 
         // Check each ORDER BY column matches the corresponding index column
-        for (i, (expr, dir)) in order_by.iter().enumerate() {
-            // For now, only support ASC order (most indexes are ASC by default)
-            if !matches!(dir, ast::Direction::Ascending) {
-                return false;
-            }
+        for (i, (expr, _dir)) in order_by.iter().enumerate() {
+            let index_col = &index_columns[i];
 
-            // Check if expression is a simple column reference
-            if let ast::Expression::Column(None, col_name) = expr {
-                // Check if it matches the index column at this position
-                if &index_columns[i] != col_name {
+            // We don't need to check directions here - we can use an index
+            // for both ASC and DESC by setting the reverse flag appropriately
+
+            // Check if expressions match
+            if let Some(ref index_expr) = index_col.expression {
+                // Index has a complex expression, check if it matches
+                if expr != index_expr {
                     return false;
                 }
             } else {
-                // Not a simple column reference
-                return false;
+                // Index has a simple column, check if ORDER BY is the same column
+                if let ast::Expression::Column(None, col_name) = expr {
+                    if col_name != &index_col.name {
+                        return false;
+                    }
+                } else {
+                    // ORDER BY has expression but index has simple column
+                    return false;
+                }
             }
         }
 
@@ -1121,6 +1244,7 @@ impl Planner {
                                 start_inclusive: false,
                                 end: None,
                                 end_inclusive: false,
+                                reverse: false,
                             },
                             ast::Operator::GreaterThanOrEqual(..) => Node::IndexRangeScan {
                                 table: table_name.to_string(),
@@ -1130,6 +1254,7 @@ impl Planner {
                                 start_inclusive: true,
                                 end: None,
                                 end_inclusive: false,
+                                reverse: false,
                             },
                             ast::Operator::LessThan(..) => Node::IndexRangeScan {
                                 table: table_name.to_string(),
@@ -1139,6 +1264,7 @@ impl Planner {
                                 start_inclusive: false,
                                 end: Some(vec![value]),
                                 end_inclusive: false,
+                                reverse: false,
                             },
                             ast::Operator::LessThanOrEqual(..) => Node::IndexRangeScan {
                                 table: table_name.to_string(),
@@ -1148,6 +1274,7 @@ impl Planner {
                                 start_inclusive: false,
                                 end: Some(vec![value]),
                                 end_inclusive: true,
+                                reverse: false,
                             },
                             _ => unreachable!(),
                         });

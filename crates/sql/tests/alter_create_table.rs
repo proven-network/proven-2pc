@@ -90,10 +90,10 @@ fn test_insert_into_created_table() {
     let results = ctx.query("SELECT * FROM CreateTable2 ORDER BY num");
     assert_eq!(results.len(), 3);
 
-    // Verify NULL handling
-    assert_eq!(results[0].get("num").unwrap(), "Null");
-    assert_eq!(results[1].get("num").unwrap(), "I32(1)");
-    assert_eq!(results[2].get("num").unwrap(), "I32(2)");
+    // Verify NULL handling - SQL standard: NULLs sort last in ASC order
+    assert_eq!(results[0].get("num").unwrap(), "I32(1)");
+    assert_eq!(results[1].get("num").unwrap(), "I32(2)");
+    assert_eq!(results[2].get("num").unwrap(), "Null");
 
     ctx.commit();
 }

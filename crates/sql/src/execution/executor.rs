@@ -82,7 +82,7 @@ impl Executor {
             | Plan::DropTable { .. }
             | Plan::CreateIndex { .. }
             | Plan::DropIndex { .. } => {
-                let result_msg = storage.execute_ddl(&plan)?;
+                let result_msg = storage.execute_ddl(&plan, tx_ctx.id)?;
                 Ok(ExecutionResult::DDL(result_msg))
             }
         }
@@ -365,6 +365,7 @@ impl Executor {
                 start_inclusive,
                 end,
                 end_inclusive,
+                reverse,
                 ..
             } => {
                 // Evaluate range bounds
@@ -398,6 +399,7 @@ impl Executor {
                         start_inclusive,
                         end_values,
                         end_inclusive,
+                        reverse,
                         tx_ctx.id,
                         tx_ctx.timestamp,
                     );

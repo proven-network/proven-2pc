@@ -398,6 +398,30 @@ impl Parser<'_> {
         Ok(column)
     }
 
+    /// Parses an index column: an expression optionally followed by ASC or DESC
+    fn parse_index_column(&mut self) -> Result<ast::IndexColumn> {
+        // Parse the expression (can be a simple column or complex expression)
+        let expression = self.parse_expression()?;
+
+        // Check for optional ASC or DESC
+        let direction = match self.peek()? {
+            Some(Token::Keyword(Keyword::Asc)) => {
+                self.next()?;
+                Some(ast::Direction::Ascending)
+            }
+            Some(Token::Keyword(Keyword::Desc)) => {
+                self.next()?;
+                Some(ast::Direction::Descending)
+            }
+            _ => None,
+        };
+
+        Ok(ast::IndexColumn {
+            expression,
+            direction,
+        })
+    }
+
     /// Parses a CREATE INDEX statement (after CREATE [UNIQUE] INDEX).
     fn parse_create_index_inner(&mut self, unique: bool) -> Result<ast::Statement> {
         let name = self.next_ident()?;
@@ -405,10 +429,10 @@ impl Parser<'_> {
         let table = self.next_ident()?;
         self.expect(Token::OpenParen)?;
 
-        // Parse one or more columns for composite index support (allow keywords as column names)
-        let mut columns = vec![self.next_ident_or_keyword()?];
+        // Parse one or more index columns (expressions with optional ASC/DESC)
+        let mut columns = vec![self.parse_index_column()?];
         while self.next_is(Token::Comma) {
-            columns.push(self.next_ident_or_keyword()?);
+            columns.push(self.parse_index_column()?);
         }
 
         self.expect(Token::CloseParen)?;

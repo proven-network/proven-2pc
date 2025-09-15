@@ -9,6 +9,16 @@ pub use crate::types::query::{Direction, JoinType};
 use crate::types::value::Row;
 use std::sync::Arc;
 
+/// An index column in the execution plan
+/// Uses AST expression for now - will be converted to types::expression later
+#[derive(Debug, Clone)]
+pub struct IndexColumn {
+    /// The expression to index (using AST expression for now)
+    pub expression: crate::parsing::ast::Expression,
+    /// Sort direction for this column in the index
+    pub direction: Option<Direction>,
+}
+
 /// Execution plan - the root of the plan tree
 #[derive(Debug, Clone)]
 pub enum Plan {
@@ -46,7 +56,7 @@ pub enum Plan {
     CreateIndex {
         name: String,
         table: String,
-        columns: Vec<String>,
+        columns: Vec<IndexColumn>,
         unique: bool,
         included_columns: Option<Vec<String>>,
     },
@@ -107,6 +117,7 @@ pub enum Node {
         start_inclusive: bool,
         end: Option<Vec<Expression>>, // End values for each column
         end_inclusive: bool,
+        reverse: bool, // Scan in reverse order (for DESC)
     },
 
     /// Filter rows (WHERE clause)
