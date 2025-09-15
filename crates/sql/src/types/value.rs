@@ -53,8 +53,10 @@ pub enum Value {
     Inet(IpAddr),
     Point(Point),
     // Collection types
-    List(Vec<Value>),
-    Map(HashMap<String, Value>),
+    Array(Vec<Value>),            // Fixed-size array
+    List(Vec<Value>),             // Variable-size list
+    Map(HashMap<String, Value>),  // Key-value pairs
+    Struct(Vec<(String, Value)>), // Named fields
 }
 
 // Backward compatibility - map old names to new format
@@ -169,8 +171,32 @@ impl Value {
             Value::Bytea(_) => DataType::Bytea,
             Value::Inet(_) => DataType::Inet,
             Value::Point(_) => DataType::Point,
-            Value::List(_) => DataType::List(Box::new(DataType::I64)), // TODO: track element type
+            Value::Array(vals) => {
+                // TODO: Infer element type from values
+                let elem_type = if vals.is_empty() {
+                    DataType::I64
+                } else {
+                    vals[0].data_type()
+                };
+                DataType::Array(Box::new(elem_type), Some(vals.len()))
+            }
+            Value::List(vals) => {
+                // TODO: Infer element type from values
+                let elem_type = if vals.is_empty() {
+                    DataType::I64
+                } else {
+                    vals[0].data_type()
+                };
+                DataType::List(Box::new(elem_type))
+            }
             Value::Map(_) => DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64)), // TODO: track types
+            Value::Struct(fields) => {
+                let field_types = fields
+                    .iter()
+                    .map(|(name, val)| (name.clone(), val.data_type()))
+                    .collect();
+                DataType::Struct(field_types)
+            }
         }
     }
 
@@ -255,8 +281,19 @@ impl fmt::Display for Value {
             Value::Bytea(b) => write!(f, "x'{}'", hex::encode(b)),
             Value::Inet(ip) => write!(f, "{}", ip),
             Value::Point(p) => write!(f, "POINT({} {})", p.x, p.y),
+            Value::Array(a) => write!(f, "{:?}", a),
             Value::List(l) => write!(f, "{:?}", l),
             Value::Map(m) => write!(f, "{:?}", m),
+            Value::Struct(s) => {
+                write!(f, "{{")?;
+                for (i, (name, val)) in s.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, val)?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -299,6 +336,16 @@ impl fmt::Debug for Value {
             Value::Bytea(b) => write!(f, "Bytea({})", hex::encode(b)),
             Value::Inet(ip) => write!(f, "Inet({})", ip),
             Value::Point(p) => write!(f, "Point({}, {})", p.x, p.y),
+            Value::Array(a) => {
+                write!(f, "Array[")?;
+                for (i, v) in a.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}", v)?;
+                }
+                write!(f, "]")
+            }
             Value::List(l) => {
                 write!(f, "List[")?;
                 for (i, v) in l.iter().enumerate() {
@@ -310,6 +357,16 @@ impl fmt::Debug for Value {
                 write!(f, "]")
             }
             Value::Map(m) => write!(f, "Map({:?})", m),
+            Value::Struct(s) => {
+                write!(f, "Struct{{")?;
+                for (i, (name, val)) in s.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {:?}", name, val)?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -345,6 +402,7 @@ impl std::hash::Hash for Value {
                 p.x.to_bits().hash(state);
                 p.y.to_bits().hash(state);
             }
+            Value::Array(a) => a.hash(state),
             Value::List(l) => l.hash(state),
             Value::Map(m) => {
                 // Hash map keys in sorted order for determinism
@@ -355,6 +413,7 @@ impl std::hash::Hash for Value {
                     v.hash(state);
                 }
             }
+            Value::Struct(s) => s.hash(state),
         }
     }
 }
@@ -419,6 +478,7 @@ impl Ord for Value {
             (Value::Point(a), Value::Point(b)) => a.cmp(b),
 
             // List comparisons (lexicographic)
+            (Value::Array(a), Value::Array(b)) => a.cmp(b),
             (Value::List(a), Value::List(b)) => a.cmp(b),
 
             // Map comparisons - compare sorted key-value pairs
@@ -429,6 +489,9 @@ impl Ord for Value {
                 b_pairs.sort_by_key(|(k, _)| k.as_str());
                 a_pairs.cmp(&b_pairs)
             }
+
+            // Struct comparisons - compare fields in order
+            (Value::Struct(a), Value::Struct(b)) => a.cmp(b),
 
             // Different types - consider them equal for total ordering
             _ => Ordering::Equal,

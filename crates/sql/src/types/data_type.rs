@@ -39,8 +39,10 @@ pub enum DataType {
     Inet,
     Point,
     // Collection types
-    List(Box<DataType>),
-    Map(Box<DataType>, Box<DataType>),
+    Array(Box<DataType>, Option<usize>), // Fixed-size array (e.g., INTEGER[3])
+    List(Box<DataType>),                 // Variable-size list (e.g., INTEGER[])
+    Map(Box<DataType>, Box<DataType>),   // Key-value pairs
+    Struct(Vec<(String, DataType)>),     // Named fields like records
     // Null handling
     Nullable(Box<DataType>),
 }
@@ -88,8 +90,17 @@ impl fmt::Display for DataType {
             DataType::Bytea => write!(f, "BYTEA"),
             DataType::Inet => write!(f, "INET"),
             DataType::Point => write!(f, "POINT"),
-            DataType::List(_) => write!(f, "ARRAY"),
-            DataType::Map(_, _) => write!(f, "MAP"),
+            DataType::Array(inner, Some(size)) => write!(f, "{}[{}]", inner, size),
+            DataType::Array(inner, None) => write!(f, "{}[]", inner),
+            DataType::List(inner) => write!(f, "{}[]", inner),
+            DataType::Map(key, value) => write!(f, "MAP({}, {})", key, value),
+            DataType::Struct(fields) => {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|(name, dtype)| format!("{} {}", name, dtype))
+                    .collect();
+                write!(f, "STRUCT({})", field_strs.join(", "))
+            }
             DataType::Nullable(inner) => write!(f, "{} NULL", inner),
         }
     }

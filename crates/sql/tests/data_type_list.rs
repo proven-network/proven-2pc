@@ -1,92 +1,218 @@
-//! LIST data type functionality tests
-//! Based on gluesql/test-suite/src/data_type/list.rs
+//! LIST data type tests (variable-length arrays)
+//! Lists can have different lengths in each row, following DuckDB's model
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::setup_test;
+
 #[test]
+#[ignore = "LIST type not yet implemented"]
 fn test_create_table_with_list_column() {
-    // TODO: Test CREATE TABLE ListType (id INTEGER, items LIST)
+    let mut ctx = setup_test();
+
+    // LIST is variable-length, each row can have different number of elements
+    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_insert_simple_integer_list() {
-    // TODO: Test inserting '[1, 2, 3]' into LIST column
+#[ignore = "LIST type not yet implemented"]
+fn test_insert_simple_list() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, values LIST)");
+
+    // Different rows can have different list lengths
+    ctx.exec("INSERT INTO ListData VALUES (1, '[1, 2, 3]')");
+    ctx.exec("INSERT INTO ListData VALUES (2, '[4, 5]')");
+    ctx.exec("INSERT INTO ListData VALUES (3, '[6, 7, 8, 9]')");
+
+    let results = ctx.query("SELECT id, values FROM ListData ORDER BY id");
+    assert_eq!(results.len(), 3);
+
+    // Lists can have varying lengths
+    assert!(results[0].get("values").unwrap().contains("List"));
+    assert!(results[1].get("values").unwrap().contains("List"));
+    assert!(results[2].get("values").unwrap().contains("List"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
+#[ignore = "LIST type not yet implemented"]
 fn test_insert_mixed_type_list() {
-    // TODO: Test inserting '["hello", "world", 30, true, [9,8]]' (strings, numbers, booleans, nested arrays)
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE MixedList (id INT, data LIST)");
+
+    // Lists can contain mixed types
+    ctx.exec(r#"INSERT INTO MixedList VALUES (1, '["hello", "world", 30, true]')"#);
+    ctx.exec(r#"INSERT INTO MixedList VALUES (2, '[1, 2.5, "test", false]')"#);
+
+    let results = ctx.query("SELECT data FROM MixedList ORDER BY id");
+    assert_eq!(results.len(), 2);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_insert_complex_nested_list() {
-    // TODO: Test inserting '[{ "foo": 100, "bar": [true, 0, [10.5, false] ] }, 10, 20]'
+#[ignore = "LIST type not yet implemented"]
+fn test_nested_lists() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE NestedList (id INT, matrix LIST)");
+
+    // Lists can contain other lists
+    ctx.exec("INSERT INTO NestedList VALUES (1, '[[1, 2], [3, 4], [5, 6]]')");
+    ctx.exec("INSERT INTO NestedList VALUES (2, '[[7], [8, 9]]')");
+
+    let results = ctx.query("SELECT matrix FROM NestedList ORDER BY id");
+    assert_eq!(results.len(), 2);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_select_list_values() {
-    // TODO: Test SELECT id, items FROM ListType returns proper list values
-}
-
-#[ignore = "not yet implemented"]
-#[test]
+#[ignore = "UNWRAP function not yet implemented"]
 fn test_unwrap_list_elements() {
-    // TODO: Test UNWRAP(items, '1') to access second element by index
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("INSERT INTO ListData VALUES (1, '[10, 20, 30]')");
+    ctx.exec("INSERT INTO ListData VALUES (2, '[40, 50]')");
+
+    // UNWRAP accesses list elements by index
+    let results = ctx.query("SELECT id, UNWRAP(items, '0') AS first, UNWRAP(items, '1') AS second FROM ListData ORDER BY id");
+    assert_eq!(results.len(), 2);
+
+    assert_eq!(results[0].get("first").unwrap(), "I32(10)");
+    assert_eq!(results[0].get("second").unwrap(), "I32(20)");
+    assert_eq!(results[1].get("first").unwrap(), "I32(40)");
+    assert_eq!(results[1].get("second").unwrap(), "I32(50)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_unwrap_nested_list_and_object_paths() {
-    // TODO: Test UNWRAP(items, '0.foo') and UNWRAP(items, '0.bar.2.0') for complex paths
+#[ignore = "Bracket notation not yet implemented"]
+fn test_list_bracket_access() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("INSERT INTO ListData VALUES (1, '[100, 200, 300]')");
+    ctx.exec("INSERT INTO ListData VALUES (2, '[400, 500]')");
+
+    // Bracket notation for list access
+    let results =
+        ctx.query("SELECT id, items[0] AS first, items[1] AS second FROM ListData ORDER BY id");
+    assert_eq!(results.len(), 2);
+
+    assert_eq!(results[0].get("first").unwrap(), "I32(100)");
+    assert_eq!(results[0].get("second").unwrap(), "I32(200)");
+    assert_eq!(results[1].get("first").unwrap(), "I32(400)");
+    assert_eq!(results[1].get("second").unwrap(), "I32(500)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_list_index_access_with_brackets() {
-    // TODO: Test items[1] AS second for accessing list elements with bracket notation
+#[ignore = "LIST type not yet implemented"]
+fn test_list_with_nulls() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+
+    ctx.exec("INSERT INTO ListData VALUES (1, '[1, 2, 3]')");
+    ctx.exec("INSERT INTO ListData VALUES (2, NULL)");
+    ctx.exec("INSERT INTO ListData VALUES (3, '[]')"); // Empty list
+
+    let results = ctx.query("SELECT id, items FROM ListData WHERE items IS NOT NULL ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+
+    let results = ctx.query("SELECT id FROM ListData WHERE items IS NULL");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_list_index_without_alias() {
-    // TODO: Test SELECT id, items[1] FROM ListType (without AS alias)
+#[ignore = "CAST to LIST not yet implemented"]
+fn test_cast_to_list() {
+    let mut ctx = setup_test();
+
+    // CAST string literals to LIST
+    let results = ctx.query("SELECT CAST('[1, 2, 3]' AS LIST) AS my_list");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("my_list").unwrap().contains("List"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_nested_list_and_object_bracket_access() {
-    // TODO: Test items['3']['0'] for accessing nested elements with string indices
+#[ignore = "LIST type not yet implemented"]
+fn test_list_in_where_clause() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, tags LIST)");
+
+    ctx.exec(r#"INSERT INTO ListData VALUES (1, '["red", "blue"]')"#);
+    ctx.exec(r#"INSERT INTO ListData VALUES (2, '["green", "yellow"]')"#);
+    ctx.exec(r#"INSERT INTO ListData VALUES (3, '["red", "green"]')"#);
+
+    // Find all rows that contain "red" in their list
+    // This would require list functions like CONTAINS or IN operator support
+    // For now, just test basic equality
+    let results = ctx.query(r#"SELECT id FROM ListData WHERE tags = '["red", "blue"]'"#);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_cast_literal_to_list() {
-    // TODO: Test CAST('[1, 2, 3]' AS LIST) AS list
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_group_by_list_column() {
-    // TODO: Test SELECT id FROM ListType GROUP BY items
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_invalid_selector_on_non_list() {
-    // TODO: Test items['not']['list'] should error: SelectorRequiresMapOrListTypes
-}
-
-#[ignore = "not yet implemented"]
-#[test]
+#[ignore = "LIST type not yet implemented"]
+#[should_panic(expected = "JsonArrayTypeRequired")]
 fn test_insert_json_object_into_list_should_error() {
-    // TODO: Test INSERT INTO ListType VALUES (1, '{ "a": 10 }') should error: JsonArrayTypeRequired
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+
+    // JSON objects should not be allowed in LIST columns
+    ctx.exec(r#"INSERT INTO ListData VALUES (1, '{"key": "value"}')"#);
 }
 
-#[ignore = "not yet implemented"]
 #[test]
+#[ignore = "LIST type not yet implemented"]
+#[should_panic(expected = "InvalidJsonString")]
 fn test_insert_invalid_json_should_error() {
-    // TODO: Test INSERT INTO ListType VALUES (1, '{{ ok [1, 2, 3] }') should error: InvalidJsonString
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+
+    // Invalid JSON should error
+    ctx.exec("INSERT INTO ListData VALUES (1, '{{not valid json}}')");
+}
+
+#[test]
+#[ignore = "GROUP BY with LIST not yet implemented"]
+fn test_group_by_list() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INT, tags LIST)");
+
+    ctx.exec(r#"INSERT INTO ListData VALUES (1, '["a", "b"]')"#);
+    ctx.exec(r#"INSERT INTO ListData VALUES (2, '["c", "d"]')"#);
+    ctx.exec(r#"INSERT INTO ListData VALUES (3, '["a", "b"]')"#); // Duplicate list
+
+    // GROUP BY should work with LIST columns
+    let results =
+        ctx.query("SELECT tags, COUNT(*) as cnt FROM ListData GROUP BY tags ORDER BY cnt");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("cnt").unwrap(), "I64(1)");
+    assert_eq!(results[1].get("cnt").unwrap(), "I64(2)");
+
+    ctx.commit();
 }

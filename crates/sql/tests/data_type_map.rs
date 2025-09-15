@@ -1,122 +1,281 @@
-//! MAP data type functionality tests
-//! Based on gluesql/test-suite/src/data_type/map.rs
+//! MAP data type tests (key-value pairs)
+//! Maps store dynamic key-value pairs, similar to dictionaries or hash maps
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::setup_test;
+
 #[test]
+#[ignore = "MAP type not yet implemented"]
 fn test_create_table_with_map_column() {
-    // TODO: Test CREATE TABLE MapType (id INTEGER NULL DEFAULT UNWRAP(NULL, 'a'), nested MAP)
+    let mut ctx = setup_test();
+
+    // MAP with key and value types
+    ctx.exec("CREATE TABLE Settings (id INT, config MAP(VARCHAR, VARCHAR))");
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_insert_simple_map() {
-    // TODO: Test inserting '{"a": true, "b": 2}' into MAP column
+#[ignore = "MAP type not yet implemented"]
+fn test_insert_map_values() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE UserPreferences (id INT, prefs MAP(VARCHAR, VARCHAR))");
+
+    // Insert map values using object notation
+    ctx.exec(r#"INSERT INTO UserPreferences VALUES (1, '{"theme": "dark", "language": "en", "timezone": "UTC"}')"#);
+    ctx.exec(r#"INSERT INTO UserPreferences VALUES (2, '{"theme": "light", "language": "fr"}')"#);
+    ctx.exec(
+        r#"INSERT INTO UserPreferences VALUES (3, '{"notifications": "on", "privacy": "strict"}')"#,
+    );
+
+    let results = ctx.query("SELECT id, prefs FROM UserPreferences ORDER BY id");
+    assert_eq!(results.len(), 3);
+
+    assert!(results[0].get("prefs").unwrap().contains("Map"));
+    assert!(results[1].get("prefs").unwrap().contains("Map"));
+    assert!(results[2].get("prefs").unwrap().contains("Map"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_insert_nested_map() {
-    // TODO: Test inserting '{"a": {"foo": "ok", "b": "steak"}, "b": 30}' with nested objects
+#[ignore = "MAP key access not yet implemented"]
+fn test_map_key_access() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Config (id INT, settings MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec(
+        r#"INSERT INTO Config VALUES (1, '{"host": "localhost", "port": "5432", "db": "mydb"}')"#,
+    );
+    ctx.exec(r#"INSERT INTO Config VALUES (2, '{"host": "remote.server", "port": "3306", "ssl": "true"}')"#);
+
+    // Access map values by key using bracket notation
+    let results = ctx.query(
+        "SELECT id, settings['host'] AS host, settings['port'] AS port FROM Config ORDER BY id",
+    );
+    assert_eq!(results.len(), 2);
+
+    assert_eq!(results[0].get("host").unwrap(), "Str(\"localhost\")");
+    assert_eq!(results[0].get("port").unwrap(), "Str(\"5432\")");
+    assert_eq!(results[1].get("host").unwrap(), "Str(\"remote.server\")");
+    assert_eq!(results[1].get("port").unwrap(), "Str(\"3306\")");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_insert_deeply_nested_map() {
-    // TODO: Test inserting '{"a": {"b": {"c": {"d": 10}}}}' with deep nesting
+#[ignore = "MAP type not yet implemented"]
+fn test_map_with_different_value_types() {
+    let mut ctx = setup_test();
+
+    // Map with mixed value types
+    ctx.exec("CREATE TABLE Metadata (id INT, data MAP(VARCHAR, ANY))");
+
+    ctx.exec(r#"INSERT INTO Metadata VALUES (1, '{"count": 42, "active": true, "name": "test", "ratio": 3.14}')"#);
+
+    let results = ctx.query("SELECT data FROM Metadata");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("data").unwrap().contains("Map"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_select_map_values() {
-    // TODO: Test SELECT id, nested FROM MapType LIMIT 1 returns proper map values
+#[ignore = "MAP key access not yet implemented"]
+fn test_map_in_where_clause() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Products (id INT, attributes MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec(r#"INSERT INTO Products VALUES (1, '{"color": "red", "size": "large", "material": "cotton"}')"#);
+    ctx.exec(r#"INSERT INTO Products VALUES (2, '{"color": "blue", "size": "medium", "material": "silk"}')"#);
+    ctx.exec(r#"INSERT INTO Products VALUES (3, '{"color": "red", "size": "small", "material": "wool"}')"#);
+
+    // Filter by map value
+    let results =
+        ctx.query("SELECT id FROM Products WHERE attributes['color'] = 'red' ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+
+    // Filter by multiple map values
+    let results = ctx.query("SELECT id FROM Products WHERE attributes['size'] = 'large' AND attributes['material'] = 'cotton'");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_unwrap_nested_paths() {
-    // TODO: Test UNWRAP(nested, 'a.foo') || '.yeah' AS foo for string operations on unwrapped values
+#[ignore = "MAP type not yet implemented"]
+fn test_map_with_nulls() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Features (id INT, flags MAP(VARCHAR, BOOL))");
+
+    ctx.exec(r#"INSERT INTO Features VALUES (1, '{"feature_a": true, "feature_b": false}')"#);
+    ctx.exec("INSERT INTO Features VALUES (2, NULL)");
+    ctx.exec(r#"INSERT INTO Features VALUES (3, '{"feature_c": true}')"#);
+
+    let results = ctx.query("SELECT id FROM Features WHERE flags IS NOT NULL ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_unwrap_deep_paths_with_arithmetic() {
-    // TODO: Test UNWRAP(nested, 'a.b.c.d') * 2 for arithmetic on deeply nested values
+#[ignore = "MAP key access not yet implemented"]
+fn test_map_key_not_found() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Config (id INT, settings MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec(r#"INSERT INTO Config VALUES (1, '{"host": "localhost", "port": "5432"}')"#);
+
+    // Accessing non-existent key should return NULL
+    let results = ctx.query("SELECT id, settings['database'] AS db FROM Config");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("db").unwrap(), "Null");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_unwrap_with_null_inputs() {
-    // TODO: Test UNWRAP(NULL, 'a.b') and UNWRAP(nested, NULL) both return NULL
+#[ignore = "MAP type not yet implemented"]
+fn test_empty_map() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE EmptyMaps (id INT, data MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec("INSERT INTO EmptyMaps VALUES (1, '{}')"); // Empty map
+    ctx.exec(r#"INSERT INTO EmptyMaps VALUES (2, '{"key": "value"}')"#);
+
+    let results = ctx.query("SELECT id, data FROM EmptyMaps ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert!(results[0].get("data").unwrap().contains("Map"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_map_bracket_access() {
-    // TODO: Test nested['b'] as b for accessing map values with bracket notation
+#[ignore = "MAP type not yet implemented"]
+fn test_map_comparison() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Tags (id INT, labels MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec(r#"INSERT INTO Tags VALUES (1, '{"env": "prod", "version": "1.0"}')"#);
+    ctx.exec(r#"INSERT INTO Tags VALUES (2, '{"env": "dev", "version": "2.0"}')"#);
+    ctx.exec(r#"INSERT INTO Tags VALUES (3, '{"env": "prod", "version": "1.0"}')"#); // Duplicate
+
+    // Maps can be compared for equality
+    let results = ctx.query(
+        r#"SELECT id FROM Tags WHERE labels = '{"env": "prod", "version": "1.0"}' ORDER BY id"#,
+    );
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_map_bracket_access_without_alias() {
-    // TODO: Test SELECT id, nested['b'] FROM MapType2 (without AS alias)
+#[ignore = "MAP type not yet implemented"]
+fn test_map_update() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Settings (id INT PRIMARY KEY, config MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec(r#"INSERT INTO Settings VALUES (1, '{"theme": "dark", "lang": "en"}')"#);
+    ctx.exec(r#"INSERT INTO Settings VALUES (2, '{"theme": "light", "lang": "fr"}')"#);
+
+    // Update map value
+    ctx.exec(r#"UPDATE Settings SET config = '{"theme": "auto", "lang": "en", "new_key": "new_value"}' WHERE id = 1"#);
+
+    let results = ctx.query("SELECT config FROM Settings WHERE id = 1");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("config").unwrap().contains("Map"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_nested_map_bracket_access() {
-    // TODO: Test nested['a']['red'] AS fruit for accessing nested map values
+#[ignore = "MAP functions not yet implemented"]
+fn test_map_keys_function() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Configs (id INT, settings MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec(r#"INSERT INTO Configs VALUES (1, '{"a": "1", "b": "2", "c": "3"}')"#);
+
+    // MAP_KEYS function to get all keys
+    let results = ctx.query("SELECT id, MAP_KEYS(settings) AS keys FROM Configs");
+    assert_eq!(results.len(), 1);
+    // Should return a list of keys: ["a", "b", "c"]
+    assert!(results[0].get("keys").unwrap().contains("List"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_map_arithmetic_operations() {
-    // TODO: Test nested['a']['blue'] + nested['b'] as sum for arithmetic on map values
+#[ignore = "MAP functions not yet implemented"]
+fn test_map_values_function() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Configs (id INT, settings MAP(VARCHAR, VARCHAR))");
+
+    ctx.exec(r#"INSERT INTO Configs VALUES (1, '{"a": "1", "b": "2", "c": "3"}')"#);
+
+    // MAP_VALUES function to get all values
+    let results = ctx.query("SELECT id, MAP_VALUES(settings) AS vals FROM Configs");
+    assert_eq!(results.len(), 1);
+    // Should return a list of values: ["1", "2", "3"]
+    assert!(results[0].get("vals").unwrap().contains("List"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_non_existent_key_returns_null() {
-    // TODO: Test accessing non-existent keys returns NULL
+#[ignore = "MAP type not yet implemented"]
+fn test_nested_maps() {
+    let mut ctx = setup_test();
+
+    // Map containing other maps
+    ctx.exec("CREATE TABLE NestedConfig (id INT, config MAP(VARCHAR, MAP(VARCHAR, VARCHAR)))");
+
+    ctx.exec(
+        r#"INSERT INTO NestedConfig VALUES (1, '{
+        "database": {"host": "localhost", "port": "5432"},
+        "cache": {"host": "redis", "port": "6379"}
+    }')"#,
+    );
+
+    let results = ctx.query("SELECT config FROM NestedConfig");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("config").unwrap().contains("Map"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_cast_literal_to_map() {
-    // TODO: Test CAST('{"a": 1}' AS MAP) AS map
-}
+#[ignore = "GROUP BY with MAP not yet implemented"]
+fn test_group_by_map() {
+    let mut ctx = setup_test();
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_group_by_map_column() {
-    // TODO: Test SELECT id FROM MapType GROUP BY nested
-}
+    ctx.exec("CREATE TABLE Events (id INT, metadata MAP(VARCHAR, VARCHAR))");
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_unwrap_non_map_value_should_error() {
-    // TODO: Test UNWRAP('abc', 'a.b.c') should error: FunctionRequiresMapValue
-}
+    ctx.exec(r#"INSERT INTO Events VALUES (1, '{"type": "click", "page": "home"}')"#);
+    ctx.exec(r#"INSERT INTO Events VALUES (2, '{"type": "view", "page": "about"}')"#);
+    ctx.exec(r#"INSERT INTO Events VALUES (3, '{"type": "click", "page": "home"}')"#); // Duplicate
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_unwrap_non_map_column_should_error() {
-    // TODO: Test UNWRAP(id, 'a.b.c') should error: SelectorRequiresMapOrListTypes
-}
+    // GROUP BY map column
+    let results =
+        ctx.query("SELECT metadata, COUNT(*) as cnt FROM Events GROUP BY metadata ORDER BY cnt");
+    assert_eq!(results.len(), 2);
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_bracket_access_on_non_map_should_error() {
-    // TODO: Test nested['a']['blue']['first'] should error: SelectorRequiresMapOrListTypes
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_insert_invalid_json_should_error() {
-    // TODO: Test INSERT INTO MapType VALUES (1, '{{ ok [1, 2, 3] }') should error: InvalidJsonString
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_insert_json_array_into_map_should_error() {
-    // TODO: Test INSERT INTO MapType VALUES (1, '[1, 2, 3]') should error: JsonObjectTypeRequired
+    ctx.commit();
 }
