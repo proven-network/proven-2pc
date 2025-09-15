@@ -6,7 +6,6 @@ mod common;
 use common::setup_test;
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 fn test_create_table_with_list_column() {
     let mut ctx = setup_test();
 
@@ -16,30 +15,28 @@ fn test_create_table_with_list_column() {
 }
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 fn test_insert_simple_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, values LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
 
     // Different rows can have different list lengths
     ctx.exec("INSERT INTO ListData VALUES (1, '[1, 2, 3]')");
     ctx.exec("INSERT INTO ListData VALUES (2, '[4, 5]')");
     ctx.exec("INSERT INTO ListData VALUES (3, '[6, 7, 8, 9]')");
 
-    let results = ctx.query("SELECT id, values FROM ListData ORDER BY id");
+    let results = ctx.query("SELECT id, items FROM ListData ORDER BY id");
     assert_eq!(results.len(), 3);
 
     // Lists can have varying lengths
-    assert!(results[0].get("values").unwrap().contains("List"));
-    assert!(results[1].get("values").unwrap().contains("List"));
-    assert!(results[2].get("values").unwrap().contains("List"));
+    assert!(results[0].get("items").unwrap().contains("List"));
+    assert!(results[1].get("items").unwrap().contains("List"));
+    assert!(results[2].get("items").unwrap().contains("List"));
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 fn test_insert_mixed_type_list() {
     let mut ctx = setup_test();
 
@@ -56,7 +53,6 @@ fn test_insert_mixed_type_list() {
 }
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 fn test_nested_lists() {
     let mut ctx = setup_test();
 
@@ -73,7 +69,6 @@ fn test_nested_lists() {
 }
 
 #[test]
-#[ignore = "UNWRAP function not yet implemented"]
 fn test_unwrap_list_elements() {
     let mut ctx = setup_test();
 
@@ -85,10 +80,10 @@ fn test_unwrap_list_elements() {
     let results = ctx.query("SELECT id, UNWRAP(items, '0') AS first, UNWRAP(items, '1') AS second FROM ListData ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert_eq!(results[0].get("first").unwrap(), "I32(10)");
-    assert_eq!(results[0].get("second").unwrap(), "I32(20)");
-    assert_eq!(results[1].get("first").unwrap(), "I32(40)");
-    assert_eq!(results[1].get("second").unwrap(), "I32(50)");
+    assert_eq!(results[0].get("first").unwrap(), "I64(10)");
+    assert_eq!(results[0].get("second").unwrap(), "I64(20)");
+    assert_eq!(results[1].get("first").unwrap(), "I64(40)");
+    assert_eq!(results[1].get("second").unwrap(), "I64(50)");
 
     ctx.commit();
 }
@@ -116,7 +111,6 @@ fn test_list_bracket_access() {
 }
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 fn test_list_with_nulls() {
     let mut ctx = setup_test();
 
@@ -152,7 +146,6 @@ fn test_cast_to_list() {
 }
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 fn test_list_in_where_clause() {
     let mut ctx = setup_test();
 
@@ -173,7 +166,6 @@ fn test_list_in_where_clause() {
 }
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 #[should_panic(expected = "JsonArrayTypeRequired")]
 fn test_insert_json_object_into_list_should_error() {
     let mut ctx = setup_test();
@@ -185,7 +177,6 @@ fn test_insert_json_object_into_list_should_error() {
 }
 
 #[test]
-#[ignore = "LIST type not yet implemented"]
 #[should_panic(expected = "InvalidJsonString")]
 fn test_insert_invalid_json_should_error() {
     let mut ctx = setup_test();

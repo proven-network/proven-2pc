@@ -6,7 +6,6 @@ mod common;
 use common::setup_test;
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 fn test_create_table_with_struct_column() {
     let mut ctx = setup_test();
 
@@ -16,7 +15,6 @@ fn test_create_table_with_struct_column() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 fn test_insert_struct_values() {
     let mut ctx = setup_test();
 
@@ -38,7 +36,6 @@ fn test_insert_struct_values() {
 }
 
 #[test]
-#[ignore = "STRUCT field access not yet implemented"]
 fn test_struct_field_access() {
     let mut ctx = setup_test();
 
@@ -61,7 +58,6 @@ fn test_struct_field_access() {
 }
 
 #[test]
-#[ignore = "STRUCT field access not yet implemented"]
 fn test_struct_in_where_clause() {
     let mut ctx = setup_test();
 
@@ -85,7 +81,6 @@ fn test_struct_in_where_clause() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 fn test_nested_structs() {
     let mut ctx = setup_test();
 
@@ -125,7 +120,6 @@ fn test_nested_structs() {
 }
 
 #[test]
-#[ignore = "STRUCT field access not yet implemented"]
 fn test_nested_struct_field_access() {
     let mut ctx = setup_test();
 
@@ -157,7 +151,6 @@ fn test_nested_struct_field_access() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 fn test_struct_with_nulls() {
     let mut ctx = setup_test();
 
@@ -176,7 +169,6 @@ fn test_struct_with_nulls() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 fn test_struct_comparison() {
     let mut ctx = setup_test();
 
@@ -197,7 +189,6 @@ fn test_struct_comparison() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 fn test_struct_in_array() {
     let mut ctx = setup_test();
 
@@ -223,7 +214,6 @@ fn test_struct_in_array() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 fn test_struct_update() {
     let mut ctx = setup_test();
 
@@ -247,7 +237,6 @@ fn test_struct_update() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 #[should_panic(expected = "StructFieldMissing")]
 fn test_insert_struct_missing_field_should_error() {
     let mut ctx = setup_test();
@@ -259,7 +248,6 @@ fn test_insert_struct_missing_field_should_error() {
 }
 
 #[test]
-#[ignore = "STRUCT type not yet implemented"]
 #[should_panic(expected = "StructFieldTypeMismatch")]
 fn test_insert_struct_wrong_type_should_error() {
     let mut ctx = setup_test();

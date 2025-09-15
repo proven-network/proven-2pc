@@ -1538,21 +1538,35 @@ impl<'a> PlanContext<'a> {
                 ))
             }
 
-            ast::Expression::ArrayAccess { base: _, index: _ } => Err(Error::ExecutionError(
-                "Array access not yet implemented in planner".into(),
-            )),
+            ast::Expression::ArrayAccess { base, index } => {
+                let base_expr = self.resolve_expression(*base)?;
+                let index_expr = self.resolve_expression(*index)?;
+                Ok(Expression::ArrayAccess(
+                    Box::new(base_expr),
+                    Box::new(index_expr),
+                ))
+            }
 
-            ast::Expression::FieldAccess { base: _, field: _ } => Err(Error::ExecutionError(
-                "Field access not yet implemented in planner".into(),
-            )),
+            ast::Expression::FieldAccess { base, field } => {
+                let base_expr = self.resolve_expression(*base)?;
+                Ok(Expression::FieldAccess(Box::new(base_expr), field))
+            }
 
-            ast::Expression::ArrayLiteral(_) => Err(Error::ExecutionError(
-                "Array literals not yet implemented in planner".into(),
-            )),
+            ast::Expression::ArrayLiteral(elements) => {
+                let resolved_elements = elements
+                    .into_iter()
+                    .map(|e| self.resolve_expression(e))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Expression::ArrayLiteral(resolved_elements))
+            }
 
-            ast::Expression::MapLiteral(_) => Err(Error::ExecutionError(
-                "Map literals not yet implemented in planner".into(),
-            )),
+            ast::Expression::MapLiteral(pairs) => {
+                let resolved_pairs = pairs
+                    .into_iter()
+                    .map(|(k, v)| Ok((self.resolve_expression(k)?, self.resolve_expression(v)?)))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Expression::MapLiteral(resolved_pairs))
+            }
         }
     }
 

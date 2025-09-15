@@ -283,7 +283,8 @@ pub fn evaluate_function(
                 }
                 (Value::Struct(fields), Value::Str(field)) => {
                     // Access by field name
-                    Ok(fields.iter()
+                    Ok(fields
+                        .iter()
                         .find(|(name, _)| name == field)
                         .map(|(_, val)| val.clone())
                         .unwrap_or(Value::Null))
@@ -305,9 +306,7 @@ pub fn evaluate_function(
             }
             match &args[0] {
                 Value::Map(m) => {
-                    let keys: Vec<Value> = m.keys()
-                        .map(|k| Value::Str(k.clone()))
-                        .collect();
+                    let keys: Vec<Value> = m.keys().map(|k| Value::Str(k.clone())).collect();
                     Ok(Value::List(keys))
                 }
                 Value::Null => Ok(Value::Null),
@@ -347,10 +346,12 @@ pub fn evaluate_function(
             }
             let path = match &args[1] {
                 Value::Str(s) => s,
-                _ => return Err(Error::TypeMismatch {
-                    expected: "string path".into(),
-                    found: args[1].data_type().to_string(),
-                }),
+                _ => {
+                    return Err(Error::TypeMismatch {
+                        expected: "string path".into(),
+                        found: args[1].data_type().to_string(),
+                    });
+                }
             };
             unwrap_value(&args[0], path)
         }
@@ -820,15 +821,12 @@ fn unwrap_value(value: &Value, path: &str) -> Result<Value> {
         } else {
             // String key for map/struct or field name
             match current {
-                Value::Map(map) => {
-                    map.get(part).cloned().unwrap_or(Value::Null)
-                }
-                Value::Struct(fields) => {
-                    fields.iter()
-                        .find(|(name, _)| name == part)
-                        .map(|(_, val)| val.clone())
-                        .unwrap_or(Value::Null)
-                }
+                Value::Map(map) => map.get(part).cloned().unwrap_or(Value::Null),
+                Value::Struct(fields) => fields
+                    .iter()
+                    .find(|(name, _)| name == part)
+                    .map(|(_, val)| val.clone())
+                    .unwrap_or(Value::Null),
                 _ => return Ok(Value::Null),
             }
         };
@@ -874,7 +872,7 @@ mod tests {
         map.insert("a".to_string(), Value::I64(1));
         map.insert("b".to_string(), Value::I64(2));
         let map_val = Value::Map(map);
-        let result = evaluate_function("LENGTH", &[map_val.clone()], &context).unwrap();
+        let result = evaluate_function("LENGTH", std::slice::from_ref(&map_val), &context).unwrap();
         assert_eq!(result, Value::I64(2));
 
         // Test IS_EMPTY function
@@ -896,10 +894,20 @@ mod tests {
         assert_eq!(result, Value::Bool(false));
 
         // Test CONTAINS with map
-        let result = evaluate_function("CONTAINS", &[map_val.clone(), Value::Str("a".to_string())], &context).unwrap();
+        let result = evaluate_function(
+            "CONTAINS",
+            &[map_val.clone(), Value::Str("a".to_string())],
+            &context,
+        )
+        .unwrap();
         assert_eq!(result, Value::Bool(true));
 
-        let result = evaluate_function("CONTAINS", &[map_val.clone(), Value::Str("c".to_string())], &context).unwrap();
+        let result = evaluate_function(
+            "CONTAINS",
+            &[map_val.clone(), Value::Str("c".to_string())],
+            &context,
+        )
+        .unwrap();
         assert_eq!(result, Value::Bool(false));
 
         // Test EXTRACT function
@@ -907,11 +915,16 @@ mod tests {
         let result = evaluate_function("EXTRACT", &[list, Value::I32(1)], &context).unwrap();
         assert_eq!(result, Value::I64(20));
 
-        let result = evaluate_function("EXTRACT", &[map_val.clone(), Value::Str("b".to_string())], &context).unwrap();
+        let result = evaluate_function(
+            "EXTRACT",
+            &[map_val.clone(), Value::Str("b".to_string())],
+            &context,
+        )
+        .unwrap();
         assert_eq!(result, Value::I64(2));
 
         // Test KEYS function
-        let result = evaluate_function("KEYS", &[map_val.clone()], &context).unwrap();
+        let result = evaluate_function("KEYS", std::slice::from_ref(&map_val), &context).unwrap();
         match result {
             Value::List(keys) => {
                 assert_eq!(keys.len(), 2);
@@ -922,7 +935,7 @@ mod tests {
         }
 
         // Test VALUES function
-        let result = evaluate_function("VALUES", &[map_val.clone()], &context).unwrap();
+        let result = evaluate_function("VALUES", std::slice::from_ref(&map_val), &context).unwrap();
         match result {
             Value::List(values) => {
                 assert_eq!(values.len(), 2);
@@ -935,24 +948,45 @@ mod tests {
         // Test UNWRAP function with nested structures
         let nested = Value::Map({
             let mut m = HashMap::new();
-            m.insert("user".to_string(), Value::Struct(vec![
-                ("name".to_string(), Value::Str("Alice".to_string())),
-                ("age".to_string(), Value::I64(30)),
-            ]));
-            m.insert("items".to_string(), Value::List(vec![
-                Value::Str("item1".to_string()),
-                Value::Str("item2".to_string()),
-            ]));
+            m.insert(
+                "user".to_string(),
+                Value::Struct(vec![
+                    ("name".to_string(), Value::Str("Alice".to_string())),
+                    ("age".to_string(), Value::I64(30)),
+                ]),
+            );
+            m.insert(
+                "items".to_string(),
+                Value::List(vec![
+                    Value::Str("item1".to_string()),
+                    Value::Str("item2".to_string()),
+                ]),
+            );
             m
         });
 
-        let result = evaluate_function("UNWRAP", &[nested.clone(), Value::Str("user.name".to_string())], &context).unwrap();
+        let result = evaluate_function(
+            "UNWRAP",
+            &[nested.clone(), Value::Str("user.name".to_string())],
+            &context,
+        )
+        .unwrap();
         assert_eq!(result, Value::Str("Alice".to_string()));
 
-        let result = evaluate_function("UNWRAP", &[nested.clone(), Value::Str("items.0".to_string())], &context).unwrap();
+        let result = evaluate_function(
+            "UNWRAP",
+            &[nested.clone(), Value::Str("items.0".to_string())],
+            &context,
+        )
+        .unwrap();
         assert_eq!(result, Value::Str("item1".to_string()));
 
-        let result = evaluate_function("UNWRAP", &[nested, Value::Str("user.unknown".to_string())], &context).unwrap();
+        let result = evaluate_function(
+            "UNWRAP",
+            &[nested, Value::Str("user.unknown".to_string())],
+            &context,
+        )
+        .unwrap();
         assert_eq!(result, Value::Null);
     }
 

@@ -268,14 +268,13 @@ impl Parser<'_> {
         })
     }
 
-    /// Parses a CREATE TABLE column definition.
-    fn parse_create_table_column(&mut self) -> Result<ast::Column> {
-        let name = self.next_ident_or_keyword()?;
+    /// Parse a data type (can be used recursively for collection types)
+    fn parse_type(&mut self) -> Result<DataType> {
         let datatype = match self.next()? {
             // Boolean types
             Token::Keyword(Keyword::Bool | Keyword::Boolean) => DataType::Bool,
 
-            // Integer types - conventional SQL names (check for UNSIGNED modifier)
+            // Integer types (check for UNSIGNED modifier)
             Token::Keyword(Keyword::Tinyint) => {
                 if self.next_if_ident_eq("UNSIGNED") {
                     DataType::U8
@@ -313,27 +312,23 @@ impl Parser<'_> {
             }
 
             // Floating point types
-            Token::Keyword(Keyword::Real) => DataType::F32, // SQL standard single precision
-            Token::Keyword(Keyword::Float | Keyword::Double) => DataType::F64, // FLOAT defaults to double
+            Token::Keyword(Keyword::Real) => DataType::F32,
+            Token::Keyword(Keyword::Float | Keyword::Double) => DataType::F64,
 
             // Decimal types
-            Token::Keyword(Keyword::Decimal) => {
-                // TODO: Parse precision and scale from DECIMAL(p,s)
-                DataType::Decimal(Some(38), Some(10))
-            }
+            Token::Keyword(Keyword::Decimal) => DataType::Decimal(Some(38), Some(10)),
 
             // String types
             Token::Keyword(Keyword::String | Keyword::Text | Keyword::Varchar) => DataType::Str,
 
-            // UUID is now a keyword
+            // Special types
             Token::Keyword(Keyword::Uuid) => DataType::Uuid,
-
-            // Date/Time types (now keywords)
             Token::Keyword(Keyword::Date) => DataType::Date,
             Token::Keyword(Keyword::Time) => DataType::Time,
             Token::Keyword(Keyword::Timestamp) => DataType::Timestamp,
             Token::Keyword(Keyword::Interval) => DataType::Interval,
-            // Also accept as identifiers for backward compatibility
+
+            // Also accept identifiers for compatibility
             Token::Ident(s) if s.to_uppercase() == "DATE" => DataType::Date,
             Token::Ident(s) if s.to_uppercase() == "TIME" => DataType::Time,
             Token::Ident(s) if s.to_uppercase() == "TIMESTAMP" => DataType::Timestamp,
@@ -343,26 +338,40 @@ impl Parser<'_> {
             }
             Token::Ident(s) if s.to_uppercase() == "INET" => DataType::Inet,
             Token::Ident(s) if s.to_uppercase() == "POINT" => DataType::Point,
+            Token::Ident(s) if s.to_uppercase() == "ANY" => DataType::I64, // ANY defaults to I64
 
-            // Collection types
-            Token::Keyword(Keyword::Array) => {
-                // ARRAY can be standalone or have element type
-                // For now, default to Array of I64
-                DataType::Array(Box::new(DataType::I64), None)
-            }
-            Token::Keyword(Keyword::List) => {
-                // LIST is variable-size, default to List of I64
-                DataType::List(Box::new(DataType::I64))
-            }
+            // Collection types can be recursive
+            Token::Keyword(Keyword::Array) => DataType::Array(Box::new(DataType::I64), None),
+            Token::Keyword(Keyword::List) => DataType::List(Box::new(DataType::I64)),
             Token::Keyword(Keyword::Map) => {
-                // MAP defaults to String keys and I64 values
-                // TODO: Parse MAP(key_type, value_type) syntax
-                DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64))
+                if self.next_if(|t| t == &Token::OpenParen).is_some() {
+                    let key_type = self.parse_type()?;
+                    self.expect(Token::Comma)?;
+                    let value_type = self.parse_type()?;
+                    self.expect(Token::CloseParen)?;
+                    DataType::Map(Box::new(key_type), Box::new(value_type))
+                } else {
+                    DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64))
+                }
             }
             Token::Keyword(Keyword::Struct) => {
-                // STRUCT needs field definitions
-                // TODO: Parse STRUCT(field1 TYPE1, field2 TYPE2) syntax
-                DataType::Struct(Vec::new())
+                if self.next_if(|t| t == &Token::OpenParen).is_some() {
+                    let mut fields = Vec::new();
+                    if self.peek()? != Some(&Token::CloseParen) {
+                        loop {
+                            let field_name = self.next_ident_or_keyword()?;
+                            let field_type = self.parse_type()?;
+                            fields.push((field_name, field_type));
+                            if !self.next_is(Token::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Token::CloseParen)?;
+                    DataType::Struct(fields)
+                } else {
+                    DataType::Struct(Vec::new())
+                }
             }
 
             token => {
@@ -374,8 +383,7 @@ impl Parser<'_> {
         };
 
         // Check for array size specification with TYPE[SIZE] syntax
-        let datatype = if self.next_if(|t| t == &Token::OpenBracket).is_some() {
-            // Parse array size
+        if self.next_if(|t| t == &Token::OpenBracket).is_some() {
             let size = if let Token::Number(n) = self.next()? {
                 n.parse::<usize>()
                     .map_err(|_| Error::ParseError(format!("invalid array size: {}", n)))?
@@ -383,12 +391,18 @@ impl Parser<'_> {
                 return Err(Error::ParseError("expected array size".into()));
             };
             self.expect(Token::CloseBracket)?;
-
-            // Convert the base type to a fixed-size array
-            DataType::Array(Box::new(datatype), Some(size))
+            Ok(DataType::Array(Box::new(datatype), Some(size)))
         } else {
-            datatype
-        };
+            Ok(datatype)
+        }
+    }
+
+    /// Parses a CREATE TABLE column definition.
+    fn parse_create_table_column(&mut self) -> Result<ast::Column> {
+        let name = self.next_ident_or_keyword()?;
+
+        // Use the new parse_type method for type parsing
+        let datatype = self.parse_type()?;
 
         let mut column = ast::Column {
             name,
@@ -400,6 +414,8 @@ impl Parser<'_> {
             index: false,
             references: None,
         };
+
+        // Parse column constraints
         while let Some(keyword) = self.next_if_keyword() {
             match keyword {
                 Keyword::Primary => {

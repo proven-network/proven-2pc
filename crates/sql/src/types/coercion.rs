@@ -3,6 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::types::{DataType, Value};
+use std::collections::HashMap;
 
 /// Coerce a value to match the target data type
 /// This handles implicit type conversions that are safe and expected in SQL
@@ -10,6 +11,17 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
     // If types already match, return as-is
     if value.data_type() == *target_type {
         return Ok(value);
+    }
+
+    // Special handling for Map values that need element coercion
+    if let (Value::Map(map), DataType::Map(_key_type, value_type)) = (&value, target_type) {
+        let mut coerced_map = HashMap::new();
+        for (key, val) in map.clone() {
+            // Coerce the value to the expected type
+            let coerced_val = coerce_value(val, value_type)?;
+            coerced_map.insert(key, coerced_val);
+        }
+        return Ok(Value::Map(coerced_map));
     }
 
     match (&value, target_type) {
@@ -279,6 +291,43 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             Ok(Value::Decimal(rust_decimal::Decimal::from(*v)))
         }
 
+        // Decimal to signed integer coercions
+        (Value::Decimal(d), DataType::I8) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_i8()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::I8)
+                .ok_or_else(|| Error::InvalidValue(format!("Cannot convert {} to TINYINT", d)))
+        }
+        (Value::Decimal(d), DataType::I16) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_i16()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::I16)
+                .ok_or_else(|| Error::InvalidValue(format!("Cannot convert {} to SMALLINT", d)))
+        }
+        (Value::Decimal(d), DataType::I32) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_i32()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::I32)
+                .ok_or_else(|| Error::InvalidValue(format!("Cannot convert {} to INT", d)))
+        }
+        (Value::Decimal(d), DataType::I64) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_i64()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::I64)
+                .ok_or_else(|| Error::InvalidValue(format!("Cannot convert {} to BIGINT", d)))
+        }
+        (Value::Decimal(d), DataType::I128) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_i128()
+                .filter(|_| d.fract().is_zero())
+                .map(Value::I128)
+                .ok_or_else(|| Error::InvalidValue(format!("Cannot convert {} to HUGEINT", d)))
+        }
+
         // Decimal to unsigned integer coercions
         (Value::Decimal(d), DataType::U8) => {
             use rust_decimal::prelude::ToPrimitive;
@@ -371,6 +420,137 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                     expected: "TIME".into(),
                     found: format!("Invalid time string: '{}'", s),
                 })
+        }
+
+        // String to collection type conversions (JSON parsing)
+        (Value::Str(s), DataType::List(elem_type)) => {
+            // Parse JSON array string to List
+            match Value::parse_json_array(s) {
+                Ok(Value::List(items)) => {
+                    // Coerce each element to the expected type
+                    let mut coerced_items = Vec::new();
+                    for item in items {
+                        coerced_items.push(coerce_value(item, elem_type)?);
+                    }
+                    Ok(Value::List(coerced_items))
+                }
+                Ok(_) => Err(Error::TypeMismatch {
+                    expected: "LIST".into(),
+                    found: format!("Invalid JSON array: '{}'", s),
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        (Value::Str(s), DataType::Array(elem_type, size)) => {
+            // Parse JSON array string to Array
+            match Value::parse_json_array(s) {
+                Ok(Value::List(items)) => {
+                    // Check size constraint if specified
+                    if let Some(expected_size) = size
+                        && items.len() != *expected_size
+                    {
+                        return Err(Error::TypeMismatch {
+                            expected: format!("ARRAY with {} elements", expected_size),
+                            found: format!("Array with {} elements", items.len()),
+                        });
+                    }
+                    // Coerce each element to the expected type
+                    let mut coerced_items = Vec::new();
+                    for item in items {
+                        coerced_items.push(coerce_value(item, elem_type)?);
+                    }
+                    Ok(Value::Array(coerced_items))
+                }
+                Ok(_) => Err(Error::TypeMismatch {
+                    expected: "ARRAY".into(),
+                    found: format!("Invalid JSON array: '{}'", s),
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        (Value::Str(s), DataType::Map(key_type, value_type)) => {
+            // Parse JSON object string to Map
+            match Value::parse_json_object(s) {
+                Ok(Value::Map(mut map)) => {
+                    // Coerce map values to match expected types
+                    let mut coerced_map = HashMap::new();
+                    for (key, val) in map.drain() {
+                        // Coerce the value to the expected type
+                        let coerced_val = coerce_value(val, value_type)?;
+                        coerced_map.insert(key, coerced_val);
+                    }
+                    Ok(Value::Map(coerced_map))
+                }
+                Ok(_) => Err(Error::TypeMismatch {
+                    expected: format!("MAP({:?}, {:?})", key_type, value_type),
+                    found: format!("Invalid JSON object: '{}'", s),
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        (Value::Str(s), DataType::Struct(schema_fields)) => {
+            // Parse JSON object string to Struct
+            match Value::parse_json_object(s) {
+                Ok(Value::Map(mut map)) => {
+                    // Convert Map to Struct with type coercion based on schema
+                    let mut fields = Vec::new();
+                    for (field_name, field_type) in schema_fields {
+                        if let Some(val) = map.remove(field_name) {
+                            // Coerce the value to the expected field type
+                            let coerced_val = coerce_value(val, field_type)?;
+                            fields.push((field_name.clone(), coerced_val));
+                        } else {
+                            return Err(Error::TypeMismatch {
+                                expected: format!("STRUCT field '{}'", field_name),
+                                found: "missing field".into(),
+                            });
+                        }
+                    }
+                    // Check for extra fields
+                    if !map.is_empty() {
+                        let extra_fields: Vec<String> = map.keys().cloned().collect();
+                        return Err(Error::TypeMismatch {
+                            expected: "STRUCT".into(),
+                            found: format!("extra fields: {:?}", extra_fields),
+                        });
+                    }
+                    Ok(Value::Struct(fields))
+                }
+                Ok(_) => Err(Error::TypeMismatch {
+                    expected: "STRUCT".into(),
+                    found: format!("Invalid JSON object: '{}'", s),
+                }),
+                Err(e) => Err(e),
+            }
+        }
+
+        // Allow List to be used where Array is expected
+        (Value::List(items), DataType::Array(elem_type, size)) => {
+            // Check size constraint if specified
+            if let Some(expected_size) = size
+                && items.len() != *expected_size
+            {
+                return Err(Error::TypeMismatch {
+                    expected: format!("ARRAY with {} elements", expected_size),
+                    found: format!("List with {} elements", items.len()),
+                });
+            }
+            // Coerce each element to the expected type
+            let mut coerced_items = Vec::new();
+            for item in items {
+                coerced_items.push(coerce_value(item.clone(), elem_type)?);
+            }
+            Ok(Value::Array(coerced_items))
+        }
+
+        // Allow Array to be used where List is expected
+        (Value::Array(items), DataType::List(elem_type)) => {
+            // Coerce each element to the expected type
+            let mut coerced_items = Vec::new();
+            for item in items {
+                coerced_items.push(coerce_value(item.clone(), elem_type)?);
+            }
+            Ok(Value::List(coerced_items))
         }
 
         // String to Timestamp conversion

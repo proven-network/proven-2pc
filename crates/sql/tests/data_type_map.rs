@@ -6,7 +6,6 @@ mod common;
 use common::setup_test;
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_create_table_with_map_column() {
     let mut ctx = setup_test();
 
@@ -16,7 +15,6 @@ fn test_create_table_with_map_column() {
 }
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_insert_map_values() {
     let mut ctx = setup_test();
 
@@ -40,7 +38,6 @@ fn test_insert_map_values() {
 }
 
 #[test]
-#[ignore = "MAP key access not yet implemented"]
 fn test_map_key_access() {
     let mut ctx = setup_test();
 
@@ -66,7 +63,6 @@ fn test_map_key_access() {
 }
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_map_with_different_value_types() {
     let mut ctx = setup_test();
 
@@ -83,7 +79,6 @@ fn test_map_with_different_value_types() {
 }
 
 #[test]
-#[ignore = "MAP key access not yet implemented"]
 fn test_map_in_where_clause() {
     let mut ctx = setup_test();
 
@@ -109,7 +104,6 @@ fn test_map_in_where_clause() {
 }
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_map_with_nulls() {
     let mut ctx = setup_test();
 
@@ -128,7 +122,6 @@ fn test_map_with_nulls() {
 }
 
 #[test]
-#[ignore = "MAP key access not yet implemented"]
 fn test_map_key_not_found() {
     let mut ctx = setup_test();
 
@@ -145,7 +138,6 @@ fn test_map_key_not_found() {
 }
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_empty_map() {
     let mut ctx = setup_test();
 
@@ -162,7 +154,6 @@ fn test_empty_map() {
 }
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_map_comparison() {
     let mut ctx = setup_test();
 
@@ -184,7 +175,6 @@ fn test_map_comparison() {
 }
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_map_update() {
     let mut ctx = setup_test();
 
@@ -204,7 +194,6 @@ fn test_map_update() {
 }
 
 #[test]
-#[ignore = "MAP functions not yet implemented"]
 fn test_map_keys_function() {
     let mut ctx = setup_test();
 
@@ -222,7 +211,6 @@ fn test_map_keys_function() {
 }
 
 #[test]
-#[ignore = "MAP functions not yet implemented"]
 fn test_map_values_function() {
     let mut ctx = setup_test();
 
@@ -240,7 +228,6 @@ fn test_map_values_function() {
 }
 
 #[test]
-#[ignore = "MAP type not yet implemented"]
 fn test_nested_maps() {
     let mut ctx = setup_test();
 

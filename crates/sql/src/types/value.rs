@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
+use std::str::FromStr;
 use uuid::Uuid;
 
 /// A row of values in a table
@@ -189,7 +190,16 @@ impl Value {
                 };
                 DataType::List(Box::new(elem_type))
             }
-            Value::Map(_) => DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64)), // TODO: track types
+            Value::Map(map) => {
+                // Infer value type from the map contents
+                let value_type = if map.is_empty() {
+                    DataType::I64 // Default if empty
+                } else {
+                    // Get the first value's type as representative
+                    map.values().next().unwrap().data_type()
+                };
+                DataType::Map(Box::new(DataType::Str), Box::new(value_type))
+            }
             Value::Struct(fields) => {
                 let field_types = fields
                     .iter()
@@ -566,10 +576,19 @@ impl Value {
             serde_json::Value::Null => Ok(Value::Null),
             serde_json::Value::Bool(b) => Ok(Value::Bool(b)),
             serde_json::Value::Number(n) => {
+                // Parse all JSON numbers as Decimal for maximum flexibility
+                // This allows proper coercion to the target type later
+                use rust_decimal::Decimal;
+
                 if let Some(i) = n.as_i64() {
-                    Ok(Value::I64(i))
-                } else if let Some(f) = n.as_f64() {
-                    Ok(Value::F64(f))
+                    Ok(Value::Decimal(Decimal::from(i)))
+                } else if let Some(u) = n.as_u64() {
+                    Ok(Value::Decimal(Decimal::from(u)))
+                } else if n.as_f64().is_some() {
+                    // For floats, use string parsing to avoid precision loss
+                    Decimal::from_str(&n.to_string())
+                        .map(Value::Decimal)
+                        .map_err(|_| Error::ParseError("Invalid JSON number".into()))
                 } else {
                     Err(Error::ParseError("Invalid JSON number".into()))
                 }
@@ -674,9 +693,9 @@ mod tests {
         match arr {
             Value::List(vals) => {
                 assert_eq!(vals.len(), 3);
-                assert_eq!(vals[0], Value::I64(1));
-                assert_eq!(vals[1], Value::I64(2));
-                assert_eq!(vals[2], Value::I64(3));
+                assert_eq!(vals[0], Value::Decimal(Decimal::from(1)));
+                assert_eq!(vals[1], Value::Decimal(Decimal::from(2)));
+                assert_eq!(vals[2], Value::Decimal(Decimal::from(3)));
             }
             _ => panic!("Expected List"),
         }
@@ -686,53 +705,66 @@ mod tests {
         match obj {
             Value::Map(map) => {
                 assert_eq!(map.get("name"), Some(&Value::Str("Alice".to_string())));
-                assert_eq!(map.get("age"), Some(&Value::I64(30)));
+                assert_eq!(map.get("age"), Some(&Value::Decimal(Decimal::from(30))));
             }
             _ => panic!("Expected Map"),
         }
 
         // Test array access
-        let list = Value::List(vec![Value::I64(10), Value::I64(20), Value::I64(30)]);
-        assert_eq!(list.get_index(0), Some(&Value::I64(10)));
-        assert_eq!(list.get_index(2), Some(&Value::I64(30)));
+        let list = Value::List(vec![
+            Value::Decimal(Decimal::from(10)),
+            Value::Decimal(Decimal::from(20)),
+            Value::Decimal(Decimal::from(30)),
+        ]);
+        assert_eq!(list.get_index(0), Some(&Value::Decimal(Decimal::from(10))));
+        assert_eq!(list.get_index(2), Some(&Value::Decimal(Decimal::from(30))));
         assert_eq!(list.get_index(5), None);
 
         // Test struct field access
         let structure = Value::Struct(vec![
             ("name".to_string(), Value::Str("Bob".to_string())),
-            ("age".to_string(), Value::I64(25)),
+            ("age".to_string(), Value::Decimal(Decimal::from(25))),
         ]);
         assert_eq!(
             structure.get_field("name"),
             Some(&Value::Str("Bob".to_string()))
         );
-        assert_eq!(structure.get_field("age"), Some(&Value::I64(25)));
+        assert_eq!(
+            structure.get_field("age"),
+            Some(&Value::Decimal(Decimal::from(25)))
+        );
         assert_eq!(structure.get_field("unknown"), None);
 
         // Test map key access
         let mut map = HashMap::new();
         map.insert("key1".to_string(), Value::Str("value1".to_string()));
-        map.insert("key2".to_string(), Value::I64(42));
+        map.insert("key2".to_string(), Value::Decimal(Decimal::from(42)));
         let map_val = Value::Map(map);
         assert_eq!(
             map_val.get_key("key1"),
             Some(&Value::Str("value1".to_string()))
         );
-        assert_eq!(map_val.get_key("key2"), Some(&Value::I64(42)));
+        assert_eq!(
+            map_val.get_key("key2"),
+            Some(&Value::Decimal(Decimal::from(42)))
+        );
         assert_eq!(map_val.get_key("key3"), None);
 
         // Test Display formatting
-        let list = Value::List(vec![Value::I64(1), Value::I64(2)]);
+        let list = Value::List(vec![
+            Value::Decimal(Decimal::from(1)),
+            Value::Decimal(Decimal::from(2)),
+        ]);
         assert_eq!(list.to_string(), "[1, 2]");
 
         let mut map = HashMap::new();
-        map.insert("a".to_string(), Value::I64(1));
+        map.insert("a".to_string(), Value::Decimal(Decimal::from(1)));
         let map_val = Value::Map(map);
         assert_eq!(map_val.to_string(), "{'a': 1}");
 
         // Test to_json_string
         let nested = Value::List(vec![
-            Value::I64(1),
+            Value::Decimal(Decimal::from(1)),
             Value::Str("test".to_string()),
             Value::Bool(true),
             Value::Null,

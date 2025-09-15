@@ -6,7 +6,6 @@ mod common;
 use common::setup_test;
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 fn test_create_table_with_array_column() {
     let mut ctx = setup_test();
 
@@ -16,7 +15,6 @@ fn test_create_table_with_array_column() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 fn test_insert_fixed_array() {
     let mut ctx = setup_test();
 
@@ -39,7 +37,6 @@ fn test_insert_fixed_array() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 #[should_panic(expected = "ArraySizeMismatch")]
 fn test_insert_wrong_size_array_should_error() {
     let mut ctx = setup_test();
@@ -51,7 +48,6 @@ fn test_insert_wrong_size_array_should_error() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 #[should_panic(expected = "ArraySizeMismatch")]
 fn test_insert_too_many_elements_should_error() {
     let mut ctx = setup_test();
@@ -63,7 +59,6 @@ fn test_insert_too_many_elements_should_error() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 fn test_array_2d_fixed_size() {
     let mut ctx = setup_test();
 
@@ -107,7 +102,6 @@ fn test_array_bracket_access() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 fn test_array_with_nulls() {
     let mut ctx = setup_test();
 
@@ -130,7 +124,6 @@ fn test_array_with_nulls() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 fn test_array_comparison() {
     let mut ctx = setup_test();
 
@@ -150,7 +143,6 @@ fn test_array_comparison() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 fn test_array_type_checking() {
     let mut ctx = setup_test();
 
@@ -210,7 +202,6 @@ fn test_cast_to_array() {
 }
 
 #[test]
-#[ignore = "ARRAY type not yet implemented"]
 fn test_array_update() {
     let mut ctx = setup_test();
 
