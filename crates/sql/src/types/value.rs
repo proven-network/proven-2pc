@@ -281,9 +281,38 @@ impl fmt::Display for Value {
             Value::Bytea(b) => write!(f, "x'{}'", hex::encode(b)),
             Value::Inet(ip) => write!(f, "{}", ip),
             Value::Point(p) => write!(f, "POINT({} {})", p.x, p.y),
-            Value::Array(a) => write!(f, "{:?}", a),
-            Value::List(l) => write!(f, "{:?}", l),
-            Value::Map(m) => write!(f, "{:?}", m),
+            Value::Array(a) => {
+                write!(f, "[")?;
+                for (i, val) in a.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", val)?;
+                }
+                write!(f, "]")
+            }
+            Value::List(l) => {
+                write!(f, "[")?;
+                for (i, val) in l.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", val)?;
+                }
+                write!(f, "]")
+            }
+            Value::Map(m) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (key, val) in m.iter() {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "'{}': {}", key, val)?;
+                    first = false;
+                }
+                write!(f, "}}")
+            }
             Value::Struct(s) => {
                 write!(f, "{{")?;
                 for (i, (name, val)) in s.iter().enumerate() {
@@ -499,6 +528,124 @@ impl Ord for Value {
     }
 }
 
+impl Value {
+    // Collection access methods
+
+    /// Parse JSON string to array/list value
+    pub fn parse_json_array(s: &str) -> Result<Value> {
+        let parsed: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| Error::ParseError(format!("Invalid JSON array: {}", e)))?;
+
+        if let serde_json::Value::Array(arr) = parsed {
+            let values: Result<Vec<Value>> = arr.into_iter().map(Self::from_json_value).collect();
+            Ok(Value::List(values?))
+        } else {
+            Err(Error::ParseError("Expected JSON array".into()))
+        }
+    }
+
+    /// Parse JSON string to map/object value
+    pub fn parse_json_object(s: &str) -> Result<Value> {
+        let parsed: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| Error::ParseError(format!("Invalid JSON object: {}", e)))?;
+
+        if let serde_json::Value::Object(obj) = parsed {
+            let mut map = HashMap::new();
+            for (key, val) in obj {
+                map.insert(key, Self::from_json_value(val)?);
+            }
+            Ok(Value::Map(map))
+        } else {
+            Err(Error::ParseError("Expected JSON object".into()))
+        }
+    }
+
+    /// Convert JSON value to SQL Value
+    fn from_json_value(json: serde_json::Value) -> Result<Value> {
+        match json {
+            serde_json::Value::Null => Ok(Value::Null),
+            serde_json::Value::Bool(b) => Ok(Value::Bool(b)),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(Value::I64(i))
+                } else if let Some(f) = n.as_f64() {
+                    Ok(Value::F64(f))
+                } else {
+                    Err(Error::ParseError("Invalid JSON number".into()))
+                }
+            }
+            serde_json::Value::String(s) => Ok(Value::Str(s)),
+            serde_json::Value::Array(arr) => {
+                let values: Result<Vec<Value>> =
+                    arr.into_iter().map(Self::from_json_value).collect();
+                Ok(Value::List(values?))
+            }
+            serde_json::Value::Object(obj) => {
+                let mut map = HashMap::new();
+                for (key, val) in obj {
+                    map.insert(key, Self::from_json_value(val)?);
+                }
+                Ok(Value::Map(map))
+            }
+        }
+    }
+
+    /// Convert Value to JSON string for display
+    pub fn to_json_string(&self) -> String {
+        match self {
+            Value::Array(vals) | Value::List(vals) => {
+                let items: Vec<String> = vals.iter().map(|v| v.to_json_string()).collect();
+                format!("[{}]", items.join(", "))
+            }
+            Value::Map(map) => {
+                let items: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k, v.to_json_string()))
+                    .collect();
+                format!("{{{}}}", items.join(", "))
+            }
+            Value::Struct(fields) => {
+                let items: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k, v.to_json_string()))
+                    .collect();
+                format!("{{{}}}", items.join(", "))
+            }
+            Value::Null => "null".to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Str(s) => format!("\"{}\"", s.replace('\"', "\\\"")),
+            _ => self.to_string(),
+        }
+    }
+
+    /// Access array/list element by index
+    pub fn get_index(&self, index: usize) -> Option<&Value> {
+        match self {
+            Value::Array(vals) | Value::List(vals) => vals.get(index),
+            _ => None,
+        }
+    }
+
+    /// Access struct field by name
+    pub fn get_field(&self, field: &str) -> Option<&Value> {
+        match self {
+            Value::Struct(fields) => fields
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, val)| val),
+            _ => None,
+        }
+    }
+
+    /// Access map value by key
+    pub fn get_key(&self, key: &str) -> Option<&Value> {
+        match self {
+            Value::Map(map) => map.get(key),
+            _ => None,
+        }
+    }
+}
+
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -518,5 +665,78 @@ mod tests {
         // Test conversion to i128
         assert_eq!(Value::I8(10).to_i128().unwrap(), 10i128);
         assert_eq!(Value::U32(1000).to_i128().unwrap(), 1000i128);
+    }
+
+    #[test]
+    fn test_collection_values() {
+        // Test JSON array parsing
+        let arr = Value::parse_json_array("[1, 2, 3]").unwrap();
+        match arr {
+            Value::List(vals) => {
+                assert_eq!(vals.len(), 3);
+                assert_eq!(vals[0], Value::I64(1));
+                assert_eq!(vals[1], Value::I64(2));
+                assert_eq!(vals[2], Value::I64(3));
+            }
+            _ => panic!("Expected List"),
+        }
+
+        // Test JSON object parsing
+        let obj = Value::parse_json_object(r#"{"name": "Alice", "age": 30}"#).unwrap();
+        match obj {
+            Value::Map(map) => {
+                assert_eq!(map.get("name"), Some(&Value::Str("Alice".to_string())));
+                assert_eq!(map.get("age"), Some(&Value::I64(30)));
+            }
+            _ => panic!("Expected Map"),
+        }
+
+        // Test array access
+        let list = Value::List(vec![Value::I64(10), Value::I64(20), Value::I64(30)]);
+        assert_eq!(list.get_index(0), Some(&Value::I64(10)));
+        assert_eq!(list.get_index(2), Some(&Value::I64(30)));
+        assert_eq!(list.get_index(5), None);
+
+        // Test struct field access
+        let structure = Value::Struct(vec![
+            ("name".to_string(), Value::Str("Bob".to_string())),
+            ("age".to_string(), Value::I64(25)),
+        ]);
+        assert_eq!(
+            structure.get_field("name"),
+            Some(&Value::Str("Bob".to_string()))
+        );
+        assert_eq!(structure.get_field("age"), Some(&Value::I64(25)));
+        assert_eq!(structure.get_field("unknown"), None);
+
+        // Test map key access
+        let mut map = HashMap::new();
+        map.insert("key1".to_string(), Value::Str("value1".to_string()));
+        map.insert("key2".to_string(), Value::I64(42));
+        let map_val = Value::Map(map);
+        assert_eq!(
+            map_val.get_key("key1"),
+            Some(&Value::Str("value1".to_string()))
+        );
+        assert_eq!(map_val.get_key("key2"), Some(&Value::I64(42)));
+        assert_eq!(map_val.get_key("key3"), None);
+
+        // Test Display formatting
+        let list = Value::List(vec![Value::I64(1), Value::I64(2)]);
+        assert_eq!(list.to_string(), "[1, 2]");
+
+        let mut map = HashMap::new();
+        map.insert("a".to_string(), Value::I64(1));
+        let map_val = Value::Map(map);
+        assert_eq!(map_val.to_string(), "{'a': 1}");
+
+        // Test to_json_string
+        let nested = Value::List(vec![
+            Value::I64(1),
+            Value::Str("test".to_string()),
+            Value::Bool(true),
+            Value::Null,
+        ]);
+        assert_eq!(nested.to_json_string(), r#"[1, "test", true, null]"#);
     }
 }

@@ -201,6 +201,131 @@ impl Column {
         }
         self
     }
+
+    /// Validates that a value matches this column's data type and constraints.
+    pub fn validate_value(&self, value: &Value) -> Result<()> {
+        // Check nullable constraint
+        if value == &Value::Null {
+            if !self.nullable {
+                return Err(Error::NullConstraintViolation(self.name.clone()));
+            }
+            return Ok(()); // NULL is valid for nullable columns
+        }
+
+        // Check data type match for collections
+        match (&self.datatype, value) {
+            // Array validation
+            (DataType::Array(elem_type, Some(size)), Value::Array(vals)) => {
+                // Check array has exactly 'size' elements
+                if vals.len() != *size {
+                    return Err(Error::InvalidValue(format!(
+                        "Array column '{}' expects {} elements, got {}",
+                        self.name,
+                        size,
+                        vals.len()
+                    )));
+                }
+                // Check each element matches elem_type
+                for (i, val) in vals.iter().enumerate() {
+                    if !val.is_null() {
+                        val.check_type(elem_type).map_err(|_| {
+                            Error::InvalidValue(format!(
+                                "Array element {} in column '{}' has wrong type",
+                                i, self.name
+                            ))
+                        })?;
+                    }
+                }
+            }
+            (DataType::Array(elem_type, None), Value::Array(vals)) => {
+                // Variable-size array - just check element types
+                for (i, val) in vals.iter().enumerate() {
+                    if !val.is_null() {
+                        val.check_type(elem_type).map_err(|_| {
+                            Error::InvalidValue(format!(
+                                "Array element {} in column '{}' has wrong type",
+                                i, self.name
+                            ))
+                        })?;
+                    }
+                }
+            }
+
+            // List validation
+            (DataType::List(elem_type), Value::List(vals)) => {
+                // Check each element matches elem_type
+                for (i, val) in vals.iter().enumerate() {
+                    if !val.is_null() {
+                        val.check_type(elem_type).map_err(|_| {
+                            Error::InvalidValue(format!(
+                                "List element {} in column '{}' has wrong type",
+                                i, self.name
+                            ))
+                        })?;
+                    }
+                }
+            }
+
+            // Map validation
+            (DataType::Map(key_type, val_type), Value::Map(map)) => {
+                // All keys are strings in our HashMap implementation
+                // Check that key_type is String
+                if !matches!(key_type.as_ref(), DataType::Str) {
+                    return Err(Error::InvalidValue(format!(
+                        "Map column '{}' requires String keys",
+                        self.name
+                    )));
+                }
+                // Check all values match val_type
+                for (key, val) in map.iter() {
+                    if !val.is_null() {
+                        val.check_type(val_type).map_err(|_| {
+                            Error::InvalidValue(format!(
+                                "Map value for key '{}' in column '{}' has wrong type",
+                                key, self.name
+                            ))
+                        })?;
+                    }
+                }
+            }
+
+            // Struct validation
+            (DataType::Struct(expected_fields), Value::Struct(actual_fields)) => {
+                // Check all required fields are present and have correct types
+                if expected_fields.len() != actual_fields.len() {
+                    return Err(Error::InvalidValue(format!(
+                        "Struct column '{}' expects {} fields, got {}",
+                        self.name,
+                        expected_fields.len(),
+                        actual_fields.len()
+                    )));
+                }
+                for (expected, actual) in expected_fields.iter().zip(actual_fields.iter()) {
+                    if expected.0 != actual.0 {
+                        return Err(Error::InvalidValue(format!(
+                            "Struct field mismatch in column '{}': expected '{}', got '{}'",
+                            self.name, expected.0, actual.0
+                        )));
+                    }
+                    if !actual.1.is_null() {
+                        actual.1.check_type(&expected.1).map_err(|_| {
+                            Error::InvalidValue(format!(
+                                "Struct field '{}' in column '{}' has wrong type",
+                                actual.0, self.name
+                            ))
+                        })?;
+                    }
+                }
+            }
+
+            // For non-collection types, use the existing check_type method
+            _ => {
+                value.check_type(&self.datatype)?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // Formats the table as a SQL CREATE TABLE statement.

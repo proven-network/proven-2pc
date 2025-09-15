@@ -80,6 +80,18 @@ pub enum Expression {
 
     /// Function call with deterministic evaluation.
     Function(String, Vec<Expression>),
+
+    /// Array/List element access: base[index]
+    ArrayAccess(Box<Expression>, Box<Expression>),
+
+    /// Struct field access: base.field
+    FieldAccess(Box<Expression>, String),
+
+    /// Array literal: [1, 2, 3]
+    ArrayLiteral(Vec<Expression>),
+
+    /// Map literal: {key1: value1, key2: value2}
+    MapLiteral(Vec<(Expression, Expression)>),
 }
 
 impl Expression {
@@ -364,6 +376,80 @@ impl Expression {
                     Value::boolean(in_range)
                 }
             }
+
+            // Collection access expressions
+            ArrayAccess(base, index) => {
+                let collection = base.evaluate(row, context)?;
+                let idx = index.evaluate(row, context)?;
+
+                match (collection, idx.clone()) {
+                    (Value::Array(arr), Value::I32(i)) => {
+                        arr.get(i as usize).cloned().unwrap_or(Value::Null)
+                    }
+                    (Value::Array(arr), Value::I64(i)) => {
+                        arr.get(i as usize).cloned().unwrap_or(Value::Null)
+                    }
+                    (Value::List(list), Value::I32(i)) => {
+                        list.get(i as usize).cloned().unwrap_or(Value::Null)
+                    }
+                    (Value::List(list), Value::I64(i)) => {
+                        list.get(i as usize).cloned().unwrap_or(Value::Null)
+                    }
+                    (Value::Map(map), Value::Str(key)) => {
+                        map.get(&key).cloned().unwrap_or(Value::Null)
+                    }
+                    _ => {
+                        return Err(Error::TypeMismatch {
+                            expected: "array/list with integer index or map with string key".into(),
+                            found: "collection access".to_string(),
+                        });
+                    }
+                }
+            }
+
+            FieldAccess(base, field) => {
+                let struct_val = base.evaluate(row, context)?;
+                match struct_val {
+                    Value::Struct(fields) => fields
+                        .iter()
+                        .find(|(name, _)| name == field)
+                        .map(|(_, val)| val.clone())
+                        .unwrap_or(Value::Null),
+                    _ => {
+                        return Err(Error::TypeMismatch {
+                            expected: "struct".into(),
+                            found: format!("{:?}", struct_val),
+                        });
+                    }
+                }
+            }
+
+            ArrayLiteral(elements) => {
+                let values: Result<Vec<_>> =
+                    elements.iter().map(|e| e.evaluate(row, context)).collect();
+                Value::List(values?)
+            }
+
+            MapLiteral(pairs) => {
+                let mut map = std::collections::HashMap::new();
+                for (key_expr, val_expr) in pairs {
+                    let key = key_expr.evaluate(row, context)?;
+                    let val = val_expr.evaluate(row, context)?;
+                    // Keys must be strings
+                    match key {
+                        Value::Str(k) => {
+                            map.insert(k, val);
+                        }
+                        _ => {
+                            return Err(Error::TypeMismatch {
+                                expected: "string key for map".into(),
+                                found: format!("{:?}", key),
+                            });
+                        }
+                    }
+                }
+                Value::Map(map)
+            }
         })
     }
 
@@ -399,6 +485,16 @@ impl Expression {
             }
 
             Function(_, args) => args.iter().all(|arg| arg.walk(visitor)),
+
+            ArrayAccess(base, index) => base.walk(visitor) && index.walk(visitor),
+
+            FieldAccess(base, _) => base.walk(visitor),
+
+            ArrayLiteral(elements) => elements.iter().all(|e| e.walk(visitor)),
+
+            MapLiteral(pairs) => pairs
+                .iter()
+                .all(|(k, v)| k.walk(visitor) && v.walk(visitor)),
 
             InList(expr, list, _) => expr.walk(visitor) && list.iter().all(|e| e.walk(visitor)),
 
@@ -494,6 +590,24 @@ impl Expression {
                 args.into_iter().map(|arg| arg.remap_columns(map)).collect(),
             ),
 
+            ArrayAccess(base, index) => ArrayAccess(
+                Box::new(base.remap_columns(map)),
+                Box::new(index.remap_columns(map)),
+            ),
+
+            FieldAccess(base, field) => FieldAccess(Box::new(base.remap_columns(map)), field),
+
+            ArrayLiteral(elements) => {
+                ArrayLiteral(elements.into_iter().map(|e| e.remap_columns(map)).collect())
+            }
+
+            MapLiteral(pairs) => MapLiteral(
+                pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.remap_columns(map), v.remap_columns(map)))
+                    .collect(),
+            ),
+
             InList(expr, list, negated) => InList(
                 Box::new(expr.remap_columns(map)),
                 list.into_iter().map(|e| e.remap_columns(map)).collect(),
@@ -577,6 +691,32 @@ impl Display for Expression {
                     write!(f, " NOT")?;
                 }
                 write!(f, " BETWEEN {} AND {}", low, high)
+            }
+
+            ArrayAccess(base, index) => write!(f, "{}[{}]", base, index),
+
+            FieldAccess(base, field) => write!(f, "{}.{}", base, field),
+
+            ArrayLiteral(elements) => {
+                write!(f, "[")?;
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, "]")
+            }
+
+            MapLiteral(pairs) => {
+                write!(f, "{{")?;
+                for (i, (key, val)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", key, val)?;
+                }
+                write!(f, "}}")
             }
         }
     }
@@ -813,6 +953,101 @@ mod tests {
         // IS NULL check
         let expr = Expression::Is(Box::new(Expression::Constant(Value::Null)), Value::Null);
         assert_eq!(expr.evaluate(None, &ctx).unwrap(), Value::boolean(true));
+    }
+
+    #[test]
+    fn test_collection_expressions() {
+        let context = test_context();
+
+        // Test array literal
+        let expr = Expression::ArrayLiteral(vec![
+            Expression::Constant(Value::I64(1)),
+            Expression::Constant(Value::I64(2)),
+            Expression::Constant(Value::I64(3)),
+        ]);
+        let result = expr.evaluate(None, &context).unwrap();
+        match result {
+            Value::List(vals) => {
+                assert_eq!(vals.len(), 3);
+                assert_eq!(vals[0], Value::I64(1));
+                assert_eq!(vals[1], Value::I64(2));
+                assert_eq!(vals[2], Value::I64(3));
+            }
+            _ => panic!("Expected List"),
+        }
+
+        // Test array access
+        let list = Expression::Constant(Value::List(vec![
+            Value::I64(10),
+            Value::I64(20),
+            Value::I64(30),
+        ]));
+        let expr = Expression::ArrayAccess(
+            Box::new(list.clone()),
+            Box::new(Expression::Constant(Value::I32(1))),
+        );
+        let result = expr.evaluate(None, &context).unwrap();
+        assert_eq!(result, Value::I64(20));
+
+        // Test out of bounds access returns NULL
+        let expr = Expression::ArrayAccess(
+            Box::new(list),
+            Box::new(Expression::Constant(Value::I32(10))),
+        );
+        let result = expr.evaluate(None, &context).unwrap();
+        assert_eq!(result, Value::Null);
+
+        // Test map literal
+        let expr = Expression::MapLiteral(vec![
+            (
+                Expression::Constant(Value::Str("name".to_string())),
+                Expression::Constant(Value::Str("Alice".to_string())),
+            ),
+            (
+                Expression::Constant(Value::Str("age".to_string())),
+                Expression::Constant(Value::I64(30)),
+            ),
+        ]);
+        let result = expr.evaluate(None, &context).unwrap();
+        match result {
+            Value::Map(map) => {
+                assert_eq!(map.get("name"), Some(&Value::Str("Alice".to_string())));
+                assert_eq!(map.get("age"), Some(&Value::I64(30)));
+            }
+            _ => panic!("Expected Map"),
+        }
+
+        // Test map access
+        let map = Expression::Constant(Value::Map({
+            let mut m = std::collections::HashMap::new();
+            m.insert("key1".to_string(), Value::Str("value1".to_string()));
+            m.insert("key2".to_string(), Value::I64(42));
+            m
+        }));
+        let expr = Expression::ArrayAccess(
+            Box::new(map),
+            Box::new(Expression::Constant(Value::Str("key2".to_string()))),
+        );
+        let result = expr.evaluate(None, &context).unwrap();
+        assert_eq!(result, Value::I64(42));
+
+        // Test struct field access
+        let structure = Expression::Constant(Value::Struct(vec![
+            ("name".to_string(), Value::Str("Bob".to_string())),
+            ("age".to_string(), Value::I64(25)),
+        ]));
+        let expr = Expression::FieldAccess(Box::new(structure), "name".to_string());
+        let result = expr.evaluate(None, &context).unwrap();
+        assert_eq!(result, Value::Str("Bob".to_string()));
+
+        // Test field access on non-existent field returns NULL
+        let structure = Expression::Constant(Value::Struct(vec![(
+            "name".to_string(),
+            Value::Str("Bob".to_string()),
+        )]));
+        let expr = Expression::FieldAccess(Box::new(structure), "unknown".to_string());
+        let result = expr.evaluate(None, &context).unwrap();
+        assert_eq!(result, Value::Null);
     }
 
     #[test]

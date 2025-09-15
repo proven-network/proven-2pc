@@ -426,6 +426,35 @@ fn bind_expression_parameters(
             Box::new(bind_expression_parameters(high, params)?),
             *negated,
         ),
+
+        Expression::ArrayAccess(base, index) => Expression::ArrayAccess(
+            Box::new(bind_expression_parameters(base, params)?),
+            Box::new(bind_expression_parameters(index, params)?),
+        ),
+
+        Expression::FieldAccess(base, field) => Expression::FieldAccess(
+            Box::new(bind_expression_parameters(base, params)?),
+            field.clone(),
+        ),
+
+        Expression::ArrayLiteral(elements) => Expression::ArrayLiteral(
+            elements
+                .iter()
+                .map(|e| bind_expression_parameters(e, params))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+
+        Expression::MapLiteral(pairs) => Expression::MapLiteral(
+            pairs
+                .iter()
+                .map(|(k, v)| {
+                    Ok((
+                        bind_expression_parameters(k, params)?,
+                        bind_expression_parameters(v, params)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        ),
     })
 }
 
