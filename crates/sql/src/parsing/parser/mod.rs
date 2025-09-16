@@ -1,13 +1,26 @@
-use std::iter::Peekable;
-use std::ops::Add;
+//! Modular SQL parser implementation
+//!
+//! The parser is split into several modules for better organization:
+//! - expr_parser: Expression parsing with operator precedence
+//! - type_parser: Data type parsing
+//! - ddl_parser: DDL statement parsing (CREATE, DROP)
+//! - dml_parser: DML statement parsing (SELECT, INSERT, UPDATE, DELETE)
+//! - common: Shared utilities
 
+pub mod ddl_parser;
+pub mod dml_parser;
+pub mod expr_parser;
+pub mod type_parser;
+
+use std::iter::Peekable;
+
+use self::ddl_parser::DdlParser;
+use self::dml_parser::DmlParser;
+use self::expr_parser::{InfixOperator, PostfixOperator, Precedence, PrefixOperator};
+use self::type_parser::{TypeParser, data_type_to_cast_string};
+use super::ast::{Expression, Literal, Statement};
 use super::{Keyword, Lexer, Token};
-use super::ast::{Expression, Literal, Operator, Column, IndexColumn, InsertSource, SelectStatement, Statement};
-use super::ast::common::{Direction, FromClause, JoinType};
-use super::ast::ddl::DdlStatement;
-use super::ast::dml::DmlStatement;
 use crate::error::{Error, Result};
-use crate::types::data_type::DataType;
 
 /// The SQL parser takes tokens from the lexer and parses the SQL syntax into an
 /// Abstract Syntax Tree (AST).
@@ -187,671 +200,6 @@ impl Parser<'_> {
             return Err(Error::ParseError("cannot nest EXPLAIN statements".into()));
         }
         Ok(Statement::Explain(Box::new(self.parse_statement()?)))
-    }
-
-    /// Parses a CREATE statement (TABLE or INDEX).
-    fn parse_create(&mut self) -> Result<Statement> {
-        self.expect(Keyword::Create.into())?;
-        match self.peek()? {
-            Some(Token::Keyword(Keyword::Table)) => self.parse_create_table_inner(),
-            Some(Token::Keyword(Keyword::Unique)) => {
-                self.next()?; // consume UNIQUE
-                self.expect(Keyword::Index.into())?;
-                self.parse_create_index_inner(true)
-            }
-            Some(Token::Keyword(Keyword::Index)) => {
-                self.next()?; // consume INDEX
-                self.parse_create_index_inner(false)
-            }
-            Some(token) => Err(Error::ParseError(format!(
-                "expected TABLE or INDEX after CREATE, found {}",
-                token
-            ))),
-            None => Err(Error::ParseError(
-                "unexpected end of input after CREATE".into(),
-            )),
-        }
-    }
-
-    /// Parses a DROP statement (TABLE or INDEX).
-    fn parse_drop(&mut self) -> Result<Statement> {
-        self.expect(Keyword::Drop.into())?;
-        match self.peek()? {
-            Some(Token::Keyword(Keyword::Table)) => self.parse_drop_table_inner(),
-            Some(Token::Keyword(Keyword::Index)) => {
-                self.next()?; // consume INDEX
-                self.parse_drop_index_inner()
-            }
-            Some(token) => Err(Error::ParseError(format!(
-                "expected TABLE or INDEX after DROP, found {}",
-                token
-            ))),
-            None => Err(Error::ParseError(
-                "unexpected end of input after DROP".into(),
-            )),
-        }
-    }
-
-    /// Parses a CREATE TABLE statement (after CREATE).
-    fn parse_create_table_inner(&mut self) -> Result<Statement> {
-        self.expect(Keyword::Table.into())?;
-
-        // Check for IF NOT EXISTS
-        let if_not_exists = if self.next_is(Keyword::If.into()) {
-            self.expect(Keyword::Not.into())?;
-            self.expect(Keyword::Exists.into())?;
-            true
-        } else {
-            false
-        };
-
-        let name = self.next_ident()?;
-
-        // Check if there's a column list
-        let columns = if self.next_is(Token::OpenParen) {
-            let mut columns = Vec::new();
-            // Check for empty column list
-            if !self.next_is(Token::CloseParen) {
-                loop {
-                    columns.push(self.parse_create_table_column()?);
-                    if !self.next_is(Token::Comma) {
-                        break;
-                    }
-                }
-                self.expect(Token::CloseParen)?;
-            }
-            columns
-        } else {
-            // Table without columns
-            Vec::new()
-        };
-        Ok(Statement::Ddl(DdlStatement::CreateTable {
-            name,
-            columns,
-            if_not_exists,
-        }))
-    }
-
-    /// Parse a data type (can be used recursively for collection types)
-    fn parse_type(&mut self) -> Result<DataType> {
-        let datatype = match self.next()? {
-            // Boolean types
-            Token::Keyword(Keyword::Bool | Keyword::Boolean) => DataType::Bool,
-
-            // Integer types (check for UNSIGNED modifier)
-            Token::Keyword(Keyword::Tinyint) => {
-                if self.next_if_ident_eq("UNSIGNED") {
-                    DataType::U8
-                } else {
-                    DataType::I8
-                }
-            }
-            Token::Keyword(Keyword::Smallint) => {
-                if self.next_if_ident_eq("UNSIGNED") {
-                    DataType::U16
-                } else {
-                    DataType::I16
-                }
-            }
-            Token::Keyword(Keyword::Int | Keyword::Integer) => {
-                if self.next_if_ident_eq("UNSIGNED") {
-                    DataType::U32
-                } else {
-                    DataType::I32
-                }
-            }
-            Token::Keyword(Keyword::Bigint) => {
-                if self.next_if_ident_eq("UNSIGNED") {
-                    DataType::U64
-                } else {
-                    DataType::I64
-                }
-            }
-            Token::Keyword(Keyword::Hugeint) => {
-                if self.next_if_ident_eq("UNSIGNED") {
-                    DataType::U128
-                } else {
-                    DataType::I128
-                }
-            }
-
-            // Floating point types
-            Token::Keyword(Keyword::Real) => DataType::F32,
-            Token::Keyword(Keyword::Float | Keyword::Double) => DataType::F64,
-
-            // Decimal types
-            Token::Keyword(Keyword::Decimal) => DataType::Decimal(Some(38), Some(10)),
-
-            // String types
-            Token::Keyword(Keyword::String | Keyword::Text | Keyword::Varchar) => DataType::Str,
-
-            // Special types
-            Token::Keyword(Keyword::Uuid) => DataType::Uuid,
-            Token::Keyword(Keyword::Date) => DataType::Date,
-            Token::Keyword(Keyword::Time) => DataType::Time,
-            Token::Keyword(Keyword::Timestamp) => DataType::Timestamp,
-            Token::Keyword(Keyword::Interval) => DataType::Interval,
-
-            // Also accept identifiers for compatibility
-            Token::Ident(s) if s.to_uppercase() == "DATE" => DataType::Date,
-            Token::Ident(s) if s.to_uppercase() == "TIME" => DataType::Time,
-            Token::Ident(s) if s.to_uppercase() == "TIMESTAMP" => DataType::Timestamp,
-            Token::Ident(s) if s.to_uppercase() == "INTERVAL" => DataType::Interval,
-            Token::Ident(s) if s.to_uppercase() == "BLOB" || s.to_uppercase() == "BYTEA" => {
-                DataType::Bytea
-            }
-            Token::Ident(s) if s.to_uppercase() == "INET" => DataType::Inet,
-            Token::Ident(s) if s.to_uppercase() == "POINT" => DataType::Point,
-            Token::Ident(s) if s.to_uppercase() == "ANY" => DataType::I64, // ANY defaults to I64
-
-            // Collection types can be recursive
-            Token::Keyword(Keyword::Array) => DataType::Array(Box::new(DataType::I64), None),
-            Token::Keyword(Keyword::List) => DataType::List(Box::new(DataType::I64)),
-            Token::Keyword(Keyword::Map) => {
-                if self.next_if(|t| t == &Token::OpenParen).is_some() {
-                    let key_type = self.parse_type()?;
-                    self.expect(Token::Comma)?;
-                    let value_type = self.parse_type()?;
-                    self.expect(Token::CloseParen)?;
-                    DataType::Map(Box::new(key_type), Box::new(value_type))
-                } else {
-                    DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64))
-                }
-            }
-            Token::Keyword(Keyword::Struct) => {
-                if self.next_if(|t| t == &Token::OpenParen).is_some() {
-                    let mut fields = Vec::new();
-                    if self.peek()? != Some(&Token::CloseParen) {
-                        loop {
-                            let field_name = self.next_ident_or_keyword()?;
-                            let field_type = self.parse_type()?;
-                            fields.push((field_name, field_type));
-                            if !self.next_is(Token::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect(Token::CloseParen)?;
-                    DataType::Struct(fields)
-                } else {
-                    DataType::Struct(Vec::new())
-                }
-            }
-
-            token => {
-                return Err(Error::ParseError(format!(
-                    "unexpected token {}, expected data type",
-                    token
-                )));
-            }
-        };
-
-        // Check for array size specification with TYPE[SIZE] or TYPE[SIZE][SIZE] syntax
-        // Handle multiple dimensions for multi-dimensional arrays
-        let mut result_type = datatype;
-        while self.next_if(|t| t == &Token::OpenBracket).is_some() {
-            // Check if we have a size or just empty brackets for variable-size list
-            let size = if self.next_if(|t| t == &Token::CloseBracket).is_some() {
-                // Empty brackets [] means variable-size list
-                result_type = DataType::List(Box::new(result_type));
-                continue;
-            } else if let Token::Number(n) = self.next()? {
-                // Fixed size array [N]
-                let size_val = n
-                    .parse::<usize>()
-                    .map_err(|_| Error::ParseError(format!("invalid array size: {}", n)))?;
-                self.expect(Token::CloseBracket)?;
-                Some(size_val)
-            } else {
-                return Err(Error::ParseError("expected array size or ]".into()));
-            };
-
-            // Wrap the current type in an Array type with fixed size
-            result_type = DataType::Array(Box::new(result_type), size);
-        }
-        Ok(result_type)
-    }
-
-    /// Parses a CREATE TABLE column definition.
-    fn parse_create_table_column(&mut self) -> Result<Column> {
-        let name = self.next_ident_or_keyword()?;
-
-        // Use the new parse_type method for type parsing
-        let datatype = self.parse_type()?;
-
-        let mut column = Column {
-            name,
-            datatype,
-            primary_key: false,
-            nullable: None,
-            default: None,
-            unique: false,
-            index: false,
-            references: None,
-        };
-
-        // Parse column constraints
-        while let Some(keyword) = self.next_if_keyword() {
-            match keyword {
-                Keyword::Primary => {
-                    self.expect(Keyword::Key.into())?;
-                    column.primary_key = true;
-                }
-                Keyword::Null => {
-                    if column.nullable.is_some() {
-                        return Err(Error::ParseError(format!(
-                            "nullability already set for column {}",
-                            column.name
-                        )));
-                    }
-                    column.nullable = Some(true)
-                }
-                Keyword::Not => {
-                    self.expect(Keyword::Null.into())?;
-                    if column.nullable.is_some() {
-                        return Err(Error::ParseError(format!(
-                            "nullability already set for column {}",
-                            column.name
-                        )));
-                    }
-                    column.nullable = Some(false)
-                }
-                Keyword::Default => column.default = Some(self.parse_expression()?),
-                Keyword::Unique => column.unique = true,
-                Keyword::Index => column.index = true,
-                Keyword::References => column.references = Some(self.next_ident()?),
-                keyword => {
-                    return Err(Error::ParseError(format!("unexpected keyword {}", keyword)));
-                }
-            }
-        }
-        Ok(column)
-    }
-
-    /// Parses an index column: an expression optionally followed by ASC or DESC
-    fn parse_index_column(&mut self) -> Result<IndexColumn> {
-        // Parse the expression (can be a simple column or complex expression)
-        let expression = self.parse_expression()?;
-
-        // Check for optional ASC or DESC
-        let direction = match self.peek()? {
-            Some(Token::Keyword(Keyword::Asc)) => {
-                self.next()?;
-                Some(Direction::Asc)
-            }
-            Some(Token::Keyword(Keyword::Desc)) => {
-                self.next()?;
-                Some(Direction::Desc)
-            }
-            _ => None,
-        };
-
-        Ok(IndexColumn {
-            expression,
-            direction,
-        })
-    }
-
-    /// Parses a CREATE INDEX statement (after CREATE [UNIQUE] INDEX).
-    fn parse_create_index_inner(&mut self, unique: bool) -> Result<Statement> {
-        let name = self.next_ident()?;
-        self.expect(Keyword::On.into())?;
-        let table = self.next_ident()?;
-        self.expect(Token::OpenParen)?;
-
-        // Parse one or more index columns (expressions with optional ASC/DESC)
-        let mut columns = vec![self.parse_index_column()?];
-        while self.next_is(Token::Comma) {
-            columns.push(self.parse_index_column()?);
-        }
-
-        self.expect(Token::CloseParen)?;
-
-        // Parse optional INCLUDE clause for covering indexes
-        let included_columns = if self.next_is(Keyword::Include.into()) {
-            self.expect(Token::OpenParen)?;
-            let mut included = vec![self.next_ident_or_keyword()?];
-            while self.next_is(Token::Comma) {
-                included.push(self.next_ident_or_keyword()?);
-            }
-            self.expect(Token::CloseParen)?;
-            Some(included)
-        } else {
-            None
-        };
-
-        Ok(Statement::Ddl(DdlStatement::CreateIndex {
-            name,
-            table,
-            columns,
-            unique,
-            included_columns,
-        }))
-    }
-
-    /// Parses a DROP INDEX statement (after DROP INDEX).
-    fn parse_drop_index_inner(&mut self) -> Result<Statement> {
-        let mut if_exists = false;
-        if self.next_is(Keyword::If.into()) {
-            self.expect(Token::Keyword(Keyword::Exists))?;
-            if_exists = true;
-        }
-        let name = self.next_ident()?;
-        Ok(Statement::Ddl(DdlStatement::DropIndex { name, if_exists }))
-    }
-
-    /// Parses a DROP TABLE statement (after DROP).
-    fn parse_drop_table_inner(&mut self) -> Result<Statement> {
-        self.expect(Token::Keyword(Keyword::Table))?;
-        let mut if_exists = false;
-        if self.next_is(Keyword::If.into()) {
-            self.expect(Token::Keyword(Keyword::Exists))?;
-            if_exists = true;
-        }
-
-        // Parse one or more table names separated by commas
-        let mut names = vec![self.next_ident()?];
-        while self.next_is(Token::Comma) {
-            names.push(self.next_ident()?);
-        }
-
-        Ok(Statement::Ddl(DdlStatement::DropTable { names, if_exists }))
-    }
-
-    /// Parses a DELETE statement.
-    fn parse_delete(&mut self) -> Result<Statement> {
-        self.expect(Keyword::Delete.into())?;
-        self.expect(Keyword::From.into())?;
-        let table = self.next_ident()?;
-        Ok(Statement::Dml(DmlStatement::Delete {
-            table,
-            r#where: self.parse_where_clause()?,
-        }))
-    }
-
-    /// Parses an INSERT statement.
-    fn parse_insert(&mut self) -> Result<Statement> {
-        self.expect(Keyword::Insert.into())?;
-        self.expect(Keyword::Into.into())?;
-        let table = self.next_ident()?;
-
-        let mut columns = None;
-        if self.next_is(Token::OpenParen) {
-            let columns = columns.insert(Vec::new());
-            loop {
-                columns.push(self.next_ident_or_keyword()?);
-                if !self.next_is(Token::Comma) {
-                    break;
-                }
-            }
-            self.expect(Token::CloseParen)?;
-        }
-
-        // Check for DEFAULT VALUES, VALUES, or SELECT
-        let source = if self.next_is(Keyword::Default.into()) {
-            self.expect(Keyword::Values.into())?;
-            InsertSource::DefaultValues
-        } else if self.next_is(Keyword::Values.into()) {
-            let mut values = Vec::new();
-            loop {
-                let mut row = Vec::new();
-                self.expect(Token::OpenParen)?;
-                loop {
-                    row.push(self.parse_expression()?);
-                    if !self.next_is(Token::Comma) {
-                        break;
-                    }
-                }
-                self.expect(Token::CloseParen)?;
-                values.push(row);
-                if !self.next_is(Token::Comma) {
-                    break;
-                }
-            }
-            InsertSource::Values(values)
-        } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
-            // Parse the SELECT statement - parse_select_clause will consume SELECT
-            let select = Box::new(SelectStatement {
-                select: self.parse_select_clause()?,
-                from: self.parse_from_clause()?,
-                r#where: self.parse_where_clause()?,
-                group_by: self.parse_group_by_clause()?,
-                having: self.parse_having_clause()?,
-                order_by: self.parse_order_by_clause()?,
-                limit: self.parse_limit_clause()?,
-                offset: self.parse_offset_clause()?,
-            });
-            InsertSource::Select(select)
-        } else {
-            return Err(Error::ParseError(
-                "expected token VALUES or SELECT after INSERT INTO".to_string(),
-            ));
-        };
-
-        Ok(Statement::Dml(DmlStatement::Insert {
-            table,
-            columns,
-            source,
-        }))
-    }
-
-    /// Parses an UPDATE statement.
-    fn parse_update(&mut self) -> Result<Statement> {
-        self.expect(Keyword::Update.into())?;
-        let table = self.next_ident()?;
-        self.expect(Keyword::Set.into())?;
-        let mut set = std::collections::BTreeMap::new();
-        loop {
-            let column = self.next_ident()?;
-            self.expect(Token::Equal)?;
-            let expr = (!self.next_is(Keyword::Default.into()))
-                .then(|| self.parse_expression())
-                .transpose()?;
-            if set.contains_key(&column) {
-                return Err(Error::ParseError(format!(
-                    "column {} set multiple times",
-                    column
-                )));
-            }
-            set.insert(column, expr);
-            if !self.next_is(Token::Comma) {
-                break;
-            }
-        }
-        Ok(Statement::Dml(DmlStatement::Update {
-            table,
-            set,
-            r#where: self.parse_where_clause()?,
-        }))
-    }
-
-    /// Parses a SELECT statement.
-    fn parse_select(&mut self) -> Result<Statement> {
-        Ok(Statement::Dml(DmlStatement::Select(Box::new(SelectStatement {
-            select: self.parse_select_clause()?,
-            from: self.parse_from_clause()?,
-            r#where: self.parse_where_clause()?,
-            group_by: self.parse_group_by_clause()?,
-            having: self.parse_having_clause()?,
-            order_by: self.parse_order_by_clause()?,
-            limit: self.parse_limit_clause()?,
-            offset: self.parse_offset_clause()?,
-        }))))
-    }
-
-    /// Parses a SELECT clause, if present.
-    fn parse_select_clause(&mut self) -> Result<Vec<(Expression, Option<String>)>> {
-        if !self.next_is(Keyword::Select.into()) {
-            return Ok(Vec::new());
-        }
-        let mut select = Vec::new();
-        loop {
-            let expr = self.parse_expression()?;
-            let mut alias = None;
-            if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
-                if expr == Expression::All {
-                    return Err(Error::ParseError("can't alias *".into()));
-                }
-                alias = Some(self.next_ident()?);
-            }
-            select.push((expr, alias));
-            if !self.next_is(Token::Comma) {
-                break;
-            }
-        }
-        Ok(select)
-    }
-
-    /// Parses a FROM clause, if present.
-    fn parse_from_clause(&mut self) -> Result<Vec<FromClause>> {
-        if !self.next_is(Keyword::From.into()) {
-            return Ok(Vec::new());
-        }
-        let mut from = Vec::new();
-        loop {
-            let mut from_item = self.parse_from_table()?;
-            while let Some(r#type) = self.parse_from_join()? {
-                let left = Box::new(from_item);
-                let right = Box::new(self.parse_from_table()?);
-                let mut predicate = None;
-                if r#type != JoinType::Cross {
-                    self.expect(Keyword::On.into())?;
-                    predicate = Some(self.parse_expression()?)
-                }
-                from_item = FromClause::Join {
-                    left,
-                    right,
-                    r#type,
-                    predicate,
-                };
-            }
-            from.push(from_item);
-            if !self.next_is(Token::Comma) {
-                break;
-            }
-        }
-        Ok(from)
-    }
-
-    // Parses a FROM table.
-    fn parse_from_table(&mut self) -> Result<FromClause> {
-        let name = self.next_ident()?;
-
-        // Check for compound object notation (schema.table)
-        if matches!(self.peek()?, Some(Token::Period)) {
-            self.next()?; // consume the period
-            let _object = self.next_ident()?; // consume the object name
-            return Err(Error::CompoundObjectNotSupported);
-        }
-
-        let mut alias = None;
-        if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
-            alias = Some(self.next_ident()?)
-        };
-        Ok(FromClause::Table { name, alias })
-    }
-
-    // Parses a FROM JOIN type, if present.
-    fn parse_from_join(&mut self) -> Result<Option<JoinType>> {
-        if self.next_is(Keyword::Join.into()) {
-            return Ok(Some(JoinType::Inner));
-        }
-        if self.next_is(Keyword::Cross.into()) {
-            self.expect(Keyword::Join.into())?;
-            return Ok(Some(JoinType::Cross));
-        }
-        if self.next_is(Keyword::Inner.into()) {
-            self.expect(Keyword::Join.into())?;
-            return Ok(Some(JoinType::Inner));
-        }
-        if self.next_is(Keyword::Left.into()) {
-            self.skip(Keyword::Outer.into());
-            self.expect(Keyword::Join.into())?;
-            return Ok(Some(JoinType::Left));
-        }
-        if self.next_is(Keyword::Right.into()) {
-            self.skip(Keyword::Outer.into());
-            self.expect(Keyword::Join.into())?;
-            return Ok(Some(JoinType::Right));
-        }
-        if self.next_is(Keyword::Full.into()) {
-            self.skip(Keyword::Outer.into());
-            self.expect(Keyword::Join.into())?;
-            return Ok(Some(JoinType::Full));
-        }
-        Ok(None)
-    }
-
-    /// Parses a WHERE clause, if present.
-    fn parse_where_clause(&mut self) -> Result<Option<Expression>> {
-        if !self.next_is(Keyword::Where.into()) {
-            return Ok(None);
-        }
-        Ok(Some(self.parse_expression()?))
-    }
-
-    /// Parses a GROUP BY clause, if present.
-    fn parse_group_by_clause(&mut self) -> Result<Vec<Expression>> {
-        if !self.next_is(Keyword::Group.into()) {
-            return Ok(Vec::new());
-        }
-        let mut group_by = Vec::new();
-        self.expect(Keyword::By.into())?;
-        loop {
-            group_by.push(self.parse_expression()?);
-            if !self.next_is(Token::Comma) {
-                break;
-            }
-        }
-        Ok(group_by)
-    }
-
-    /// Parses a HAVING clause, if present.
-    fn parse_having_clause(&mut self) -> Result<Option<Expression>> {
-        if !self.next_is(Keyword::Having.into()) {
-            return Ok(None);
-        }
-        Ok(Some(self.parse_expression()?))
-    }
-
-    /// Parses an ORDER BY clause, if present.
-    fn parse_order_by_clause(&mut self) -> Result<Vec<(Expression, Direction)>> {
-        if !self.next_is(Keyword::Order.into()) {
-            return Ok(Vec::new());
-        }
-        let mut order_by = Vec::new();
-        self.expect(Keyword::By.into())?;
-        loop {
-            let expr = self.parse_expression()?;
-            let order = self
-                .next_if_map(|token| match token {
-                    Token::Keyword(Keyword::Asc) => Some(Direction::Asc),
-                    Token::Keyword(Keyword::Desc) => Some(Direction::Desc),
-                    _ => None,
-                })
-                .unwrap_or(Direction::Asc);
-            order_by.push((expr, order));
-            if !self.next_is(Token::Comma) {
-                break;
-            }
-        }
-        Ok(order_by)
-    }
-
-    /// Parses a LIMIT clause, if present.
-    fn parse_limit_clause(&mut self) -> Result<Option<Expression>> {
-        if !self.next_is(Keyword::Limit.into()) {
-            return Ok(None);
-        }
-        Ok(Some(self.parse_expression()?))
-    }
-
-    /// Parses an OFFSET clause, if present.
-    fn parse_offset_clause(&mut self) -> Result<Option<Expression>> {
-        if !self.next_is(Keyword::Offset.into()) {
-            return Ok(None);
-        }
-        Ok(Some(self.parse_expression()?))
     }
 
     /// Parses an expression using the precedence climbing algorithm. See:
@@ -1146,9 +494,7 @@ impl Parser<'_> {
                                             &timestamp_str,
                                             "%Y-%m-%d %H:%M:%S%.f",
                                         ) {
-                                            Ok(timestamp) => {
-                                                Literal::Timestamp(timestamp).into()
-                                            }
+                                            Ok(timestamp) => Literal::Timestamp(timestamp).into(),
                                             Err(_) => {
                                                 return Err(Error::ParseError(format!(
                                                     "Invalid timestamp format: '{}'. Expected 'YYYY-MM-DD HH:MM:SS[.fraction]'",
@@ -1325,10 +671,7 @@ impl Parser<'_> {
                 // We'll encode the type as the second argument
                 Expression::Function(
                     "CAST".to_string(),
-                    vec![
-                        expr,
-                        Expression::Literal(Literal::String(type_string)),
-                    ],
+                    vec![expr, Expression::Literal(Literal::String(type_string))],
                 )
             }
 
@@ -1570,8 +913,7 @@ impl Parser<'_> {
         // Handle bracket notation for array/list/map access
         if self.peek()? == Some(&Token::OpenBracket) {
             // Check precedence before consuming
-            if PostfixOperator::ArrayAccess(Expression::Literal(Literal::Null))
-                .precedence()
+            if PostfixOperator::ArrayAccess(Expression::Literal(Literal::Null)).precedence()
                 < min_precedence
             {
                 return Ok(None);
@@ -1603,235 +945,88 @@ impl Parser<'_> {
     }
 }
 
-/// Operator precedence.
-type Precedence = u8;
+// Implement DmlParser trait for Parser
+impl DmlParser for Parser<'_> {
+    fn next(&mut self) -> Result<Token> {
+        self.next()
+    }
 
-/// Operator associativity.
-enum Associativity {
-    Left,
-    Right,
-}
+    fn next_ident(&mut self) -> Result<String> {
+        self.next_ident()
+    }
 
-impl Add<Associativity> for Precedence {
-    type Output = Self;
+    fn next_ident_or_keyword(&mut self) -> Result<String> {
+        self.next_ident_or_keyword()
+    }
 
-    fn add(self, rhs: Associativity) -> Self {
-        // Left-associative operators have increased precedence, so they bind
-        // tighter to their left-hand side.
-        self + match rhs {
-            Associativity::Left => 1,
-            Associativity::Right => 0,
-        }
+    fn next_is(&mut self, token: Token) -> bool {
+        self.next_is(token)
+    }
+
+    fn expect(&mut self, expect: Token) -> Result<()> {
+        self.expect(expect)
+    }
+
+    fn peek(&mut self) -> Result<Option<&Token>> {
+        self.peek()
+    }
+
+    fn parse_expression(&mut self) -> Result<Expression> {
+        self.parse_expression()
+    }
+
+    fn next_if_map<T>(&mut self, f: impl Fn(&Token) -> Option<T>) -> Option<T> {
+        self.next_if_map(f)
+    }
+
+    fn skip(&mut self, token: Token) {
+        self.skip(token);
     }
 }
 
-/// Prefix operators.
-enum PrefixOperator {
-    Minus, // -a
-    Not,   // NOT a
-    Plus,  // +a
-}
-
-impl PrefixOperator {
-    /// The operator precedence.
-    fn precedence(&self) -> Precedence {
-        match self {
-            Self::Not => 3,
-            Self::Minus | Self::Plus => 10,
-        }
+// Implement DdlParser trait for Parser
+impl DdlParser for Parser<'_> {
+    fn next_ident(&mut self) -> Result<String> {
+        self.next_ident()
     }
 
-    // The operator associativity. Prefix operators are right-associative by
-    // definition.
-    fn associativity(&self) -> Associativity {
-        Associativity::Right
+    fn parse_expression(&mut self) -> Result<Expression> {
+        self.parse_expression()
     }
 
-    /// Builds an AST expression for the operator.
-    fn into_expression(self, rhs: Expression) -> Expression {
-        let rhs = Box::new(rhs);
-        match self {
-            Self::Plus => Operator::Identity(rhs).into(),
-            Self::Minus => Operator::Negate(rhs).into(),
-            Self::Not => Operator::Not(rhs).into(),
-        }
+    fn next_if_keyword(&mut self) -> Option<Keyword> {
+        self.next_if_keyword()
     }
 }
 
-/// Infix operators.
-enum InfixOperator {
-    Add,                // a + b
-    And,                // a AND b
-    Divide,             // a / b
-    Equal,              // a = b
-    Exponentiate,       // a ^ b
-    GreaterThan,        // a > b
-    GreaterThanOrEqual, // a >= b
-    LessThan,           // a < b
-    LessThanOrEqual,    // a <= b
-    Like,               // a LIKE b
-    Multiply,           // a * b
-    NotEqual,           // a != b
-    Or,                 // a OR b
-    Remainder,          // a % b
-    Subtract,           // a - b
-}
-
-impl InfixOperator {
-    /// The operator precedence.
-    ///
-    /// Mostly follows Postgres, except IS and LIKE having same precedence as =.
-    /// This is similar to SQLite and MySQL.
-    fn precedence(&self) -> Precedence {
-        match self {
-            Self::Or => 1,
-            Self::And => 2,
-            // Self::Not => 3
-            Self::Equal | Self::NotEqual | Self::Like => 4, // also Self::Is
-            Self::GreaterThan
-            | Self::GreaterThanOrEqual
-            | Self::LessThan
-            | Self::LessThanOrEqual => 5,
-            Self::Add | Self::Subtract => 6,
-            Self::Multiply | Self::Divide | Self::Remainder => 7,
-            Self::Exponentiate => 8,
-        }
+// Implement TypeParser trait for Parser
+impl TypeParser for Parser<'_> {
+    fn next(&mut self) -> Result<Token> {
+        self.next()
     }
 
-    /// The operator associativity.
-    fn associativity(&self) -> Associativity {
-        match self {
-            Self::Exponentiate => Associativity::Right,
-            _ => Associativity::Left,
-        }
+    fn next_ident_or_keyword(&mut self) -> Result<String> {
+        self.next_ident_or_keyword()
     }
 
-    /// Builds an AST expression for the infix operator.
-    fn into_expression(self, lhs: Expression, rhs: Expression) -> Expression {
-        let (lhs, rhs) = (Box::new(lhs), Box::new(rhs));
-        match self {
-            Self::Add => Operator::Add(lhs, rhs).into(),
-            Self::And => Operator::And(lhs, rhs).into(),
-            Self::Divide => Operator::Divide(lhs, rhs).into(),
-            Self::Equal => Operator::Equal(lhs, rhs).into(),
-            Self::Exponentiate => Operator::Exponentiate(lhs, rhs).into(),
-            Self::GreaterThan => Operator::GreaterThan(lhs, rhs).into(),
-            Self::GreaterThanOrEqual => Operator::GreaterThanOrEqual(lhs, rhs).into(),
-            Self::LessThan => Operator::LessThan(lhs, rhs).into(),
-            Self::LessThanOrEqual => Operator::LessThanOrEqual(lhs, rhs).into(),
-            Self::Like => Operator::Like(lhs, rhs).into(),
-            Self::Multiply => Operator::Multiply(lhs, rhs).into(),
-            Self::NotEqual => Operator::NotEqual(lhs, rhs).into(),
-            Self::Or => Operator::Or(lhs, rhs).into(),
-            Self::Remainder => Operator::Remainder(lhs, rhs).into(),
-            Self::Subtract => Operator::Subtract(lhs, rhs).into(),
-        }
-    }
-}
-
-/// Postfix operators.
-enum PostfixOperator {
-    Factorial,                                       // a!
-    Is(Literal),                                // a IS NULL | NAN
-    IsNot(Literal),                             // a IS NOT NULL | NAN
-    InList(Vec<Expression>, bool),              // a IN (list) or a NOT IN (list)
-    Between(Expression, Expression, bool), // a BETWEEN low AND high or a NOT BETWEEN low AND high
-    ArrayAccess(Expression),                    // a[index]
-    FieldAccess(String),                             // a.field
-}
-
-impl PostfixOperator {
-    // The operator precedence.
-    fn precedence(&self) -> Precedence {
-        match self {
-            Self::Is(_) | Self::IsNot(_) | Self::InList(_, _) | Self::Between(_, _, _) => 4,
-            Self::Factorial => 9,
-            Self::ArrayAccess(_) | Self::FieldAccess(_) => 10, // Highest precedence
-        }
+    fn next_if(&mut self, predicate: impl Fn(&Token) -> bool) -> Option<Token> {
+        self.next_if(predicate)
     }
 
-    /// Builds an AST expression for the operator.
-    fn into_expression(self, lhs: Expression) -> Expression {
-        let lhs = Box::new(lhs);
-        match self {
-            Self::Factorial => Operator::Factorial(lhs).into(),
-            Self::Is(v) => Operator::Is(lhs, v).into(),
-            Self::IsNot(v) => Operator::Not(Box::new(Operator::Is(lhs, v).into())).into(),
-            Self::InList(list, negated) => Operator::InList {
-                expr: lhs,
-                list,
-                negated,
-            }
-            .into(),
-            Self::Between(low, high, negated) => Operator::Between {
-                expr: lhs,
-                low: Box::new(low),
-                high: Box::new(high),
-                negated,
-            }
-            .into(),
-            Self::ArrayAccess(index) => Expression::ArrayAccess {
-                base: lhs,
-                index: Box::new(index),
-            },
-            Self::FieldAccess(field) => Expression::FieldAccess { base: lhs, field },
-        }
+    fn next_is(&mut self, token: Token) -> bool {
+        self.next_is(token)
     }
-}
 
-/// Convert a DataType to a string representation for CAST function
-fn data_type_to_cast_string(data_type: &DataType) -> String {
-    use crate::types::DataType;
-    match data_type {
-        DataType::I8 => "TINYINT".to_string(),
-        DataType::I16 => "SMALLINT".to_string(),
-        DataType::I32 => "INT".to_string(),
-        DataType::I64 => "BIGINT".to_string(),
-        DataType::I128 => "HUGEINT".to_string(),
-        DataType::U8 => "TINYINT UNSIGNED".to_string(),
-        DataType::U16 => "SMALLINT UNSIGNED".to_string(),
-        DataType::U32 => "INT UNSIGNED".to_string(),
-        DataType::U64 => "BIGINT UNSIGNED".to_string(),
-        DataType::U128 => "HUGEINT UNSIGNED".to_string(),
-        DataType::F32 => "REAL".to_string(),
-        DataType::F64 => "FLOAT".to_string(),
-        DataType::Decimal(_, _) => "DECIMAL".to_string(),
-        DataType::Bool => "BOOLEAN".to_string(),
-        DataType::Str | DataType::Text => "TEXT".to_string(),
-        DataType::Date => "DATE".to_string(),
-        DataType::Time => "TIME".to_string(),
-        DataType::Timestamp => "TIMESTAMP".to_string(),
-        DataType::Interval => "INTERVAL".to_string(),
-        DataType::Uuid => "UUID".to_string(),
-        DataType::Bytea => "BYTEA".to_string(),
-        DataType::Inet => "INET".to_string(),
-        DataType::Point => "POINT".to_string(),
-        DataType::List(elem_type) => format!("{}[]", data_type_to_cast_string(elem_type)),
-        DataType::Array(elem_type, size) => {
-            if let Some(s) = size {
-                format!("{}[{}]", data_type_to_cast_string(elem_type), s)
-            } else {
-                format!("{}[]", data_type_to_cast_string(elem_type))
-            }
-        }
-        DataType::Map(key_type, val_type) => {
-            format!(
-                "MAP({}, {})",
-                data_type_to_cast_string(key_type),
-                data_type_to_cast_string(val_type)
-            )
-        }
-        DataType::Struct(fields) => {
-            let field_strs: Vec<String> = fields
-                .iter()
-                .map(|(name, dtype)| format!("{} {}", name, data_type_to_cast_string(dtype)))
-                .collect();
-            format!("STRUCT({})", field_strs.join(", "))
-        }
-        DataType::Nullable(inner) => {
-            // For CAST, nullable types are handled the same as their inner type
-            data_type_to_cast_string(inner)
-        }
+    fn next_if_ident_eq(&mut self, expected: &str) -> bool {
+        self.next_if_ident_eq(expected)
+    }
+
+    fn expect(&mut self, expect: Token) -> Result<()> {
+        self.expect(expect)
+    }
+
+    fn peek(&mut self) -> Result<Option<&Token>> {
+        self.peek()
     }
 }
 
@@ -1970,6 +1165,7 @@ impl Parser<'_> {
 
 #[test]
 fn test_parse_collection_types() {
+    use super::ast::ddl::DdlStatement;
     use crate::types::DataType;
 
     // Test LIST type
@@ -2024,10 +1220,7 @@ fn test_parse_collection_expressions() {
     match expr {
         Expression::ArrayAccess { base, index } => {
             assert!(matches!(*base, Expression::Column(None, _)));
-            assert!(matches!(
-                *index,
-                Expression::Literal(Literal::Integer(0))
-            ));
+            assert!(matches!(*index, Expression::Literal(Literal::Integer(0))));
             println!("✓ Array access parsing works");
         }
         _ => panic!("Expected ArrayAccess"),

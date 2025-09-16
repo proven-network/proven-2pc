@@ -1,0 +1,338 @@
+//! DML (Data Manipulation Language) statement parser module
+//!
+//! Handles parsing of SELECT, INSERT, UPDATE, and DELETE statements.
+
+use super::super::{Keyword, Token};
+use crate::error::{Error, Result};
+use crate::parsing::ast::common::{Direction, FromClause, JoinType};
+use crate::parsing::ast::dml::DmlStatement;
+use crate::parsing::ast::{Expression, InsertSource, SelectStatement, Statement};
+use std::collections::BTreeMap;
+
+/// Parser trait for DML statements
+pub trait DmlParser {
+    /// Returns the next token
+    fn next(&mut self) -> Result<Token>;
+
+    /// Returns the next identifier
+    fn next_ident(&mut self) -> Result<String>;
+
+    /// Returns the next identifier or keyword as identifier
+    fn next_ident_or_keyword(&mut self) -> Result<String>;
+
+    /// Consumes next token if it matches
+    fn next_is(&mut self, token: Token) -> bool;
+
+    /// Expects a specific token or errors
+    fn expect(&mut self, expect: Token) -> Result<()>;
+
+    /// Peeks at next token without consuming
+    fn peek(&mut self) -> Result<Option<&Token>>;
+
+    /// Parses an expression
+    fn parse_expression(&mut self) -> Result<Expression>;
+
+    /// Maps next token if it matches predicate
+    fn next_if_map<T>(&mut self, f: impl Fn(&Token) -> Option<T>) -> Option<T>;
+
+    /// Skips a token if it matches
+    fn skip(&mut self, token: Token);
+
+    /// Parses a DELETE statement.
+    fn parse_delete(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Delete.into())?;
+        self.expect(Keyword::From.into())?;
+        let table = self.next_ident()?;
+        Ok(Statement::Dml(DmlStatement::Delete {
+            table,
+            r#where: self.parse_where_clause()?,
+        }))
+    }
+
+    /// Parses an INSERT statement.
+    fn parse_insert(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Insert.into())?;
+        self.expect(Keyword::Into.into())?;
+        let table = self.next_ident()?;
+
+        let mut columns = None;
+        if self.next_is(Token::OpenParen) {
+            let columns = columns.insert(Vec::new());
+            loop {
+                columns.push(self.next_ident_or_keyword()?);
+                if !self.next_is(Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(Token::CloseParen)?;
+        }
+
+        // Check for DEFAULT VALUES, VALUES, or SELECT
+        let source = if self.next_is(Keyword::Default.into()) {
+            self.expect(Keyword::Values.into())?;
+            InsertSource::DefaultValues
+        } else if self.next_is(Keyword::Values.into()) {
+            let mut values = Vec::new();
+            loop {
+                let mut row = Vec::new();
+                self.expect(Token::OpenParen)?;
+                loop {
+                    row.push(self.parse_expression()?);
+                    if !self.next_is(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::CloseParen)?;
+                values.push(row);
+                if !self.next_is(Token::Comma) {
+                    break;
+                }
+            }
+            InsertSource::Values(values)
+        } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
+            // Parse the SELECT statement - parse_select_clause will consume SELECT
+            let select = Box::new(SelectStatement {
+                select: self.parse_select_clause()?,
+                from: self.parse_from_clause()?,
+                r#where: self.parse_where_clause()?,
+                group_by: self.parse_group_by_clause()?,
+                having: self.parse_having_clause()?,
+                order_by: self.parse_order_by_clause()?,
+                limit: self.parse_limit_clause()?,
+                offset: self.parse_offset_clause()?,
+            });
+            InsertSource::Select(select)
+        } else {
+            return Err(Error::ParseError(
+                "expected token VALUES or SELECT after INSERT INTO".to_string(),
+            ));
+        };
+
+        Ok(Statement::Dml(DmlStatement::Insert {
+            table,
+            columns,
+            source,
+        }))
+    }
+
+    /// Parses an UPDATE statement.
+    fn parse_update(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Update.into())?;
+        let table = self.next_ident()?;
+        self.expect(Keyword::Set.into())?;
+        let mut set = BTreeMap::new();
+        loop {
+            let column = self.next_ident()?;
+            self.expect(Token::Equal)?;
+            let expr = (!self.next_is(Keyword::Default.into()))
+                .then(|| self.parse_expression())
+                .transpose()?;
+            if set.contains_key(&column) {
+                return Err(Error::ParseError(format!(
+                    "column {} set multiple times",
+                    column
+                )));
+            }
+            set.insert(column, expr);
+            if !self.next_is(Token::Comma) {
+                break;
+            }
+        }
+        Ok(Statement::Dml(DmlStatement::Update {
+            table,
+            set,
+            r#where: self.parse_where_clause()?,
+        }))
+    }
+
+    /// Parses a SELECT statement.
+    fn parse_select(&mut self) -> Result<Statement> {
+        Ok(Statement::Dml(DmlStatement::Select(Box::new(
+            SelectStatement {
+                select: self.parse_select_clause()?,
+                from: self.parse_from_clause()?,
+                r#where: self.parse_where_clause()?,
+                group_by: self.parse_group_by_clause()?,
+                having: self.parse_having_clause()?,
+                order_by: self.parse_order_by_clause()?,
+                limit: self.parse_limit_clause()?,
+                offset: self.parse_offset_clause()?,
+            },
+        ))))
+    }
+
+    /// Parses a SELECT clause, if present.
+    fn parse_select_clause(&mut self) -> Result<Vec<(Expression, Option<String>)>> {
+        if !self.next_is(Keyword::Select.into()) {
+            return Ok(Vec::new());
+        }
+        let mut select = Vec::new();
+        loop {
+            let expr = self.parse_expression()?;
+            let mut alias = None;
+            if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
+                if expr == Expression::All {
+                    return Err(Error::ParseError("can't alias *".into()));
+                }
+                alias = Some(self.next_ident()?);
+            }
+            select.push((expr, alias));
+            if !self.next_is(Token::Comma) {
+                break;
+            }
+        }
+        Ok(select)
+    }
+
+    /// Parses a FROM clause, if present.
+    fn parse_from_clause(&mut self) -> Result<Vec<FromClause>> {
+        if !self.next_is(Keyword::From.into()) {
+            return Ok(Vec::new());
+        }
+        let mut from = Vec::new();
+        loop {
+            let mut from_item = self.parse_from_table()?;
+            while let Some(r#type) = self.parse_from_join()? {
+                let left = Box::new(from_item);
+                let right = Box::new(self.parse_from_table()?);
+                let mut predicate = None;
+                if r#type != JoinType::Cross {
+                    self.expect(Keyword::On.into())?;
+                    predicate = Some(self.parse_expression()?)
+                }
+                from_item = FromClause::Join {
+                    left,
+                    right,
+                    r#type,
+                    predicate,
+                };
+            }
+            from.push(from_item);
+            if !self.next_is(Token::Comma) {
+                break;
+            }
+        }
+        Ok(from)
+    }
+
+    // Parses a FROM table.
+    fn parse_from_table(&mut self) -> Result<FromClause> {
+        let name = self.next_ident()?;
+
+        // Check for compound object notation (schema.table)
+        if matches!(self.peek()?, Some(Token::Period)) {
+            self.next()?; // consume the period
+            let _object = self.next_ident()?; // consume the object name
+            return Err(Error::CompoundObjectNotSupported);
+        }
+
+        let mut alias = None;
+        if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
+            alias = Some(self.next_ident()?)
+        };
+        Ok(FromClause::Table { name, alias })
+    }
+
+    // Parses a FROM JOIN type, if present.
+    fn parse_from_join(&mut self) -> Result<Option<JoinType>> {
+        if self.next_is(Keyword::Join.into()) {
+            return Ok(Some(JoinType::Inner));
+        }
+        if self.next_is(Keyword::Cross.into()) {
+            self.expect(Keyword::Join.into())?;
+            return Ok(Some(JoinType::Cross));
+        }
+        if self.next_is(Keyword::Inner.into()) {
+            self.expect(Keyword::Join.into())?;
+            return Ok(Some(JoinType::Inner));
+        }
+        if self.next_is(Keyword::Left.into()) {
+            self.skip(Keyword::Outer.into());
+            self.expect(Keyword::Join.into())?;
+            return Ok(Some(JoinType::Left));
+        }
+        if self.next_is(Keyword::Right.into()) {
+            self.skip(Keyword::Outer.into());
+            self.expect(Keyword::Join.into())?;
+            return Ok(Some(JoinType::Right));
+        }
+        if self.next_is(Keyword::Full.into()) {
+            self.skip(Keyword::Outer.into());
+            self.expect(Keyword::Join.into())?;
+            return Ok(Some(JoinType::Full));
+        }
+        Ok(None)
+    }
+
+    /// Parses a WHERE clause, if present.
+    fn parse_where_clause(&mut self) -> Result<Option<Expression>> {
+        if !self.next_is(Keyword::Where.into()) {
+            return Ok(None);
+        }
+        Ok(Some(self.parse_expression()?))
+    }
+
+    /// Parses a GROUP BY clause, if present.
+    fn parse_group_by_clause(&mut self) -> Result<Vec<Expression>> {
+        if !self.next_is(Keyword::Group.into()) {
+            return Ok(Vec::new());
+        }
+        let mut group_by = Vec::new();
+        self.expect(Keyword::By.into())?;
+        loop {
+            group_by.push(self.parse_expression()?);
+            if !self.next_is(Token::Comma) {
+                break;
+            }
+        }
+        Ok(group_by)
+    }
+
+    /// Parses a HAVING clause, if present.
+    fn parse_having_clause(&mut self) -> Result<Option<Expression>> {
+        if !self.next_is(Keyword::Having.into()) {
+            return Ok(None);
+        }
+        Ok(Some(self.parse_expression()?))
+    }
+
+    /// Parses an ORDER BY clause, if present.
+    fn parse_order_by_clause(&mut self) -> Result<Vec<(Expression, Direction)>> {
+        if !self.next_is(Keyword::Order.into()) {
+            return Ok(Vec::new());
+        }
+        let mut order_by = Vec::new();
+        self.expect(Keyword::By.into())?;
+        loop {
+            let expr = self.parse_expression()?;
+            let order = self
+                .next_if_map(|token| match token {
+                    Token::Keyword(Keyword::Asc) => Some(Direction::Asc),
+                    Token::Keyword(Keyword::Desc) => Some(Direction::Desc),
+                    _ => None,
+                })
+                .unwrap_or(Direction::Asc);
+            order_by.push((expr, order));
+            if !self.next_is(Token::Comma) {
+                break;
+            }
+        }
+        Ok(order_by)
+    }
+
+    /// Parses a LIMIT clause, if present.
+    fn parse_limit_clause(&mut self) -> Result<Option<Expression>> {
+        if !self.next_is(Keyword::Limit.into()) {
+            return Ok(None);
+        }
+        Ok(Some(self.parse_expression()?))
+    }
+
+    /// Parses an OFFSET clause, if present.
+    fn parse_offset_clause(&mut self) -> Result<Option<Expression>> {
+        if !self.next_is(Keyword::Offset.into()) {
+            return Ok(None);
+        }
+        Ok(Some(self.parse_expression()?))
+    }
+}

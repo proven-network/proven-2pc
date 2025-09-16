@@ -1,0 +1,252 @@
+//! DDL (Data Definition Language) statement parser module
+//!
+//! Handles parsing of CREATE and DROP statements for tables and indexes.
+
+use super::super::{Keyword, Token};
+use super::type_parser::TypeParser;
+use crate::error::{Error, Result};
+use crate::parsing::ast::Expression;
+use crate::parsing::ast::common::Direction;
+use crate::parsing::ast::ddl::DdlStatement;
+use crate::parsing::ast::{Column, IndexColumn, Statement};
+
+/// Parser trait for DDL statements
+pub trait DdlParser: TypeParser {
+    /// Returns the next identifier
+    fn next_ident(&mut self) -> Result<String>;
+
+    /// Parses an expression
+    fn parse_expression(&mut self) -> Result<Expression>;
+
+    /// Returns the next keyword if there is one
+    fn next_if_keyword(&mut self) -> Option<Keyword>;
+
+    /// Parses a CREATE statement (TABLE or INDEX).
+    fn parse_create(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Create.into())?;
+        match self.peek()? {
+            Some(Token::Keyword(Keyword::Table)) => self.parse_create_table_inner(),
+            Some(Token::Keyword(Keyword::Unique)) => {
+                self.next()?; // consume UNIQUE
+                self.expect(Keyword::Index.into())?;
+                self.parse_create_index_inner(true)
+            }
+            Some(Token::Keyword(Keyword::Index)) => {
+                self.next()?; // consume INDEX
+                self.parse_create_index_inner(false)
+            }
+            Some(token) => Err(Error::ParseError(format!(
+                "expected TABLE or INDEX after CREATE, found {}",
+                token
+            ))),
+            None => Err(Error::ParseError(
+                "unexpected end of input after CREATE".into(),
+            )),
+        }
+    }
+
+    /// Parses a DROP statement (TABLE or INDEX).
+    fn parse_drop(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Drop.into())?;
+        match self.peek()? {
+            Some(Token::Keyword(Keyword::Table)) => self.parse_drop_table_inner(),
+            Some(Token::Keyword(Keyword::Index)) => {
+                self.next()?; // consume INDEX
+                self.parse_drop_index_inner()
+            }
+            Some(token) => Err(Error::ParseError(format!(
+                "expected TABLE or INDEX after DROP, found {}",
+                token
+            ))),
+            None => Err(Error::ParseError(
+                "unexpected end of input after DROP".into(),
+            )),
+        }
+    }
+
+    /// Parses a CREATE TABLE statement (after CREATE).
+    fn parse_create_table_inner(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Table.into())?;
+
+        // Check for IF NOT EXISTS
+        let if_not_exists = if self.next_is(Keyword::If.into()) {
+            self.expect(Keyword::Not.into())?;
+            self.expect(Keyword::Exists.into())?;
+            true
+        } else {
+            false
+        };
+
+        let name = self.next_ident()?;
+
+        // Check if there's a column list
+        let columns = if self.next_is(Token::OpenParen) {
+            let mut columns = Vec::new();
+            // Check for empty column list
+            if !self.next_is(Token::CloseParen) {
+                loop {
+                    columns.push(self.parse_create_table_column()?);
+                    if !self.next_is(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::CloseParen)?;
+            }
+            columns
+        } else {
+            // Table without columns
+            Vec::new()
+        };
+        Ok(Statement::Ddl(DdlStatement::CreateTable {
+            name,
+            columns,
+            if_not_exists,
+        }))
+    }
+
+    /// Parses a CREATE TABLE column definition.
+    fn parse_create_table_column(&mut self) -> Result<Column> {
+        let name = self.next_ident_or_keyword()?;
+
+        // Use the TypeParser trait method for type parsing
+        let datatype = self.parse_type()?;
+
+        let mut column = Column {
+            name,
+            datatype,
+            primary_key: false,
+            nullable: None,
+            default: None,
+            unique: false,
+            index: false,
+            references: None,
+        };
+
+        // Parse column constraints
+        while let Some(keyword) = self.next_if_keyword() {
+            match keyword {
+                Keyword::Primary => {
+                    self.expect(Keyword::Key.into())?;
+                    column.primary_key = true;
+                }
+                Keyword::Null => {
+                    if column.nullable.is_some() {
+                        return Err(Error::ParseError(format!(
+                            "nullability already set for column {}",
+                            column.name
+                        )));
+                    }
+                    column.nullable = Some(true)
+                }
+                Keyword::Not => {
+                    self.expect(Keyword::Null.into())?;
+                    if column.nullable.is_some() {
+                        return Err(Error::ParseError(format!(
+                            "nullability already set for column {}",
+                            column.name
+                        )));
+                    }
+                    column.nullable = Some(false)
+                }
+                Keyword::Default => column.default = Some(self.parse_expression()?),
+                Keyword::Unique => column.unique = true,
+                Keyword::Index => column.index = true,
+                Keyword::References => column.references = Some(self.next_ident()?),
+                keyword => {
+                    return Err(Error::ParseError(format!("unexpected keyword {}", keyword)));
+                }
+            }
+        }
+        Ok(column)
+    }
+
+    /// Parses an index column: an expression optionally followed by ASC or DESC
+    fn parse_index_column(&mut self) -> Result<IndexColumn> {
+        // Parse the expression (can be a simple column or complex expression)
+        let expression = self.parse_expression()?;
+
+        // Check for optional ASC or DESC
+        let direction = match self.peek()? {
+            Some(Token::Keyword(Keyword::Asc)) => {
+                self.next()?;
+                Some(Direction::Asc)
+            }
+            Some(Token::Keyword(Keyword::Desc)) => {
+                self.next()?;
+                Some(Direction::Desc)
+            }
+            _ => None,
+        };
+
+        Ok(IndexColumn {
+            expression,
+            direction,
+        })
+    }
+
+    /// Parses a CREATE INDEX statement (after CREATE [UNIQUE] INDEX).
+    fn parse_create_index_inner(&mut self, unique: bool) -> Result<Statement> {
+        let name = self.next_ident()?;
+        self.expect(Keyword::On.into())?;
+        let table = self.next_ident()?;
+        self.expect(Token::OpenParen)?;
+
+        // Parse one or more index columns (expressions with optional ASC/DESC)
+        let mut columns = vec![self.parse_index_column()?];
+        while self.next_is(Token::Comma) {
+            columns.push(self.parse_index_column()?);
+        }
+
+        self.expect(Token::CloseParen)?;
+
+        // Parse optional INCLUDE clause for covering indexes
+        let included_columns = if self.next_is(Keyword::Include.into()) {
+            self.expect(Token::OpenParen)?;
+            let mut included = vec![self.next_ident_or_keyword()?];
+            while self.next_is(Token::Comma) {
+                included.push(self.next_ident_or_keyword()?);
+            }
+            self.expect(Token::CloseParen)?;
+            Some(included)
+        } else {
+            None
+        };
+
+        Ok(Statement::Ddl(DdlStatement::CreateIndex {
+            name,
+            table,
+            columns,
+            unique,
+            included_columns,
+        }))
+    }
+
+    /// Parses a DROP INDEX statement (after DROP INDEX).
+    fn parse_drop_index_inner(&mut self) -> Result<Statement> {
+        let mut if_exists = false;
+        if self.next_is(Keyword::If.into()) {
+            self.expect(Token::Keyword(Keyword::Exists))?;
+            if_exists = true;
+        }
+        let name = self.next_ident()?;
+        Ok(Statement::Ddl(DdlStatement::DropIndex { name, if_exists }))
+    }
+
+    /// Parses a DROP TABLE statement (after DROP).
+    fn parse_drop_table_inner(&mut self) -> Result<Statement> {
+        self.expect(Token::Keyword(Keyword::Table))?;
+        let mut if_exists = false;
+        if self.next_is(Keyword::If.into()) {
+            self.expect(Token::Keyword(Keyword::Exists))?;
+            if_exists = true;
+        }
+
+        // Parse one or more table names separated by commas
+        let mut names = vec![self.next_ident()?];
+        while self.next_is(Token::Comma) {
+            names.push(self.next_ident()?);
+        }
+
+        Ok(Statement::Ddl(DdlStatement::DropTable { names, if_exists }))
+    }
+}
