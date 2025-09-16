@@ -448,13 +448,13 @@ mod tests {
         // Valid row
         let row = vec![
             Value::integer(1),
-            Value::string("Alice".into()),
+            Value::string("Alice"),
             Value::integer(30),
         ];
         assert!(table.validate_row(&row).is_ok());
 
         // Wrong number of columns
-        let row = vec![Value::integer(1), Value::string("Bob".into())];
+        let row = vec![Value::integer(1), Value::string("Bob")];
         assert!(table.validate_row(&row).is_err());
 
         // Null in non-nullable column
@@ -463,8 +463,8 @@ mod tests {
 
         // Wrong type
         let row = vec![
-            Value::string("not_an_int".into()),
-            Value::string("Charlie".into()),
+            Value::string("not_an_int"),
+            Value::string("Charlie"),
             Value::integer(35),
         ];
         assert!(table.validate_row(&row).is_err());

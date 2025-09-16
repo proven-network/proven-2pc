@@ -1,0 +1,213 @@
+//! SQL function definitions and registry
+//!
+//! This module provides a trait-based architecture for SQL functions,
+//! separating metadata/validation from execution.
+
+use crate::error::{Error, Result};
+use crate::stream::transaction::TransactionContext;
+use crate::types::data_type::DataType;
+use crate::types::value::Value;
+use std::collections::HashMap;
+
+
+// String functions
+mod concat;
+mod length;
+mod lower;
+mod upper;
+
+// Aggregate functions
+mod avg;
+mod count;
+mod max;
+mod min;
+mod sum;
+
+// Type functions
+mod cast;
+pub(crate) mod coalesce;
+mod ifnull;
+
+// Math functions
+mod abs;
+mod round;
+
+// System functions
+mod generate_uuid;
+pub(crate) mod now;
+
+// Time/Date functions
+mod current_timestamp;
+mod current_date;
+mod current_time;
+
+// Collection functions
+mod is_empty;
+mod contains;
+mod extract;
+mod keys;
+mod values;
+mod unwrap;
+mod append;
+mod prepend;
+mod sort;
+mod reverse;
+mod distinct;
+mod slice;
+mod take;
+mod skip;
+mod find_idx;
+mod flatten;
+mod entries;
+mod fields;
+mod merge;
+mod from_entries;
+
+/// Metadata about a function's signature
+#[derive(Debug, Clone)]
+pub struct FunctionSignature {
+    /// Function name (uppercase)
+    pub name: &'static str,
+    /// Minimum number of arguments
+    pub min_args: usize,
+    /// Maximum number of arguments (None for variadic)
+    pub max_args: Option<usize>,
+    /// Expected argument types (None means any type accepted)
+    pub arg_types: Vec<Option<DataType>>,
+    /// Whether this function is deterministic
+    pub is_deterministic: bool,
+    /// Whether this is an aggregate function
+    pub is_aggregate: bool,
+    /// Description of the function
+    pub description: &'static str,
+}
+
+/// Trait for SQL functions
+pub trait Function: Send + Sync {
+    /// Get the function's signature
+    fn signature(&self) -> &FunctionSignature;
+
+    /// Validate arguments and return the expected return type
+    fn validate(&self, arg_types: &[DataType]) -> Result<DataType>;
+
+    /// Execute the function with runtime values
+    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value>;
+}
+
+use std::sync::LazyLock;
+
+/// Registry of all available SQL functions
+pub struct FunctionRegistry {
+    functions: HashMap<String, Box<dyn Function>>,
+}
+
+impl FunctionRegistry {
+    /// Create a new function registry with all builtin functions
+    fn new() -> Self {
+        let mut registry = Self {
+            functions: HashMap::new(),
+        };
+
+        // Register string functions
+        upper::register(&mut registry);
+        lower::register(&mut registry);
+        length::register(&mut registry);
+        concat::register(&mut registry);
+
+        // Register aggregate functions
+        count::register(&mut registry);
+        sum::register(&mut registry);
+        avg::register(&mut registry);
+        min::register(&mut registry);
+        max::register(&mut registry);
+
+        // Register type functions
+        cast::register(&mut registry);
+        coalesce::register(&mut registry);
+        ifnull::register(&mut registry);
+
+        // Register math functions
+        abs::register(&mut registry);
+        round::register(&mut registry);
+
+        // Register system functions
+        now::register(&mut registry);
+        generate_uuid::register(&mut registry);
+
+        // Register time/date functions
+        current_timestamp::register(&mut registry);
+        current_date::register(&mut registry);
+        current_time::register(&mut registry);
+
+        // Register collection functions
+        is_empty::register(&mut registry);
+        contains::register(&mut registry);
+        extract::register(&mut registry);
+        keys::register(&mut registry);
+        values::register(&mut registry);
+        unwrap::register(&mut registry);
+        append::register(&mut registry);
+        prepend::register(&mut registry);
+        sort::register(&mut registry);
+        reverse::register(&mut registry);
+        distinct::register(&mut registry);
+        slice::register(&mut registry);
+        take::register(&mut registry);
+        skip::register(&mut registry);
+        find_idx::register(&mut registry);
+        flatten::register(&mut registry);
+        entries::register(&mut registry);
+        fields::register(&mut registry);
+        merge::register(&mut registry);
+        from_entries::register(&mut registry);
+
+        registry
+    }
+
+    /// Register a function
+    fn register(&mut self, function: Box<dyn Function>) {
+        let name = function.signature().name.to_string();
+        self.functions.insert(name, function);
+    }
+}
+
+// Global static registry
+static REGISTRY: LazyLock<FunctionRegistry> = LazyLock::new(FunctionRegistry::new);
+
+/// Look up a function by name
+pub fn get_function(name: &str) -> Option<&'static dyn Function> {
+    REGISTRY
+        .functions
+        .get(&name.to_uppercase())
+        .map(|f| f.as_ref())
+}
+
+/// Check if a function exists
+pub fn function_exists(name: &str) -> bool {
+    REGISTRY.functions.contains_key(&name.to_uppercase())
+}
+
+/// Check if a function is an aggregate
+pub fn is_aggregate(name: &str) -> bool {
+    get_function(name)
+        .map(|f| f.signature().is_aggregate)
+        .unwrap_or(false)
+}
+
+/// Validate function arguments and return the expected return type
+pub fn validate_function(name: &str, arg_types: &[DataType]) -> Result<DataType> {
+    if let Some(func) = get_function(name) {
+        func.validate(arg_types)
+    } else {
+        Err(Error::ExecutionError(format!("Unknown function: {}", name)))
+    }
+}
+
+/// Execute a function with runtime values
+pub fn execute_function(name: &str, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    if let Some(func) = get_function(name) {
+        func.execute(args, context)
+    } else {
+        Err(Error::ExecutionError(format!("Unknown function: {}", name)))
+    }
+}

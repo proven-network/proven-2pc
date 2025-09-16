@@ -8,6 +8,7 @@ use crate::parsing::ast::{Expression, Statement};
 use crate::types::data_type::DataType;
 
 /// Type checker for SQL statements and expressions
+#[derive(Default)]
 pub struct TypeChecker {
     /// Whether to allow implicit type conversions
     allow_implicit_conversions: bool,
@@ -22,16 +23,30 @@ impl TypeChecker {
     }
 
     /// Type check a statement
-    pub fn check_statement(&mut self, statement: Statement, context: &mut AnalysisContext) -> Result<AnnotatedStatement> {
+    pub fn check_statement(
+        &mut self,
+        statement: Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<AnnotatedStatement> {
         match &statement {
             Statement::Dml(dml) => match dml {
-                crate::parsing::ast::DmlStatement::Select(_) => self.check_select(statement, context),
-                crate::parsing::ast::DmlStatement::Insert { .. } => self.check_insert(statement, context),
-                crate::parsing::ast::DmlStatement::Update { .. } => self.check_update(statement, context),
-                crate::parsing::ast::DmlStatement::Delete { .. } => self.check_delete(statement, context),
+                crate::parsing::ast::DmlStatement::Select(_) => {
+                    self.check_select(statement, context)
+                }
+                crate::parsing::ast::DmlStatement::Insert { .. } => {
+                    self.check_insert(statement, context)
+                }
+                crate::parsing::ast::DmlStatement::Update { .. } => {
+                    self.check_update(statement, context)
+                }
+                crate::parsing::ast::DmlStatement::Delete { .. } => {
+                    self.check_delete(statement, context)
+                }
             },
             Statement::Ddl(ddl) => match ddl {
-                crate::parsing::ast::DdlStatement::CreateTable { .. } => self.check_create_table(statement, context),
+                crate::parsing::ast::DdlStatement::CreateTable { .. } => {
+                    self.check_create_table(statement, context)
+                }
                 _ => Ok(AnnotatedStatement::Ddl(statement)),
             },
             _ => Ok(AnnotatedStatement::Ddl(statement)),
@@ -39,7 +54,11 @@ impl TypeChecker {
     }
 
     /// Type check a SELECT statement
-    fn check_select(&mut self, statement: Statement, context: &mut AnalysisContext) -> Result<AnnotatedStatement> {
+    fn check_select(
+        &mut self,
+        statement: Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<AnnotatedStatement> {
         // TODO: Implement SELECT type checking
         // - Check projection expressions
         // - Check WHERE clause is boolean
@@ -50,7 +69,11 @@ impl TypeChecker {
     }
 
     /// Type check an INSERT statement
-    fn check_insert(&mut self, statement: Statement, context: &mut AnalysisContext) -> Result<AnnotatedStatement> {
+    fn check_insert(
+        &mut self,
+        statement: Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<AnnotatedStatement> {
         // TODO: Implement INSERT type checking
         // - Check value types match column types
         // - Handle DEFAULT values
@@ -59,7 +82,11 @@ impl TypeChecker {
     }
 
     /// Type check an UPDATE statement
-    fn check_update(&mut self, statement: Statement, context: &mut AnalysisContext) -> Result<AnnotatedStatement> {
+    fn check_update(
+        &mut self,
+        statement: Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<AnnotatedStatement> {
         // TODO: Implement UPDATE type checking
         // - Check assignment value types
         // - Check WHERE clause is boolean
@@ -67,14 +94,22 @@ impl TypeChecker {
     }
 
     /// Type check a DELETE statement
-    fn check_delete(&mut self, statement: Statement, context: &mut AnalysisContext) -> Result<AnnotatedStatement> {
+    fn check_delete(
+        &mut self,
+        statement: Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<AnnotatedStatement> {
         // TODO: Implement DELETE type checking
         // - Check WHERE clause is boolean
         Ok(AnnotatedStatement::Ddl(statement))
     }
 
     /// Type check a CREATE TABLE statement
-    fn check_create_table(&mut self, statement: Statement, context: &mut AnalysisContext) -> Result<AnnotatedStatement> {
+    fn check_create_table(
+        &mut self,
+        statement: Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<AnnotatedStatement> {
         // TODO: Implement CREATE TABLE type checking
         // - Validate column types
         // - Check DEFAULT values match column types
@@ -83,7 +118,11 @@ impl TypeChecker {
     }
 
     /// Type check an expression
-    pub fn check_expression(&mut self, expr: &Expression, context: &mut AnalysisContext) -> Result<TypedExpression> {
+    pub fn check_expression(
+        &mut self,
+        expr: &Expression,
+        context: &mut AnalysisContext,
+    ) -> Result<TypedExpression> {
         let (data_type, nullable) = self.infer_type(expr, context)?;
 
         Ok(TypedExpression {
@@ -94,7 +133,11 @@ impl TypeChecker {
     }
 
     /// Infer the type of an expression
-    fn infer_type(&self, expr: &Expression, context: &mut AnalysisContext) -> Result<(DataType, bool)> {
+    fn infer_type(
+        &self,
+        expr: &Expression,
+        context: &mut AnalysisContext,
+    ) -> Result<(DataType, bool)> {
         match expr {
             Expression::Literal(lit) => Ok((self.literal_type(lit)?, false)),
             Expression::Column(table, column) => {
@@ -107,17 +150,39 @@ impl TypeChecker {
                 // Use a nullable text type as placeholder
                 Ok((DataType::Nullable(Box::new(DataType::Text)), true))
             }
-            Expression::Function(_name, _args) => {
-                // TODO: Infer function return type based on name and args
-                // Use a nullable text type as placeholder
-                Ok((DataType::Nullable(Box::new(DataType::Text)), true))
+            Expression::Function(name, args) => {
+                // Infer argument types first
+                let mut arg_types = Vec::new();
+                for arg in args {
+                    let (arg_type, _) = self.infer_type(arg, context)?;
+                    arg_types.push(arg_type);
+                }
+
+                // Look up function and validate
+                match crate::functions::validate_function(name, &arg_types) {
+                    Ok(return_type) => {
+                        // Check if it's nullable
+                        let nullable = matches!(return_type, DataType::Nullable(_));
+                        Ok((return_type, nullable))
+                    }
+                    Err(_) => {
+                        // If validation fails or unknown function, return a generic nullable type
+                        Ok((DataType::Nullable(Box::new(DataType::Text)), true))
+                    }
+                }
             }
-            _ => Err(Error::ExecutionError("Type inference not implemented for this expression".to_string())),
+            _ => Err(Error::ExecutionError(
+                "Type inference not implemented for this expression".to_string(),
+            )),
         }
     }
 
     /// Infer the type of an operator expression
-    fn infer_operator_type(&self, op: &crate::parsing::ast::Operator, context: &mut AnalysisContext) -> Result<(DataType, bool)> {
+    fn infer_operator_type(
+        &self,
+        op: &crate::parsing::ast::Operator,
+        context: &mut AnalysisContext,
+    ) -> Result<(DataType, bool)> {
         use crate::parsing::ast::Operator;
 
         match op {
@@ -149,17 +214,23 @@ impl TypeChecker {
                 }
                 Ok((DataType::Bool, nullable))
             }
-            Operator::Equal(left, right) | Operator::NotEqual(left, right)
-            | Operator::LessThan(left, right) | Operator::LessThanOrEqual(left, right)
-            | Operator::GreaterThan(left, right) | Operator::GreaterThanOrEqual(left, right) => {
+            Operator::Equal(left, right)
+            | Operator::NotEqual(left, right)
+            | Operator::LessThan(left, right)
+            | Operator::LessThanOrEqual(left, right)
+            | Operator::GreaterThan(left, right)
+            | Operator::GreaterThanOrEqual(left, right) => {
                 let (left_type, left_nullable) = self.infer_type(left, context)?;
                 let (right_type, right_nullable) = self.infer_type(right, context)?;
                 // Comparison operators return boolean
                 Ok((DataType::Bool, left_nullable || right_nullable))
             }
-            Operator::Add(left, right) | Operator::Subtract(left, right)
-            | Operator::Multiply(left, right) | Operator::Divide(left, right)
-            | Operator::Remainder(left, right) | Operator::Exponentiate(left, right) => {
+            Operator::Add(left, right)
+            | Operator::Subtract(left, right)
+            | Operator::Multiply(left, right)
+            | Operator::Divide(left, right)
+            | Operator::Remainder(left, right)
+            | Operator::Exponentiate(left, right) => {
                 let (left_type, left_nullable) = self.infer_type(left, context)?;
                 let (right_type, right_nullable) = self.infer_type(right, context)?;
 
@@ -224,7 +295,6 @@ impl TypeChecker {
             Literal::Interval(_) => Ok(DataType::Interval),
         }
     }
-
 
     /// Check if two numeric types are compatible
     fn are_numeric_types_compatible(&self, left: &DataType, right: &DataType) -> bool {

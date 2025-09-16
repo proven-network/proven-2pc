@@ -767,27 +767,27 @@ mod tests {
 
         // Add rows: [category, value]
         aggregator.add(
-            &Arc::new(vec![Value::string("A".into()), Value::integer(10)]),
+            &Arc::new(vec![Value::string("A"), Value::integer(10)]),
             &context,
             &storage,
         )?;
         aggregator.add(
-            &Arc::new(vec![Value::string("B".into()), Value::integer(20)]),
+            &Arc::new(vec![Value::string("B"), Value::integer(20)]),
             &context,
             &storage,
         )?;
         aggregator.add(
-            &Arc::new(vec![Value::string("A".into()), Value::integer(30)]),
+            &Arc::new(vec![Value::string("A"), Value::integer(30)]),
             &context,
             &storage,
         )?;
         aggregator.add(
-            &Arc::new(vec![Value::string("B".into()), Value::integer(40)]),
+            &Arc::new(vec![Value::string("B"), Value::integer(40)]),
             &context,
             &storage,
         )?;
         aggregator.add(
-            &Arc::new(vec![Value::string("A".into()), Value::integer(50)]),
+            &Arc::new(vec![Value::string("A"), Value::integer(50)]),
             &context,
             &storage,
         )?;
@@ -797,10 +797,10 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         // Group A: 3 rows
-        assert_eq!(results[0][0], Value::string("A".into()));
+        assert_eq!(results[0][0], Value::string("A"));
         assert_eq!(results[0][1], Value::integer(3));
         // Group B: 2 rows
-        assert_eq!(results[1][0], Value::string("B".into()));
+        assert_eq!(results[1][0], Value::string("B"));
         assert_eq!(results[1][1], Value::integer(2));
 
         Ok(())

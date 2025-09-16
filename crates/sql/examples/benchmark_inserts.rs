@@ -4,8 +4,7 @@
 //! 1 million rows into a table directly using the engine.
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
-use proven_sql::types::value::Value;
+use proven_sql::{SqlOperation, SqlTransactionEngine, Value};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
 use std::time::Instant;

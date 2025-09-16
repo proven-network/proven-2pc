@@ -47,7 +47,7 @@ fn test_date_literal_parsing() {
     println!("Int comparison: {:?}", int_comparison);
 
     // Test Value comparison directly
-    use proven_sql::types::value::Value;
+    use proven_sql::Value;
     let v1 = Value::Date(date1);
     let v2 = Value::Date(date2);
     println!(

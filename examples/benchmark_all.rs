@@ -13,7 +13,7 @@ use proven_queue_client::QueueClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
 use proven_snapshot_memory::MemorySnapshotStore;
-use proven_sql::types::value::Value as SqlValue;
+use proven_sql::Value as SqlValue;
 use proven_sql_client::SqlClient;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

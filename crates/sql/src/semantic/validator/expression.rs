@@ -102,11 +102,10 @@ impl ExpressionValidator {
             self.validate_expression(arg, context)?;
         }
 
-        // Check if it's an aggregate function
-        let is_aggregate = matches!(
-            name.to_uppercase().as_str(),
-            "COUNT" | "SUM" | "AVG" | "MIN" | "MAX"
-        );
+        // Check if it's an aggregate function using the registry
+        let is_aggregate = crate::functions::get_function(name)
+            .map(|func| func.signature().is_aggregate)
+            .unwrap_or(false);
 
         if is_aggregate {
             // TODO: Track that we're in an aggregate context

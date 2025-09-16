@@ -8,7 +8,7 @@ use proven_coordinator::Coordinator;
 use proven_engine::{MockClient, MockEngine};
 use proven_runner::Runner;
 use proven_snapshot_memory::MemorySnapshotStore;
-use proven_sql::types::value::Value as SqlValue;
+use proven_sql::Value as SqlValue;
 use proven_sql_client::SqlClient;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

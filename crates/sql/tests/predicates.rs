@@ -5,7 +5,7 @@
 //! non-conflicting transactions to proceed.
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::stream::{engine::SqlTransactionEngine, operation::SqlOperation};
+use proven_sql::{SqlOperation, SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
 
 /// Helper to create a test engine

@@ -1,9 +1,7 @@
 //! SQL client for coordinator-based transactions
 
 use proven_coordinator::Transaction;
-use proven_sql::stream::operation::SqlOperation;
-use proven_sql::stream::response::SqlResponse;
-use proven_sql::types::value::Value;
+use proven_sql::{SqlOperation, SqlResponse, Value};
 
 /// SQL client that works with coordinator transactions
 #[derive(Clone)]

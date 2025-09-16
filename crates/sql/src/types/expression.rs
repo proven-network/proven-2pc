@@ -1063,16 +1063,16 @@ mod tests {
         assert_eq!(result, Value::Timestamp(expected)); // Should match ctx.tx_id.global_id.physical (1000 microseconds = 0 secs + 1000000 nanos)
 
         // Test UUID() function - should be deterministic based on tx_id
-        let expr1 = Expression::Function("UUID".to_string(), vec![]);
+        let expr1 = Expression::Function("GENERATE_UUID".to_string(), vec![]);
         let uuid1 = expr1.evaluate(None, &ctx).unwrap();
 
         // Calling UUID again should produce a different UUID (auto-incrementing sequence)
-        let expr2 = Expression::Function("UUID".to_string(), vec![]);
+        let expr2 = Expression::Function("GENERATE_UUID".to_string(), vec![]);
         let uuid2 = expr2.evaluate(None, &ctx).unwrap();
         assert_ne!(uuid1, uuid2);
 
         // And a third call should be different from both
-        let expr3 = Expression::Function("UUID".to_string(), vec![]);
+        let expr3 = Expression::Function("GENERATE_UUID".to_string(), vec![]);
         let uuid3 = expr3.evaluate(None, &ctx).unwrap();
         assert_ne!(uuid1, uuid3);
         assert_ne!(uuid2, uuid3);

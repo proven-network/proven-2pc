@@ -17,6 +17,7 @@ struct Scope {
 }
 
 /// Manager for query scopes (subqueries, CTEs, etc.)
+#[derive(Default)]
 pub struct ScopeManager {
     /// Current scope
     current_scope: Option<Scope>,

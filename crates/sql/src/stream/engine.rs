@@ -8,7 +8,7 @@ use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution::Executor;
 use crate::planning::planner::Planner;
-use crate::semantic::{SemanticAnalyzer, AnalyzedStatement};
+use crate::semantic::SemanticAnalyzer;
 use crate::storage::mvcc::MvccStorage;
 use crate::stream::{
     operation::SqlOperation,

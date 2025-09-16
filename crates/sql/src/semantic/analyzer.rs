@@ -5,7 +5,9 @@ use super::context::AnalysisContext;
 use super::resolver::{ColumnResolver, ScopeManager, TableResolver};
 use super::type_checker::TypeChecker;
 use super::types::StatementMetadata;
-use super::validator::{ConstraintValidator, ExpressionValidator, FunctionValidator, StatementValidator};
+use super::validator::{
+    ConstraintValidator, ExpressionValidator, FunctionValidator, StatementValidator,
+};
 use crate::error::Result;
 use crate::parsing::ast::Statement;
 use crate::types::schema::Table;
@@ -47,7 +49,7 @@ impl SemanticAnalyzer {
     pub fn new(schemas: HashMap<String, Table>) -> Self {
         let type_checker = TypeChecker::new();
         let table_resolver = TableResolver::new(schemas.clone());
-        let column_resolver = ColumnResolver::new();
+        let column_resolver = ColumnResolver;
         let scope_manager = ScopeManager::new();
         let expression_validator = ExpressionValidator::new();
         let statement_validator = StatementValidator::new();
@@ -91,7 +93,11 @@ impl SemanticAnalyzer {
     }
 
     /// Phase 1: Resolve all names in the statement
-    fn resolve_names(&mut self, statement: &Statement, context: &mut AnalysisContext) -> Result<()> {
+    fn resolve_names(
+        &mut self,
+        statement: &Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         // First resolve table references
         self.table_resolver.resolve_statement(statement, context)?;
 
@@ -105,23 +111,34 @@ impl SemanticAnalyzer {
     }
 
     /// Phase 2: Type check and annotate the statement
-    fn type_check(&mut self, statement: Statement, context: &mut AnalysisContext) -> Result<AnnotatedStatement> {
+    fn type_check(
+        &mut self,
+        statement: Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<AnnotatedStatement> {
         self.type_checker.check_statement(statement, context)
     }
 
     /// Phase 3: Validate constraints and semantic rules
-    fn validate(&mut self, statement: &AnnotatedStatement, context: &mut AnalysisContext) -> Result<()> {
+    fn validate(
+        &mut self,
+        statement: &AnnotatedStatement,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         // Validate expressions
-        self.expression_validator.validate_statement(statement, context)?;
+        self.expression_validator
+            .validate_statement(statement, context)?;
 
         // Validate statement-level rules
         self.statement_validator.validate(statement, context)?;
 
         // Validate constraints
-        self.constraint_validator.validate_statement(statement, context)?;
+        self.constraint_validator
+            .validate_statement(statement, context)?;
 
         // Validate function calls
-        self.function_validator.validate_statement(statement, context)?;
+        self.function_validator
+            .validate_statement(statement, context)?;
 
         Ok(())
     }

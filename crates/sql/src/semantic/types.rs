@@ -16,7 +16,7 @@ pub struct TypedExpression {
 }
 
 /// Metadata about a statement collected during analysis
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct StatementMetadata {
     /// Tables referenced in the statement
     pub referenced_tables: HashSet<String>,

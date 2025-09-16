@@ -10,6 +10,4 @@ mod executor;
 mod join;
 
 // Re-export main types
-pub use aggregator::Aggregator;
 pub use executor::{ExecutionResult, Executor};
-pub use join::{HashJoiner, NestedLoopJoiner};

@@ -5,6 +5,89 @@ use crate::error::{Error, Result};
 use crate::types::{DataType, Value};
 use std::collections::HashMap;
 
+/// Check if a type can be coerced to another type
+/// Returns true for valid implicit conversions
+pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
+    // Same type is always valid
+    if from == to {
+        return true;
+    }
+
+    // NULL/Nullable handling
+    if let DataType::Nullable(to_inner) = to {
+        // Any type can be coerced to its nullable version
+        return from == to_inner.as_ref() || can_coerce(from, to_inner);
+    }
+
+    match (from, to) {
+        // Integer widening conversions (always safe)
+        (DataType::I8, DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128) => true,
+        (DataType::I16, DataType::I32 | DataType::I64 | DataType::I128) => true,
+        (DataType::I32, DataType::I64 | DataType::I128) => true,
+        (DataType::I64, DataType::I128) => true,
+
+        // Unsigned integer widening
+        (DataType::U8, DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128) => true,
+        (DataType::U16, DataType::U32 | DataType::U64 | DataType::U128) => true,
+        (DataType::U32, DataType::U64 | DataType::U128) => true,
+        (DataType::U64, DataType::U128) => true,
+
+        // Float widening
+        (DataType::F32, DataType::F64) => true,
+
+        // Integer to float (may lose precision but generally allowed)
+        (DataType::I8 | DataType::I16 | DataType::I32, DataType::F32 | DataType::F64) => true,
+        (DataType::I64, DataType::F64) => true,  // i64 to f32 loses precision
+
+        // Text types are interchangeable
+        (DataType::Str, DataType::Text) | (DataType::Text, DataType::Str) => true,
+
+        _ => false,
+    }
+}
+
+/// Calculate the cost of coercing from one type to another
+/// Lower cost means more preferred conversion
+/// Returns None if coercion is not possible
+pub fn coercion_cost(from: &DataType, to: &DataType) -> Option<u32> {
+    if from == to {
+        return Some(0);
+    }
+
+    if !can_coerce(from, to) {
+        return None;
+    }
+
+    match (from, to) {
+        // Nullable wrapper has minimal cost
+        (_, DataType::Nullable(to_inner)) if from == to_inner.as_ref() => Some(1),
+
+        // Integer widening - prefer smaller jumps
+        (DataType::I8, DataType::I16) => Some(10),
+        (DataType::I8, DataType::I32) => Some(20),
+        (DataType::I8, DataType::I64) => Some(30),
+        (DataType::I8, DataType::I128) => Some(40),
+        (DataType::I16, DataType::I32) => Some(10),
+        (DataType::I16, DataType::I64) => Some(20),
+        (DataType::I16, DataType::I128) => Some(30),
+        (DataType::I32, DataType::I64) => Some(10),
+        (DataType::I32, DataType::I128) => Some(20),
+        (DataType::I64, DataType::I128) => Some(10),
+
+        // Integer to float has higher cost (precision loss)
+        (DataType::I8 | DataType::I16 | DataType::I32, DataType::F32) => Some(50),
+        (DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64, DataType::F64) => Some(60),
+
+        // Float widening
+        (DataType::F32, DataType::F64) => Some(10),
+
+        // Text conversion has minimal cost
+        (DataType::Str, DataType::Text) | (DataType::Text, DataType::Str) => Some(5),
+
+        _ => None,
+    }
+}
+
 /// Coerce a value to match the target data type
 /// This handles implicit type conversions that are safe and expected in SQL
 pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {

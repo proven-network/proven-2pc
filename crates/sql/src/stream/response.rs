@@ -39,7 +39,7 @@ pub fn convert_execution_result(result: ExecutionResult) -> SqlResponse {
             rows_affected: Some(count),
             message: None,
         },
-        ExecutionResult::DDL(msg) => SqlResponse::ExecuteResult {
+        ExecutionResult::Ddl(msg) => SqlResponse::ExecuteResult {
             result_type: "ddl".to_string(),
             rows_affected: None,
             message: Some(msg),

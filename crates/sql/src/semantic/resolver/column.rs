@@ -5,14 +5,9 @@ use crate::parsing::ast::{DmlStatement, Expression, SelectStatement, Statement};
 use crate::semantic::context::AnalysisContext;
 
 /// Resolver for column references
-pub struct ColumnResolver {}
+pub struct ColumnResolver;
 
 impl ColumnResolver {
-    /// Create a new column resolver
-    pub fn new() -> Self {
-        Self {}
-    }
-
     /// Resolve columns in a statement
     pub fn resolve_statement(
         &mut self,

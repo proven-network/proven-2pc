@@ -68,8 +68,8 @@ impl Value {
     }
 
     /// Create a string value
-    pub fn string(s: String) -> Self {
-        Value::Str(s)
+    pub fn string<S: Into<String>>(s: S) -> Self {
+        Value::Str(s.into())
     }
 
     /// Create a boolean value
@@ -91,6 +91,26 @@ impl Value {
                 | Value::U32(_)
                 | Value::U64(_)
                 | Value::U128(_)
+        )
+    }
+
+    /// Check if value is any numeric type (integer, float, or decimal)
+    pub fn is_numeric(&self) -> bool {
+        matches!(
+            self,
+            Value::I8(_)
+                | Value::I16(_)
+                | Value::I32(_)
+                | Value::I64(_)
+                | Value::I128(_)
+                | Value::U8(_)
+                | Value::U16(_)
+                | Value::U32(_)
+                | Value::U64(_)
+                | Value::U128(_)
+                | Value::F32(_)
+                | Value::F64(_)
+                | Value::Decimal(_)
         )
     }
 

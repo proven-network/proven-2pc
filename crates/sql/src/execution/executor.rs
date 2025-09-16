@@ -26,7 +26,7 @@ pub enum ExecutionResult {
     /// Number of rows modified (INSERT, UPDATE, DELETE)
     Modified(usize),
     /// DDL operation result
-    DDL(String),
+    Ddl(String),
 }
 
 /// Complete MVCC-aware SQL executor
@@ -84,7 +84,7 @@ impl Executor {
             | Plan::CreateIndex { .. }
             | Plan::DropIndex { .. } => {
                 let result_msg = storage.execute_ddl(&plan, tx_ctx.id)?;
-                Ok(ExecutionResult::DDL(result_msg))
+                Ok(ExecutionResult::Ddl(result_msg))
             }
         }
     }
@@ -197,7 +197,7 @@ impl Executor {
             };
 
             // Apply type coercion to match schema
-            let coerced_row = crate::types::coercion::coerce_row(final_row, schema)?;
+            let coerced_row = crate::semantic::coercion::coerce_row(final_row, schema)?;
 
             write_ops::insert(storage, tx_ctx, &table, coerced_row)?;
             count += 1;
@@ -254,7 +254,7 @@ impl Executor {
             }
 
             // Apply type coercion to match schema
-            let coerced_row = crate::types::coercion::coerce_row(updated, &schema)?;
+            let coerced_row = crate::semantic::coercion::coerce_row(updated, &schema)?;
 
             write_ops::update(storage, tx_ctx, &table, row_id, coerced_row)?;
             count += 1;
@@ -826,10 +826,9 @@ impl Executor {
                                     .map(|(name, val)| (name.clone(), val.data_type()))
                                     .collect();
                                 // Try to coerce the parsed map to struct
-                                if let Ok(coerced) = crate::types::coercion::coerce_value(
-                                    parsed,
-                                    &DataType::Struct(schema),
-                                ) {
+                                if let Ok(coerced) =
+                                    crate::semantic::coerce_value(parsed, &DataType::Struct(schema))
+                                {
                                     r = coerced;
                                 }
                             }
@@ -848,7 +847,7 @@ impl Executor {
                             .map(|(name, val)| (name.clone(), val.data_type()))
                             .collect();
                         if let Ok(coerced) =
-                            crate::types::coercion::coerce_value(parsed, &DataType::Struct(schema))
+                            crate::semantic::coerce_value(parsed, &DataType::Struct(schema))
                         {
                             let l_parsed = coerced;
                             let r_val = r;
