@@ -4,32 +4,12 @@
 //! collection types (ARRAY, LIST, MAP), and complex types (STRUCT).
 
 use super::super::{Keyword, Token};
+use super::token_helper::TokenHelper;
 use crate::error::{Error, Result};
 use crate::types::data_type::DataType;
 
 /// Parser trait for type parsing functionality
-pub trait TypeParser {
-    /// Returns the next token
-    fn next(&mut self) -> Result<Token>;
-
-    /// Returns the next identifier or keyword as identifier
-    fn next_ident_or_keyword(&mut self) -> Result<String>;
-
-    /// Checks if next token matches predicate without consuming
-    fn next_if(&mut self, predicate: impl Fn(&Token) -> bool) -> Option<Token>;
-
-    /// Returns true if next token matches and consumes it
-    fn next_is(&mut self, token: Token) -> bool;
-
-    /// Checks if next identifier matches (case-insensitive)
-    fn next_if_ident_eq(&mut self, expected: &str) -> bool;
-
-    /// Expects a specific token or errors
-    fn expect(&mut self, expect: Token) -> Result<()>;
-
-    /// Peeks at next token without consuming
-    fn peek(&mut self) -> Result<Option<&Token>>;
-
+pub trait TypeParser: TokenHelper {
     /// Parse a data type (can be used recursively for collection types)
     fn parse_type(&mut self) -> Result<DataType> {
         let datatype = match self.next()? {
@@ -168,60 +148,5 @@ pub trait TypeParser {
             result_type = DataType::Array(Box::new(result_type), size);
         }
         Ok(result_type)
-    }
-}
-
-/// Convert a DataType to a string representation for CAST function
-pub fn data_type_to_cast_string(data_type: &DataType) -> String {
-    match data_type {
-        DataType::I8 => "TINYINT".to_string(),
-        DataType::I16 => "SMALLINT".to_string(),
-        DataType::I32 => "INT".to_string(),
-        DataType::I64 => "BIGINT".to_string(),
-        DataType::I128 => "HUGEINT".to_string(),
-        DataType::U8 => "TINYINT UNSIGNED".to_string(),
-        DataType::U16 => "SMALLINT UNSIGNED".to_string(),
-        DataType::U32 => "INT UNSIGNED".to_string(),
-        DataType::U64 => "BIGINT UNSIGNED".to_string(),
-        DataType::U128 => "HUGEINT UNSIGNED".to_string(),
-        DataType::F32 => "REAL".to_string(),
-        DataType::F64 => "FLOAT".to_string(),
-        DataType::Decimal(_, _) => "DECIMAL".to_string(),
-        DataType::Bool => "BOOLEAN".to_string(),
-        DataType::Str | DataType::Text => "TEXT".to_string(),
-        DataType::Date => "DATE".to_string(),
-        DataType::Time => "TIME".to_string(),
-        DataType::Timestamp => "TIMESTAMP".to_string(),
-        DataType::Interval => "INTERVAL".to_string(),
-        DataType::Uuid => "UUID".to_string(),
-        DataType::Bytea => "BYTEA".to_string(),
-        DataType::Inet => "INET".to_string(),
-        DataType::Point => "POINT".to_string(),
-        DataType::List(elem_type) => format!("{}[]", data_type_to_cast_string(elem_type)),
-        DataType::Array(elem_type, size) => {
-            if let Some(s) = size {
-                format!("{}[{}]", data_type_to_cast_string(elem_type), s)
-            } else {
-                format!("{}[]", data_type_to_cast_string(elem_type))
-            }
-        }
-        DataType::Map(key_type, val_type) => {
-            format!(
-                "MAP({}, {})",
-                data_type_to_cast_string(key_type),
-                data_type_to_cast_string(val_type)
-            )
-        }
-        DataType::Struct(fields) => {
-            let field_strs: Vec<String> = fields
-                .iter()
-                .map(|(name, dtype)| format!("{} {}", name, data_type_to_cast_string(dtype)))
-                .collect();
-            format!("STRUCT({})", field_strs.join(", "))
-        }
-        DataType::Nullable(inner) => {
-            // For CAST, nullable types are handled the same as their inner type
-            data_type_to_cast_string(inner)
-        }
     }
 }

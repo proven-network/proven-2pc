@@ -3,6 +3,7 @@
 //! Handles parsing of SELECT, INSERT, UPDATE, and DELETE statements.
 
 use super::super::{Keyword, Token};
+use super::token_helper::TokenHelper;
 use crate::error::{Error, Result};
 use crate::parsing::ast::common::{Direction, FromClause, JoinType};
 use crate::parsing::ast::dml::DmlStatement;
@@ -10,33 +11,9 @@ use crate::parsing::ast::{Expression, InsertSource, SelectStatement, Statement};
 use std::collections::BTreeMap;
 
 /// Parser trait for DML statements
-pub trait DmlParser {
-    /// Returns the next token
-    fn next(&mut self) -> Result<Token>;
-
-    /// Returns the next identifier
-    fn next_ident(&mut self) -> Result<String>;
-
-    /// Returns the next identifier or keyword as identifier
-    fn next_ident_or_keyword(&mut self) -> Result<String>;
-
-    /// Consumes next token if it matches
-    fn next_is(&mut self, token: Token) -> bool;
-
-    /// Expects a specific token or errors
-    fn expect(&mut self, expect: Token) -> Result<()>;
-
-    /// Peeks at next token without consuming
-    fn peek(&mut self) -> Result<Option<&Token>>;
-
+pub trait DmlParser: TokenHelper {
     /// Parses an expression
     fn parse_expression(&mut self) -> Result<Expression>;
-
-    /// Maps next token if it matches predicate
-    fn next_if_map<T>(&mut self, f: impl Fn(&Token) -> Option<T>) -> Option<T>;
-
-    /// Skips a token if it matches
-    fn skip(&mut self, token: Token);
 
     /// Parses a DELETE statement.
     fn parse_delete(&mut self) -> Result<Statement> {

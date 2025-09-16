@@ -12,14 +12,8 @@ use crate::parsing::ast::{Column, IndexColumn, Statement};
 
 /// Parser trait for DDL statements
 pub trait DdlParser: TypeParser {
-    /// Returns the next identifier
-    fn next_ident(&mut self) -> Result<String>;
-
     /// Parses an expression
     fn parse_expression(&mut self) -> Result<Expression>;
-
-    /// Returns the next keyword if there is one
-    fn next_if_keyword(&mut self) -> Option<Keyword>;
 
     /// Parses a CREATE statement (TABLE or INDEX).
     fn parse_create(&mut self) -> Result<Statement> {
