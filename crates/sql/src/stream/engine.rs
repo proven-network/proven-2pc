@@ -8,10 +8,11 @@ use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution::Executor;
 use crate::planning::planner::Planner;
-use crate::planning::prepared_cache::{PreparedCache, PreparedPlan, bind_parameters};
+use crate::semantic::{SemanticAnalyzer, AnalyzedStatement};
 use crate::storage::mvcc::MvccStorage;
 use crate::stream::{
     operation::SqlOperation,
+    prepared_cache::{PreparedCache, PreparedStatement},
     response::{SqlResponse, convert_execution_result},
     transaction::TransactionContext,
 };
@@ -34,17 +35,24 @@ pub struct SqlTransactionEngine {
 
     /// Prepared statement cache
     prepared_cache: PreparedCache,
+
+    /// Semantic analyzer for validation and type checking
+    analyzer: SemanticAnalyzer,
 }
 
 impl SqlTransactionEngine {
     /// Create a new SQL transaction engine
     pub fn new() -> Self {
+        let storage = MvccStorage::new();
+        let analyzer = SemanticAnalyzer::new(storage.get_schemas());
+
         Self {
-            storage: MvccStorage::new(),
+            storage,
             active_transactions: HashMap::new(),
             executor: Executor::new(),
             migration_version: 0,
             prepared_cache: PreparedCache::new(),
+            analyzer,
         }
     }
 
@@ -63,89 +71,12 @@ impl SqlTransactionEngine {
             )));
         }
 
-        // Check if we have parameters
-        let plan = if params.is_some() {
-            // Try to get from cache
-            if let Some(prepared) = self.prepared_cache.get(sql) {
-                // Use cached plan and bind parameters
-                let params = params.unwrap_or_default();
-                if params.len() != prepared.param_count {
-                    return OperationResult::Complete(SqlResponse::Error(format!(
-                        "Expected {} parameters, got {}",
-                        prepared.param_count,
-                        params.len()
-                    )));
-                }
-                match bind_parameters(&prepared.plan_template, &params) {
-                    Ok(bound_plan) => bound_plan,
-                    Err(e) => {
-                        return OperationResult::Complete(SqlResponse::Error(format!(
-                            "Parameter binding error: {:?}",
-                            e
-                        )));
-                    }
-                }
-            } else {
-                // Parse, plan, and cache
-                let statement = match crate::parsing::parse_sql(sql) {
-                    Ok(stmt) => stmt,
-                    Err(e) => {
-                        return OperationResult::Complete(SqlResponse::Error(format!(
-                            "Parse error: {:?}",
-                            e
-                        )));
-                    }
-                };
-
-                // Count parameters in the ORIGINAL statement (before optimization)
-                // This ensures we always expect the same number of parameters the user wrote
-                let original_param_count = count_statement_parameters(&statement);
-
-                let planner = Planner::new(
-                    self.storage.get_schemas(),
-                    self.storage.get_index_metadata(),
-                );
-                let plan_template = match planner.plan(statement) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return OperationResult::Complete(SqlResponse::Error(format!(
-                            "Planning error: {:?}",
-                            e
-                        )));
-                    }
-                };
-
-                // Cache the prepared plan with the ORIGINAL parameter count
-                self.prepared_cache.insert(
-                    sql.to_string(),
-                    PreparedPlan {
-                        plan_template: plan_template.clone(),
-                        param_count: original_param_count,
-                        param_locations: Vec::new(), // Not tracking locations for now
-                    },
-                );
-
-                // Bind parameters
-                let params = params.unwrap_or_default();
-                if params.len() != original_param_count {
-                    return OperationResult::Complete(SqlResponse::Error(format!(
-                        "Expected {} parameters, got {}",
-                        original_param_count,
-                        params.len()
-                    )));
-                }
-                match bind_parameters(&plan_template, &params) {
-                    Ok(bound_plan) => bound_plan,
-                    Err(e) => {
-                        return OperationResult::Complete(SqlResponse::Error(format!(
-                            "Parameter binding error: {:?}",
-                            e
-                        )));
-                    }
-                }
-            }
+        // Parse and analyze, using cache when possible
+        let analyzed = if let Some(prepared) = self.prepared_cache.get(sql) {
+            // Use cached semantic analysis
+            prepared.analyzed.clone()
         } else {
-            // No parameters - regular execution
+            // Parse and analyze
             let statement = match crate::parsing::parse_sql(sql) {
                 Ok(stmt) => stmt,
                 Err(e) => {
@@ -156,18 +87,63 @@ impl SqlTransactionEngine {
                 }
             };
 
-            let planner = Planner::new(
-                self.storage.get_schemas(),
-                self.storage.get_index_metadata(),
-            );
-            match planner.plan(statement) {
-                Ok(p) => p,
+            // Count parameters in the ORIGINAL statement (before optimization)
+            let original_param_count = count_statement_parameters(&statement);
+
+            // Semantic analysis - validates and type checks
+            let analyzed = match self.analyzer.analyze(statement) {
+                Ok(a) => a,
                 Err(e) => {
                     return OperationResult::Complete(SqlResponse::Error(format!(
-                        "Planning error: {:?}",
+                        "Semantic error: {:?}",
                         e
                     )));
                 }
+            };
+
+            // Cache the analyzed statement
+            self.prepared_cache.insert(
+                sql.to_string(),
+                PreparedStatement {
+                    analyzed: analyzed.clone(),
+                    param_count: original_param_count,
+                    param_locations: Vec::new(), // Not tracking locations for now
+                },
+            );
+
+            analyzed
+        };
+
+        // Check parameter count if provided
+        if let Some(ref params) = params {
+            let expected_count = if let Some(prepared) = self.prepared_cache.get(sql) {
+                prepared.param_count
+            } else {
+                // Should not happen, but fallback to counting
+                analyzed.metadata.parameter_expectations.len()
+            };
+
+            if params.len() != expected_count {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Expected {} parameters, got {}",
+                    expected_count,
+                    params.len()
+                )));
+            }
+        }
+
+        // Plan the analyzed statement (always done fresh for optimization)
+        let planner = Planner::new(
+            self.storage.get_schemas(),
+            self.storage.get_index_metadata(),
+        );
+        let plan = match planner.plan(analyzed) {
+            Ok(p) => p,
+            Err(e) => {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Planning error: {:?}",
+                    e
+                )));
             }
         };
 
@@ -216,6 +192,12 @@ impl SqlTransactionEngine {
                 // Update schema cache if DDL operation
                 if plan.is_ddl() {
                     // Schema updates are handled internally by storage
+                    // Update the semantic analyzer with new schemas
+                    self.analyzer = SemanticAnalyzer::new(self.storage.get_schemas());
+
+                    // Invalidate cache entries for affected tables
+                    // For now, just clear the entire cache on DDL
+                    self.prepared_cache.clear();
                 }
                 OperationResult::Complete(convert_execution_result(result))
             }

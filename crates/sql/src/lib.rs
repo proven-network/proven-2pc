@@ -10,6 +10,7 @@ pub mod error;
 pub mod execution;
 pub mod parsing;
 pub mod planning;
+pub mod semantic;
 pub mod storage;
 pub mod stream;
 pub mod types;

@@ -14,6 +14,7 @@ use crate::parsing::ast::{
     Column, Expression as AstExpression, InsertSource, Literal, Operator, SelectStatement,
     Statement,
 };
+use crate::semantic::AnalyzedStatement;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use crate::types::statistics::DatabaseStatistics;
@@ -175,8 +176,11 @@ impl Planner {
         self.statistics = None;
     }
 
-    /// Plan a statement
-    pub fn plan(&self, statement: Statement) -> Result<Plan> {
+    /// Plan an analyzed statement
+    pub fn plan(&self, analyzed: AnalyzedStatement) -> Result<Plan> {
+        // Extract metadata for optimization hints
+        let metadata = analyzed.metadata;
+        let statement = analyzed.statement.into_statement();
         match statement {
             Statement::Explain(_) => {
                 Err(Error::ExecutionError("EXPLAIN not yet implemented".into()))
@@ -200,10 +204,7 @@ impl Planner {
                     unique,
                     included_columns,
                 } => {
-                    // Verify table exists
-                    if !self.schemas.contains_key(&table) {
-                        return Err(Error::TableNotFound(table));
-                    }
+                    // Table existence already verified by semantic analyzer
                     // Convert AST IndexColumns to Plan IndexColumns
                     let plan_columns: Vec<crate::planning::plan::IndexColumn> = columns
                         .into_iter()
@@ -1427,10 +1428,11 @@ impl<'a> PlanContext<'a> {
     }
 
     fn add_table(&mut self, name: String, alias: Option<String>) -> Result<()> {
+        // Table existence already validated by semantic analyzer
         let schema = self
             .schemas
             .get(&name)
-            .ok_or_else(|| Error::TableNotFound(name.clone()))?;
+            .expect("Table should exist after semantic analysis");
 
         let table_ref = TableRef {
             name: name.clone(),
@@ -1624,16 +1626,17 @@ impl<'a> PlanContext<'a> {
     }
 
     fn resolve_column_in_table(&self, table: &TableRef, column_name: &str) -> Result<Expression> {
+        // Column existence already validated by semantic analyzer
         let schema = self
             .schemas
             .get(&table.name)
-            .ok_or_else(|| Error::TableNotFound(table.name.clone()))?;
+            .expect("Table should exist after semantic analysis");
 
         let col_index = schema
             .columns
             .iter()
             .position(|c| c.name == column_name)
-            .ok_or_else(|| Error::ColumnNotFound(column_name.to_string()))?;
+            .expect("Column should exist after semantic analysis");
 
         Ok(Expression::Column(table.start_column + col_index))
     }
