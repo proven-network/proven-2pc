@@ -364,7 +364,8 @@ impl TransactionEngine for SqlTransactionEngine {
 
 /// Count the number of parameter placeholders in an AST statement (before planning)
 fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
-    use crate::parsing::{Expression, Statement, ast::InsertSource};
+    use crate::parsing::dml::DmlStatement;
+    use crate::parsing::{Expression, InsertSource, Statement};
 
     let mut max_idx = 0;
 
@@ -461,80 +462,81 @@ fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
         }
     }
 
-    match stmt {
-        Statement::Select(select) => {
-            // Check all parts of SELECT
-            for (expr, _) in &select.select {
-                count_expr_params(expr, &mut max_idx);
+    if let Statement::Dml(dml_stmt) = stmt {
+        match dml_stmt {
+            DmlStatement::Select(select) => {
+                // Check all parts of SELECT
+                for (expr, _) in &select.select {
+                    count_expr_params(expr, &mut max_idx);
+                }
+                if let Some(where_clause) = &select.r#where {
+                    count_expr_params(where_clause, &mut max_idx);
+                }
+                for expr in &select.group_by {
+                    count_expr_params(expr, &mut max_idx);
+                }
+                if let Some(having) = &select.having {
+                    count_expr_params(having, &mut max_idx);
+                }
+                for (expr, _) in &select.order_by {
+                    count_expr_params(expr, &mut max_idx);
+                }
             }
-            if let Some(where_clause) = &select.r#where {
-                count_expr_params(where_clause, &mut max_idx);
-            }
-            for expr in &select.group_by {
-                count_expr_params(expr, &mut max_idx);
-            }
-            if let Some(having) = &select.having {
-                count_expr_params(having, &mut max_idx);
-            }
-            for (expr, _) in &select.order_by {
-                count_expr_params(expr, &mut max_idx);
-            }
-        }
-        Statement::Insert { source, .. } => {
-            match source {
-                InsertSource::Values(values) => {
-                    for row in values {
-                        for expr in row {
+            DmlStatement::Insert { source, .. } => {
+                match source {
+                    InsertSource::Values(values) => {
+                        for row in values {
+                            for expr in row {
+                                count_expr_params(expr, &mut max_idx);
+                            }
+                        }
+                    }
+                    InsertSource::DefaultValues => {
+                        // No parameters in DEFAULT VALUES
+                    }
+                    InsertSource::Select(select) => {
+                        // Count params in the SELECT statement
+                        for (expr, _) in &select.select {
                             count_expr_params(expr, &mut max_idx);
+                        }
+                        if let Some(where_expr) = &select.r#where {
+                            count_expr_params(where_expr, &mut max_idx);
+                        }
+                        for expr in &select.group_by {
+                            count_expr_params(expr, &mut max_idx);
+                        }
+                        if let Some(having_expr) = &select.having {
+                            count_expr_params(having_expr, &mut max_idx);
+                        }
+                        for (expr, _) in &select.order_by {
+                            count_expr_params(expr, &mut max_idx);
+                        }
+                        if let Some(limit_expr) = &select.limit {
+                            count_expr_params(limit_expr, &mut max_idx);
+                        }
+                        if let Some(offset_expr) = &select.offset {
+                            count_expr_params(offset_expr, &mut max_idx);
                         }
                     }
                 }
-                InsertSource::DefaultValues => {
-                    // No parameters in DEFAULT VALUES
-                }
-                InsertSource::Select(select) => {
-                    // Count params in the SELECT statement
-                    for (expr, _) in &select.select {
-                        count_expr_params(expr, &mut max_idx);
-                    }
-                    if let Some(where_expr) = &select.r#where {
-                        count_expr_params(where_expr, &mut max_idx);
-                    }
-                    for expr in &select.group_by {
-                        count_expr_params(expr, &mut max_idx);
-                    }
-                    if let Some(having_expr) = &select.having {
-                        count_expr_params(having_expr, &mut max_idx);
-                    }
-                    for (expr, _) in &select.order_by {
-                        count_expr_params(expr, &mut max_idx);
-                    }
-                    if let Some(limit_expr) = &select.limit {
-                        count_expr_params(limit_expr, &mut max_idx);
-                    }
-                    if let Some(offset_expr) = &select.offset {
-                        count_expr_params(offset_expr, &mut max_idx);
-                    }
-                }
             }
-        }
-        Statement::Update { set, r#where, .. } => {
-            for expr in set.values().flatten() {
-                count_expr_params(expr, &mut max_idx);
-            }
+            DmlStatement::Update { set, r#where, .. } => {
+                for expr in set.values().flatten() {
+                    count_expr_params(expr, &mut max_idx);
+                }
 
-            if let Some(where_clause) = r#where {
+                if let Some(where_clause) = r#where {
+                    count_expr_params(where_clause, &mut max_idx);
+                }
+            }
+            DmlStatement::Delete {
+                r#where: Some(where_clause),
+                ..
+            } => {
                 count_expr_params(where_clause, &mut max_idx);
             }
+            DmlStatement::Delete { r#where: None, .. } => {}
         }
-        Statement::Delete {
-            r#where: Some(where_clause),
-            ..
-        } => {
-            count_expr_params(where_clause, &mut max_idx);
-        }
-        Statement::Delete { r#where: None, .. } => {}
-        _ => {} // DDL statements don't have parameters
     }
 
     max_idx

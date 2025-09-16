@@ -1,7 +1,11 @@
 use std::iter::Peekable;
 use std::ops::Add;
 
-use super::{Keyword, Lexer, Token, ast};
+use super::{Keyword, Lexer, Token};
+use super::ast::{Expression, Literal, Operator, Column, IndexColumn, InsertSource, SelectStatement, Statement};
+use super::ast::common::{Direction, FromClause, JoinType};
+use super::ast::ddl::DdlStatement;
+use super::ast::dml::DmlStatement;
 use crate::error::{Error, Result};
 use crate::types::data_type::DataType;
 
@@ -22,7 +26,7 @@ pub struct Parser<'a> {
 impl Parser<'_> {
     /// Parses the input string into a SQL statement AST. The entire string must
     /// be parsed as a single statement, ending with an optional semicolon.
-    pub fn parse(statement: &str) -> Result<ast::Statement> {
+    pub fn parse(statement: &str) -> Result<Statement> {
         let mut parser = Self::new(statement);
         let statement = parser.parse_statement()?;
         parser.skip(Token::Semicolon);
@@ -35,7 +39,7 @@ impl Parser<'_> {
     /// Parse the input string into a SQL expression AST. The entire string must
     /// be parsed as a single expression. Only used in tests.
     #[cfg(test)]
-    pub fn parse_expr(expr: &str) -> Result<ast::Expression> {
+    pub fn parse_expr(expr: &str) -> Result<Expression> {
         let mut parser = Self::new(expr);
         let expression = parser.parse_expression()?;
         if let Some(token) = parser.lexer.next().transpose()? {
@@ -157,7 +161,7 @@ impl Parser<'_> {
     }
 
     /// Parses a SQL statement.
-    fn parse_statement(&mut self) -> Result<ast::Statement> {
+    fn parse_statement(&mut self) -> Result<Statement> {
         let Some(token) = self.peek()? else {
             return Err(Error::ParseError("unexpected end of input".into()));
         };
@@ -177,16 +181,16 @@ impl Parser<'_> {
     }
 
     /// Parses an EXPLAIN statement.
-    fn parse_explain(&mut self) -> Result<ast::Statement> {
+    fn parse_explain(&mut self) -> Result<Statement> {
         self.expect(Keyword::Explain.into())?;
         if self.next_is(Keyword::Explain.into()) {
             return Err(Error::ParseError("cannot nest EXPLAIN statements".into()));
         }
-        Ok(ast::Statement::Explain(Box::new(self.parse_statement()?)))
+        Ok(Statement::Explain(Box::new(self.parse_statement()?)))
     }
 
     /// Parses a CREATE statement (TABLE or INDEX).
-    fn parse_create(&mut self) -> Result<ast::Statement> {
+    fn parse_create(&mut self) -> Result<Statement> {
         self.expect(Keyword::Create.into())?;
         match self.peek()? {
             Some(Token::Keyword(Keyword::Table)) => self.parse_create_table_inner(),
@@ -210,7 +214,7 @@ impl Parser<'_> {
     }
 
     /// Parses a DROP statement (TABLE or INDEX).
-    fn parse_drop(&mut self) -> Result<ast::Statement> {
+    fn parse_drop(&mut self) -> Result<Statement> {
         self.expect(Keyword::Drop.into())?;
         match self.peek()? {
             Some(Token::Keyword(Keyword::Table)) => self.parse_drop_table_inner(),
@@ -229,7 +233,7 @@ impl Parser<'_> {
     }
 
     /// Parses a CREATE TABLE statement (after CREATE).
-    fn parse_create_table_inner(&mut self) -> Result<ast::Statement> {
+    fn parse_create_table_inner(&mut self) -> Result<Statement> {
         self.expect(Keyword::Table.into())?;
 
         // Check for IF NOT EXISTS
@@ -261,11 +265,11 @@ impl Parser<'_> {
             // Table without columns
             Vec::new()
         };
-        Ok(ast::Statement::CreateTable {
+        Ok(Statement::Ddl(DdlStatement::CreateTable {
             name,
             columns,
             if_not_exists,
-        })
+        }))
     }
 
     /// Parse a data type (can be used recursively for collection types)
@@ -409,13 +413,13 @@ impl Parser<'_> {
     }
 
     /// Parses a CREATE TABLE column definition.
-    fn parse_create_table_column(&mut self) -> Result<ast::Column> {
+    fn parse_create_table_column(&mut self) -> Result<Column> {
         let name = self.next_ident_or_keyword()?;
 
         // Use the new parse_type method for type parsing
         let datatype = self.parse_type()?;
 
-        let mut column = ast::Column {
+        let mut column = Column {
             name,
             datatype,
             primary_key: false,
@@ -465,7 +469,7 @@ impl Parser<'_> {
     }
 
     /// Parses an index column: an expression optionally followed by ASC or DESC
-    fn parse_index_column(&mut self) -> Result<ast::IndexColumn> {
+    fn parse_index_column(&mut self) -> Result<IndexColumn> {
         // Parse the expression (can be a simple column or complex expression)
         let expression = self.parse_expression()?;
 
@@ -473,23 +477,23 @@ impl Parser<'_> {
         let direction = match self.peek()? {
             Some(Token::Keyword(Keyword::Asc)) => {
                 self.next()?;
-                Some(ast::Direction::Ascending)
+                Some(Direction::Asc)
             }
             Some(Token::Keyword(Keyword::Desc)) => {
                 self.next()?;
-                Some(ast::Direction::Descending)
+                Some(Direction::Desc)
             }
             _ => None,
         };
 
-        Ok(ast::IndexColumn {
+        Ok(IndexColumn {
             expression,
             direction,
         })
     }
 
     /// Parses a CREATE INDEX statement (after CREATE [UNIQUE] INDEX).
-    fn parse_create_index_inner(&mut self, unique: bool) -> Result<ast::Statement> {
+    fn parse_create_index_inner(&mut self, unique: bool) -> Result<Statement> {
         let name = self.next_ident()?;
         self.expect(Keyword::On.into())?;
         let table = self.next_ident()?;
@@ -516,28 +520,28 @@ impl Parser<'_> {
             None
         };
 
-        Ok(ast::Statement::CreateIndex {
+        Ok(Statement::Ddl(DdlStatement::CreateIndex {
             name,
             table,
             columns,
             unique,
             included_columns,
-        })
+        }))
     }
 
     /// Parses a DROP INDEX statement (after DROP INDEX).
-    fn parse_drop_index_inner(&mut self) -> Result<ast::Statement> {
+    fn parse_drop_index_inner(&mut self) -> Result<Statement> {
         let mut if_exists = false;
         if self.next_is(Keyword::If.into()) {
             self.expect(Token::Keyword(Keyword::Exists))?;
             if_exists = true;
         }
         let name = self.next_ident()?;
-        Ok(ast::Statement::DropIndex { name, if_exists })
+        Ok(Statement::Ddl(DdlStatement::DropIndex { name, if_exists }))
     }
 
     /// Parses a DROP TABLE statement (after DROP).
-    fn parse_drop_table_inner(&mut self) -> Result<ast::Statement> {
+    fn parse_drop_table_inner(&mut self) -> Result<Statement> {
         self.expect(Token::Keyword(Keyword::Table))?;
         let mut if_exists = false;
         if self.next_is(Keyword::If.into()) {
@@ -551,22 +555,22 @@ impl Parser<'_> {
             names.push(self.next_ident()?);
         }
 
-        Ok(ast::Statement::DropTable { names, if_exists })
+        Ok(Statement::Ddl(DdlStatement::DropTable { names, if_exists }))
     }
 
     /// Parses a DELETE statement.
-    fn parse_delete(&mut self) -> Result<ast::Statement> {
+    fn parse_delete(&mut self) -> Result<Statement> {
         self.expect(Keyword::Delete.into())?;
         self.expect(Keyword::From.into())?;
         let table = self.next_ident()?;
-        Ok(ast::Statement::Delete {
+        Ok(Statement::Dml(DmlStatement::Delete {
             table,
             r#where: self.parse_where_clause()?,
-        })
+        }))
     }
 
     /// Parses an INSERT statement.
-    fn parse_insert(&mut self) -> Result<ast::Statement> {
+    fn parse_insert(&mut self) -> Result<Statement> {
         self.expect(Keyword::Insert.into())?;
         self.expect(Keyword::Into.into())?;
         let table = self.next_ident()?;
@@ -586,7 +590,7 @@ impl Parser<'_> {
         // Check for DEFAULT VALUES, VALUES, or SELECT
         let source = if self.next_is(Keyword::Default.into()) {
             self.expect(Keyword::Values.into())?;
-            ast::InsertSource::DefaultValues
+            InsertSource::DefaultValues
         } else if self.next_is(Keyword::Values.into()) {
             let mut values = Vec::new();
             loop {
@@ -604,10 +608,10 @@ impl Parser<'_> {
                     break;
                 }
             }
-            ast::InsertSource::Values(values)
+            InsertSource::Values(values)
         } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
             // Parse the SELECT statement - parse_select_clause will consume SELECT
-            let select = Box::new(ast::SelectStatement {
+            let select = Box::new(SelectStatement {
                 select: self.parse_select_clause()?,
                 from: self.parse_from_clause()?,
                 r#where: self.parse_where_clause()?,
@@ -617,22 +621,22 @@ impl Parser<'_> {
                 limit: self.parse_limit_clause()?,
                 offset: self.parse_offset_clause()?,
             });
-            ast::InsertSource::Select(select)
+            InsertSource::Select(select)
         } else {
             return Err(Error::ParseError(
                 "expected token VALUES or SELECT after INSERT INTO".to_string(),
             ));
         };
 
-        Ok(ast::Statement::Insert {
+        Ok(Statement::Dml(DmlStatement::Insert {
             table,
             columns,
             source,
-        })
+        }))
     }
 
     /// Parses an UPDATE statement.
-    fn parse_update(&mut self) -> Result<ast::Statement> {
+    fn parse_update(&mut self) -> Result<Statement> {
         self.expect(Keyword::Update.into())?;
         let table = self.next_ident()?;
         self.expect(Keyword::Set.into())?;
@@ -654,16 +658,16 @@ impl Parser<'_> {
                 break;
             }
         }
-        Ok(ast::Statement::Update {
+        Ok(Statement::Dml(DmlStatement::Update {
             table,
             set,
             r#where: self.parse_where_clause()?,
-        })
+        }))
     }
 
     /// Parses a SELECT statement.
-    fn parse_select(&mut self) -> Result<ast::Statement> {
-        Ok(ast::Statement::Select(Box::new(ast::SelectStatement {
+    fn parse_select(&mut self) -> Result<Statement> {
+        Ok(Statement::Dml(DmlStatement::Select(Box::new(SelectStatement {
             select: self.parse_select_clause()?,
             from: self.parse_from_clause()?,
             r#where: self.parse_where_clause()?,
@@ -672,11 +676,11 @@ impl Parser<'_> {
             order_by: self.parse_order_by_clause()?,
             limit: self.parse_limit_clause()?,
             offset: self.parse_offset_clause()?,
-        })))
+        }))))
     }
 
     /// Parses a SELECT clause, if present.
-    fn parse_select_clause(&mut self) -> Result<Vec<(ast::Expression, Option<String>)>> {
+    fn parse_select_clause(&mut self) -> Result<Vec<(Expression, Option<String>)>> {
         if !self.next_is(Keyword::Select.into()) {
             return Ok(Vec::new());
         }
@@ -685,7 +689,7 @@ impl Parser<'_> {
             let expr = self.parse_expression()?;
             let mut alias = None;
             if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
-                if expr == ast::Expression::All {
+                if expr == Expression::All {
                     return Err(Error::ParseError("can't alias *".into()));
                 }
                 alias = Some(self.next_ident()?);
@@ -699,7 +703,7 @@ impl Parser<'_> {
     }
 
     /// Parses a FROM clause, if present.
-    fn parse_from_clause(&mut self) -> Result<Vec<ast::FromClause>> {
+    fn parse_from_clause(&mut self) -> Result<Vec<FromClause>> {
         if !self.next_is(Keyword::From.into()) {
             return Ok(Vec::new());
         }
@@ -710,11 +714,11 @@ impl Parser<'_> {
                 let left = Box::new(from_item);
                 let right = Box::new(self.parse_from_table()?);
                 let mut predicate = None;
-                if r#type != ast::JoinType::Cross {
+                if r#type != JoinType::Cross {
                     self.expect(Keyword::On.into())?;
                     predicate = Some(self.parse_expression()?)
                 }
-                from_item = ast::FromClause::Join {
+                from_item = FromClause::Join {
                     left,
                     right,
                     r#type,
@@ -730,7 +734,7 @@ impl Parser<'_> {
     }
 
     // Parses a FROM table.
-    fn parse_from_table(&mut self) -> Result<ast::FromClause> {
+    fn parse_from_table(&mut self) -> Result<FromClause> {
         let name = self.next_ident()?;
 
         // Check for compound object notation (schema.table)
@@ -744,42 +748,42 @@ impl Parser<'_> {
         if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
             alias = Some(self.next_ident()?)
         };
-        Ok(ast::FromClause::Table { name, alias })
+        Ok(FromClause::Table { name, alias })
     }
 
     // Parses a FROM JOIN type, if present.
-    fn parse_from_join(&mut self) -> Result<Option<ast::JoinType>> {
+    fn parse_from_join(&mut self) -> Result<Option<JoinType>> {
         if self.next_is(Keyword::Join.into()) {
-            return Ok(Some(ast::JoinType::Inner));
+            return Ok(Some(JoinType::Inner));
         }
         if self.next_is(Keyword::Cross.into()) {
             self.expect(Keyword::Join.into())?;
-            return Ok(Some(ast::JoinType::Cross));
+            return Ok(Some(JoinType::Cross));
         }
         if self.next_is(Keyword::Inner.into()) {
             self.expect(Keyword::Join.into())?;
-            return Ok(Some(ast::JoinType::Inner));
+            return Ok(Some(JoinType::Inner));
         }
         if self.next_is(Keyword::Left.into()) {
             self.skip(Keyword::Outer.into());
             self.expect(Keyword::Join.into())?;
-            return Ok(Some(ast::JoinType::Left));
+            return Ok(Some(JoinType::Left));
         }
         if self.next_is(Keyword::Right.into()) {
             self.skip(Keyword::Outer.into());
             self.expect(Keyword::Join.into())?;
-            return Ok(Some(ast::JoinType::Right));
+            return Ok(Some(JoinType::Right));
         }
         if self.next_is(Keyword::Full.into()) {
             self.skip(Keyword::Outer.into());
             self.expect(Keyword::Join.into())?;
-            return Ok(Some(ast::JoinType::Full));
+            return Ok(Some(JoinType::Full));
         }
         Ok(None)
     }
 
     /// Parses a WHERE clause, if present.
-    fn parse_where_clause(&mut self) -> Result<Option<ast::Expression>> {
+    fn parse_where_clause(&mut self) -> Result<Option<Expression>> {
         if !self.next_is(Keyword::Where.into()) {
             return Ok(None);
         }
@@ -787,7 +791,7 @@ impl Parser<'_> {
     }
 
     /// Parses a GROUP BY clause, if present.
-    fn parse_group_by_clause(&mut self) -> Result<Vec<ast::Expression>> {
+    fn parse_group_by_clause(&mut self) -> Result<Vec<Expression>> {
         if !self.next_is(Keyword::Group.into()) {
             return Ok(Vec::new());
         }
@@ -803,7 +807,7 @@ impl Parser<'_> {
     }
 
     /// Parses a HAVING clause, if present.
-    fn parse_having_clause(&mut self) -> Result<Option<ast::Expression>> {
+    fn parse_having_clause(&mut self) -> Result<Option<Expression>> {
         if !self.next_is(Keyword::Having.into()) {
             return Ok(None);
         }
@@ -811,7 +815,7 @@ impl Parser<'_> {
     }
 
     /// Parses an ORDER BY clause, if present.
-    fn parse_order_by_clause(&mut self) -> Result<Vec<(ast::Expression, ast::Direction)>> {
+    fn parse_order_by_clause(&mut self) -> Result<Vec<(Expression, Direction)>> {
         if !self.next_is(Keyword::Order.into()) {
             return Ok(Vec::new());
         }
@@ -821,11 +825,11 @@ impl Parser<'_> {
             let expr = self.parse_expression()?;
             let order = self
                 .next_if_map(|token| match token {
-                    Token::Keyword(Keyword::Asc) => Some(ast::Direction::Ascending),
-                    Token::Keyword(Keyword::Desc) => Some(ast::Direction::Descending),
+                    Token::Keyword(Keyword::Asc) => Some(Direction::Asc),
+                    Token::Keyword(Keyword::Desc) => Some(Direction::Desc),
                     _ => None,
                 })
-                .unwrap_or_default();
+                .unwrap_or(Direction::Asc);
             order_by.push((expr, order));
             if !self.next_is(Token::Comma) {
                 break;
@@ -835,7 +839,7 @@ impl Parser<'_> {
     }
 
     /// Parses a LIMIT clause, if present.
-    fn parse_limit_clause(&mut self) -> Result<Option<ast::Expression>> {
+    fn parse_limit_clause(&mut self) -> Result<Option<Expression>> {
         if !self.next_is(Keyword::Limit.into()) {
             return Ok(None);
         }
@@ -843,7 +847,7 @@ impl Parser<'_> {
     }
 
     /// Parses an OFFSET clause, if present.
-    fn parse_offset_clause(&mut self) -> Result<Option<ast::Expression>> {
+    fn parse_offset_clause(&mut self) -> Result<Option<Expression>> {
         if !self.next_is(Keyword::Offset.into()) {
             return Ok(None);
         }
@@ -954,12 +958,12 @@ impl Parser<'_> {
     ///   lhs = (lhs op rhs) = ((2 ^ (3 ^ 2)) - (4 * 3))
     ///   op = parse_infix_operator(prec=0) = None (end of expression)
     ///   return lhs = ((2 ^ (3 ^ 2)) - (4 * 3))
-    fn parse_expression(&mut self) -> Result<ast::Expression> {
+    fn parse_expression(&mut self) -> Result<Expression> {
         self.parse_expression_at(0)
     }
 
     /// Parses an expression at the given minimum precedence.
-    fn parse_expression_at(&mut self, min_precedence: Precedence) -> Result<ast::Expression> {
+    fn parse_expression_at(&mut self, min_precedence: Precedence) -> Result<Expression> {
         // If the left-hand side is a prefix operator, recursively parse it and
         // its operand. Otherwise, parse the left-hand side as an atom.
         let mut lhs = if let Some(prefix) = self.parse_prefix_operator_at(min_precedence) {
@@ -1003,17 +1007,17 @@ impl Parser<'_> {
     /// * A column name.
     /// * A function call.
     /// * A parenthesized expression.
-    fn parse_expression_atom(&mut self) -> Result<ast::Expression> {
+    fn parse_expression_atom(&mut self) -> Result<Expression> {
         let token = self.next()?;
         Ok(match token {
             // All columns.
-            Token::Asterisk => ast::Expression::All,
+            Token::Asterisk => Expression::All,
 
             // Literal value.
             Token::Number(n) if n.chars().all(|c| c.is_ascii_digit()) => {
                 // Try to parse as i128 first, then as u128 if that fails
                 match n.parse::<i128>() {
-                    Ok(val) => ast::Literal::Integer(val).into(),
+                    Ok(val) => Literal::Integer(val).into(),
                     Err(_) => {
                         // Try parsing as u128 for large unsigned values
                         match n.parse::<u128>() {
@@ -1022,11 +1026,11 @@ impl Parser<'_> {
                                 // For now, we'll store them as i128 and let coercion handle it
                                 // This is a bit of a hack but works for INSERT INTO unsigned columns
                                 if val <= i128::MAX as u128 {
-                                    ast::Literal::Integer(val as i128).into()
+                                    Literal::Integer(val as i128).into()
                                 } else {
                                     // For values > i128::MAX, use Float to preserve the value
                                     // This will be converted to U128 later during coercion
-                                    ast::Literal::Float(val as f64).into()
+                                    Literal::Float(val as f64).into()
                                 }
                             }
                             Err(e) => {
@@ -1036,24 +1040,24 @@ impl Parser<'_> {
                     }
                 }
             }
-            Token::Number(n) => ast::Literal::Float(
+            Token::Number(n) => Literal::Float(
                 n.parse()
                     .map_err(|e| Error::ParseError(format!("invalid float: {}", e)))?,
             )
             .into(),
-            Token::String(s) => ast::Literal::String(s).into(),
+            Token::String(s) => Literal::String(s).into(),
             Token::HexString(h) => {
                 // Convert hex string to bytes
                 match hex::decode(&h) {
-                    Ok(bytes) => ast::Literal::Bytea(bytes).into(),
+                    Ok(bytes) => Literal::Bytea(bytes).into(),
                     Err(_) => return Err(Error::ParseError(format!("Invalid hex string: {}", h))),
                 }
             }
-            Token::Keyword(Keyword::True) => ast::Literal::Boolean(true).into(),
-            Token::Keyword(Keyword::False) => ast::Literal::Boolean(false).into(),
-            Token::Keyword(Keyword::Infinity) => ast::Literal::Float(f64::INFINITY).into(),
-            Token::Keyword(Keyword::NaN) => ast::Literal::Float(f64::NAN).into(),
-            Token::Keyword(Keyword::Null) => ast::Literal::Null.into(),
+            Token::Keyword(Keyword::True) => Literal::Boolean(true).into(),
+            Token::Keyword(Keyword::False) => Literal::Boolean(false).into(),
+            Token::Keyword(Keyword::Infinity) => Literal::Float(f64::INFINITY).into(),
+            Token::Keyword(Keyword::NaN) => Literal::Float(f64::NAN).into(),
+            Token::Keyword(Keyword::Null) => Literal::Null.into(),
 
             // DATE literal: DATE 'YYYY-MM-DD' or column name "date"
             Token::Keyword(Keyword::Date) => {
@@ -1066,7 +1070,7 @@ impl Parser<'_> {
                                 // Parse the date string into a NaiveDate
                                 use chrono::NaiveDate;
                                 match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                                    Ok(date) => ast::Literal::Date(date).into(),
+                                    Ok(date) => Literal::Date(date).into(),
                                     Err(_) => {
                                         return Err(Error::ParseError(format!(
                                             "Invalid date format: '{}'. Expected 'YYYY-MM-DD'",
@@ -1080,7 +1084,7 @@ impl Parser<'_> {
                     }
                     _ => {
                         // It's a column reference named "date"
-                        ast::Expression::Column(None, "date".to_string())
+                        Expression::Column(None, "date".to_string())
                     }
                 }
             }
@@ -1096,11 +1100,11 @@ impl Parser<'_> {
                                 // Parse the time string into a NaiveTime
                                 use chrono::NaiveTime;
                                 match NaiveTime::parse_from_str(&time_str, "%H:%M:%S") {
-                                    Ok(time) => ast::Literal::Time(time).into(),
+                                    Ok(time) => Literal::Time(time).into(),
                                     Err(_) => {
                                         // Try with fractional seconds
                                         match NaiveTime::parse_from_str(&time_str, "%H:%M:%S%.f") {
-                                            Ok(time) => ast::Literal::Time(time).into(),
+                                            Ok(time) => Literal::Time(time).into(),
                                             Err(_) => {
                                                 return Err(Error::ParseError(format!(
                                                     "Invalid time format: '{}'. Expected 'HH:MM:SS[.fraction]'",
@@ -1116,7 +1120,7 @@ impl Parser<'_> {
                     }
                     _ => {
                         // It's a column reference named "time"
-                        ast::Expression::Column(None, "time".to_string())
+                        Expression::Column(None, "time".to_string())
                     }
                 }
             }
@@ -1135,7 +1139,7 @@ impl Parser<'_> {
                                     &timestamp_str,
                                     "%Y-%m-%d %H:%M:%S",
                                 ) {
-                                    Ok(timestamp) => ast::Literal::Timestamp(timestamp).into(),
+                                    Ok(timestamp) => Literal::Timestamp(timestamp).into(),
                                     Err(_) => {
                                         // Try with fractional seconds
                                         match NaiveDateTime::parse_from_str(
@@ -1143,7 +1147,7 @@ impl Parser<'_> {
                                             "%Y-%m-%d %H:%M:%S%.f",
                                         ) {
                                             Ok(timestamp) => {
-                                                ast::Literal::Timestamp(timestamp).into()
+                                                Literal::Timestamp(timestamp).into()
                                             }
                                             Err(_) => {
                                                 return Err(Error::ParseError(format!(
@@ -1160,7 +1164,7 @@ impl Parser<'_> {
                     }
                     _ => {
                         // It's a column reference named "timestamp"
-                        ast::Expression::Column(None, "timestamp".to_string())
+                        Expression::Column(None, "timestamp".to_string())
                     }
                 }
             }
@@ -1236,7 +1240,7 @@ impl Parser<'_> {
                                             )))
                                         }
                                     };
-                                    ast::Literal::Interval(interval).into()
+                                    Literal::Interval(interval).into()
                                 } else {
                                     // Simple format - parse as before
                                     // Parse the interval value (possibly negative)
@@ -1290,7 +1294,7 @@ impl Parser<'_> {
                                         )));
                                     }
                                 };
-                                ast::Literal::Interval(interval).into()
+                                Literal::Interval(interval).into()
                                 }
                             }
                             _ => unreachable!(),
@@ -1298,7 +1302,7 @@ impl Parser<'_> {
                     }
                     _ => {
                         // It's a column reference named "interval"
-                        ast::Expression::Column(None, "interval".to_string())
+                        Expression::Column(None, "interval".to_string())
                     }
                 }
             }
@@ -1319,11 +1323,11 @@ impl Parser<'_> {
 
                 // Use the Function expression with a special CAST function name
                 // We'll encode the type as the second argument
-                ast::Expression::Function(
+                Expression::Function(
                     "CAST".to_string(),
                     vec![
                         expr,
-                        ast::Expression::Literal(ast::Literal::String(type_string)),
+                        Expression::Literal(Literal::String(type_string)),
                     ],
                 )
             }
@@ -1356,23 +1360,23 @@ impl Parser<'_> {
 
                 // If DISTINCT was used, create a special function name
                 if is_distinct {
-                    ast::Expression::Function(format!("{}_DISTINCT", name.to_uppercase()), args)
+                    Expression::Function(format!("{}_DISTINCT", name.to_uppercase()), args)
                 } else {
-                    ast::Expression::Function(name, args)
+                    Expression::Function(name, args)
                 }
             }
 
             // Column name, either qualified as table.column or unqualified.
             Token::Ident(table) if self.next_is(Token::Period) => {
-                ast::Expression::Column(Some(table), self.next_ident()?)
+                Expression::Column(Some(table), self.next_ident()?)
             }
-            Token::Ident(column) => ast::Expression::Column(None, column),
+            Token::Ident(column) => Expression::Column(None, column),
 
             // Parameter placeholder (?)
             Token::Question => {
                 let param_idx = self.param_count;
                 self.param_count += 1;
-                ast::Expression::Parameter(param_idx)
+                Expression::Parameter(param_idx)
             }
 
             // Parenthesized expression.
@@ -1392,7 +1396,7 @@ impl Parser<'_> {
                     }
                 }
                 self.expect(Token::CloseBracket)?;
-                ast::Expression::ArrayLiteral(elements)
+                Expression::ArrayLiteral(elements)
             }
 
             // Map literal: {key1: value1, key2: value2}
@@ -1414,7 +1418,7 @@ impl Parser<'_> {
                     }
                 }
                 self.expect(Token::CloseBrace)?;
-                ast::Expression::MapLiteral(pairs)
+                Expression::MapLiteral(pairs)
             }
 
             token => {
@@ -1477,14 +1481,14 @@ impl Parser<'_> {
         if self.peek()? == Some(&Token::Keyword(Keyword::Is)) {
             // We can't consume tokens unless the precedence is satisfied, so we
             // assume IS NULL (they all have the same precedence).
-            if PostfixOperator::Is(ast::Literal::Null).precedence() < min_precedence {
+            if PostfixOperator::Is(Literal::Null).precedence() < min_precedence {
                 return Ok(None);
             }
             self.expect(Keyword::Is.into())?;
             let not = self.next_is(Keyword::Not.into());
             let value = match self.next()? {
-                Token::Keyword(Keyword::NaN) => ast::Literal::Float(f64::NAN),
-                Token::Keyword(Keyword::Null) => ast::Literal::Null,
+                Token::Keyword(Keyword::NaN) => Literal::Float(f64::NAN),
+                Token::Keyword(Keyword::Null) => Literal::Null,
                 token => return Err(Error::ParseError(format!("unexpected token {}", token))),
             };
             let operator = match not {
@@ -1543,8 +1547,8 @@ impl Parser<'_> {
         if self.peek()? == Some(&Token::Keyword(Keyword::Between)) {
             // Check precedence before consuming
             if PostfixOperator::Between(
-                ast::Expression::Literal(ast::Literal::Null),
-                ast::Expression::Literal(ast::Literal::Null),
+                Expression::Literal(Literal::Null),
+                Expression::Literal(Literal::Null),
                 false,
             )
             .precedence()
@@ -1566,7 +1570,7 @@ impl Parser<'_> {
         // Handle bracket notation for array/list/map access
         if self.peek()? == Some(&Token::OpenBracket) {
             // Check precedence before consuming
-            if PostfixOperator::ArrayAccess(ast::Expression::Literal(ast::Literal::Null))
+            if PostfixOperator::ArrayAccess(Expression::Literal(Literal::Null))
                 .precedence()
                 < min_precedence
             {
@@ -1644,12 +1648,12 @@ impl PrefixOperator {
     }
 
     /// Builds an AST expression for the operator.
-    fn into_expression(self, rhs: ast::Expression) -> ast::Expression {
+    fn into_expression(self, rhs: Expression) -> Expression {
         let rhs = Box::new(rhs);
         match self {
-            Self::Plus => ast::Operator::Identity(rhs).into(),
-            Self::Minus => ast::Operator::Negate(rhs).into(),
-            Self::Not => ast::Operator::Not(rhs).into(),
+            Self::Plus => Operator::Identity(rhs).into(),
+            Self::Minus => Operator::Negate(rhs).into(),
+            Self::Not => Operator::Not(rhs).into(),
         }
     }
 }
@@ -1703,24 +1707,24 @@ impl InfixOperator {
     }
 
     /// Builds an AST expression for the infix operator.
-    fn into_expression(self, lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
+    fn into_expression(self, lhs: Expression, rhs: Expression) -> Expression {
         let (lhs, rhs) = (Box::new(lhs), Box::new(rhs));
         match self {
-            Self::Add => ast::Operator::Add(lhs, rhs).into(),
-            Self::And => ast::Operator::And(lhs, rhs).into(),
-            Self::Divide => ast::Operator::Divide(lhs, rhs).into(),
-            Self::Equal => ast::Operator::Equal(lhs, rhs).into(),
-            Self::Exponentiate => ast::Operator::Exponentiate(lhs, rhs).into(),
-            Self::GreaterThan => ast::Operator::GreaterThan(lhs, rhs).into(),
-            Self::GreaterThanOrEqual => ast::Operator::GreaterThanOrEqual(lhs, rhs).into(),
-            Self::LessThan => ast::Operator::LessThan(lhs, rhs).into(),
-            Self::LessThanOrEqual => ast::Operator::LessThanOrEqual(lhs, rhs).into(),
-            Self::Like => ast::Operator::Like(lhs, rhs).into(),
-            Self::Multiply => ast::Operator::Multiply(lhs, rhs).into(),
-            Self::NotEqual => ast::Operator::NotEqual(lhs, rhs).into(),
-            Self::Or => ast::Operator::Or(lhs, rhs).into(),
-            Self::Remainder => ast::Operator::Remainder(lhs, rhs).into(),
-            Self::Subtract => ast::Operator::Subtract(lhs, rhs).into(),
+            Self::Add => Operator::Add(lhs, rhs).into(),
+            Self::And => Operator::And(lhs, rhs).into(),
+            Self::Divide => Operator::Divide(lhs, rhs).into(),
+            Self::Equal => Operator::Equal(lhs, rhs).into(),
+            Self::Exponentiate => Operator::Exponentiate(lhs, rhs).into(),
+            Self::GreaterThan => Operator::GreaterThan(lhs, rhs).into(),
+            Self::GreaterThanOrEqual => Operator::GreaterThanOrEqual(lhs, rhs).into(),
+            Self::LessThan => Operator::LessThan(lhs, rhs).into(),
+            Self::LessThanOrEqual => Operator::LessThanOrEqual(lhs, rhs).into(),
+            Self::Like => Operator::Like(lhs, rhs).into(),
+            Self::Multiply => Operator::Multiply(lhs, rhs).into(),
+            Self::NotEqual => Operator::NotEqual(lhs, rhs).into(),
+            Self::Or => Operator::Or(lhs, rhs).into(),
+            Self::Remainder => Operator::Remainder(lhs, rhs).into(),
+            Self::Subtract => Operator::Subtract(lhs, rhs).into(),
         }
     }
 }
@@ -1728,11 +1732,11 @@ impl InfixOperator {
 /// Postfix operators.
 enum PostfixOperator {
     Factorial,                                       // a!
-    Is(ast::Literal),                                // a IS NULL | NAN
-    IsNot(ast::Literal),                             // a IS NOT NULL | NAN
-    InList(Vec<ast::Expression>, bool),              // a IN (list) or a NOT IN (list)
-    Between(ast::Expression, ast::Expression, bool), // a BETWEEN low AND high or a NOT BETWEEN low AND high
-    ArrayAccess(ast::Expression),                    // a[index]
+    Is(Literal),                                // a IS NULL | NAN
+    IsNot(Literal),                             // a IS NOT NULL | NAN
+    InList(Vec<Expression>, bool),              // a IN (list) or a NOT IN (list)
+    Between(Expression, Expression, bool), // a BETWEEN low AND high or a NOT BETWEEN low AND high
+    ArrayAccess(Expression),                    // a[index]
     FieldAccess(String),                             // a.field
 }
 
@@ -1747,30 +1751,30 @@ impl PostfixOperator {
     }
 
     /// Builds an AST expression for the operator.
-    fn into_expression(self, lhs: ast::Expression) -> ast::Expression {
+    fn into_expression(self, lhs: Expression) -> Expression {
         let lhs = Box::new(lhs);
         match self {
-            Self::Factorial => ast::Operator::Factorial(lhs).into(),
-            Self::Is(v) => ast::Operator::Is(lhs, v).into(),
-            Self::IsNot(v) => ast::Operator::Not(Box::new(ast::Operator::Is(lhs, v).into())).into(),
-            Self::InList(list, negated) => ast::Operator::InList {
+            Self::Factorial => Operator::Factorial(lhs).into(),
+            Self::Is(v) => Operator::Is(lhs, v).into(),
+            Self::IsNot(v) => Operator::Not(Box::new(Operator::Is(lhs, v).into())).into(),
+            Self::InList(list, negated) => Operator::InList {
                 expr: lhs,
                 list,
                 negated,
             }
             .into(),
-            Self::Between(low, high, negated) => ast::Operator::Between {
+            Self::Between(low, high, negated) => Operator::Between {
                 expr: lhs,
                 low: Box::new(low),
                 high: Box::new(high),
                 negated,
             }
             .into(),
-            Self::ArrayAccess(index) => ast::Expression::ArrayAccess {
+            Self::ArrayAccess(index) => Expression::ArrayAccess {
                 base: lhs,
                 index: Box::new(index),
             },
-            Self::FieldAccess(field) => ast::Expression::FieldAccess { base: lhs, field },
+            Self::FieldAccess(field) => Expression::FieldAccess { base: lhs, field },
         }
     }
 }
@@ -1837,7 +1841,7 @@ impl Parser<'_> {
         &mut self,
         interval_str: &str,
         start_unit: &str,
-    ) -> Result<ast::Expression> {
+    ) -> Result<Expression> {
         use crate::types::data_type::Interval;
 
         let start_upper = start_unit.to_uppercase();
@@ -1870,7 +1874,7 @@ impl Parser<'_> {
                     days: 0,
                     microseconds: 0,
                 };
-                return Ok(ast::Literal::Interval(interval).into());
+                return Ok(Literal::Interval(interval).into());
             }
         }
 
@@ -1928,7 +1932,7 @@ impl Parser<'_> {
                         total_microseconds
                     },
                 };
-                return Ok(ast::Literal::Interval(interval).into());
+                return Ok(Literal::Interval(interval).into());
             }
         }
 
@@ -1953,7 +1957,7 @@ impl Parser<'_> {
                         microseconds
                     },
                 };
-                return Ok(ast::Literal::Interval(interval).into());
+                return Ok(Literal::Interval(interval).into());
             }
         }
 
@@ -1971,7 +1975,7 @@ fn test_parse_collection_types() {
     // Test LIST type
     let sql = "CREATE TABLE test (items LIST)";
     let stmt = Parser::parse(sql).unwrap();
-    if let ast::Statement::CreateTable { columns, .. } = stmt {
+    if let Statement::Ddl(DdlStatement::CreateTable { columns, .. }) = stmt {
         assert!(matches!(columns[0].datatype, DataType::List(_)));
         println!("✓ LIST parsing works");
     }
@@ -1979,7 +1983,7 @@ fn test_parse_collection_types() {
     // Test ARRAY with size
     let sql = "CREATE TABLE test (coords INT[3])";
     let stmt = Parser::parse(sql).unwrap();
-    if let ast::Statement::CreateTable { columns, .. } = stmt {
+    if let Statement::Ddl(DdlStatement::CreateTable { columns, .. }) = stmt {
         assert!(matches!(columns[0].datatype, DataType::Array(_, Some(3))));
         println!("✓ ARRAY[SIZE] parsing works");
     }
@@ -1987,7 +1991,7 @@ fn test_parse_collection_types() {
     // Test MAP type
     let sql = "CREATE TABLE test (settings MAP)";
     let stmt = Parser::parse(sql).unwrap();
-    if let ast::Statement::CreateTable { columns, .. } = stmt {
+    if let Statement::Ddl(DdlStatement::CreateTable { columns, .. }) = stmt {
         assert!(matches!(columns[0].datatype, DataType::Map(_, _)));
         println!("✓ MAP parsing works");
     }
@@ -1998,7 +2002,7 @@ fn test_parse_collection_expressions() {
     // Test array literal
     let expr = Parser::parse_expr("[1, 2, 3]").unwrap();
     match expr {
-        ast::Expression::ArrayLiteral(elements) => {
+        Expression::ArrayLiteral(elements) => {
             assert_eq!(elements.len(), 3);
             println!("✓ Array literal parsing works");
         }
@@ -2008,7 +2012,7 @@ fn test_parse_collection_expressions() {
     // Test map literal
     let expr = Parser::parse_expr("{'key1': 'value1', 'key2': 'value2'}").unwrap();
     match expr {
-        ast::Expression::MapLiteral(pairs) => {
+        Expression::MapLiteral(pairs) => {
             assert_eq!(pairs.len(), 2);
             println!("✓ Map literal parsing works");
         }
@@ -2018,11 +2022,11 @@ fn test_parse_collection_expressions() {
     // Test array access
     let expr = Parser::parse_expr("arr[0]").unwrap();
     match expr {
-        ast::Expression::ArrayAccess { base, index } => {
-            assert!(matches!(*base, ast::Expression::Column(None, _)));
+        Expression::ArrayAccess { base, index } => {
+            assert!(matches!(*base, Expression::Column(None, _)));
             assert!(matches!(
                 *index,
-                ast::Expression::Literal(ast::Literal::Integer(0))
+                Expression::Literal(Literal::Integer(0))
             ));
             println!("✓ Array access parsing works");
         }
@@ -2032,8 +2036,8 @@ fn test_parse_collection_expressions() {
     // Test struct field access - need to use parentheses or array access to disambiguate from table.column
     let expr = Parser::parse_expr("(person).name").unwrap();
     match expr {
-        ast::Expression::FieldAccess { base, field } => {
-            assert!(matches!(*base, ast::Expression::Column(None, _)));
+        Expression::FieldAccess { base, field } => {
+            assert!(matches!(*base, Expression::Column(None, _)));
             assert_eq!(field, "name");
             println!("✓ Field access parsing works");
         }
@@ -2043,16 +2047,16 @@ fn test_parse_collection_expressions() {
     // Test nested access
     let expr = Parser::parse_expr("users[0].address.city").unwrap();
     match expr {
-        ast::Expression::FieldAccess { base, field } => {
+        Expression::FieldAccess { base, field } => {
             assert_eq!(field, "city");
             // Check nested structure
             match *base {
-                ast::Expression::FieldAccess {
+                Expression::FieldAccess {
                     base: inner_base,
                     field: inner_field,
                 } => {
                     assert_eq!(inner_field, "address");
-                    assert!(matches!(*inner_base, ast::Expression::ArrayAccess { .. }));
+                    assert!(matches!(*inner_base, Expression::ArrayAccess { .. }));
                     println!("✓ Nested access parsing works");
                 }
                 _ => panic!("Expected nested FieldAccess"),

@@ -7,7 +7,13 @@ use super::optimizer::Optimizer;
 use super::plan::{AggregateFunc, Direction, JoinType, Node, Plan};
 use super::predicate::{Predicate, PredicateCondition, QueryPredicates};
 use crate::error::{Error, Result};
-use crate::parsing::ast;
+use crate::parsing::ast::common::{Direction as AstDirection, FromClause};
+use crate::parsing::ast::ddl::DdlStatement;
+use crate::parsing::ast::dml::DmlStatement;
+use crate::parsing::ast::{
+    Column, Expression as AstExpression, InsertSource, Literal, Operator, SelectStatement,
+    Statement,
+};
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use crate::types::statistics::DatabaseStatistics;
@@ -27,9 +33,9 @@ pub struct IndexInfo {
 /// Index column info for planning
 #[derive(Debug, Clone)]
 pub struct IndexColumn {
-    pub name: String,                        // Column name for simple columns
-    pub expression: Option<ast::Expression>, // Full expression if complex
-    pub direction: Option<ast::Direction>,
+    pub name: String,                      // Column name for simple columns
+    pub expression: Option<AstExpression>, // Full expression if complex
+    pub direction: Option<AstDirection>,
 }
 
 /// Query planner
@@ -69,11 +75,16 @@ impl Planner {
                             // Simple column name
                             IndexColumn {
                                 name: col.expression.clone(),
-                                expression: Some(ast::Expression::Column(
+                                expression: Some(AstExpression::Column(
                                     None,
                                     col.expression.clone(),
                                 )),
-                                direction: col.direction,
+                                direction: col.direction.map(|d| match d {
+                                    crate::types::query::Direction::Ascending => AstDirection::Asc,
+                                    crate::types::query::Direction::Descending => {
+                                        AstDirection::Desc
+                                    }
+                                }),
                             }
                         } else {
                             // Complex expression - try to parse it
@@ -90,7 +101,12 @@ impl Planner {
                             IndexColumn {
                                 name: col.expression.clone(),
                                 expression: expr,
-                                direction: col.direction,
+                                direction: col.direction.map(|d| match d {
+                                    crate::types::query::Direction::Ascending => AstDirection::Asc,
+                                    crate::types::query::Direction::Descending => {
+                                        AstDirection::Desc
+                                    }
+                                }),
                             }
                         }
                     })
@@ -160,84 +176,91 @@ impl Planner {
     }
 
     /// Plan a statement
-    pub fn plan(&self, statement: ast::Statement) -> Result<Plan> {
+    pub fn plan(&self, statement: Statement) -> Result<Plan> {
         match statement {
-            ast::Statement::Select(select_stmt) => {
-                let ast::SelectStatement {
-                    select,
-                    from,
-                    r#where,
-                    group_by,
-                    having,
-                    order_by,
-                    offset,
-                    limit,
-                } = *select_stmt;
-                self.plan_select(
-                    select, from, r#where, group_by, having, order_by, offset, limit,
-                )
-            }
-
-            ast::Statement::Insert {
-                table,
-                columns,
-                source,
-            } => self.plan_insert(table, columns, source),
-
-            ast::Statement::Update {
-                table,
-                set,
-                r#where,
-            } => self.plan_update(table, set, r#where),
-
-            ast::Statement::Delete { table, r#where } => self.plan_delete(table, r#where),
-
-            ast::Statement::CreateTable {
-                name,
-                columns,
-                if_not_exists,
-            } => self.plan_create_table(name, columns, if_not_exists),
-
-            ast::Statement::DropTable { names, if_exists } => {
-                Ok(Plan::DropTable { names, if_exists })
-            }
-
-            ast::Statement::CreateIndex {
-                name,
-                table,
-                columns,
-                unique,
-                included_columns,
-            } => {
-                // Verify table exists
-                if !self.schemas.contains_key(&table) {
-                    return Err(Error::TableNotFound(table));
-                }
-                // Convert AST IndexColumns to Plan IndexColumns
-                let plan_columns: Vec<crate::planning::plan::IndexColumn> = columns
-                    .into_iter()
-                    .map(|col| crate::planning::plan::IndexColumn {
-                        expression: col.expression,
-                        direction: col.direction,
-                    })
-                    .collect();
-
-                Ok(Plan::CreateIndex {
-                    name,
-                    table,
-                    columns: plan_columns,
-                    unique,
-                    included_columns,
-                })
-            }
-
-            ast::Statement::DropIndex { name, if_exists } => {
-                Ok(Plan::DropIndex { name, if_exists })
-            }
-
-            ast::Statement::Explain(_) => {
+            Statement::Explain(_) => {
                 Err(Error::ExecutionError("EXPLAIN not yet implemented".into()))
             }
+
+            Statement::Ddl(ddl) => match ddl {
+                DdlStatement::CreateTable {
+                    name,
+                    columns,
+                    if_not_exists,
+                } => self.plan_create_table(name, columns, if_not_exists),
+
+                DdlStatement::DropTable { names, if_exists } => {
+                    Ok(Plan::DropTable { names, if_exists })
+                }
+
+                DdlStatement::CreateIndex {
+                    name,
+                    table,
+                    columns,
+                    unique,
+                    included_columns,
+                } => {
+                    // Verify table exists
+                    if !self.schemas.contains_key(&table) {
+                        return Err(Error::TableNotFound(table));
+                    }
+                    // Convert AST IndexColumns to Plan IndexColumns
+                    let plan_columns: Vec<crate::planning::plan::IndexColumn> = columns
+                        .into_iter()
+                        .map(|col| crate::planning::plan::IndexColumn {
+                            expression: col.expression,
+                            direction: col.direction.map(|d| match d {
+                                AstDirection::Asc => crate::types::query::Direction::Ascending,
+                                AstDirection::Desc => crate::types::query::Direction::Descending,
+                            }),
+                        })
+                        .collect();
+
+                    Ok(Plan::CreateIndex {
+                        name,
+                        table,
+                        columns: plan_columns,
+                        unique,
+                        included_columns,
+                    })
+                }
+
+                DdlStatement::DropIndex { name, if_exists } => {
+                    Ok(Plan::DropIndex { name, if_exists })
+                }
+            },
+
+            Statement::Dml(dml) => match dml {
+                DmlStatement::Select(select_stmt) => {
+                    let SelectStatement {
+                        select,
+                        from,
+                        r#where,
+                        group_by,
+                        having,
+                        order_by,
+                        offset,
+                        limit,
+                    } = *select_stmt;
+                    self.plan_select(
+                        select, from, r#where, group_by, having, order_by, offset, limit,
+                    )
+                }
+
+                DmlStatement::Insert {
+                    table,
+                    columns,
+                    source,
+                } => self.plan_insert(table, columns, source),
+
+                DmlStatement::Update {
+                    table,
+                    set,
+                    r#where,
+                } => self.plan_update(table, set, r#where),
+
+                DmlStatement::Delete { table, r#where } => self.plan_delete(table, r#where),
+            },
         }
     }
 
@@ -245,14 +268,14 @@ impl Planner {
     #[allow(clippy::too_many_arguments)]
     fn plan_select(
         &self,
-        select: Vec<(ast::Expression, Option<String>)>,
-        from: Vec<ast::FromClause>,
-        r#where: Option<ast::Expression>,
-        group_by: Vec<ast::Expression>,
-        having: Option<ast::Expression>,
-        order_by: Vec<(ast::Expression, ast::Direction)>,
-        offset: Option<ast::Expression>,
-        limit: Option<ast::Expression>,
+        select: Vec<(AstExpression, Option<String>)>,
+        from: Vec<FromClause>,
+        r#where: Option<AstExpression>,
+        group_by: Vec<AstExpression>,
+        having: Option<AstExpression>,
+        order_by: Vec<(AstExpression, AstDirection)>,
+        offset: Option<AstExpression>,
+        limit: Option<AstExpression>,
     ) -> Result<Plan> {
         // Build context for column resolution
         let mut context = PlanContext::new(&self.schemas);
@@ -326,9 +349,7 @@ impl Planner {
                     let reverse = if !order_by.is_empty() && !index.columns.is_empty() {
                         // Get the direction from ORDER BY and the index
                         let order_dir = order_by[0].1;
-                        let index_dir = index.columns[0]
-                            .direction
-                            .unwrap_or(ast::Direction::Ascending);
+                        let index_dir = index.columns[0].direction.unwrap_or(AstDirection::Asc);
                         // Reverse if they don't match
                         order_dir != index_dir
                     } else {
@@ -356,8 +377,8 @@ impl Planner {
                     .map(|(e, d)| {
                         let expr = context.resolve_expression(e)?;
                         let dir = match d {
-                            ast::Direction::Ascending => Direction::Ascending,
-                            ast::Direction::Descending => Direction::Descending,
+                            AstDirection::Asc => Direction::Ascending,
+                            AstDirection::Desc => Direction::Descending,
                         };
                         Ok((expr, dir))
                     })
@@ -401,7 +422,7 @@ impl Planner {
                             let column_alias = alias.clone().or_else(|| {
                                 // Extract column name from the expression
                                 match &expr {
-                                    ast::Expression::Column(_, col_name) => Some(col_name.clone()),
+                                    AstExpression::Column(_, col_name) => Some(col_name.clone()),
                                     _ => None,
                                 }
                             });
@@ -454,7 +475,7 @@ impl Planner {
     }
 
     /// Plan FROM clause
-    fn plan_from(&self, from: Vec<ast::FromClause>, context: &mut PlanContext) -> Result<Node> {
+    fn plan_from(&self, from: Vec<FromClause>, context: &mut PlanContext) -> Result<Node> {
         if from.is_empty() {
             // For SELECT without FROM, return a single empty row
             // This allows expressions like SELECT 1, SELECT NULL IS NULL, etc.
@@ -465,7 +486,7 @@ impl Planner {
 
         for from_item in from {
             match from_item {
-                ast::FromClause::Table { name, alias } => {
+                FromClause::Table { name, alias } => {
                     // Register table in context
                     context.add_table(name.clone(), alias.clone())?;
 
@@ -486,7 +507,7 @@ impl Planner {
                     });
                 }
 
-                ast::FromClause::Join {
+                FromClause::Join {
                     left,
                     right,
                     r#type,
@@ -508,7 +529,13 @@ impl Planner {
                                 right: Box::new(right_node),
                                 left_col,
                                 right_col,
-                                join_type: r#type,
+                                join_type: match r#type {
+                                    crate::parsing::ast::common::JoinType::Cross => JoinType::Cross,
+                                    crate::parsing::ast::common::JoinType::Inner => JoinType::Inner,
+                                    crate::parsing::ast::common::JoinType::Left => JoinType::Left,
+                                    crate::parsing::ast::common::JoinType::Right => JoinType::Right,
+                                    crate::parsing::ast::common::JoinType::Full => JoinType::Full,
+                                },
                             }
                         } else {
                             // Use nested loop join for complex predicates
@@ -517,7 +544,13 @@ impl Planner {
                                 left: Box::new(left_node),
                                 right: Box::new(right_node),
                                 predicate: join_predicate,
-                                join_type: r#type,
+                                join_type: match r#type {
+                                    crate::parsing::ast::common::JoinType::Cross => JoinType::Cross,
+                                    crate::parsing::ast::common::JoinType::Inner => JoinType::Inner,
+                                    crate::parsing::ast::common::JoinType::Left => JoinType::Left,
+                                    crate::parsing::ast::common::JoinType::Right => JoinType::Right,
+                                    crate::parsing::ast::common::JoinType::Full => JoinType::Full,
+                                },
                             }
                         }
                     } else {
@@ -557,7 +590,7 @@ impl Planner {
         &self,
         table: String,
         columns: Option<Vec<String>>,
-        source: ast::InsertSource,
+        source: InsertSource,
     ) -> Result<Plan> {
         let schema = self
             .schemas
@@ -582,7 +615,7 @@ impl Planner {
 
         // Build source node based on InsertSource
         let source_node = match source {
-            ast::InsertSource::Values(values) => {
+            InsertSource::Values(values) => {
                 // Build VALUES node with resolved expressions
                 let context = PlanContext::new(&self.schemas);
                 let rows = values
@@ -595,7 +628,7 @@ impl Planner {
                     .collect::<Result<Vec<_>>>()?;
                 Box::new(Node::Values { rows })
             }
-            ast::InsertSource::DefaultValues => {
+            InsertSource::DefaultValues => {
                 // Create an empty row - the executor will fill in default values
                 // Note: column_indices should be None when using DEFAULT VALUES
                 if column_indices.is_some() {
@@ -605,7 +638,7 @@ impl Planner {
                 }
                 Box::new(Node::Values { rows: vec![vec![]] })
             }
-            ast::InsertSource::Select(select) => {
+            InsertSource::Select(select) => {
                 // Plan the SELECT statement as the source
                 let plan = self.plan_select(
                     select.select,
@@ -636,8 +669,8 @@ impl Planner {
     fn plan_update(
         &self,
         table: String,
-        set: BTreeMap<String, Option<ast::Expression>>,
-        r#where: Option<ast::Expression>,
+        set: BTreeMap<String, Option<AstExpression>>,
+        r#where: Option<AstExpression>,
     ) -> Result<Plan> {
         let mut context = PlanContext::new(&self.schemas);
         context.add_table(table.clone(), None)?;
@@ -690,7 +723,7 @@ impl Planner {
     }
 
     /// Plan DELETE statement
-    fn plan_delete(&self, table: String, r#where: Option<ast::Expression>) -> Result<Plan> {
+    fn plan_delete(&self, table: String, r#where: Option<AstExpression>) -> Result<Plan> {
         let mut context = PlanContext::new(&self.schemas);
         context.add_table(table.clone(), None)?;
 
@@ -719,7 +752,7 @@ impl Planner {
     fn plan_create_table(
         &self,
         name: String,
-        columns: Vec<ast::Column>,
+        columns: Vec<Column>,
         if_not_exists: bool,
     ) -> Result<Plan> {
         // Convert AST columns to schema
@@ -786,7 +819,7 @@ impl Planner {
     /// Plan projection (SELECT expressions)
     fn plan_projection(
         &self,
-        select: Vec<(ast::Expression, Option<String>)>,
+        select: Vec<(AstExpression, Option<String>)>,
         context: &mut PlanContext,
     ) -> Result<(Vec<Expression>, Vec<Option<String>>)> {
         let mut expressions = Vec::new();
@@ -794,7 +827,7 @@ impl Planner {
 
         for (expr, alias) in select {
             match expr {
-                ast::Expression::All => {
+                AstExpression::All => {
                     // Expand * to all columns
                     for table in &context.tables {
                         if let Some(schema) = self.schemas.get(&table.name) {
@@ -806,9 +839,9 @@ impl Planner {
                         }
                     }
                 }
-                ast::Expression::Column(ref table_ref, ref col_name) if alias.is_none() => {
+                AstExpression::Column(ref table_ref, ref col_name) if alias.is_none() => {
                     // No alias provided - use the column name
-                    expressions.push(context.resolve_expression(ast::Expression::Column(
+                    expressions.push(context.resolve_expression(AstExpression::Column(
                         table_ref.clone(),
                         col_name.clone(),
                     ))?);
@@ -825,14 +858,14 @@ impl Planner {
     }
 
     /// Check if SELECT has aggregate functions
-    fn has_aggregates(&self, select: &[(ast::Expression, Option<String>)]) -> bool {
+    fn has_aggregates(&self, select: &[(AstExpression, Option<String>)]) -> bool {
         select.iter().any(|(expr, _)| self.is_aggregate_expr(expr))
     }
 
     /// Check if expression is an aggregate
-    fn is_aggregate_expr(&self, expr: &ast::Expression) -> bool {
+    fn is_aggregate_expr(&self, expr: &AstExpression) -> bool {
         match expr {
-            ast::Expression::Function(name, _) => {
+            AstExpression::Function(name, _) => {
                 matches!(
                     name.to_uppercase().as_str(),
                     "COUNT"
@@ -858,19 +891,19 @@ impl Planner {
     /// Extract aggregate functions
     fn extract_aggregates(
         &self,
-        select: &[(ast::Expression, Option<String>)],
+        select: &[(AstExpression, Option<String>)],
         context: &mut PlanContext,
     ) -> Result<Vec<AggregateFunc>> {
         let mut aggregates = Vec::new();
 
         for (expr, _) in select {
-            if let ast::Expression::Function(name, args) = expr {
+            if let AstExpression::Function(name, args) = expr {
                 let func_name = name.to_uppercase();
 
                 // Get the argument expression
                 let arg = if args.is_empty() {
                     Expression::Constant(crate::types::value::Value::integer(1)) // For COUNT(*)
-                } else if args.len() == 1 && matches!(args[0], ast::Expression::All) {
+                } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
                     // Handle COUNT(*) and COUNT(DISTINCT *)
                     // For DISTINCT *, we need to signal to count distinct rows
                     if func_name.ends_with("_DISTINCT") {
@@ -908,11 +941,9 @@ impl Planner {
     }
 
     /// Evaluate a constant expression
-    fn eval_constant(&self, expr: ast::Expression) -> Result<usize> {
+    fn eval_constant(&self, expr: AstExpression) -> Result<usize> {
         match expr {
-            ast::Expression::Literal(ast::Literal::Integer(n))
-                if n >= 0 && n <= usize::MAX as i128 =>
-            {
+            AstExpression::Literal(Literal::Integer(n)) if n >= 0 && n <= usize::MAX as i128 => {
                 Ok(n as usize)
             }
             _ => Err(Error::ExecutionError(
@@ -924,7 +955,7 @@ impl Planner {
     /// Plan WHERE clause with index optimization
     fn plan_where_with_index(
         &self,
-        where_expr: ast::Expression,
+        where_expr: AstExpression,
         source: Node,
         context: &mut PlanContext,
     ) -> Result<Node> {
@@ -948,22 +979,22 @@ impl Planner {
 
     /// Extract equality conditions from a WHERE expression (handles AND chains)
     fn extract_equality_conditions(
-        expr: &ast::Expression,
+        expr: &AstExpression,
         table_name: &str,
         alias: &Option<String>,
-    ) -> Vec<(String, ast::Expression)> {
+    ) -> Vec<(String, AstExpression)> {
         let mut conditions = Vec::new();
 
         match expr {
             // Handle AND expressions recursively
-            ast::Expression::Operator(ast::Operator::And(left, right)) => {
+            AstExpression::Operator(Operator::And(left, right)) => {
                 conditions.extend(Self::extract_equality_conditions(left, table_name, alias));
                 conditions.extend(Self::extract_equality_conditions(right, table_name, alias));
             }
             // Handle equality conditions
-            ast::Expression::Operator(ast::Operator::Equal(left, right)) => {
+            AstExpression::Operator(Operator::Equal(left, right)) => {
                 // Check if left is a column from our table
-                if let ast::Expression::Column(ref table_ref, ref column_name) = **left {
+                if let AstExpression::Column(ref table_ref, ref column_name) = **left {
                     if table_ref.is_none()
                         || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
                         || table_ref == alias
@@ -972,7 +1003,7 @@ impl Planner {
                     }
                 }
                 // Also check if right is a column (value = column)
-                else if let ast::Expression::Column(ref table_ref, ref column_name) = **right
+                else if let AstExpression::Column(ref table_ref, ref column_name) = **right
                     && (table_ref.is_none()
                         || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
                         || table_ref == alias)
@@ -991,7 +1022,7 @@ impl Planner {
         &self,
         index_name: &str,
         table_name: &str,
-        conditions: &[(String, ast::Expression)],
+        conditions: &[(String, AstExpression)],
     ) -> f64 {
         // Get table statistics if available
         if let Some(db_stats) = &self.statistics
@@ -1003,7 +1034,7 @@ impl Planner {
             for (col_name, expr) in conditions {
                 if let Some(col_stats) = table_stats.columns.get(col_name) {
                     // Check if the value is in most common values
-                    if let ast::Expression::Literal(ast::Literal::Integer(i)) = expr {
+                    if let AstExpression::Literal(Literal::Integer(i)) = expr {
                         let value = if *i >= i32::MIN as i128 && *i <= i32::MAX as i128 {
                             crate::types::value::Value::I32(*i as i32)
                         } else if *i >= i64::MIN as i128 && *i <= i64::MAX as i128 {
@@ -1062,7 +1093,7 @@ impl Planner {
     /// Try to create an IndexScan or IndexRangeScan node if WHERE clause matches an indexed column
     fn try_create_index_scan(
         &self,
-        where_expr: &ast::Expression,
+        where_expr: &AstExpression,
         table_name: &str,
         alias: &Option<String>,
         context: &PlanContext,
@@ -1141,9 +1172,9 @@ impl Planner {
         }
 
         // Fall back to checking for simple single-column equality
-        if let ast::Expression::Operator(ast::Operator::Equal(left, right)) = where_expr {
+        if let AstExpression::Operator(Operator::Equal(left, right)) = where_expr {
             // Check if left side is a column
-            if let ast::Expression::Column(ref table_ref, ref column_name) = **left {
+            if let AstExpression::Column(ref table_ref, ref column_name) = **left {
                 // Verify this column belongs to our table
                 if table_ref.is_none()
                     || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
@@ -1168,7 +1199,7 @@ impl Planner {
                 }
             }
             // Also check if right side is a column (value = column)
-            else if let ast::Expression::Column(ref table_ref, ref column_name) = **right
+            else if let AstExpression::Column(ref table_ref, ref column_name) = **right
                 && (table_ref.is_none()
                     || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
                     || table_ref == alias)
@@ -1191,7 +1222,7 @@ impl Planner {
     /// Check if ORDER BY matches an index (for optimization)
     fn order_by_matches_index(
         &self,
-        order_by: &[(ast::Expression, ast::Direction)],
+        order_by: &[(AstExpression, AstDirection)],
         index_columns: &[IndexColumn],
         _table_name: &str,
         _context: &PlanContext,
@@ -1216,7 +1247,7 @@ impl Planner {
                 }
             } else {
                 // Index has a simple column, check if ORDER BY is the same column
-                if let ast::Expression::Column(None, col_name) = expr {
+                if let AstExpression::Column(None, col_name) = expr {
                     if col_name != &index_col.name {
                         return false;
                     }
@@ -1233,20 +1264,20 @@ impl Planner {
     /// Try to create an IndexRangeScan node for range queries
     fn try_create_range_scan(
         &self,
-        where_expr: &ast::Expression,
+        where_expr: &AstExpression,
         table_name: &str,
         alias: &Option<String>,
         context: &PlanContext,
     ) -> Option<Node> {
         // Check for single comparison operators (>, <, >=, <=)
-        if let ast::Expression::Operator(op) = where_expr {
+        if let AstExpression::Operator(op) = where_expr {
             match op {
-                ast::Operator::GreaterThan(left, right)
-                | ast::Operator::GreaterThanOrEqual(left, right)
-                | ast::Operator::LessThan(left, right)
-                | ast::Operator::LessThanOrEqual(left, right) => {
+                Operator::GreaterThan(left, right)
+                | Operator::GreaterThanOrEqual(left, right)
+                | Operator::LessThan(left, right)
+                | Operator::LessThanOrEqual(left, right) => {
                     // Check if one side is an indexed column
-                    if let ast::Expression::Column(ref table_ref, ref column_name) = **left
+                    if let AstExpression::Column(ref table_ref, ref column_name) = **left
                         && (table_ref.is_none()
                             || table_ref.as_ref().map(|s| s.as_str()) == Some(table_name)
                             || table_ref == alias)
@@ -1257,7 +1288,7 @@ impl Planner {
                         // Create range scan based on operator
                         let value = context.resolve_expression((**right).clone()).ok()?;
                         return Some(match op {
-                            ast::Operator::GreaterThan(..) => Node::IndexRangeScan {
+                            Operator::GreaterThan(..) => Node::IndexRangeScan {
                                 table: table_name.to_string(),
                                 alias: alias.clone(),
                                 index_name: column_name.to_string(),
@@ -1267,7 +1298,7 @@ impl Planner {
                                 end_inclusive: false,
                                 reverse: false,
                             },
-                            ast::Operator::GreaterThanOrEqual(..) => Node::IndexRangeScan {
+                            Operator::GreaterThanOrEqual(..) => Node::IndexRangeScan {
                                 table: table_name.to_string(),
                                 alias: alias.clone(),
                                 index_name: column_name.to_string(),
@@ -1277,7 +1308,7 @@ impl Planner {
                                 end_inclusive: false,
                                 reverse: false,
                             },
-                            ast::Operator::LessThan(..) => Node::IndexRangeScan {
+                            Operator::LessThan(..) => Node::IndexRangeScan {
                                 table: table_name.to_string(),
                                 alias: alias.clone(),
                                 index_name: column_name.to_string(),
@@ -1287,7 +1318,7 @@ impl Planner {
                                 end_inclusive: false,
                                 reverse: false,
                             },
-                            ast::Operator::LessThanOrEqual(..) => Node::IndexRangeScan {
+                            Operator::LessThanOrEqual(..) => Node::IndexRangeScan {
                                 table: table_name.to_string(),
                                 alias: alias.clone(),
                                 index_name: column_name.to_string(),
@@ -1311,13 +1342,13 @@ impl Planner {
     /// Extract equi-join columns from a join predicate (e.g., t1.id = t2.id)
     fn extract_equi_join_columns(
         &self,
-        predicate: &ast::Expression,
+        predicate: &AstExpression,
         left_node: &Node,
         right_node: &Node,
         _context: &PlanContext,
     ) -> Option<(usize, usize)> {
         // Look for equality operator
-        if let ast::Expression::Operator(ast::Operator::Equal(left_expr, right_expr)) = predicate {
+        if let AstExpression::Operator(Operator::Equal(left_expr, right_expr)) = predicate {
             // Get column names from both nodes
             let left_columns = left_node.get_column_names(&self.schemas);
             let right_columns = right_node.get_column_names(&self.schemas);
@@ -1359,9 +1390,9 @@ impl Planner {
     }
 
     /// Extract column name from an expression
-    fn extract_column_name(&self, expr: &ast::Expression) -> Option<String> {
+    fn extract_column_name(&self, expr: &AstExpression) -> Option<String> {
         match expr {
-            ast::Expression::Column(table_ref, column_name) => {
+            AstExpression::Column(table_ref, column_name) => {
                 if let Some(table) = table_ref {
                     Some(format!("{}.{}", table, column_name))
                 } else {
@@ -1413,13 +1444,13 @@ impl<'a> PlanContext<'a> {
         Ok(())
     }
 
-    fn resolve_expression(&self, expr: ast::Expression) -> Result<Expression> {
+    fn resolve_expression(&self, expr: AstExpression) -> Result<Expression> {
         match expr {
-            ast::Expression::Literal(lit) => {
+            AstExpression::Literal(lit) => {
                 let value = match lit {
-                    ast::Literal::Null => crate::types::value::Value::Null,
-                    ast::Literal::Boolean(b) => crate::types::value::Value::boolean(b),
-                    ast::Literal::Integer(i) => {
+                    Literal::Null => crate::types::value::Value::Null,
+                    Literal::Boolean(b) => crate::types::value::Value::boolean(b),
+                    Literal::Integer(i) => {
                         // Try to fit the integer in the smallest type possible
                         // Type coercion will handle conversions during execution if needed
                         if i >= i32::MIN as i128 && i <= i32::MAX as i128 {
@@ -1430,7 +1461,7 @@ impl<'a> PlanContext<'a> {
                             crate::types::value::Value::I128(i)
                         }
                     }
-                    ast::Literal::Float(f) => {
+                    Literal::Float(f) => {
                         // Handle special float values that can't be represented as Decimal
                         if f.is_nan() || f.is_infinite() {
                             // Keep as F64 for special values (will be coerced to F32 if needed)
@@ -1472,17 +1503,17 @@ impl<'a> PlanContext<'a> {
                             }
                         }
                     }
-                    ast::Literal::String(s) => crate::types::value::Value::string(s),
-                    ast::Literal::Bytea(b) => crate::types::value::Value::Bytea(b),
-                    ast::Literal::Date(d) => crate::types::value::Value::Date(d),
-                    ast::Literal::Time(t) => crate::types::value::Value::Time(t),
-                    ast::Literal::Timestamp(ts) => crate::types::value::Value::Timestamp(ts),
-                    ast::Literal::Interval(i) => crate::types::value::Value::Interval(i),
+                    Literal::String(s) => crate::types::value::Value::string(s),
+                    Literal::Bytea(b) => crate::types::value::Value::Bytea(b),
+                    Literal::Date(d) => crate::types::value::Value::Date(d),
+                    Literal::Time(t) => crate::types::value::Value::Time(t),
+                    Literal::Timestamp(ts) => crate::types::value::Value::Timestamp(ts),
+                    Literal::Interval(i) => crate::types::value::Value::Interval(i),
                 };
                 Ok(Expression::Constant(value))
             }
 
-            ast::Expression::Column(table_ref, column_name) => {
+            AstExpression::Column(table_ref, column_name) => {
                 // Find the table
                 let table = if let Some(ref tref) = table_ref {
                     // First try to find a table with this name
@@ -1531,7 +1562,7 @@ impl<'a> PlanContext<'a> {
                 }
             }
 
-            ast::Expression::Function(name, args) => {
+            AstExpression::Function(name, args) => {
                 let resolved_args = args
                     .into_iter()
                     .map(|a| self.resolve_expression(a))
@@ -1539,18 +1570,16 @@ impl<'a> PlanContext<'a> {
                 Ok(Expression::Function(name, resolved_args))
             }
 
-            ast::Expression::Operator(op) => self.resolve_operator(op),
+            AstExpression::Operator(op) => self.resolve_operator(op),
 
-            ast::Expression::Parameter(idx) => {
+            AstExpression::Parameter(idx) => {
                 // Keep parameters as-is for prepared statements
                 Ok(Expression::Parameter(idx))
             }
 
-            ast::Expression::All => {
-                Err(Error::ExecutionError("* not valid in this context".into()))
-            }
+            AstExpression::All => Err(Error::ExecutionError("* not valid in this context".into())),
 
-            ast::Expression::Case {
+            AstExpression::Case {
                 operand: _,
                 when_clauses: _,
                 else_clause: _,
@@ -1562,7 +1591,7 @@ impl<'a> PlanContext<'a> {
                 ))
             }
 
-            ast::Expression::ArrayAccess { base, index } => {
+            AstExpression::ArrayAccess { base, index } => {
                 let base_expr = self.resolve_expression(*base)?;
                 let index_expr = self.resolve_expression(*index)?;
                 Ok(Expression::ArrayAccess(
@@ -1571,12 +1600,12 @@ impl<'a> PlanContext<'a> {
                 ))
             }
 
-            ast::Expression::FieldAccess { base, field } => {
+            AstExpression::FieldAccess { base, field } => {
                 let base_expr = self.resolve_expression(*base)?;
                 Ok(Expression::FieldAccess(Box::new(base_expr), field))
             }
 
-            ast::Expression::ArrayLiteral(elements) => {
+            AstExpression::ArrayLiteral(elements) => {
                 let resolved_elements = elements
                     .into_iter()
                     .map(|e| self.resolve_expression(e))
@@ -1584,7 +1613,7 @@ impl<'a> PlanContext<'a> {
                 Ok(Expression::ArrayLiteral(resolved_elements))
             }
 
-            ast::Expression::MapLiteral(pairs) => {
+            AstExpression::MapLiteral(pairs) => {
                 let resolved_pairs = pairs
                     .into_iter()
                     .map(|(k, v)| Ok((self.resolve_expression(k)?, self.resolve_expression(v)?)))
@@ -1609,8 +1638,8 @@ impl<'a> PlanContext<'a> {
         Ok(Expression::Column(table.start_column + col_index))
     }
 
-    fn resolve_operator(&self, op: ast::Operator) -> Result<Expression> {
-        use ast::Operator::*;
+    fn resolve_operator(&self, op: Operator) -> Result<Expression> {
+        use Operator::*;
 
         Ok(match op {
             And(l, r) => Expression::And(
@@ -1648,7 +1677,7 @@ impl<'a> PlanContext<'a> {
             ),
             Is(e, lit) => {
                 let value = match lit {
-                    ast::Literal::Null => crate::types::value::Value::Null,
+                    Literal::Null => crate::types::value::Value::Null,
                     _ => return Err(Error::ExecutionError("IS only supports NULL".into())),
                 };
                 Expression::Is(Box::new(self.resolve_expression(*e)?), value)
@@ -2255,19 +2284,19 @@ impl Planner {
     }
 
     /// Convert an expression to a string for column naming
-    fn expr_to_string(expr: &ast::Expression) -> String {
+    fn expr_to_string(expr: &AstExpression) -> String {
         match expr {
-            ast::Expression::Column(_, col) => col.clone(),
-            ast::Expression::Literal(ast::Literal::Integer(i)) => i.to_string(),
-            ast::Expression::Literal(ast::Literal::Float(f)) => f.to_string(),
+            AstExpression::Column(_, col) => col.clone(),
+            AstExpression::Literal(Literal::Integer(i)) => i.to_string(),
+            AstExpression::Literal(Literal::Float(f)) => f.to_string(),
             _ => "?".to_string(),
         }
     }
 
     /// Generate a proper alias for an aggregate function expression
-    fn generate_aggregate_alias(&self, expr: &ast::Expression) -> Option<String> {
+    fn generate_aggregate_alias(&self, expr: &AstExpression) -> Option<String> {
         match expr {
-            ast::Expression::Function(name, args) => {
+            AstExpression::Function(name, args) => {
                 let func_name = name.to_uppercase();
 
                 // Handle DISTINCT functions
@@ -2282,36 +2311,34 @@ impl Planner {
                     String::new()
                 } else if args.len() == 1 {
                     match &args[0] {
-                        ast::Expression::All => "*".to_string(),
-                        ast::Expression::Column(table, col) => {
+                        AstExpression::All => "*".to_string(),
+                        AstExpression::Column(table, col) => {
                             if let Some(t) = table {
                                 format!("{}.{}", t, col)
                             } else {
                                 col.clone()
                             }
                         }
-                        ast::Expression::Literal(ast::Literal::Null) => "NULL".to_string(),
-                        ast::Expression::Literal(ast::Literal::Integer(i)) => i.to_string(),
-                        ast::Expression::Literal(ast::Literal::Float(f)) => f.to_string(),
-                        ast::Expression::Literal(ast::Literal::String(s)) => format!("'{}'", s),
-                        ast::Expression::Function(fname, fargs) => {
+                        AstExpression::Literal(Literal::Null) => "NULL".to_string(),
+                        AstExpression::Literal(Literal::Integer(i)) => i.to_string(),
+                        AstExpression::Literal(Literal::Float(f)) => f.to_string(),
+                        AstExpression::Literal(Literal::String(s)) => format!("'{}'", s),
+                        AstExpression::Function(fname, fargs) => {
                             // For functions, show the function name and arguments
                             let farg_str = fargs
                                 .iter()
                                 .map(|arg| match arg {
-                                    ast::Expression::Column(_, col) => col.clone(),
-                                    ast::Expression::Literal(ast::Literal::Integer(i)) => {
-                                        i.to_string()
-                                    }
+                                    AstExpression::Column(_, col) => col.clone(),
+                                    AstExpression::Literal(Literal::Integer(i)) => i.to_string(),
                                     _ => "?".to_string(),
                                 })
                                 .collect::<Vec<_>>()
                                 .join(", ");
                             format!("{}({})", fname.to_uppercase(), farg_str)
                         }
-                        ast::Expression::Operator(op) => {
+                        AstExpression::Operator(op) => {
                             // For operators, try to reconstruct the expression
-                            use crate::parsing::ast::Operator;
+                            use crate::parsing::Operator;
                             match op {
                                 Operator::Add(l, r) => format!(
                                     "{} + {}",
@@ -2342,7 +2369,7 @@ impl Planner {
                     // Multiple arguments - join them
                     args.iter()
                         .map(|arg| match arg {
-                            ast::Expression::Column(_, col) => col.clone(),
+                            AstExpression::Column(_, col) => col.clone(),
                             _ => "expr".to_string(),
                         })
                         .collect::<Vec<_>>()
@@ -2360,20 +2387,18 @@ impl Planner {
     }
 
     /// Check if two AST expressions are equal
-    fn expressions_equal(expr1: &ast::Expression, expr2: &ast::Expression) -> bool {
+    fn expressions_equal(expr1: &AstExpression, expr2: &AstExpression) -> bool {
         match (expr1, expr2) {
             // Column references must match exactly
-            (ast::Expression::Column(t1, c1), ast::Expression::Column(t2, c2)) => {
-                t1 == t2 && c1 == c2
-            }
+            (AstExpression::Column(t1, c1), AstExpression::Column(t2, c2)) => t1 == t2 && c1 == c2,
             // Literals must match
-            (ast::Expression::Literal(l1), ast::Expression::Literal(l2)) => l1 == l2,
+            (AstExpression::Literal(l1), AstExpression::Literal(l2)) => l1 == l2,
             // All expressions match
-            (ast::Expression::All, ast::Expression::All) => true,
+            (AstExpression::All, AstExpression::All) => true,
             // Parameters must have the same index
-            (ast::Expression::Parameter(i1), ast::Expression::Parameter(i2)) => i1 == i2,
+            (AstExpression::Parameter(i1), AstExpression::Parameter(i2)) => i1 == i2,
             // Functions must have the same name and arguments
-            (ast::Expression::Function(n1, args1), ast::Expression::Function(n2, args2)) => {
+            (AstExpression::Function(n1, args1), AstExpression::Function(n2, args2)) => {
                 n1 == n2
                     && args1.len() == args2.len()
                     && args1
@@ -2382,7 +2407,7 @@ impl Planner {
                         .all(|(a1, a2)| Self::expressions_equal(a1, a2))
             }
             // Operators must match and have equal operands
-            (ast::Expression::Operator(op1), ast::Expression::Operator(op2)) => {
+            (AstExpression::Operator(op1), AstExpression::Operator(op2)) => {
                 use crate::parsing::Operator;
                 match (op1, op2) {
                     (Operator::Add(l1, r1), Operator::Add(l2, r2))
@@ -2419,12 +2444,12 @@ impl Planner {
             }
             // Case expressions
             (
-                ast::Expression::Case {
+                AstExpression::Case {
                     operand: o1,
                     when_clauses: w1,
                     else_clause: e1,
                 },
-                ast::Expression::Case {
+                AstExpression::Case {
                     operand: o2,
                     when_clauses: w2,
                     else_clause: e2,
