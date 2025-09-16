@@ -9,7 +9,6 @@ use crate::types::data_type::DataType;
 use crate::types::value::Value;
 use std::collections::HashMap;
 
-
 // String functions
 mod concat;
 mod length;
@@ -37,31 +36,31 @@ mod generate_uuid;
 pub(crate) mod now;
 
 // Time/Date functions
-mod current_timestamp;
 mod current_date;
 mod current_time;
+mod current_timestamp;
 
 // Collection functions
-mod is_empty;
-mod contains;
-mod extract;
-mod keys;
-mod values;
-mod unwrap;
 mod append;
-mod prepend;
-mod sort;
-mod reverse;
+mod contains;
 mod distinct;
-mod slice;
-mod take;
-mod skip;
+mod entries;
+mod extract;
+mod fields;
 mod find_idx;
 mod flatten;
-mod entries;
-mod fields;
-mod merge;
 mod from_entries;
+mod is_empty;
+mod keys;
+mod merge;
+mod prepend;
+mod reverse;
+mod skip;
+mod slice;
+mod sort;
+mod take;
+mod unwrap;
+mod values;
 
 /// Metadata about a function's signature
 #[derive(Debug, Clone)]

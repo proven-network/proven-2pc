@@ -14,7 +14,7 @@ impl Function for UpperFunction {
             name: "UPPER",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],  // Will be validated in validate()
+            arg_types: vec![], // Will be validated in validate()
             is_deterministic: true,
             is_aggregate: false,
             description: "Converts a string to uppercase",
@@ -33,9 +33,7 @@ impl Function for UpperFunction {
         match &arg_types[0] {
             DataType::Text | DataType::Str => Ok(DataType::Text),
             DataType::Nullable(inner) => match inner.as_ref() {
-                DataType::Text | DataType::Str => {
-                    Ok(DataType::Nullable(Box::new(DataType::Text)))
-                }
+                DataType::Text | DataType::Str => Ok(DataType::Nullable(Box::new(DataType::Text))),
                 _ => Err(Error::TypeMismatch {
                     expected: "string type".into(),
                     found: arg_types[0].to_string(),
@@ -92,20 +90,15 @@ mod tests {
         let func = UpperFunction;
 
         // Valid string type
-        assert_eq!(
-            func.validate(&[DataType::Text]).unwrap(),
-            DataType::Text
-        );
+        assert_eq!(func.validate(&[DataType::Text]).unwrap(), DataType::Text);
 
         // Valid Str type
-        assert_eq!(
-            func.validate(&[DataType::Str]).unwrap(),
-            DataType::Text
-        );
+        assert_eq!(func.validate(&[DataType::Str]).unwrap(), DataType::Text);
 
         // Nullable string type
         assert_eq!(
-            func.validate(&[DataType::Nullable(Box::new(DataType::Text))]).unwrap(),
+            func.validate(&[DataType::Nullable(Box::new(DataType::Text))])
+                .unwrap(),
             DataType::Nullable(Box::new(DataType::Text))
         );
 

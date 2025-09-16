@@ -6,8 +6,13 @@
 //! transaction context for proper visibility checks and expression evaluation.
 
 mod aggregator;
+mod delete;
 mod executor;
+mod expression;
+mod insert;
 mod join;
+mod select;
+mod update;
 
-// Re-export main types
-pub use executor::{ExecutionResult, Executor};
+// Re-export main types and functions
+pub use executor::{ExecutionResult, execute};

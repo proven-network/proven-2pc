@@ -1885,7 +1885,16 @@ fn evaluate_default_expression(expr: Expression) -> Result<crate::types::value::
                     // Evaluate CAST at CREATE TABLE time
                     let val = evaluate_default_expression(args[0].clone())?;
                     if let Expression::Constant(Value::Str(type_name)) = &args[1] {
-                        crate::types::functions::cast_value(&val, type_name)
+                        // Create a dummy context for CAST function
+                        use proven_hlc::{HlcTimestamp, NodeId};
+                        let context = crate::stream::transaction::TransactionContext::new(
+                            HlcTimestamp::new(1, 0, NodeId::new(0)),
+                        );
+                        crate::functions::execute_function(
+                            "CAST",
+                            &[val, Value::Str(type_name.clone())],
+                            &context,
+                        )
                     } else {
                         Err(Error::ExecutionError(
                             "CAST requires a type name as second argument".into(),

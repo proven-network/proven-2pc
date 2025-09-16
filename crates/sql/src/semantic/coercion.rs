@@ -37,7 +37,7 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
 
         // Integer to float (may lose precision but generally allowed)
         (DataType::I8 | DataType::I16 | DataType::I32, DataType::F32 | DataType::F64) => true,
-        (DataType::I64, DataType::F64) => true,  // i64 to f32 loses precision
+        (DataType::I64, DataType::F64) => true, // i64 to f32 loses precision
 
         // Text types are interchangeable
         (DataType::Str, DataType::Text) | (DataType::Text, DataType::Str) => true,

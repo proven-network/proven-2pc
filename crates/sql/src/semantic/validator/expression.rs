@@ -20,7 +20,11 @@ impl ExpressionValidator {
     }
 
     /// Validate all expressions in a statement
-    pub fn validate_statement(&self, statement: &AnnotatedStatement, context: &mut AnalysisContext) -> Result<()> {
+    pub fn validate_statement(
+        &self,
+        statement: &AnnotatedStatement,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         // TODO: Implement expression validation
         // - Check for invalid expression combinations
         // - Validate aggregate function usage
@@ -30,7 +34,11 @@ impl ExpressionValidator {
     }
 
     /// Validate a single expression
-    pub fn validate_expression(&self, expr: &Expression, context: &mut AnalysisContext) -> Result<()> {
+    pub fn validate_expression(
+        &self,
+        expr: &Expression,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         match expr {
             Expression::Column(table, column) => {
                 // Column validation is handled by the resolver
@@ -53,22 +61,35 @@ impl ExpressionValidator {
     }
 
     /// Validate operator
-    fn validate_operator(&self, op: &crate::parsing::ast::Operator, context: &mut AnalysisContext) -> Result<()> {
+    fn validate_operator(
+        &self,
+        op: &crate::parsing::ast::Operator,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         use crate::parsing::ast::Operator;
 
         match op {
-            Operator::And(left, right) | Operator::Or(left, right)
-            | Operator::Equal(left, right) | Operator::NotEqual(left, right)
-            | Operator::LessThan(left, right) | Operator::LessThanOrEqual(left, right)
-            | Operator::GreaterThan(left, right) | Operator::GreaterThanOrEqual(left, right)
-            | Operator::Add(left, right) | Operator::Subtract(left, right)
-            | Operator::Multiply(left, right) | Operator::Divide(left, right)
-            | Operator::Remainder(left, right) | Operator::Exponentiate(left, right)
+            Operator::And(left, right)
+            | Operator::Or(left, right)
+            | Operator::Equal(left, right)
+            | Operator::NotEqual(left, right)
+            | Operator::LessThan(left, right)
+            | Operator::LessThanOrEqual(left, right)
+            | Operator::GreaterThan(left, right)
+            | Operator::GreaterThanOrEqual(left, right)
+            | Operator::Add(left, right)
+            | Operator::Subtract(left, right)
+            | Operator::Multiply(left, right)
+            | Operator::Divide(left, right)
+            | Operator::Remainder(left, right)
+            | Operator::Exponentiate(left, right)
             | Operator::Like(left, right) => {
                 self.validate_expression(left, context)?;
                 self.validate_expression(right, context)?;
             }
-            Operator::Not(expr) | Operator::Negate(expr) | Operator::Identity(expr)
+            Operator::Not(expr)
+            | Operator::Negate(expr)
+            | Operator::Identity(expr)
             | Operator::Factorial(expr) => {
                 self.validate_expression(expr, context)?;
             }
@@ -81,7 +102,9 @@ impl ExpressionValidator {
                     self.validate_expression(item, context)?;
                 }
             }
-            Operator::Between { expr, low, high, .. } => {
+            Operator::Between {
+                expr, low, high, ..
+            } => {
                 self.validate_expression(expr, context)?;
                 self.validate_expression(low, context)?;
                 self.validate_expression(high, context)?;

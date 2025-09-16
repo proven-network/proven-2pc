@@ -238,9 +238,9 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             Value::F64(v) => Ok(Value::F32(*v as f32)),
             Value::Decimal(d) => {
                 use rust_decimal::prelude::ToPrimitive;
-                d.to_f32()
-                    .map(Value::F32)
-                    .ok_or_else(|| Error::InvalidValue(format!("Cannot cast decimal {} to REAL", d)))
+                d.to_f32().map(Value::F32).ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot cast decimal {} to REAL", d))
+                })
             }
             Value::Str(s) => s
                 .parse::<f32>()
@@ -309,9 +309,10 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             Value::I16(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
             Value::I32(v) if *v >= 0 => Ok(Value::U32(*v as u32)),
             Value::I64(v) if *v >= 0 && *v <= u32::MAX as i64 => Ok(Value::U32(*v as u32)),
-            Value::Str(s) => s.parse::<u32>().map(Value::U32).map_err(|_| {
-                Error::InvalidValue(format!("Cannot cast '{}' to INT UNSIGNED", s))
-            }),
+            Value::Str(s) => s
+                .parse::<u32>()
+                .map(Value::U32)
+                .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to INT UNSIGNED", s))),
             _ => Err(Error::InvalidValue(format!(
                 "Cannot cast {} to INT UNSIGNED",
                 value.data_type()
@@ -392,9 +393,9 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
                         Error::InvalidValue(format!("Cannot cast float {} to DECIMAL", v))
                     }),
                 Value::Decimal(d) => Ok(Value::Decimal(*d)),
-                Value::Str(s) => Decimal::from_str(s).map(Value::Decimal).map_err(|_| {
-                    Error::InvalidValue(format!("Cannot cast '{}' to DECIMAL", s))
-                }),
+                Value::Str(s) => Decimal::from_str(s)
+                    .map(Value::Decimal)
+                    .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to DECIMAL", s))),
                 _ => Err(Error::TypeMismatch {
                     expected: "numeric or string".into(),
                     found: value.data_type().to_string(),
@@ -406,11 +407,9 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             use uuid::Uuid;
 
             match value {
-                Value::Str(s) => {
-                    Uuid::parse_str(s).map(Value::Uuid).map_err(|_| {
-                        Error::InvalidValue(format!("Failed to parse UUID: {}", s))
-                    })
-                }
+                Value::Str(s) => Uuid::parse_str(s)
+                    .map(Value::Uuid)
+                    .map_err(|_| Error::InvalidValue(format!("Failed to parse UUID: {}", s))),
                 Value::Uuid(u) => Ok(Value::Uuid(*u)),
                 _ => Err(Error::InvalidValue(format!(
                     "Cannot cast {} to UUID",

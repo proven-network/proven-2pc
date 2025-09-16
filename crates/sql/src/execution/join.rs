@@ -4,6 +4,7 @@
 //! and visibility rules. Unlike toydb's pure iterator-based joins, these
 //! joins integrate with transaction contexts and respect MVCC isolation.
 
+use super::expression;
 use crate::error::{Error, Result};
 use crate::storage::MvccStorage;
 use crate::stream::transaction::TransactionContext;
@@ -164,7 +165,7 @@ impl NestedLoopJoiner {
 
     /// Evaluate the join predicate for MVCC context
     fn evaluate_predicate(&self, row: &RowRef) -> Result<Value> {
-        self.predicate.evaluate(Some(row), &self.context)
+        expression::evaluate(&self.predicate, Some(row), &self.context)
     }
 }
 

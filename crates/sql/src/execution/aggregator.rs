@@ -689,7 +689,7 @@ pub(crate) fn evaluate_expression(
                 .map(|arg| evaluate_expression(arg, row, _context, _storage))
                 .collect();
             // Call the function evaluator
-            crate::types::functions::evaluate_function(name, &arg_values?, _context)
+            crate::functions::execute_function(name, &arg_values?, _context)
         }
 
         _ => Err(Error::InvalidValue(

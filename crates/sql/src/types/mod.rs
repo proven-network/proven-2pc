@@ -3,7 +3,6 @@
 pub mod data_type;
 pub mod evaluator;
 pub mod expression;
-pub mod functions;
 pub mod query;
 pub mod schema;
 pub mod statistics;

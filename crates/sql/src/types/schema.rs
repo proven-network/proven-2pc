@@ -365,38 +365,6 @@ impl Display for Table {
     }
 }
 
-/// Label for a column in query results.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Label {
-    /// No label.
-    None,
-    /// An unqualified column name.
-    Unqualified(String),
-    /// A fully qualified table.column name.
-    Qualified(String, String),
-}
-
-impl Display for Label {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Label::None => write!(f, "?"),
-            Label::Unqualified(name) => write!(f, "{}", name),
-            Label::Qualified(table, column) => write!(f, "{}.{}", table, column),
-        }
-    }
-}
-
-impl Label {
-    /// Returns the column name part of the label.
-    pub fn column(&self) -> Option<&str> {
-        match self {
-            Label::None => None,
-            Label::Unqualified(name) => Some(name),
-            Label::Qualified(_, column) => Some(column),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

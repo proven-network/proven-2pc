@@ -6,7 +6,7 @@
 use proven_hlc::HlcTimestamp;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
-use crate::execution::Executor;
+use crate::execution;
 use crate::planning::planner::Planner;
 use crate::semantic::SemanticAnalyzer;
 use crate::storage::mvcc::MvccStorage;
@@ -27,9 +27,6 @@ pub struct SqlTransactionEngine {
     /// Active transactions with their predicates
     active_transactions: HashMap<HlcTimestamp, TransactionContext>,
 
-    /// SQL executor (stateless)
-    executor: Executor,
-
     /// Current migration version
     migration_version: u32,
 
@@ -49,7 +46,6 @@ impl SqlTransactionEngine {
         Self {
             storage,
             active_transactions: HashMap::new(),
-            executor: Executor::new(),
             migration_version: 0,
             prepared_cache: PreparedCache::new(),
             analyzer,
@@ -184,10 +180,7 @@ impl SqlTransactionEngine {
         tx_ctx.add_predicates(plan_predicates);
 
         // Phase 5: Execute
-        match self
-            .executor
-            .execute(plan.clone(), &mut self.storage, tx_ctx)
-        {
+        match execution::execute(plan.clone(), &mut self.storage, tx_ctx) {
             Ok(result) => {
                 // Update schema cache if DDL operation
                 if plan.is_ddl() {

@@ -29,7 +29,9 @@ impl Function for ValuesFunction {
                 "VALUES takes exactly 1 argument".into(),
             ));
         }
-        Ok(DataType::List(Box::new(DataType::Nullable(Box::new(DataType::Text)))))
+        Ok(DataType::List(Box::new(DataType::Nullable(Box::new(
+            DataType::Text,
+        )))))
     }
 
     fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {

@@ -46,16 +46,12 @@ impl Function for ExtractFunction {
             (Value::Array(a) | Value::List(a), Value::I64(idx)) => {
                 Ok(a.get(*idx as usize).cloned().unwrap_or(Value::Null))
             }
-            (Value::Map(m), Value::Str(key)) => {
-                Ok(m.get(key).cloned().unwrap_or(Value::Null))
-            }
-            (Value::Struct(fields), Value::Str(field)) => {
-                Ok(fields
-                    .iter()
-                    .find(|(name, _)| name == field)
-                    .map(|(_, val)| val.clone())
-                    .unwrap_or(Value::Null))
-            }
+            (Value::Map(m), Value::Str(key)) => Ok(m.get(key).cloned().unwrap_or(Value::Null)),
+            (Value::Struct(fields), Value::Str(field)) => Ok(fields
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, val)| val.clone())
+                .unwrap_or(Value::Null)),
             (Value::Null, _) => Ok(Value::Null),
             _ => Err(Error::TypeMismatch {
                 expected: "collection with appropriate accessor".into(),

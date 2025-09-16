@@ -15,7 +15,7 @@ impl Function for NowFunction {
             min_args: 0,
             max_args: Some(0),
             arg_types: vec![],
-            is_deterministic: false,  // Depends on transaction context
+            is_deterministic: false, // Depends on transaction context
             is_aggregate: false,
             description: "Returns the current timestamp from the transaction context",
         };
@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(sig.name, "NOW");
         assert_eq!(sig.min_args, 0);
         assert_eq!(sig.max_args, Some(0));
-        assert!(!sig.is_deterministic);  // Context-dependent
+        assert!(!sig.is_deterministic); // Context-dependent
         assert!(!sig.is_aggregate);
     }
 

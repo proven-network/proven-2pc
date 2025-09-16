@@ -141,24 +141,19 @@ mod tests {
         let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
 
         // First non-null value
-        let result = func.execute(
-            &[Value::Null, Value::I32(42), Value::I32(100)],
-            &context
-        ).unwrap();
+        let result = func
+            .execute(&[Value::Null, Value::I32(42), Value::I32(100)], &context)
+            .unwrap();
         assert_eq!(result, Value::I32(42));
 
         // All nulls
-        let result = func.execute(
-            &[Value::Null, Value::Null],
-            &context
-        ).unwrap();
+        let result = func.execute(&[Value::Null, Value::Null], &context).unwrap();
         assert_eq!(result, Value::Null);
 
         // First value is not null
-        let result = func.execute(
-            &[Value::string("hello"), Value::Null],
-            &context
-        ).unwrap();
+        let result = func
+            .execute(&[Value::string("hello"), Value::Null], &context)
+            .unwrap();
         assert_eq!(result, Value::string("hello"));
     }
 
@@ -168,17 +163,15 @@ mod tests {
         let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
 
         // First is null, return second
-        let result = func.execute(
-            &[Value::Null, Value::I32(42)],
-            &context
-        ).unwrap();
+        let result = func
+            .execute(&[Value::Null, Value::I32(42)], &context)
+            .unwrap();
         assert_eq!(result, Value::I32(42));
 
         // First is not null, return first
-        let result = func.execute(
-            &[Value::string("hello"), Value::I32(42)],
-            &context
-        ).unwrap();
+        let result = func
+            .execute(&[Value::string("hello"), Value::I32(42)], &context)
+            .unwrap();
         assert_eq!(result, Value::string("hello"));
     }
 }

@@ -32,9 +32,19 @@ impl Function for SumFunction {
 
         // Check that the argument is numeric
         match &arg_types[0] {
-            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128 |
-            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128 |
-            DataType::F32 | DataType::F64 | DataType::Decimal(_, _) => {
+            DataType::I8
+            | DataType::I16
+            | DataType::I32
+            | DataType::I64
+            | DataType::I128
+            | DataType::U8
+            | DataType::U16
+            | DataType::U32
+            | DataType::U64
+            | DataType::U128
+            | DataType::F32
+            | DataType::F64
+            | DataType::Decimal(_, _) => {
                 // SUM returns the same type for integers, F64 for floats
                 match &arg_types[0] {
                     DataType::F32 | DataType::F64 => Ok(DataType::F64),
@@ -60,9 +70,7 @@ impl Function for SumFunction {
         // This just validates and returns the value for aggregation
 
         if args.len() != 1 {
-            return Err(Error::ExecutionError(
-                "SUM takes exactly 1 argument".into(),
-            ));
+            return Err(Error::ExecutionError("SUM takes exactly 1 argument".into()));
         }
 
         // For aggregate functions, we typically just return the value
@@ -112,7 +120,8 @@ mod tests {
 
         // Decimal
         assert_eq!(
-            func.validate(&[DataType::Decimal(Some(10), Some(2))]).unwrap(),
+            func.validate(&[DataType::Decimal(Some(10), Some(2))])
+                .unwrap(),
             DataType::Decimal(None, None)
         );
 

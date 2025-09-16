@@ -32,18 +32,14 @@ impl Function for MaxFunction {
 
         // MAX returns the same type as input for any comparable type
         match &arg_types[0] {
-            DataType::Nullable(inner) => {
-                Ok(DataType::Nullable(inner.clone()))
-            }
+            DataType::Nullable(inner) => Ok(DataType::Nullable(inner.clone())),
             _ => Ok(arg_types[0].clone()),
         }
     }
 
     fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
         if args.len() != 1 {
-            return Err(Error::ExecutionError(
-                "MAX takes exactly 1 argument".into(),
-            ));
+            return Err(Error::ExecutionError("MAX takes exactly 1 argument".into()));
         }
 
         // For aggregate functions, just return the value
@@ -80,7 +76,10 @@ mod tests {
         assert_eq!(func.validate(&[DataType::I32]).unwrap(), DataType::I32);
         assert_eq!(func.validate(&[DataType::F64]).unwrap(), DataType::F64);
         assert_eq!(func.validate(&[DataType::Text]).unwrap(), DataType::Text);
-        assert_eq!(func.validate(&[DataType::Timestamp]).unwrap(), DataType::Timestamp);
+        assert_eq!(
+            func.validate(&[DataType::Timestamp]).unwrap(),
+            DataType::Timestamp
+        );
 
         // Wrong number of arguments
         assert!(func.validate(&[]).is_err());

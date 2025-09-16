@@ -19,17 +19,6 @@ pub enum JoinType {
     Full,
 }
 
-impl JoinType {
-    /// If true, the join is an outer join, where rows with no join matches are
-    /// emitted with a NULL match.
-    pub fn is_outer(&self) -> bool {
-        match self {
-            Self::Left | Self::Right | Self::Full => true,
-            Self::Cross | Self::Inner => false,
-        }
-    }
-}
-
 /// A FROM item.
 #[derive(Debug, Clone)]
 pub enum FromClause {

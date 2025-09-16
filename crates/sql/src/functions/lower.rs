@@ -33,9 +33,7 @@ impl Function for LowerFunction {
         match &arg_types[0] {
             DataType::Text | DataType::Str => Ok(DataType::Text),
             DataType::Nullable(inner) => match inner.as_ref() {
-                DataType::Text | DataType::Str => {
-                    Ok(DataType::Nullable(Box::new(DataType::Text)))
-                }
+                DataType::Text | DataType::Str => Ok(DataType::Nullable(Box::new(DataType::Text))),
                 _ => Err(Error::TypeMismatch {
                     expected: "string type".into(),
                     found: arg_types[0].to_string(),

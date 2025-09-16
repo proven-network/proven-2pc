@@ -19,7 +19,11 @@ impl StatementValidator {
     }
 
     /// Validate a statement
-    pub fn validate(&self, statement: &AnnotatedStatement, context: &mut AnalysisContext) -> Result<()> {
+    pub fn validate(
+        &self,
+        statement: &AnnotatedStatement,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         match statement {
             AnnotatedStatement::Select(select) => self.validate_select(select, context),
             AnnotatedStatement::Insert(insert) => self.validate_insert(insert, context),

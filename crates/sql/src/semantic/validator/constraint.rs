@@ -19,7 +19,11 @@ impl ConstraintValidator {
     }
 
     /// Validate constraints in a statement
-    pub fn validate_statement(&self, statement: &AnnotatedStatement, context: &mut AnalysisContext) -> Result<()> {
+    pub fn validate_statement(
+        &self,
+        statement: &AnnotatedStatement,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         match statement {
             AnnotatedStatement::Insert(_) => {
                 // TODO: Validate insert doesn't violate constraints
@@ -60,9 +64,15 @@ impl ConstraintValidator {
     }
 
     /// Validate a primary key constraint
-    pub fn validate_primary_key(&self, columns: &[String], context: &AnalysisContext) -> Result<()> {
+    pub fn validate_primary_key(
+        &self,
+        columns: &[String],
+        context: &AnalysisContext,
+    ) -> Result<()> {
         if columns.is_empty() {
-            return Err(Error::ExecutionError("Primary key must have at least one column".to_string()));
+            return Err(Error::ExecutionError(
+                "Primary key must have at least one column".to_string(),
+            ));
         }
 
         // TODO: Check that all columns exist in the table
@@ -74,7 +84,9 @@ impl ConstraintValidator {
     /// Validate a unique constraint
     pub fn validate_unique(&self, columns: &[String], context: &AnalysisContext) -> Result<()> {
         if columns.is_empty() {
-            return Err(Error::ExecutionError("Unique constraint must have at least one column".to_string()));
+            return Err(Error::ExecutionError(
+                "Unique constraint must have at least one column".to_string(),
+            ));
         }
 
         // TODO: Check that all columns exist in the table

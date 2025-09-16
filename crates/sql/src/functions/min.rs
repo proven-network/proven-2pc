@@ -33,18 +33,14 @@ impl Function for MinFunction {
         // MIN returns the same type as input for any comparable type
         // All types are comparable in SQL (even strings)
         match &arg_types[0] {
-            DataType::Nullable(inner) => {
-                Ok(DataType::Nullable(inner.clone()))
-            }
+            DataType::Nullable(inner) => Ok(DataType::Nullable(inner.clone())),
             _ => Ok(arg_types[0].clone()),
         }
     }
 
     fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
         if args.len() != 1 {
-            return Err(Error::ExecutionError(
-                "MIN takes exactly 1 argument".into(),
-            ));
+            return Err(Error::ExecutionError("MIN takes exactly 1 argument".into()));
         }
 
         // For aggregate functions, just return the value
@@ -85,7 +81,8 @@ mod tests {
 
         // Nullable types
         assert_eq!(
-            func.validate(&[DataType::Nullable(Box::new(DataType::I32))]).unwrap(),
+            func.validate(&[DataType::Nullable(Box::new(DataType::I32))])
+                .unwrap(),
             DataType::Nullable(Box::new(DataType::I32))
         );
 

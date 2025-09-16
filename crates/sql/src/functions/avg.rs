@@ -32,9 +32,19 @@ impl Function for AvgFunction {
 
         // Check that the argument is numeric
         match &arg_types[0] {
-            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128 |
-            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128 |
-            DataType::F32 | DataType::F64 | DataType::Decimal(_, _) => {
+            DataType::I8
+            | DataType::I16
+            | DataType::I32
+            | DataType::I64
+            | DataType::I128
+            | DataType::U8
+            | DataType::U16
+            | DataType::U32
+            | DataType::U64
+            | DataType::U128
+            | DataType::F32
+            | DataType::F64
+            | DataType::Decimal(_, _) => {
                 // AVG always returns F64 for precision
                 Ok(DataType::F64)
             }
@@ -55,9 +65,7 @@ impl Function for AvgFunction {
         // The actual averaging happens in the executor
 
         if args.len() != 1 {
-            return Err(Error::ExecutionError(
-                "AVG takes exactly 1 argument".into(),
-            ));
+            return Err(Error::ExecutionError("AVG takes exactly 1 argument".into()));
         }
 
         // For aggregate functions, we typically just return the value
@@ -103,7 +111,8 @@ mod tests {
         assert_eq!(func.validate(&[DataType::F32]).unwrap(), DataType::F64);
         assert_eq!(func.validate(&[DataType::F64]).unwrap(), DataType::F64);
         assert_eq!(
-            func.validate(&[DataType::Decimal(Some(10), Some(2))]).unwrap(),
+            func.validate(&[DataType::Decimal(Some(10), Some(2))])
+                .unwrap(),
             DataType::F64
         );
 

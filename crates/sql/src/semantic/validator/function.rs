@@ -253,7 +253,9 @@ impl FunctionValidator {
                 // Simple type inference for literals
                 let arg_type = match arg {
                     Expression::Literal(lit) => match lit {
-                        crate::parsing::ast::Literal::Null => DataType::Nullable(Box::new(DataType::Text)),
+                        crate::parsing::ast::Literal::Null => {
+                            DataType::Nullable(Box::new(DataType::Text))
+                        }
                         crate::parsing::ast::Literal::Boolean(_) => DataType::Bool,
                         crate::parsing::ast::Literal::Integer(_) => DataType::I64,
                         crate::parsing::ast::Literal::Float(_) => DataType::F64,
@@ -267,7 +269,7 @@ impl FunctionValidator {
                     Expression::Column(_, _) => {
                         // For columns, we'd need context, so use a generic type
                         DataType::Text
-                    },
+                    }
                     _ => {
                         // For complex expressions, use a generic type
                         DataType::Nullable(Box::new(DataType::Text))

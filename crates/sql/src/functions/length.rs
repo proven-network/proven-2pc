@@ -96,9 +96,7 @@ mod tests {
         let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
 
         // String length
-        let result = func
-            .execute(&[Value::string("hello")], &context)
-            .unwrap();
+        let result = func.execute(&[Value::string("hello")], &context).unwrap();
         assert_eq!(result, Value::integer(5));
 
         // Empty string

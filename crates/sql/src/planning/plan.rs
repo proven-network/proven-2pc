@@ -328,12 +328,3 @@ pub enum AggregateFunc {
     Variance(Expression),
     VarianceDistinct(Expression),
 }
-
-/// Row iterator type returned by node execution
-pub type Rows = Box<dyn Iterator<Item = Result<Arc<Row>>> + Send>;
-
-/// Execute a plan node, returning a row iterator
-pub trait NodeExecutor {
-    /// Execute the node and return rows
-    fn execute(&self, node: &Node) -> Result<Rows>;
-}

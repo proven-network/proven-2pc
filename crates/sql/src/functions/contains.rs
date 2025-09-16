@@ -40,15 +40,9 @@ impl Function for ContainsFunction {
         }
 
         match (&args[0], &args[1]) {
-            (Value::Array(a) | Value::List(a), elem) => {
-                Ok(Value::Bool(a.contains(elem)))
-            }
-            (Value::Map(m), Value::Str(key)) => {
-                Ok(Value::Bool(m.contains_key(key)))
-            }
-            (Value::Str(s), Value::Str(substr)) => {
-                Ok(Value::Bool(s.contains(substr.as_str())))
-            }
+            (Value::Array(a) | Value::List(a), elem) => Ok(Value::Bool(a.contains(elem))),
+            (Value::Map(m), Value::Str(key)) => Ok(Value::Bool(m.contains_key(key))),
+            (Value::Str(s), Value::Str(substr)) => Ok(Value::Bool(s.contains(substr.as_str()))),
             (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
             _ => Err(Error::TypeMismatch {
                 expected: "collection with element or map with string key".into(),

@@ -19,7 +19,11 @@ impl TableResolver {
     }
 
     /// Resolve tables in a statement
-    pub fn resolve_statement(&mut self, statement: &Statement, context: &mut AnalysisContext) -> Result<()> {
+    pub fn resolve_statement(
+        &mut self,
+        statement: &Statement,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         match statement {
             Statement::Dml(dml) => match dml {
                 DmlStatement::Select(select) => {
@@ -43,7 +47,11 @@ impl TableResolver {
     }
 
     /// Resolve tables in a SELECT statement
-    fn resolve_select_tables(&mut self, select: &SelectStatement, context: &mut AnalysisContext) -> Result<()> {
+    fn resolve_select_tables(
+        &mut self,
+        select: &SelectStatement,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         for from_clause in &select.from {
             self.resolve_from_clause(from_clause, context)?;
         }
@@ -51,7 +59,11 @@ impl TableResolver {
     }
 
     /// Resolve a FROM clause
-    fn resolve_from_clause(&mut self, from: &FromClause, context: &mut AnalysisContext) -> Result<()> {
+    fn resolve_from_clause(
+        &mut self,
+        from: &FromClause,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
         match from {
             FromClause::Table { name, alias } => {
                 context.add_table(name.clone(), alias.clone())?;
