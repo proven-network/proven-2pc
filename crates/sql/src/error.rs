@@ -24,6 +24,9 @@ pub enum Error {
     #[error("Type mismatch: expected {expected}, found {found}")]
     TypeMismatch { expected: String, found: String },
 
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     #[error("Array size mismatch: expected {expected} elements, found {found}")]
     ArraySizeMismatch { expected: usize, found: usize },
 

@@ -10,6 +10,7 @@ mod coercion;
 mod error;
 mod execution;
 mod functions;
+mod operators;
 mod parsing;
 mod planning;
 mod semantic;

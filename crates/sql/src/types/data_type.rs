@@ -60,6 +60,51 @@ impl DataType {
             _ => self,
         }
     }
+
+    /// Check if this type is numeric (integer, float, or decimal)
+    pub fn is_numeric(&self) -> bool {
+        match self.base_type() {
+            DataType::I8
+            | DataType::I16
+            | DataType::I32
+            | DataType::I64
+            | DataType::I128
+            | DataType::U8
+            | DataType::U16
+            | DataType::U32
+            | DataType::U64
+            | DataType::U128
+            | DataType::F32
+            | DataType::F64
+            | DataType::Decimal(_, _) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this type is an integer (signed or unsigned)
+    pub fn is_integer(&self) -> bool {
+        match self.base_type() {
+            DataType::I8
+            | DataType::I16
+            | DataType::I32
+            | DataType::I64
+            | DataType::I128
+            | DataType::U8
+            | DataType::U16
+            | DataType::U32
+            | DataType::U64
+            | DataType::U128 => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this type is an unsigned integer
+    pub fn is_unsigned_integer(&self) -> bool {
+        match self.base_type() {
+            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128 => true,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for DataType {
