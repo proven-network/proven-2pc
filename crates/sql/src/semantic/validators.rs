@@ -208,26 +208,8 @@ impl ConstraintValidator {
                 Ok(())
             }
 
-            Statement::Dml(DmlStatement::Update { table, .. }) => {
-                // Similar validation for UPDATE
-                if let Some(schema) = context.schemas().get(table) {
-                    for slot in &mut analyzed.parameter_slots {
-                        if let SqlContext::UpdateAssignment { ref column_name } =
-                            slot.coercion_context.sql_context
-                        {
-                            // Find column by name
-                            for col in &schema.columns {
-                                if &col.name == column_name {
-                                    if !col.nullable {
-                                        slot.coercion_context.nullable = false;
-                                    }
-                                    slot.acceptable_types = vec![col.datatype.clone()];
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+            Statement::Dml(DmlStatement::Update { .. }) => {
+                // UPDATE parameters are validated elsewhere
                 Ok(())
             }
 

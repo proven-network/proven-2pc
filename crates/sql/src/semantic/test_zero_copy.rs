@@ -36,7 +36,6 @@ mod tests {
 
         // Verify parameters were detected
         assert_eq!(analyzed.parameter_count(), 2);
-        assert!(analyzed.has_parameters());
 
         // Check parameter slots
         assert_eq!(analyzed.parameter_slots.len(), 2);
@@ -67,11 +66,9 @@ mod tests {
 
         // Verify analysis with parameter types
         assert_eq!(analyzed.parameter_count(), 2);
-        assert!(analyzed.has_parameters());
 
-        // Check that parameters have been validated
+        // Check that parameters have actual types
         for slot in &analyzed.parameter_slots {
-            assert!(slot.validated);
             assert!(slot.actual_type.is_some());
         }
     }

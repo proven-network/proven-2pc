@@ -31,10 +31,6 @@ pub struct TypeAnnotations {
     /// Maps expression IDs to their type information
     /// The ID is computed based on the expression's position in the AST
     annotations: HashMap<ExpressionId, TypeInfo>,
-
-    /// Column index mappings for resolved column references
-    /// Maps (table_alias, column_name) to column index in row
-    column_indices: HashMap<(Option<String>, String), usize>,
 }
 
 /// Unique identifier for an expression in the AST
@@ -69,17 +65,11 @@ pub struct ParameterSlot {
     /// The actual type if known
     pub actual_type: Option<DataType>,
 
-    /// Acceptable types in preference order
-    pub acceptable_types: Vec<DataType>,
-
     /// Coercion context and hints
     pub coercion_context: CoercionContext,
 
     /// Human-readable description
     pub description: String,
-
-    /// Whether this parameter has been validated
-    pub validated: bool,
 }
 
 /// Context for parameter coercion
@@ -99,9 +89,6 @@ pub enum SqlContext {
     InsertValue {
         column_index: usize,
     },
-    UpdateAssignment {
-        column_name: String,
-    },
     HavingClause,
     JoinCondition,
     SelectProjection,
@@ -119,9 +106,6 @@ pub struct StatementMetadata {
     /// Statement type
     pub statement_type: StatementType,
 
-    /// Tables referenced with their access patterns
-    pub table_access: Vec<TableAccess>,
-
     /// All columns referenced
     pub referenced_columns: HashSet<(String, String)>, // (table, column)
 
@@ -136,65 +120,10 @@ pub struct StatementMetadata {
 
     /// Whether statement contains aggregates
     pub has_aggregates: bool,
-
-    /// Estimated row count for optimization
-    pub estimated_rows: Option<usize>,
-}
-
-/// How a table is accessed in the query
-#[derive(Debug, Clone)]
-pub struct TableAccess {
-    /// Table name
-    pub table: String,
-
-    /// Alias if any
-    pub alias: Option<String>,
-
-    /// Access pattern
-    pub access_type: AccessType,
-
-    /// Columns used from this table
-    pub columns_used: Vec<String>,
-
-    /// Predicates that could use indexes
-    pub index_opportunities: Vec<IndexOpportunity>,
-}
-
-/// Type of table access
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccessType {
-    FullScan,
-    IndexScan,
-    PrimaryKeyLookup,
-    Insert,
-    Update,
-    Delete,
-}
-
-/// Opportunity to use an index
-#[derive(Debug, Clone)]
-pub struct IndexOpportunity {
-    /// Column(s) involved
-    pub columns: Vec<String>,
-
-    /// Type of predicate
-    pub predicate_type: PredicateType,
-
-    /// Estimated selectivity (0.0 to 1.0)
-    pub selectivity: f64,
-}
-
-/// Type of predicate for index usage
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PredicateType {
-    Equality,
-    Range,
-    Prefix,
-    In,
 }
 
 /// Statement type for quick identification
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatementType {
     Select,
     Insert,
@@ -204,13 +133,8 @@ pub enum StatementType {
     DropTable,
     CreateIndex,
     DropIndex,
+    #[default]
     Other,
-}
-
-impl Default for StatementType {
-    fn default() -> Self {
-        StatementType::Other
-    }
 }
 
 // Implementation methods
@@ -240,11 +164,6 @@ impl AnalyzedStatement {
         self.parameter_slots.push(slot);
     }
 
-    /// Check if statement has parameters
-    pub fn has_parameters(&self) -> bool {
-        !self.parameter_slots.is_empty()
-    }
-
     /// Get parameter count
     pub fn parameter_count(&self) -> usize {
         self.parameter_slots.len()
@@ -272,29 +191,12 @@ impl TypeAnnotations {
     pub fn get(&self, id: &ExpressionId) -> Option<&TypeInfo> {
         self.annotations.get(id)
     }
-
-    /// Add a column index mapping
-    pub fn add_column_index(&mut self, table: Option<String>, column: String, index: usize) {
-        self.column_indices.insert((table, column), index);
-    }
-
-    /// Get column index
-    pub fn get_column_index(&self, table: Option<&str>, column: &str) -> Option<usize> {
-        self.column_indices
-            .get(&(table.map(String::from), column.to_string()))
-            .copied()
-    }
 }
 
 impl ExpressionId {
     /// Create from a path of indices
     pub fn from_path(path: Vec<usize>) -> Self {
         Self(path)
-    }
-
-    /// Create for root expression
-    pub fn root() -> Self {
-        Self(vec![])
     }
 
     /// Extend with another level
@@ -311,16 +213,6 @@ impl ExpressionId {
 }
 
 impl StatementMetadata {
-    /// Check if this is a read-only query
-    pub fn is_readonly(&self) -> bool {
-        !self.is_mutation
-    }
-
-    /// Add a table access pattern
-    pub fn add_table_access(&mut self, access: TableAccess) {
-        self.table_access.push(access);
-    }
-
     /// Add a referenced column
     pub fn add_column_reference(&mut self, table: String, column: String) {
         self.referenced_columns.insert((table, column));

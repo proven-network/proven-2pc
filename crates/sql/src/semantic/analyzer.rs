@@ -7,8 +7,8 @@
 use super::context::AnalysisContext;
 use super::resolver::{ColumnResolver, TableResolver};
 use super::statement::{
-    AccessType, AnalyzedStatement, CoercionContext, ExpressionId, ParameterSlot, SqlContext,
-    StatementType, TableAccess, TypeInfo,
+    AnalyzedStatement, CoercionContext, ExpressionId, ParameterSlot, SqlContext, StatementType,
+    TypeInfo,
 };
 use super::type_checker::TypeChecker;
 use super::validators::{
@@ -188,10 +188,7 @@ impl SemanticAnalyzer {
             let expr_id = ExpressionId::from_path(vec![0, i]); // SELECT, projection i
             let type_info = self.analyze_expression(expr, expr_id.clone(), analyzed, context)?;
 
-            let column_name = alias
-                .as_ref()
-                .map(|a| a.clone())
-                .unwrap_or_else(|| format!("column_{}", i));
+            let column_name = alias.clone().unwrap_or_else(|| format!("column_{}", i));
 
             output_schema.push((column_name, type_info.data_type.clone()));
         }
@@ -377,38 +374,33 @@ impl SemanticAnalyzer {
         // If we have parameter types from context, use them
         if let Some(param_type) = context.get_parameter_type(index) {
             // We have the concrete type, no need for acceptable_types guessing
-            let (sql_context, _) = self.determine_parameter_context(&expr_id, context)?;
+            let sql_context = self.determine_parameter_context(&expr_id, context)?;
 
             let slot = ParameterSlot {
                 index,
                 expression_id: expr_id.clone(),
                 actual_type: Some(param_type.clone()),
-                acceptable_types: vec![param_type.clone()],
                 coercion_context: CoercionContext {
                     sql_context: sql_context.clone(),
                     nullable: true, // Will be refined based on context
                 },
                 description: format!("Parameter {} in {:?}", index, sql_context),
-                validated: true, // Already validated with concrete type
             };
 
             analyzed.add_parameter(slot);
         } else {
-            // Fallback: determine acceptable types from context
-            let (sql_context, acceptable_types) =
-                self.determine_parameter_context(&expr_id, context)?;
+            // Fallback: determine context from position
+            let sql_context = self.determine_parameter_context(&expr_id, context)?;
 
             let slot = ParameterSlot {
                 index,
                 expression_id: expr_id,
                 actual_type: None,
-                acceptable_types,
                 coercion_context: CoercionContext {
                     sql_context: sql_context.clone(),
                     nullable: true, // Will be refined based on context
                 },
                 description: format!("Parameter {} in {:?}", index, sql_context),
-                validated: false,
             };
 
             analyzed.add_parameter(slot);
@@ -421,7 +413,7 @@ impl SemanticAnalyzer {
         &self,
         expr_id: &ExpressionId,
         context: &AnalysisContext,
-    ) -> Result<(SqlContext, Vec<DataType>)> {
+    ) -> Result<SqlContext> {
         // Determine context based on expression path
         let path = expr_id.path();
 
@@ -435,15 +427,12 @@ impl SemanticAnalyzer {
                 arg_index,
             };
 
-            // Note: We don't get acceptable types from function signature anymore
             // Functions use their validate() method for type checking
-            let acceptable_types = vec![];
-
-            return Ok((sql_context, acceptable_types));
+            return Ok(sql_context);
         }
 
         if path.is_empty() {
-            return Ok((SqlContext::WhereClause, vec![]));
+            return Ok(SqlContext::WhereClause);
         }
 
         // First element indicates the clause
@@ -460,10 +449,7 @@ impl SemanticAnalyzer {
             _ => SqlContext::WhereClause,
         };
 
-        // TODO: Determine acceptable types based on context and surrounding operators
-        let acceptable_types = vec![];
-
-        Ok((sql_context, acceptable_types))
+        Ok(sql_context)
     }
 
     /// Analyze INSERT statement
@@ -481,21 +467,12 @@ impl SemanticAnalyzer {
             .get(table)
             .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
-        // Determine target columns
-        let target_columns = if let Some(cols) = columns {
+        // Determine target columns (unused but kept for future validation)
+        let _target_columns = if let Some(cols) = columns {
             cols.clone()
         } else {
             schema.columns.iter().map(|c| c.name.clone()).collect()
         };
-
-        // Add table access info
-        analyzed.metadata.add_table_access(TableAccess {
-            table: table.to_string(),
-            alias: None,
-            access_type: AccessType::Insert,
-            columns_used: target_columns.clone(),
-            index_opportunities: vec![],
-        });
 
         // Analyze the insert source
         match source {
@@ -536,16 +513,7 @@ impl SemanticAnalyzer {
             .get(table)
             .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
-        // Add table access info
-        let columns_used: Vec<String> = set.iter().map(|(col, _)| col.clone()).collect();
-
-        analyzed.metadata.add_table_access(TableAccess {
-            table: table.to_string(),
-            alias: None,
-            access_type: AccessType::Update,
-            columns_used,
-            index_opportunities: vec![],
-        });
+        // Table access tracking removed - not used downstream
 
         // Analyze SET expressions
         for (i, (_column, expr_opt)) in set.iter().enumerate() {
@@ -575,14 +543,7 @@ impl SemanticAnalyzer {
         // Validate table exists and add to context
         context.add_table(table.to_string(), None)?;
 
-        // Add table access info
-        analyzed.metadata.add_table_access(TableAccess {
-            table: table.to_string(),
-            alias: None,
-            access_type: AccessType::Delete,
-            columns_used: vec![],
-            index_opportunities: vec![],
-        });
+        // Table access tracking removed - not used downstream
 
         // Analyze WHERE clause
         if let Some(where_expr) = where_clause {
@@ -617,7 +578,6 @@ impl SemanticAnalyzer {
             DdlStatement::DropIndex { .. } => {
                 analyzed.metadata.statement_type = StatementType::DropIndex;
             }
-            _ => {}
         }
         Ok(())
     }
@@ -658,18 +618,6 @@ impl SemanticAnalyzer {
             },
             _ => StatementType::Other,
         }
-    }
-
-    /// Check if expression is an aggregate
-    fn is_aggregate_expression(&self, _expr: &Expression) -> bool {
-        // Implementation would check for aggregate functions
-        false
-    }
-
-    /// Check if expression is deterministic
-    fn is_deterministic_expression(&self, _expr: &Expression) -> bool {
-        // Implementation would check for non-deterministic functions
-        true
     }
 
     /// Validate functions that contain parameters now that we have concrete types
@@ -728,12 +676,14 @@ impl SemanticAnalyzer {
 
             // For each possible argument, check if we already have it from parameters
             for arg_idx in 0..sig.min_args {
-                if !param_arg_types.contains_key(&arg_idx) {
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    param_arg_types.entry(arg_idx)
+                {
                     // This argument is not a parameter, get its type from annotations
                     let arg_expr_id = func_expr_id.child(arg_idx);
 
                     if let Some(type_info) = statement.get_type(&arg_expr_id) {
-                        param_arg_types.insert(arg_idx, type_info.data_type.clone());
+                        e.insert(type_info.data_type.clone());
                     }
                 }
             }
