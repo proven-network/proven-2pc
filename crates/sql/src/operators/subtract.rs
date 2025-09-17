@@ -1,6 +1,7 @@
 //! Subtraction operator implementation
 
 use super::helpers::*;
+use super::mixed_ops;
 use super::traits::BinaryOperator;
 use crate::error::{Error, Result};
 use crate::types::{DataType, Value};
@@ -28,13 +29,16 @@ impl BinaryOperator for SubtractOperator {
         let (left_inner, right_inner, nullable) = unwrap_nullable_pair(left, right);
 
         let result = match (left_inner, right_inner) {
+            // Unknown (NULL) with anything returns Unknown
+            (Unknown, _) | (_, Unknown) => Unknown,
+
             // Numeric subtraction - use helper for promotion
             (a, b) if a.is_numeric() && b.is_numeric() => promote_numeric_types(a, b)?,
 
             // Date arithmetic
             (Date, I32) | (Date, I64) => Date,
             (Date, Interval) => Date,
-            (Date, Date) => I32, // Date - Date = days difference
+            (Date, Date) => Interval, // Date - Date = Interval
 
             // Timestamp arithmetic
             (Timestamp, Interval) => Timestamp,
@@ -65,49 +69,8 @@ impl BinaryOperator for SubtractOperator {
             // NULL handling
             (Null, _) | (_, Null) => Ok(Null),
 
-            // Same-type integer operations with overflow checking
-            (I8(a), I8(b)) => a
-                .checked_sub(*b)
-                .map(I8)
-                .ok_or_else(|| Error::InvalidValue("I8 underflow".into())),
-            (I16(a), I16(b)) => a
-                .checked_sub(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 underflow".into())),
-            (I32(a), I32(b)) => a
-                .checked_sub(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 underflow".into())),
-            (I64(a), I64(b)) => a
-                .checked_sub(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
-            (I128(a), I128(b)) => a
-                .checked_sub(*b)
-                .map(I128)
-                .ok_or_else(|| Error::InvalidValue("I128 underflow".into())),
-
-            // Unsigned integers
-            (U8(a), U8(b)) => a
-                .checked_sub(*b)
-                .map(U8)
-                .ok_or_else(|| Error::InvalidValue("U8 underflow".into())),
-            (U16(a), U16(b)) => a
-                .checked_sub(*b)
-                .map(U16)
-                .ok_or_else(|| Error::InvalidValue("U16 underflow".into())),
-            (U32(a), U32(b)) => a
-                .checked_sub(*b)
-                .map(U32)
-                .ok_or_else(|| Error::InvalidValue("U32 underflow".into())),
-            (U64(a), U64(b)) => a
-                .checked_sub(*b)
-                .map(U64)
-                .ok_or_else(|| Error::InvalidValue("U64 underflow".into())),
-            (U128(a), U128(b)) => a
-                .checked_sub(*b)
-                .map(U128)
-                .ok_or_else(|| Error::InvalidValue("U128 underflow".into())),
+            // All integer operations - use generic handler
+            (a, b) if a.is_integer() && b.is_integer() => mixed_ops::subtract_integers(a, b),
 
             // Floats (no overflow checking needed)
             (F32(a), F32(b)) => Ok(F32(a - b)),
@@ -115,56 +78,6 @@ impl BinaryOperator for SubtractOperator {
 
             // Decimal
             (Decimal(a), Decimal(b)) => Ok(Decimal(a - b)),
-
-            // Mixed integer types - promote then subtract
-            (I8(a), I16(b)) => (*a as i16)
-                .checked_sub(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 underflow".into())),
-            (I16(a), I8(b)) => a
-                .checked_sub(*b as i16)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 underflow".into())),
-            (I8(a), I32(b)) => (*a as i32)
-                .checked_sub(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 underflow".into())),
-            (I32(a), I8(b)) => a
-                .checked_sub(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 underflow".into())),
-            (I8(a), I64(b)) => (*a as i64)
-                .checked_sub(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
-            (I64(a), I8(b)) => a
-                .checked_sub(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
-            (I16(a), I32(b)) => (*a as i32)
-                .checked_sub(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 underflow".into())),
-            (I32(a), I16(b)) => a
-                .checked_sub(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 underflow".into())),
-            (I16(a), I64(b)) => (*a as i64)
-                .checked_sub(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
-            (I64(a), I16(b)) => a
-                .checked_sub(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
-            (I32(a), I64(b)) => (*a as i64)
-                .checked_sub(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
-            (I64(a), I32(b)) => a
-                .checked_sub(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 underflow".into())),
 
             // Date arithmetic
             (Date(date), I32(days)) => {
@@ -181,7 +94,12 @@ impl BinaryOperator for SubtractOperator {
                 if days > i32::MAX as i64 || days < i32::MIN as i64 {
                     return Err(Error::InvalidValue("Date difference too large".into()));
                 }
-                Ok(I32(days as i32))
+                // Return an Interval representing the number of days
+                Ok(Value::Interval(crate::types::data_type::Interval {
+                    months: 0,
+                    days: days as i32,
+                    microseconds: 0,
+                }))
             }
 
             // Date/Time - Interval operations
@@ -323,16 +241,20 @@ mod tests {
         );
         assert_eq!(
             op.validate(&DataType::Date, &DataType::Date).unwrap(),
-            DataType::I32
+            DataType::Interval
         );
 
-        // Execution - Date - Date = days
+        // Execution - Date - Date = Interval
         let date1 = NaiveDate::from_ymd_opt(2024, 1, 10).unwrap();
         let date2 = NaiveDate::from_ymd_opt(2024, 1, 5).unwrap();
         assert_eq!(
             op.execute(&Value::Date(date1), &Value::Date(date2))
                 .unwrap(),
-            Value::I32(5)
+            Value::Interval(crate::types::data_type::Interval {
+                months: 0,
+                days: 5,
+                microseconds: 0,
+            })
         );
     }
 }

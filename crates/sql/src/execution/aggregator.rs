@@ -4,10 +4,10 @@
 //! ensuring all expression evaluation respects transaction visibility rules.
 
 use crate::error::{Error, Result};
+use crate::operators;
 use crate::planning::plan::AggregateFunc;
 use crate::storage::MvccStorage;
 use crate::stream::transaction::TransactionContext;
-use crate::types::evaluator;
 use crate::types::expression::Expression;
 use crate::types::value::Value;
 use std::collections::{HashMap, HashSet};
@@ -254,14 +254,14 @@ impl Accumulator for SumAccumulator {
                     self.sum = if self.sum == Value::Null {
                         val
                     } else {
-                        evaluator::add(&self.sum, &val)?
+                        operators::execute_add(&self.sum, &val)?
                     };
                 }
             } else {
                 self.sum = if self.sum == Value::Null {
                     val
                 } else {
-                    evaluator::add(&self.sum, &val)?
+                    operators::execute_add(&self.sum, &val)?
                 };
             }
         }
@@ -301,7 +301,7 @@ impl Accumulator for AvgAccumulator {
                     self.sum = if self.sum == Value::Null {
                         val
                     } else {
-                        evaluator::add(&self.sum, &val)?
+                        operators::execute_add(&self.sum, &val)?
                     };
                     self.count += 1;
                 }
@@ -309,7 +309,7 @@ impl Accumulator for AvgAccumulator {
                 self.sum = if self.sum == Value::Null {
                     val
                 } else {
-                    evaluator::add(&self.sum, &val)?
+                    operators::execute_add(&self.sum, &val)?
                 };
                 self.count += 1;
             }
@@ -319,7 +319,33 @@ impl Accumulator for AvgAccumulator {
 
     fn finalize(self: Box<Self>) -> Result<Value> {
         if self.count > 0 {
-            evaluator::divide(&self.sum, &Value::integer(self.count))
+            // Convert sum to decimal for precise average calculation
+            let decimal_sum = match self.sum {
+                Value::I8(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::I16(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::I32(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::I64(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::I128(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::U8(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::U16(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::U32(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::U64(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::U128(n) => Value::Decimal(rust_decimal::Decimal::from(n)),
+                Value::F32(n) => {
+                    Value::Decimal(rust_decimal::Decimal::from_f32_retain(n).ok_or_else(|| {
+                        Error::InvalidValue("Cannot convert NaN to decimal".into())
+                    })?)
+                }
+                Value::F64(n) => {
+                    Value::Decimal(rust_decimal::Decimal::from_f64_retain(n).ok_or_else(|| {
+                        Error::InvalidValue("Cannot convert NaN to decimal".into())
+                    })?)
+                }
+                Value::Decimal(d) => Value::Decimal(d),
+                _ => self.sum, // Non-numeric types pass through
+            };
+            let decimal_count = Value::Decimal(rust_decimal::Decimal::from(self.count));
+            operators::execute_divide(&decimal_sum, &decimal_count)
         } else {
             Ok(Value::Null)
         }
@@ -354,7 +380,7 @@ impl Accumulator for MinAccumulator {
                 self.seen_values.insert(HashableValue(val.clone()));
             }
             if self.min == Value::Null
-                || evaluator::compare(&val, &self.min)? == std::cmp::Ordering::Less
+                || operators::compare(&val, &self.min)? == std::cmp::Ordering::Less
             {
                 self.min = val;
             }
@@ -395,7 +421,7 @@ impl Accumulator for MaxAccumulator {
                 self.seen_values.insert(HashableValue(val.clone()));
             }
             if self.max == Value::Null
-                || evaluator::compare(&val, &self.max)? == std::cmp::Ordering::Greater
+                || operators::compare(&val, &self.max)? == std::cmp::Ordering::Greater
             {
                 self.max = val;
             }
@@ -661,25 +687,25 @@ pub(crate) fn evaluate_expression(
         Expression::Add(left, right) => {
             let l = evaluate_expression(left, row, _context, _storage)?;
             let r = evaluate_expression(right, row, _context, _storage)?;
-            evaluator::add(&l, &r)
+            operators::execute_add(&l, &r)
         }
 
         Expression::Subtract(left, right) => {
             let l = evaluate_expression(left, row, _context, _storage)?;
             let r = evaluate_expression(right, row, _context, _storage)?;
-            evaluator::subtract(&l, &r)
+            operators::execute_subtract(&l, &r)
         }
 
         Expression::Multiply(left, right) => {
             let l = evaluate_expression(left, row, _context, _storage)?;
             let r = evaluate_expression(right, row, _context, _storage)?;
-            evaluator::multiply(&l, &r)
+            operators::execute_multiply(&l, &r)
         }
 
         Expression::Divide(left, right) => {
             let l = evaluate_expression(left, row, _context, _storage)?;
             let r = evaluate_expression(right, row, _context, _storage)?;
-            evaluator::divide(&l, &r)
+            operators::execute_divide(&l, &r)
         }
 
         Expression::Function(name, args) => {
@@ -703,6 +729,7 @@ mod tests {
     use super::*;
     use crate::storage::mvcc::MvccStorage;
     use proven_hlc::{HlcClock, NodeId};
+    use rust_decimal::Decimal;
 
     fn setup_test() -> (MvccStorage, TransactionContext) {
         let storage = MvccStorage::new();
@@ -793,7 +820,7 @@ mod tests {
         )?;
 
         let mut results = aggregator.finalize()?;
-        results.sort_by(|a, b| evaluator::compare(&a[0], &b[0]).unwrap());
+        results.sort_by(|a, b| operators::compare(&a[0], &b[0]).unwrap());
 
         assert_eq!(results.len(), 2);
         // Group A: 3 rows
@@ -844,7 +871,7 @@ mod tests {
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0][0], Value::integer(20)); // (10+20+30)/3 = 20
+        assert_eq!(results[0][0], Value::Decimal(Decimal::from(20))); // (10+20+30)/3 = 20
 
         Ok(())
     }

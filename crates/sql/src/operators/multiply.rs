@@ -1,6 +1,7 @@
 //! Multiplication operator implementation
 
 use super::helpers::*;
+use super::mixed_ops;
 use super::traits::BinaryOperator;
 use crate::error::{Error, Result};
 use crate::types::{DataType, Value};
@@ -27,6 +28,9 @@ impl BinaryOperator for MultiplyOperator {
         let (left_inner, right_inner, nullable) = unwrap_nullable_pair(left, right);
 
         let result = match (left_inner, right_inner) {
+            // Unknown (NULL) with anything returns Unknown
+            (Unknown, _) | (_, Unknown) => Unknown,
+
             // Numeric multiplication only
             (a, b) if a.is_numeric() && b.is_numeric() => promote_numeric_types(a, b)?,
 
@@ -51,49 +55,8 @@ impl BinaryOperator for MultiplyOperator {
             // NULL handling
             (Null, _) | (_, Null) => Ok(Null),
 
-            // Same-type integer operations with overflow checking
-            (I8(a), I8(b)) => a
-                .checked_mul(*b)
-                .map(I8)
-                .ok_or_else(|| Error::InvalidValue("I8 overflow".into())),
-            (I16(a), I16(b)) => a
-                .checked_mul(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
-            (I32(a), I32(b)) => a
-                .checked_mul(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I64(a), I64(b)) => a
-                .checked_mul(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I128(a), I128(b)) => a
-                .checked_mul(*b)
-                .map(I128)
-                .ok_or_else(|| Error::InvalidValue("I128 overflow".into())),
-
-            // Unsigned integers
-            (U8(a), U8(b)) => a
-                .checked_mul(*b)
-                .map(U8)
-                .ok_or_else(|| Error::InvalidValue("U8 overflow".into())),
-            (U16(a), U16(b)) => a
-                .checked_mul(*b)
-                .map(U16)
-                .ok_or_else(|| Error::InvalidValue("U16 overflow".into())),
-            (U32(a), U32(b)) => a
-                .checked_mul(*b)
-                .map(U32)
-                .ok_or_else(|| Error::InvalidValue("U32 overflow".into())),
-            (U64(a), U64(b)) => a
-                .checked_mul(*b)
-                .map(U64)
-                .ok_or_else(|| Error::InvalidValue("U64 overflow".into())),
-            (U128(a), U128(b)) => a
-                .checked_mul(*b)
-                .map(U128)
-                .ok_or_else(|| Error::InvalidValue("U128 overflow".into())),
+            // All integer operations - use generic handler
+            (a, b) if a.is_integer() && b.is_integer() => mixed_ops::multiply_integers(a, b),
 
             // Floats (check for infinity/NaN)
             (F32(a), F32(b)) => {
@@ -113,56 +76,6 @@ impl BinaryOperator for MultiplyOperator {
 
             // Decimal
             (Decimal(a), Decimal(b)) => Ok(Decimal(a * b)),
-
-            // Mixed integer types - promote then multiply
-            (I8(a), I16(b)) => (*a as i16)
-                .checked_mul(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
-            (I16(a), I8(b)) => a
-                .checked_mul(*b as i16)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
-            (I8(a), I32(b)) => (*a as i32)
-                .checked_mul(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I32(a), I8(b)) => a
-                .checked_mul(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I8(a), I64(b)) => (*a as i64)
-                .checked_mul(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I64(a), I8(b)) => a
-                .checked_mul(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I16(a), I32(b)) => (*a as i32)
-                .checked_mul(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I32(a), I16(b)) => a
-                .checked_mul(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I16(a), I64(b)) => (*a as i64)
-                .checked_mul(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I64(a), I16(b)) => a
-                .checked_mul(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I32(a), I64(b)) => (*a as i64)
-                .checked_mul(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I64(a), I32(b)) => a
-                .checked_mul(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
 
             // Interval * integer (scale interval)
             (Value::Interval(interval), I32(scale)) | (I32(scale), Value::Interval(interval)) => {

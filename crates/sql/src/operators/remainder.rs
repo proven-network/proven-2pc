@@ -1,6 +1,7 @@
 //! Remainder (modulo) operator implementation
 
 use super::helpers::*;
+use super::mixed_ops;
 use super::traits::BinaryOperator;
 use crate::error::{Error, Result};
 use crate::types::{DataType, Value};
@@ -27,6 +28,9 @@ impl BinaryOperator for RemainderOperator {
         let (left_inner, right_inner, nullable) = unwrap_nullable_pair(left, right);
 
         let result = match (left_inner, right_inner) {
+            // Unknown (NULL) with anything returns Unknown
+            (Unknown, _) | (_, Unknown) => Unknown,
+
             // Integer remainder
             (a, b) if a.is_integer() && b.is_integer() => promote_integer_types(a, b)?,
 
@@ -71,37 +75,8 @@ impl BinaryOperator for RemainderOperator {
             // NULL handling
             (Null, _) | (_, Null) => Ok(Null),
 
-            // Check for modulo by zero first
-            (_, n) if is_zero(n) => Err(Error::InvalidOperation("Modulo by zero".to_string())),
-
-            // Same-type integer operations
-            (I8(a), I8(b)) => a
-                .checked_rem(*b)
-                .map(I8)
-                .ok_or_else(|| Error::InvalidValue("I8 remainder error".into())),
-            (I16(a), I16(b)) => a
-                .checked_rem(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 remainder error".into())),
-            (I32(a), I32(b)) => a
-                .checked_rem(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 remainder error".into())),
-            (I64(a), I64(b)) => a
-                .checked_rem(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 remainder error".into())),
-            (I128(a), I128(b)) => a
-                .checked_rem(*b)
-                .map(I128)
-                .ok_or_else(|| Error::InvalidValue("I128 remainder error".into())),
-
-            // Unsigned integers
-            (U8(a), U8(b)) => Ok(U8(a % b)),
-            (U16(a), U16(b)) => Ok(U16(a % b)),
-            (U32(a), U32(b)) => Ok(U32(a % b)),
-            (U64(a), U64(b)) => Ok(U64(a % b)),
-            (U128(a), U128(b)) => Ok(U128(a % b)),
+            // All integer operations - use generic handler
+            (a, b) if a.is_integer() && b.is_integer() => mixed_ops::remainder_integers(a, b),
 
             // Floats
             (F32(a), F32(b)) => {
@@ -125,56 +100,6 @@ impl BinaryOperator for RemainderOperator {
                 .map(Decimal)
                 .ok_or_else(|| Error::InvalidValue("Decimal remainder error".into())),
 
-            // Mixed integer types - promote then compute remainder
-            (I8(a), I16(b)) => (*a as i16)
-                .checked_rem(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 remainder error".into())),
-            (I16(a), I8(b)) => a
-                .checked_rem(*b as i16)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 remainder error".into())),
-            (I8(a), I32(b)) => (*a as i32)
-                .checked_rem(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 remainder error".into())),
-            (I32(a), I8(b)) => a
-                .checked_rem(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 remainder error".into())),
-            (I8(a), I64(b)) => (*a as i64)
-                .checked_rem(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 remainder error".into())),
-            (I64(a), I8(b)) => a
-                .checked_rem(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 remainder error".into())),
-            (I16(a), I32(b)) => (*a as i32)
-                .checked_rem(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 remainder error".into())),
-            (I32(a), I16(b)) => a
-                .checked_rem(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 remainder error".into())),
-            (I16(a), I64(b)) => (*a as i64)
-                .checked_rem(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 remainder error".into())),
-            (I64(a), I16(b)) => a
-                .checked_rem(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 remainder error".into())),
-            (I32(a), I64(b)) => (*a as i64)
-                .checked_rem(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 remainder error".into())),
-            (I64(a), I32(b)) => a
-                .checked_rem(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 remainder error".into())),
-
             // Mixed numeric types - convert to common type
             (a, b) if a.is_numeric() && b.is_numeric() => remainder_mixed_numeric(a, b),
 
@@ -183,26 +108,6 @@ impl BinaryOperator for RemainderOperator {
                 left, right
             ))),
         }
-    }
-}
-
-/// Check if a value is zero
-fn is_zero(value: &Value) -> bool {
-    match value {
-        Value::I8(n) => *n == 0,
-        Value::I16(n) => *n == 0,
-        Value::I32(n) => *n == 0,
-        Value::I64(n) => *n == 0,
-        Value::I128(n) => *n == 0,
-        Value::U8(n) => *n == 0,
-        Value::U16(n) => *n == 0,
-        Value::U32(n) => *n == 0,
-        Value::U64(n) => *n == 0,
-        Value::U128(n) => *n == 0,
-        Value::F32(n) => *n == 0.0,
-        Value::F64(n) => *n == 0.0,
-        Value::Decimal(d) => d.is_zero(),
-        _ => false,
     }
 }
 

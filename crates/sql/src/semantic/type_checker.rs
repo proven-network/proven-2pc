@@ -7,6 +7,7 @@
 use super::context::AnalysisContext;
 use super::statement::{ExpressionId, TypeAnnotations, TypeInfo};
 use crate::error::{Error, Result};
+use crate::operators;
 use crate::parsing::ast::{Expression, Literal, Operator};
 use crate::types::data_type::DataType;
 
@@ -211,7 +212,7 @@ impl TypeChecker {
     /// Check a literal value
     fn check_literal(&self, lit: &Literal) -> TypeInfo {
         let data_type = match lit {
-            Literal::Null => DataType::Nullable(Box::new(DataType::I64)),
+            Literal::Null => DataType::Unknown, // NULL can be any type, determined by context
             Literal::Boolean(_) => DataType::Bool,
             Literal::Integer(n) => {
                 // Choose appropriate integer type based on value
@@ -278,64 +279,16 @@ impl TypeChecker {
     ) -> Result<TypeInfo> {
         match op {
             // Logical operators return boolean
-            Operator::And(left, right) | Operator::Or(left, right) => {
+            Operator::And(left, right) => {
                 let left_id = expr_id.child(0);
                 let right_id = expr_id.child(1);
 
                 let left_type = self.check_expression(left, &left_id, context, annotations)?;
                 let right_type = self.check_expression(right, &right_id, context, annotations)?;
 
-                Ok(TypeInfo {
-                    data_type: DataType::Bool,
-                    nullable: left_type.nullable || right_type.nullable,
-                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
-                })
-            }
-
-            // Comparison operators return boolean
-            Operator::Equal(left, right)
-            | Operator::NotEqual(left, right)
-            | Operator::LessThan(left, right)
-            | Operator::LessThanOrEqual(left, right)
-            | Operator::GreaterThan(left, right)
-            | Operator::GreaterThanOrEqual(left, right) => {
-                let left_id = expr_id.child(0);
-                let right_id = expr_id.child(1);
-
-                let left_type = self.check_expression(left, &left_id, context, annotations)?;
-                let right_type = self.check_expression(right, &right_id, context, annotations)?;
-
-                Ok(TypeInfo {
-                    data_type: DataType::Bool,
-                    nullable: left_type.nullable || right_type.nullable,
-                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
-                })
-            }
-
-            // Arithmetic operators
-            Operator::Add(left, right) | Operator::Subtract(left, right) => {
-                let left_id = expr_id.child(0);
-                let right_id = expr_id.child(1);
-
-                let left_type = self.check_expression(left, &left_id, context, annotations)?;
-                let right_type = self.check_expression(right, &right_id, context, annotations)?;
-
-                // Handle date/time arithmetic specially
-                let result_type = if matches!(op, Operator::Add(_, _) | Operator::Subtract(_, _)) {
-                    self.check_datetime_arithmetic(
-                        &left_type.data_type,
-                        &right_type.data_type,
-                        matches!(op, Operator::Subtract(_, _)),
-                    )
-                    .or_else(|_| {
-                        // Fall back to numeric promotion if not date/time types
-                        self.promote_numeric_types(&left_type.data_type, &right_type.data_type)
-                    })?
-                } else {
-                    self.promote_numeric_types(&left_type.data_type, &right_type.data_type)?
-                };
+                // Validate using operators module
+                let result_type =
+                    operators::validate_and(&left_type.data_type, &right_type.data_type)?;
 
                 Ok(TypeInfo {
                     data_type: result_type,
@@ -345,19 +298,240 @@ impl TypeChecker {
                 })
             }
 
-            Operator::Multiply(left, right)
-            | Operator::Divide(left, right)
-            | Operator::Remainder(left, right)
-            | Operator::Exponentiate(left, right) => {
+            Operator::Or(left, right) => {
                 let left_id = expr_id.child(0);
                 let right_id = expr_id.child(1);
 
                 let left_type = self.check_expression(left, &left_id, context, annotations)?;
                 let right_type = self.check_expression(right, &right_id, context, annotations)?;
 
-                // These operators don't apply to date/time types
+                // Validate using operators module
                 let result_type =
-                    self.promote_numeric_types(&left_type.data_type, &right_type.data_type)?;
+                    operators::validate_or(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            // Comparison operators return boolean
+            Operator::Equal(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_equal(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::NotEqual(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_not_equal(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::LessThan(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_less_than(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::LessThanOrEqual(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type = operators::validate_less_than_equal(
+                    &left_type.data_type,
+                    &right_type.data_type,
+                )?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::GreaterThan(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_greater_than(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::GreaterThanOrEqual(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type = operators::validate_greater_than_equal(
+                    &left_type.data_type,
+                    &right_type.data_type,
+                )?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            // Arithmetic operators
+            Operator::Add(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                // Validate using operators module
+                let result_type =
+                    operators::validate_add(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::Subtract(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                // Validate using operators module
+                let result_type =
+                    operators::validate_subtract(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::Multiply(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_multiply(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::Divide(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_divide(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::Remainder(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_remainder(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
+                })
+            }
+
+            Operator::Exponentiate(left, right) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+
+                let left_type = self.check_expression(left, &left_id, context, annotations)?;
+                let right_type = self.check_expression(right, &right_id, context, annotations)?;
+
+                let result_type =
+                    operators::validate_exponentiate(&left_type.data_type, &right_type.data_type)?;
 
                 Ok(TypeInfo {
                     data_type: result_type,
@@ -372,27 +546,52 @@ impl TypeChecker {
                 let expr_id = expr_id.child(0);
                 let expr_type = self.check_expression(expr, &expr_id, context, annotations)?;
 
+                let result_type = operators::validate_not(&expr_type.data_type)?;
+
                 Ok(TypeInfo {
-                    data_type: DataType::Bool,
+                    data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
                     is_deterministic: expr_type.is_deterministic,
                 })
             }
 
-            Operator::Negate(expr) | Operator::Identity(expr) => {
+            Operator::Negate(expr) => {
                 let expr_id = expr_id.child(0);
                 let expr_type = self.check_expression(expr, &expr_id, context, annotations)?;
 
-                Ok(expr_type)
+                let result_type = operators::validate_negate(&expr_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: expr_type.nullable,
+                    is_aggregate: expr_type.is_aggregate,
+                    is_deterministic: expr_type.is_deterministic,
+                })
+            }
+
+            Operator::Identity(expr) => {
+                let expr_id = expr_id.child(0);
+                let expr_type = self.check_expression(expr, &expr_id, context, annotations)?;
+
+                let result_type = operators::validate_identity(&expr_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: expr_type.nullable,
+                    is_aggregate: expr_type.is_aggregate,
+                    is_deterministic: expr_type.is_deterministic,
+                })
             }
 
             Operator::Factorial(expr) => {
                 let expr_id = expr_id.child(0);
                 let expr_type = self.check_expression(expr, &expr_id, context, annotations)?;
 
+                let result_type = operators::validate_factorial(&expr_type.data_type)?;
+
                 Ok(TypeInfo {
-                    data_type: DataType::I64, // Factorial always returns integer
+                    data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
                     is_deterministic: expr_type.is_deterministic,
@@ -420,8 +619,11 @@ impl TypeChecker {
                 let left_type = self.check_expression(left, &left_id, context, annotations)?;
                 let right_type = self.check_expression(right, &right_id, context, annotations)?;
 
+                let result_type =
+                    operators::validate_like(&left_type.data_type, &right_type.data_type)?;
+
                 Ok(TypeInfo {
-                    data_type: DataType::Bool,
+                    data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
                     is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
@@ -545,182 +747,6 @@ impl TypeChecker {
             nullable: any_nullable,
             is_aggregate: is_aggregate || any_aggregate,
             is_deterministic,
-        })
-    }
-
-    /// Check date/time arithmetic operations
-    fn check_datetime_arithmetic(
-        &self,
-        left: &DataType,
-        right: &DataType,
-        is_subtract: bool,
-    ) -> Result<DataType> {
-        use DataType::*;
-
-        // Handle nullable types
-        let (left_inner, left_nullable) = match left {
-            Nullable(inner) => (&**inner, true),
-            other => (other, false),
-        };
-
-        let (right_inner, right_nullable) = match right {
-            Nullable(inner) => (&**inner, true),
-            other => (other, false),
-        };
-
-        let result = match (left_inner, right_inner, is_subtract) {
-            // Date arithmetic
-            (Date, Date, true) => I32, // Date - Date = days
-            (Date, I32 | I64, _) | (I32 | I64, Date, false) => Date, // Date ± integer days
-            (Date, Interval, _) => Date, // Date ± Interval
-            (Interval, Date, false) => Date, // Interval + Date
-
-            // Timestamp arithmetic
-            (Timestamp, Timestamp, true) => Interval, // Timestamp - Timestamp
-            (Timestamp, Interval, _) => Timestamp,    // Timestamp ± Interval
-            (Interval, Timestamp, false) => Timestamp, // Interval + Timestamp
-
-            // Time arithmetic
-            (Time, Time, true) => Interval,  // Time - Time
-            (Time, Interval, _) => Time,     // Time ± Interval
-            (Interval, Time, false) => Time, // Interval + Time
-
-            // Interval arithmetic
-            (Interval, Interval, false) => Interval, // Interval + Interval
-            (Interval, Interval, true) => Interval,  // Interval - Interval
-
-            // No match - not valid date/time arithmetic
-            _ => {
-                return Err(Error::TypeMismatch {
-                    expected: format!("date/time arithmetic operands"),
-                    found: format!("{:?} and {:?}", left, right),
-                });
-            }
-        };
-
-        // Wrap in nullable if either operand was nullable
-        Ok(if left_nullable || right_nullable {
-            Nullable(Box::new(result))
-        } else {
-            result
-        })
-    }
-
-    /// Promote numeric types to a common type
-    fn promote_numeric_types(&self, left: &DataType, right: &DataType) -> Result<DataType> {
-        use DataType::*;
-
-        // Handle nullable types
-        let (left_inner, left_nullable) = match left {
-            Nullable(inner) => (&**inner, true),
-            other => (other, false),
-        };
-
-        let (right_inner, right_nullable) = match right {
-            Nullable(inner) => (&**inner, true),
-            other => (other, false),
-        };
-
-        let promoted = match (left_inner, right_inner) {
-            // Same types
-            (I8, I8) => I8,
-            (I16, I16) => I16,
-            (I32, I32) => I32,
-            (I64, I64) => I64,
-            (I128, I128) => I128,
-            (U8, U8) => U8,
-            (U16, U16) => U16,
-            (U32, U32) => U32,
-            (U64, U64) => U64,
-            (U128, U128) => U128,
-            (F32, F32) => F32,
-            (F64, F64) => F64,
-            (Decimal(p1, s1), Decimal(p2, s2)) => {
-                // For decimal arithmetic, use the larger precision/scale
-                let precision = match (p1, p2) {
-                    (Some(p1), Some(p2)) => Some((*p1).max(*p2)),
-                    (Some(p), None) | (None, Some(p)) => Some(*p),
-                    (None, None) => None,
-                };
-                let scale = match (s1, s2) {
-                    (Some(s1), Some(s2)) => Some((*s1).max(*s2)),
-                    (Some(s), None) | (None, Some(s)) => Some(*s),
-                    (None, None) => None,
-                };
-                Decimal(precision, scale)
-            }
-
-            // Signed integer promotions
-            (I8, I16) | (I16, I8) => I16,
-            (I8, I32) | (I32, I8) | (I16, I32) | (I32, I16) => I32,
-            (I8, I64) | (I64, I8) | (I16, I64) | (I64, I16) | (I32, I64) | (I64, I32) => I64,
-            (_, I128) | (I128, _) => I128,
-
-            // Unsigned integer promotions
-            (U8, U16) | (U16, U8) => U16,
-            (U8, U32) | (U32, U8) | (U16, U32) | (U32, U16) => U32,
-            (U8, U64) | (U64, U8) | (U16, U64) | (U64, U16) | (U32, U64) | (U64, U32) => U64,
-            (U8, U128)
-            | (U128, U8)
-            | (U16, U128)
-            | (U128, U16)
-            | (U32, U128)
-            | (U128, U32)
-            | (U64, U128)
-            | (U128, U64) => U128,
-
-            // Mixed signed/unsigned promotions (promote to larger signed type to avoid overflow)
-            (U8, I8) | (I8, U8) => I16, // U8 max (255) > I8 max (127), need I16
-            (U8, I16) | (I16, U8) => I16,
-            (U8, I32) | (I32, U8) | (U16, I32) | (I32, U16) => I32,
-            (U32, I32) | (I32, U32) => I64, // U32 max > I32 max, need I64
-            (U8, I64) | (I64, U8) | (U16, I64) | (I64, U16) | (U32, I64) | (I64, U32) => I64,
-            (U64, I64) | (I64, U64) => I128, // U64 max > I64 max, need I128
-            (U8, I128)
-            | (I128, U8)
-            | (U16, I128)
-            | (I128, U16)
-            | (U32, I128)
-            | (I128, U32)
-            | (U64, I128)
-            | (I128, U64) => I128,
-
-            // Float promotions
-            (F32, F64) | (F64, F32) => F64,
-
-            // Integer to float
-            (I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64, F32)
-            | (F32, I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64) => F32,
-            (I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | U128, F64)
-            | (F64, I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | U128) => F64,
-
-            // Decimal with integer/float
-            (Decimal(p, s), I8 | I16 | I32 | I64 | I128 | U8 | U16 | U32 | U64 | U128)
-            | (I8 | I16 | I32 | I64 | I128 | U8 | U16 | U32 | U64 | U128, Decimal(p, s)) => {
-                // Integer promotes to decimal
-                Decimal(*p, *s)
-            }
-            (Decimal(_, _), F32 | F64) | (F32 | F64, Decimal(_, _)) => {
-                // Decimal with float promotes to float (loss of precision warning would be good)
-                F64
-            }
-
-            // Unknown type propagates
-            (Unknown, _) | (_, Unknown) => Unknown,
-
-            _ => {
-                return Err(Error::TypeMismatch {
-                    expected: format!("{:?}", left),
-                    found: format!("{:?}", right),
-                });
-            }
-        };
-
-        // Wrap in nullable if either operand was nullable
-        Ok(if left_nullable || right_nullable {
-            Nullable(Box::new(promoted))
-        } else {
-            promoted
         })
     }
 }

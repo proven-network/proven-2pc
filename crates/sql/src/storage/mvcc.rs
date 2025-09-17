@@ -817,22 +817,22 @@ impl VersionedTable {
                 Operator::Add(left, right) => {
                     let left_val = self.evaluate_expression(left, row)?;
                     let right_val = self.evaluate_expression(right, row)?;
-                    crate::types::evaluator::add(&left_val, &right_val)
+                    crate::operators::execute_add(&left_val, &right_val)
                 }
                 Operator::Subtract(left, right) => {
                     let left_val = self.evaluate_expression(left, row)?;
                     let right_val = self.evaluate_expression(right, row)?;
-                    crate::types::evaluator::subtract(&left_val, &right_val)
+                    crate::operators::execute_subtract(&left_val, &right_val)
                 }
                 Operator::Multiply(left, right) => {
                     let left_val = self.evaluate_expression(left, row)?;
                     let right_val = self.evaluate_expression(right, row)?;
-                    crate::types::evaluator::multiply(&left_val, &right_val)
+                    crate::operators::execute_multiply(&left_val, &right_val)
                 }
                 Operator::Divide(left, right) => {
                     let left_val = self.evaluate_expression(left, row)?;
                     let right_val = self.evaluate_expression(right, row)?;
-                    crate::types::evaluator::divide(&left_val, &right_val)
+                    crate::operators::execute_divide(&left_val, &right_val)
                 }
                 _ => Err(Error::InvalidValue(
                     "Unsupported operator type in index expression".into(),

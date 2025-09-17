@@ -21,7 +21,6 @@ use crate::types::schema::Table;
 use crate::types::statistics::DatabaseStatistics;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
-use std::str::FromStr;
 
 /// Index metadata for planning
 #[derive(Debug, Clone)]
@@ -1531,46 +1530,9 @@ impl<'a> PlanContext<'a> {
                         }
                     }
                     Literal::Float(f) => {
-                        // Handle special float values that can't be represented as Decimal
-                        if f.is_nan() || f.is_infinite() {
-                            // Keep as F64 for special values (will be coerced to F32 if needed)
-                            crate::types::value::Value::F64(f)
-                        } else {
-                            // Check if this value can be represented as a Decimal
-                            // Decimal has a max value of about 7.9e28, much smaller than u128::MAX (3.4e38)
-                            // For very large values (like u128 values > i128::MAX), keep as F64
-                            if f.abs() > 7.9e28 {
-                                // Value too large for Decimal, keep as F64
-                                // This is used for large unsigned integer literals
-                                crate::types::value::Value::F64(f)
-                            } else {
-                                // Try to parse as a decimal string to avoid float precision issues
-                                // If the float is a simple value like 25.12, format with limited precision
-                                let decimal = if f.fract() != 0.0 && f.abs() < 1e10 {
-                                    // Format with up to 10 decimal places, then parse
-                                    let s = format!("{:.10}", f);
-                                    // Trim trailing zeros and parse
-                                    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-                                    rust_decimal::Decimal::from_str(trimmed).unwrap_or_else(|_| {
-                                        rust_decimal::Decimal::from_f64_retain(f).unwrap_or_else(
-                                            || {
-                                                // If that fails, convert to string and back for better precision
-                                                rust_decimal::Decimal::from_str(&f.to_string())
-                                                    .unwrap_or_default()
-                                            },
-                                        )
-                                    })
-                                } else {
-                                    // For integer-like values or large values
-                                    rust_decimal::Decimal::from_f64_retain(f).unwrap_or_else(|| {
-                                        // If that fails, convert to string and back for better precision
-                                        rust_decimal::Decimal::from_str(&f.to_string())
-                                            .unwrap_or_default()
-                                    })
-                                };
-                                crate::types::value::Value::Decimal(decimal)
-                            }
-                        }
+                        // Keep float literals as F64 to avoid precision issues when comparing
+                        // with float columns. Converting to Decimal causes precision mismatches.
+                        crate::types::value::Value::F64(f)
                     }
                     Literal::String(s) => crate::types::value::Value::string(s),
                     Literal::Bytea(b) => crate::types::value::Value::Bytea(b),
@@ -1812,7 +1774,7 @@ impl<'a> PlanContext<'a> {
 
 /// Evaluates a DEFAULT expression to a constant Value
 fn evaluate_default_expression(expr: Expression) -> Result<crate::types::value::Value> {
-    use crate::types::evaluator;
+    use crate::operators;
     use crate::types::value::Value;
 
     match expr {
@@ -1822,22 +1784,22 @@ fn evaluate_default_expression(expr: Expression) -> Result<crate::types::value::
         Expression::Add(left, right) => {
             let l = evaluate_default_expression(*left)?;
             let r = evaluate_default_expression(*right)?;
-            evaluator::add(&l, &r)
+            operators::execute_add(&l, &r)
         }
         Expression::Subtract(left, right) => {
             let l = evaluate_default_expression(*left)?;
             let r = evaluate_default_expression(*right)?;
-            evaluator::subtract(&l, &r)
+            operators::execute_subtract(&l, &r)
         }
         Expression::Multiply(left, right) => {
             let l = evaluate_default_expression(*left)?;
             let r = evaluate_default_expression(*right)?;
-            evaluator::multiply(&l, &r)
+            operators::execute_multiply(&l, &r)
         }
         Expression::Divide(left, right) => {
             let l = evaluate_default_expression(*left)?;
             let r = evaluate_default_expression(*right)?;
-            evaluator::divide(&l, &r)
+            operators::execute_divide(&l, &r)
         }
         Expression::Remainder(left, right) => {
             let l = evaluate_default_expression(*left)?;

@@ -1,7 +1,7 @@
 //! The SQL data model, including data types, expressions, and schema objects.
 
 pub mod data_type;
-pub mod evaluator;
+// pub mod evaluator; // Deprecated: use operators module instead
 pub mod expression;
 pub mod query;
 pub mod schema;

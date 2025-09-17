@@ -5,9 +5,9 @@
 //! transaction context.
 
 use crate::error::{Error, Result};
+use crate::operators;
 use crate::semantic::BoundParameters;
 use crate::stream::transaction::TransactionContext;
-use crate::types::evaluator;
 use crate::types::expression::Expression;
 use crate::types::value::{Row, Value};
 use std::sync::Arc;
@@ -38,16 +38,16 @@ pub fn evaluate(
         And(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            evaluator::and(&l, &r)?
+            operators::execute_and(&l, &r)?
         }
         Or(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            evaluator::or(&l, &r)?
+            operators::execute_or(&l, &r)?
         }
         Not(expr) => {
             let v = evaluate(expr, row, context, params)?;
-            evaluator::not(&v)?
+            operators::execute_not(&v)?
         }
 
         // Comparison operations with SQL NULL semantics and NaN handling
@@ -176,8 +176,8 @@ pub fn evaluate(
                 return Ok(Value::boolean(false));
             }
 
-            // Use evaluator::compare for type-aware comparison
-            match evaluator::compare(&l, &r) {
+            // Use operators::compare for type-aware comparison
+            match operators::compare(&l, &r) {
                 Ok(std::cmp::Ordering::Equal) => Value::boolean(true),
                 Ok(_) => Value::boolean(false),
                 Err(_) => Value::boolean(false), // Type mismatch means not equal
@@ -202,7 +202,7 @@ pub fn evaluate(
             if has_nan {
                 return Ok(Value::boolean(true));
             }
-            match evaluator::compare(&l, &r) {
+            match operators::compare(&l, &r) {
                 Ok(std::cmp::Ordering::Equal) => Value::boolean(false),
                 Ok(_) => Value::boolean(true),
                 Err(_) => Value::boolean(true), // Type mismatch means not equal
@@ -225,7 +225,7 @@ pub fn evaluate(
             if has_nan {
                 return Ok(Value::boolean(false));
             }
-            match evaluator::compare(&l, &r) {
+            match operators::compare(&l, &r) {
                 Ok(std::cmp::Ordering::Less) => Value::boolean(true),
                 Ok(_) => Value::boolean(false),
                 Err(_) => Value::boolean(false),
@@ -248,7 +248,7 @@ pub fn evaluate(
             if has_nan {
                 return Ok(Value::boolean(false));
             }
-            match evaluator::compare(&l, &r) {
+            match operators::compare(&l, &r) {
                 Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => Value::boolean(true),
                 Ok(_) => Value::boolean(false),
                 Err(_) => Value::boolean(false),
@@ -271,7 +271,7 @@ pub fn evaluate(
             if has_nan {
                 return Ok(Value::boolean(false));
             }
-            match evaluator::compare(&l, &r) {
+            match operators::compare(&l, &r) {
                 Ok(std::cmp::Ordering::Greater) => Value::boolean(true),
                 Ok(_) => Value::boolean(false),
                 Err(_) => Value::boolean(false),
@@ -294,7 +294,7 @@ pub fn evaluate(
             if has_nan {
                 return Ok(Value::boolean(false));
             }
-            match evaluator::compare(&l, &r) {
+            match operators::compare(&l, &r) {
                 Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => Value::boolean(true),
                 Ok(_) => Value::boolean(false),
                 Err(_) => Value::boolean(false),
@@ -310,90 +310,38 @@ pub fn evaluate(
         Add(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            evaluator::add(&l, &r)?
+            operators::execute_add(&l, &r)?
         }
         Subtract(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            evaluator::subtract(&l, &r)?
+            operators::execute_subtract(&l, &r)?
         }
         Multiply(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            evaluator::multiply(&l, &r)?
+            operators::execute_multiply(&l, &r)?
         }
         Divide(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            evaluator::divide(&l, &r)?
+            operators::execute_divide(&l, &r)?
         }
         Remainder(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            evaluator::remainder(&l, &r)?
+            operators::execute_remainder(&l, &r)?
         }
 
         Negate(expr) => {
             let value = evaluate(expr, row, context, params)?;
-            match value {
-                Value::Null => Value::Null,
-                Value::I8(i) => Value::I8(-i),
-                Value::I16(i) => Value::I16(-i),
-                Value::I32(i) => Value::I32(-i),
-                Value::I64(i) => Value::I64(-i),
-                Value::I128(i) => Value::I128(-i),
-                // Unsigned types need to be converted to signed equivalents
-                Value::U8(u) => {
-                    if u <= i8::MAX as u8 {
-                        Value::I8(-(u as i8))
-                    } else {
-                        Value::I16(-(u as i16))
-                    }
-                }
-                Value::U16(u) => {
-                    if u <= i16::MAX as u16 {
-                        Value::I16(-(u as i16))
-                    } else {
-                        Value::I32(-(u as i32))
-                    }
-                }
-                Value::U32(u) => {
-                    if u <= i32::MAX as u32 {
-                        Value::I32(-(u as i32))
-                    } else {
-                        Value::I64(-(u as i64))
-                    }
-                }
-                Value::U64(u) => {
-                    if u <= i64::MAX as u64 {
-                        Value::I64(-(u as i64))
-                    } else {
-                        Value::I128(-(u as i128))
-                    }
-                }
-                Value::U128(u) => {
-                    if u <= i128::MAX as u128 {
-                        Value::I128(-(u as i128))
-                    } else {
-                        return Err(Error::InvalidValue(format!(
-                            "Cannot negate {}: value too large",
-                            u
-                        )));
-                    }
-                }
-                Value::F32(f) => Value::F32(-f),
-                Value::F64(f) => Value::F64(-f),
-                Value::Decimal(d) => Value::Decimal(-d),
-                _ => {
-                    return Err(Error::TypeMismatch {
-                        expected: "numeric".into(),
-                        found: format!("{:?}", value),
-                    });
-                }
-            }
+            operators::execute_negate(&value)?
         }
 
-        Identity(expr) => evaluate(expr, row, context, params)?,
+        Identity(expr) => {
+            let value = evaluate(expr, row, context, params)?;
+            operators::execute_identity(&value)?
+        }
 
         // Function calls
         Function(name, args) => {
@@ -420,7 +368,7 @@ pub fn evaluate(
                 if item_value == Value::Null {
                     has_null = true;
                 } else if let Ok(std::cmp::Ordering::Equal) =
-                    evaluator::compare(&value, &item_value)
+                    operators::compare(&value, &item_value)
                 {
                     found = true;
                     break;
@@ -448,9 +396,9 @@ pub fn evaluate(
             }
 
             let low_cmp =
-                evaluator::compare(&value, &low_value).unwrap_or(std::cmp::Ordering::Less);
+                operators::compare(&value, &low_value).unwrap_or(std::cmp::Ordering::Less);
             let high_cmp =
-                evaluator::compare(&value, &high_value).unwrap_or(std::cmp::Ordering::Greater);
+                operators::compare(&value, &high_value).unwrap_or(std::cmp::Ordering::Greater);
 
             let in_range =
                 low_cmp != std::cmp::Ordering::Less && high_cmp != std::cmp::Ordering::Greater;

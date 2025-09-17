@@ -44,6 +44,9 @@ impl UnaryOperator for NegateOperator {
             // Interval can be negated
             Interval => Interval,
 
+            // Unknown type (NULL) can be negated (result is NULL)
+            Unknown => Unknown,
+
             _ => {
                 return Err(Error::InvalidValue(format!(
                     "Cannot negate non-numeric type: {}",

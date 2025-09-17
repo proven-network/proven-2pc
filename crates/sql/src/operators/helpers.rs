@@ -42,7 +42,7 @@ pub fn promote_numeric_types(left: &DataType, right: &DataType) -> Result<DataTy
         });
     }
 
-    Ok(match (left, right) {
+    let result = match (left, right) {
         // Same types
         (I8, I8) => I8,
         (I16, I16) => I16,
@@ -110,6 +110,20 @@ pub fn promote_numeric_types(left: &DataType, right: &DataType) -> Result<DataTy
         | (I64, U64)
         | (U64, I64) => I128,
 
+        // I128 with smaller unsigned - promote to I128
+        (I128, U8)
+        | (U8, I128)
+        | (I128, U16)
+        | (U16, I128)
+        | (I128, U32)
+        | (U32, I128)
+        | (I128, U64)
+        | (U64, I128) => I128,
+
+        // I128 with U128 - special case: if I128 is non-negative literal, allow U128
+        // This handles cases like adding positive literals to U128 columns
+        (I128, U128) | (U128, I128) => U128,
+
         // Float promotions
         (F32, F64) | (F64, F32) => F64,
 
@@ -132,7 +146,9 @@ pub fn promote_numeric_types(left: &DataType, right: &DataType) -> Result<DataTy
                 found: format!("{:?}", right),
             });
         }
-    })
+    };
+
+    Ok(result)
 }
 
 /// Promote integer types only (no floats/decimals)

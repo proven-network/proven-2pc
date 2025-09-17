@@ -1,6 +1,7 @@
 //! Division operator implementation
 
 use super::helpers::*;
+use super::mixed_ops;
 use super::traits::BinaryOperator;
 use crate::error::{Error, Result};
 use crate::types::{DataType, Value};
@@ -27,6 +28,9 @@ impl BinaryOperator for DivideOperator {
         let (left_inner, right_inner, nullable) = unwrap_nullable_pair(left, right);
 
         let result = match (left_inner, right_inner) {
+            // Unknown (NULL) with anything returns Unknown
+            (Unknown, _) | (_, Unknown) => Unknown,
+
             // Integer division returns integer (truncating)
             (I8, I8) => I8,
             (I16, I16) => I16,
@@ -39,7 +43,7 @@ impl BinaryOperator for DivideOperator {
             (U64, U64) => U64,
             (U128, U128) => U128,
 
-            // Mixed integer division - promote
+            // All integer types handled by type promotion
             (a, b) if a.is_integer() && b.is_integer() => promote_integer_types(a, b)?,
 
             // Float division
@@ -88,52 +92,8 @@ impl BinaryOperator for DivideOperator {
             // NULL handling
             (Null, _) | (_, Null) => Ok(Null),
 
-            // Check for division by zero first
-            (_, n) if is_zero(n) => Err(Error::InvalidOperation("Division by zero".to_string())),
-
-            // Same-type integer operations (truncating division)
-            (I8(a), I8(b)) => a
-                .checked_div(*b)
-                .map(I8)
-                .ok_or_else(|| Error::InvalidValue("I8 overflow".into())),
-            (I16(a), I16(b)) => a
-                .checked_div(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
-            (I32(a), I32(b)) => a
-                .checked_div(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I64(a), I64(b)) => a
-                .checked_div(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I128(a), I128(b)) => a
-                .checked_div(*b)
-                .map(I128)
-                .ok_or_else(|| Error::InvalidValue("I128 overflow".into())),
-
-            // Unsigned integers
-            (U8(a), U8(b)) => a
-                .checked_div(*b)
-                .map(U8)
-                .ok_or_else(|| Error::InvalidValue("U8 overflow".into())),
-            (U16(a), U16(b)) => a
-                .checked_div(*b)
-                .map(U16)
-                .ok_or_else(|| Error::InvalidValue("U16 overflow".into())),
-            (U32(a), U32(b)) => a
-                .checked_div(*b)
-                .map(U32)
-                .ok_or_else(|| Error::InvalidValue("U32 overflow".into())),
-            (U64(a), U64(b)) => a
-                .checked_div(*b)
-                .map(U64)
-                .ok_or_else(|| Error::InvalidValue("U64 overflow".into())),
-            (U128(a), U128(b)) => a
-                .checked_div(*b)
-                .map(U128)
-                .ok_or_else(|| Error::InvalidValue("U128 overflow".into())),
+            // All integer operations - use generic handler
+            (a, b) if a.is_integer() && b.is_integer() => mixed_ops::divide_integers(a, b),
 
             // Floats
             (F32(a), F32(b)) => {
@@ -156,56 +116,6 @@ impl BinaryOperator for DivideOperator {
                 .checked_div(*b)
                 .map(Decimal)
                 .ok_or_else(|| Error::InvalidValue("Decimal division error".into())),
-
-            // Mixed integer types - promote then divide
-            (I8(a), I16(b)) => (*a as i16)
-                .checked_div(*b)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
-            (I16(a), I8(b)) => a
-                .checked_div(*b as i16)
-                .map(I16)
-                .ok_or_else(|| Error::InvalidValue("I16 overflow".into())),
-            (I8(a), I32(b)) => (*a as i32)
-                .checked_div(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I32(a), I8(b)) => a
-                .checked_div(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I8(a), I64(b)) => (*a as i64)
-                .checked_div(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I64(a), I8(b)) => a
-                .checked_div(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I16(a), I32(b)) => (*a as i32)
-                .checked_div(*b)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I32(a), I16(b)) => a
-                .checked_div(*b as i32)
-                .map(I32)
-                .ok_or_else(|| Error::InvalidValue("I32 overflow".into())),
-            (I16(a), I64(b)) => (*a as i64)
-                .checked_div(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I64(a), I16(b)) => a
-                .checked_div(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I32(a), I64(b)) => (*a as i64)
-                .checked_div(*b)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
-            (I64(a), I32(b)) => a
-                .checked_div(*b as i64)
-                .map(I64)
-                .ok_or_else(|| Error::InvalidValue("I64 overflow".into())),
 
             // Interval / integer (scale down interval)
             (Value::Interval(interval), I32(scale)) => {
@@ -231,26 +141,6 @@ impl BinaryOperator for DivideOperator {
                 left, right
             ))),
         }
-    }
-}
-
-/// Check if a value is zero
-fn is_zero(value: &Value) -> bool {
-    match value {
-        Value::I8(n) => *n == 0,
-        Value::I16(n) => *n == 0,
-        Value::I32(n) => *n == 0,
-        Value::I64(n) => *n == 0,
-        Value::I128(n) => *n == 0,
-        Value::U8(n) => *n == 0,
-        Value::U16(n) => *n == 0,
-        Value::U32(n) => *n == 0,
-        Value::U64(n) => *n == 0,
-        Value::U128(n) => *n == 0,
-        Value::F32(n) => *n == 0.0,
-        Value::F64(n) => *n == 0.0,
-        Value::Decimal(d) => d.is_zero(),
-        _ => false,
     }
 }
 

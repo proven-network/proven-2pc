@@ -5,10 +5,10 @@
 
 use super::{aggregator::Aggregator, expression, join};
 use crate::error::{Error, Result};
+use crate::operators;
 use crate::planning::plan::{Node, Plan};
 use crate::storage::{MvccStorage, read_ops};
 use crate::stream::TransactionContext;
-use crate::types::evaluator;
 use crate::types::query::Rows;
 use crate::types::value::Value;
 use std::sync::Arc;
@@ -272,7 +272,7 @@ pub fn execute_node_read<'a>(
 
                     // Check start bound
                     if let Some(ref start) = start_vals {
-                        match evaluator::compare_composite(&row_values, start).ok() {
+                        match operators::compare_composite(&row_values, start).ok() {
                             Some(std::cmp::Ordering::Less) => return None,
                             Some(std::cmp::Ordering::Equal) if !start_incl => return None,
                             _ => {}
@@ -281,7 +281,7 @@ pub fn execute_node_read<'a>(
 
                     // Check end bound
                     if let Some(ref end) = end_vals {
-                        match evaluator::compare_composite(&row_values, end).ok() {
+                        match operators::compare_composite(&row_values, end).ok() {
                             Some(std::cmp::Ordering::Greater) => return None,
                             Some(std::cmp::Ordering::Equal) if !end_incl => return None,
                             _ => {}

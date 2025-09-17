@@ -74,10 +74,10 @@ fn match_pattern(text: &str, pattern: &str) -> Result<bool> {
 /// Convert SQL LIKE pattern to regex pattern
 fn sql_pattern_to_regex(pattern: &str) -> String {
     let mut regex = String::from("^");
-    let mut chars = pattern.chars().peekable();
+    let chars = pattern.chars().peekable();
     let mut escaped = false;
 
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         if escaped {
             // Escape special regex characters
             match ch {

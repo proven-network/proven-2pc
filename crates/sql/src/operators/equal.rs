@@ -27,6 +27,9 @@ impl BinaryOperator for EqualOperator {
 
         // Check if types are comparable
         match (left_inner, right_inner) {
+            // Unknown types (parameters) can be compared with anything
+            (Unknown, _) | (_, Unknown) => Ok(Bool),
+
             // Same types are always comparable
             (a, b) if a == b => Ok(Bool),
 
@@ -36,8 +39,22 @@ impl BinaryOperator for EqualOperator {
             // String types can be compared
             (Str, Text) | (Text, Str) => Ok(Bool),
 
+            // Collections can be compared with strings (JSON parsing at runtime)
+            (Array(..), Str) | (Str, Array(..)) => Ok(Bool),
+            (List(..), Str) | (Str, List(..)) => Ok(Bool),
+            (Map(..), Str) | (Str, Map(..)) => Ok(Bool),
+            (Struct(..), Str) | (Str, Struct(..)) => Ok(Bool),
+
             // Date/Time types can be compared with same type
             (Date, Date) | (Time, Time) | (Timestamp, Timestamp) => Ok(Bool),
+
+            // Date/Time types can be compared with strings (parsed at runtime)
+            (Date, Str) | (Str, Date) => Ok(Bool),
+            (Time, Str) | (Str, Time) => Ok(Bool),
+            (Timestamp, Str) | (Str, Timestamp) => Ok(Bool),
+
+            // UUID can be compared with strings (parsed at runtime)
+            (Uuid, Str) | (Str, Uuid) => Ok(Bool),
 
             _ => Err(Error::TypeMismatch {
                 expected: format!("{:?}", left),
@@ -53,8 +70,8 @@ impl BinaryOperator for EqualOperator {
         match (left, right) {
             (Null, _) | (_, Null) => Ok(Null),
             _ => {
-                // Use the compare function from evaluator
-                let ordering = crate::types::evaluator::compare(left, right)?;
+                // Use the compare function from operators module
+                let ordering = crate::operators::compare(left, right)?;
                 Ok(Bool(ordering == std::cmp::Ordering::Equal))
             }
         }

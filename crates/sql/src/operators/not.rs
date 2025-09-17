@@ -21,9 +21,10 @@ impl UnaryOperator for NotOperator {
 
         let (inner, nullable) = unwrap_nullable(operand);
 
-        // Operand must be boolean
+        // Operand must be boolean or unknown (NULL)
         match inner {
             Bool => Ok(wrap_nullable(Bool, nullable)),
+            Unknown => Ok(Bool), // NOT NULL returns NULL, which is a nullable Bool
             _ => Err(Error::TypeMismatch {
                 expected: "BOOLEAN".into(),
                 found: format!("{:?}", operand),

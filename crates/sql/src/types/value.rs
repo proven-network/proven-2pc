@@ -94,6 +94,22 @@ impl Value {
         )
     }
 
+    /// Check if value is a signed integer type
+    pub fn is_signed_integer(&self) -> bool {
+        matches!(
+            self,
+            Value::I8(_) | Value::I16(_) | Value::I32(_) | Value::I64(_) | Value::I128(_)
+        )
+    }
+
+    /// Check if value is an unsigned integer type
+    pub fn is_unsigned_integer(&self) -> bool {
+        matches!(
+            self,
+            Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::U64(_) | Value::U128(_)
+        )
+    }
+
     /// Check if value is any numeric type (integer, float, or decimal)
     pub fn is_numeric(&self) -> bool {
         matches!(
@@ -561,7 +577,7 @@ impl Ord for Value {
                     && (b.is_integer()
                         || matches!(b, Value::F32(_) | Value::F64(_) | Value::Decimal(_))) =>
             {
-                crate::types::evaluator::compare(a, b).unwrap_or(Ordering::Equal)
+                crate::operators::compare(a, b).unwrap_or(Ordering::Equal)
             }
 
             // String comparisons

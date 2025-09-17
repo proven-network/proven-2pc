@@ -31,6 +31,11 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
         // NULL can be coerced to any nullable type
         (Value::Null, _) => Ok(Value::Null),
 
+        // Non-null value to Nullable type - unwrap the Nullable and try to coerce
+        (_, DataType::Nullable(inner_type)) if !matches!(value, Value::Null) => {
+            coerce_value_impl(value, inner_type)
+        }
+
         // Integer type coercions (widening is safe, narrowing checks bounds)
         (Value::I8(v), DataType::I16) => Ok(Value::I16(*v as i16)),
         (Value::I8(v), DataType::I32) => Ok(Value::I32(*v as i32)),
