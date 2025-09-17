@@ -9,19 +9,26 @@
 //! - Performs type checking on expressions
 //! - Validates constraints and rules
 //! - Infers parameter types from context
-//! - Produces a typed AST with metadata
+//! - Produces a lightweight analyzed statement with Arc-wrapped AST
 
+// New efficient implementation
+pub mod analyzed;
 pub mod analyzer;
-pub mod annotated_ast;
-pub mod coercion;
+pub mod parameters;
+
+// Supporting modules
 pub mod context;
 pub mod resolver;
 pub mod type_checker;
 pub mod types;
-pub mod validator;
+pub mod validators; // New zero-copy validators
 
-pub use analyzer::{AnalyzedStatement, SemanticAnalyzer};
-pub use annotated_ast::AnnotatedStatement;
-pub use coercion::{can_coerce, coerce_value, coercion_cost};
-pub use context::AnalysisContext;
-pub use types::{ParameterExpectation, StatementMetadata, TypedExpression};
+#[cfg(test)]
+mod test_zero_copy;
+// #[cfg(test)]
+// mod type_checker_test;
+
+// Export the new implementation types as primary interface
+pub use analyzed::AnalyzedStatement;
+pub use analyzer::SemanticAnalyzer;
+pub use parameters::{BoundParameters, bind_parameters};

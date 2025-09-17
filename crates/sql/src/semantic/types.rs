@@ -4,17 +4,6 @@ use crate::parsing::ast::Expression;
 use crate::types::data_type::DataType;
 use std::collections::HashSet;
 
-/// An expression with type information
-#[derive(Debug, Clone)]
-pub struct TypedExpression {
-    /// The original expression
-    pub expr: Expression,
-    /// The inferred or checked type
-    pub data_type: DataType,
-    /// Whether this expression can be NULL
-    pub nullable: bool,
-}
-
 /// Metadata about a statement collected during analysis
 #[derive(Debug, Default, Clone)]
 pub struct StatementMetadata {

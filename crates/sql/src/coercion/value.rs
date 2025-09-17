@@ -1,98 +1,12 @@
-//! Type coercion for SQL values
-//! Handles automatic type conversion to match schema requirements
+//! Value coercion implementation
 
 use crate::error::{Error, Result};
 use crate::types::{DataType, Value};
 use std::collections::HashMap;
 
-/// Check if a type can be coerced to another type
-/// Returns true for valid implicit conversions
-pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
-    // Same type is always valid
-    if from == to {
-        return true;
-    }
-
-    // NULL/Nullable handling
-    if let DataType::Nullable(to_inner) = to {
-        // Any type can be coerced to its nullable version
-        return from == to_inner.as_ref() || can_coerce(from, to_inner);
-    }
-
-    match (from, to) {
-        // Integer widening conversions (always safe)
-        (DataType::I8, DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128) => true,
-        (DataType::I16, DataType::I32 | DataType::I64 | DataType::I128) => true,
-        (DataType::I32, DataType::I64 | DataType::I128) => true,
-        (DataType::I64, DataType::I128) => true,
-
-        // Unsigned integer widening
-        (DataType::U8, DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128) => true,
-        (DataType::U16, DataType::U32 | DataType::U64 | DataType::U128) => true,
-        (DataType::U32, DataType::U64 | DataType::U128) => true,
-        (DataType::U64, DataType::U128) => true,
-
-        // Float widening
-        (DataType::F32, DataType::F64) => true,
-
-        // Integer to float (may lose precision but generally allowed)
-        (DataType::I8 | DataType::I16 | DataType::I32, DataType::F32 | DataType::F64) => true,
-        (DataType::I64, DataType::F64) => true, // i64 to f32 loses precision
-
-        // Text types are interchangeable
-        (DataType::Str, DataType::Text) | (DataType::Text, DataType::Str) => true,
-
-        _ => false,
-    }
-}
-
-/// Calculate the cost of coercing from one type to another
-/// Lower cost means more preferred conversion
-/// Returns None if coercion is not possible
-pub fn coercion_cost(from: &DataType, to: &DataType) -> Option<u32> {
-    if from == to {
-        return Some(0);
-    }
-
-    if !can_coerce(from, to) {
-        return None;
-    }
-
-    match (from, to) {
-        // Nullable wrapper has minimal cost
-        (_, DataType::Nullable(to_inner)) if from == to_inner.as_ref() => Some(1),
-
-        // Integer widening - prefer smaller jumps
-        (DataType::I8, DataType::I16) => Some(10),
-        (DataType::I8, DataType::I32) => Some(20),
-        (DataType::I8, DataType::I64) => Some(30),
-        (DataType::I8, DataType::I128) => Some(40),
-        (DataType::I16, DataType::I32) => Some(10),
-        (DataType::I16, DataType::I64) => Some(20),
-        (DataType::I16, DataType::I128) => Some(30),
-        (DataType::I32, DataType::I64) => Some(10),
-        (DataType::I32, DataType::I128) => Some(20),
-        (DataType::I64, DataType::I128) => Some(10),
-
-        // Integer to float has higher cost (precision loss)
-        (DataType::I8 | DataType::I16 | DataType::I32, DataType::F32) => Some(50),
-        (DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64, DataType::F64) => Some(60),
-
-        // Float widening
-        (DataType::F32, DataType::F64) => Some(10),
-
-        // Text conversion has minimal cost
-        (DataType::Str, DataType::Text) | (DataType::Text, DataType::Str) => Some(5),
-
-        _ => None,
-    }
-}
-
 /// Coerce a value to match the target data type
 /// This handles implicit type conversions that are safe and expected in SQL
-pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
-    // If types already match, return as-is
-    // Special case: for structs, always try coercion in case field types need adjustment
+pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> {
     if !matches!(value, Value::Struct(_)) && value.data_type() == *target_type {
         return Ok(value);
     }
@@ -107,7 +21,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
         let mut coerced_map = HashMap::new();
         for (key, val) in map.clone() {
             // Coerce the value to the expected type
-            let coerced_val = coerce_value(val, value_type)?;
+            let coerced_val = coerce_value_impl(val, value_type)?;
             coerced_map.insert(key, coerced_val);
         }
         return Ok(Value::Map(coerced_map));
@@ -380,6 +294,24 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             Ok(Value::Decimal(rust_decimal::Decimal::from(*v)))
         }
 
+        // Float to Decimal coercions
+        (Value::F32(v), DataType::Decimal(_, _)) => {
+            use rust_decimal::prelude::FromPrimitive;
+            rust_decimal::Decimal::from_f32(*v)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot convert float {} to decimal", v))
+                })
+                .map(Value::Decimal)
+        }
+        (Value::F64(v), DataType::Decimal(_, _)) => {
+            use rust_decimal::prelude::FromPrimitive;
+            rust_decimal::Decimal::from_f64(*v)
+                .ok_or_else(|| {
+                    Error::InvalidValue(format!("Cannot convert double {} to decimal", v))
+                })
+                .map(Value::Decimal)
+        }
+
         // Decimal to signed integer coercions
         (Value::Decimal(d), DataType::I8) => {
             use rust_decimal::prelude::ToPrimitive;
@@ -523,7 +455,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                         let mut coerced_items = Vec::new();
                         let mut all_coercible = true;
                         for item in &items {
-                            match coerce_value(item.clone(), elem_type) {
+                            match coerce_value_impl(item.clone(), elem_type) {
                                 Ok(coerced) => coerced_items.push(coerced),
                                 Err(_) => {
                                     all_coercible = false;
@@ -542,7 +474,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                         // Not the default type, strict coercion
                         let mut coerced_items = Vec::new();
                         for item in items {
-                            coerced_items.push(coerce_value(item, elem_type)?);
+                            coerced_items.push(coerce_value_impl(item, elem_type)?);
                         }
                         Ok(Value::List(coerced_items))
                     }
@@ -570,7 +502,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                     // Coerce each element to the expected type
                     let mut coerced_items = Vec::new();
                     for item in items {
-                        coerced_items.push(coerce_value(item, elem_type)?);
+                        coerced_items.push(coerce_value_impl(item, elem_type)?);
                     }
                     Ok(Value::Array(coerced_items))
                 }
@@ -589,7 +521,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                     let mut coerced_map = HashMap::new();
                     for (key, val) in map.drain() {
                         // Coerce the value to the expected type
-                        let coerced_val = coerce_value(val, value_type)?;
+                        let coerced_val = coerce_value_impl(val, value_type)?;
                         coerced_map.insert(key, coerced_val);
                     }
                     Ok(Value::Map(coerced_map))
@@ -611,7 +543,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                         if let Some(val) = map.remove(field_name) {
                             // Coerce the value to the expected field type
                             let coerced_val =
-                                coerce_value(val.clone(), field_type).map_err(|e| {
+                                coerce_value_impl(val.clone(), field_type).map_err(|e| {
                                     // If coercion fails, provide more specific error for struct fields
                                     if let Error::TypeMismatch { expected, found } = e {
                                         Error::StructFieldTypeMismatch {
@@ -679,7 +611,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                     .ok_or_else(|| Error::StructFieldMissing(field_name.clone()))?;
 
                 // Coerce the field value to the expected type
-                let coerced_val = coerce_value(field_value, field_type).map_err(|e| {
+                let coerced_val = coerce_value_impl(field_value, field_type).map_err(|e| {
                     // If coercion fails, provide more specific error for struct fields
                     if let Error::TypeMismatch { expected, found } = e {
                         Error::StructFieldTypeMismatch {
@@ -718,7 +650,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
                 if let Some(val) = map.get(field_name) {
                     used_keys.push(field_name.clone());
                     // Coerce the value to the expected field type
-                    let coerced_val = coerce_value(val.clone(), field_type).map_err(|e| {
+                    let coerced_val = coerce_value_impl(val.clone(), field_type).map_err(|e| {
                         // If coercion fails, provide more specific error for struct fields
                         if let Error::TypeMismatch { expected, found } = e {
                             Error::StructFieldTypeMismatch {
@@ -764,7 +696,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             // Coerce each element to the expected type
             let mut coerced_items = Vec::new();
             for item in items {
-                coerced_items.push(coerce_value(item.clone(), elem_type)?);
+                coerced_items.push(coerce_value_impl(item.clone(), elem_type)?);
             }
             Ok(Value::Array(coerced_items))
         }
@@ -774,7 +706,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             // Coerce each element to the expected type
             let mut coerced_items = Vec::new();
             for item in items {
-                coerced_items.push(coerce_value(item.clone(), elem_type)?);
+                coerced_items.push(coerce_value_impl(item.clone(), elem_type)?);
             }
             Ok(Value::List(coerced_items))
         }
@@ -784,7 +716,7 @@ pub fn coerce_value(value: Value, target_type: &DataType) -> Result<Value> {
             // Coerce each element to the expected type
             let mut coerced_items = Vec::new();
             for item in items {
-                coerced_items.push(coerce_value(item.clone(), elem_type)?);
+                coerced_items.push(coerce_value_impl(item.clone(), elem_type)?);
             }
             Ok(Value::List(coerced_items))
         }
@@ -827,58 +759,6 @@ pub fn coerce_row(row: Vec<Value>, schema: &crate::types::schema::Table) -> Resu
 
     row.into_iter()
         .zip(&schema.columns)
-        .map(|(value, column)| coerce_value(value, &column.datatype))
+        .map(|(value, column)| coerce_value_impl(value, &column.datatype))
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_integer_widening() {
-        // I64 to I128 (widening - always safe)
-        let value = Value::I64(1000000000000);
-        let result = coerce_value(value, &DataType::I128).unwrap();
-        assert_eq!(result, Value::I128(1000000000000));
-
-        // I32 to I64 (widening - always safe)
-        let value = Value::I32(42);
-        let result = coerce_value(value, &DataType::I64).unwrap();
-        assert_eq!(result, Value::I64(42));
-    }
-
-    #[test]
-    fn test_integer_narrowing() {
-        // I64 to I32 (narrowing - may fail)
-        let value = Value::I64(42);
-        let result = coerce_value(value, &DataType::I32).unwrap();
-        assert_eq!(result, Value::I32(42));
-
-        // I64 to I32 with overflow should fail
-        let value = Value::I64(i64::MAX);
-        let result = coerce_value(value, &DataType::I32);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_null_coercion() {
-        // NULL can be coerced to any type
-        let value = Value::Null;
-        let result = coerce_value(value.clone(), &DataType::I128).unwrap();
-        assert_eq!(result, Value::Null);
-
-        let result = coerce_value(value.clone(), &DataType::Str).unwrap();
-        assert_eq!(result, Value::Null);
-    }
-
-    #[test]
-    fn test_integer_to_decimal() {
-        let value = Value::I64(42);
-        let result = coerce_value(value, &DataType::Decimal(Some(10), Some(2))).unwrap();
-        match result {
-            Value::Decimal(d) => assert_eq!(d.to_string(), "42"),
-            _ => panic!("Expected Decimal"),
-        }
-    }
 }

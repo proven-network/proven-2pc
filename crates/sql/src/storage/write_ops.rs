@@ -74,38 +74,3 @@ pub fn delete(
 
     Ok(())
 }
-
-/// Create a new table
-pub fn create_table(
-    storage: &mut MvccStorage,
-    tx_ctx: &mut TransactionContext,
-    name: String,
-    schema: crate::types::schema::Table,
-) -> Result<()> {
-    // Check transaction is active
-    if tx_ctx.state != TransactionState::Active {
-        return Err(Error::TransactionNotActive(tx_ctx.id));
-    }
-
-    // Create the table
-    storage.create_table(name.clone(), schema)?;
-
-    Ok(())
-}
-
-/// Drop a table
-pub fn drop_table(
-    storage: &mut MvccStorage,
-    tx_ctx: &mut TransactionContext,
-    name: &str,
-) -> Result<()> {
-    // Check transaction is active
-    if tx_ctx.state != TransactionState::Active {
-        return Err(Error::TransactionNotActive(tx_ctx.id));
-    }
-
-    // Drop the table
-    storage.drop_table(name)?;
-
-    Ok(())
-}

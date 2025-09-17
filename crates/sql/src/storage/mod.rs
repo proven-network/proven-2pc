@@ -8,4 +8,4 @@ pub mod read_ops;
 pub mod write_ops;
 
 // Re-export the main types
-pub use mvcc::{MvccRowIterator, MvccRowWithIdIterator, MvccStorage};
+pub use mvcc::MvccStorage;

@@ -15,10 +15,7 @@ impl Function for ReverseFunction {
             name: "REVERSE",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Reverses a list or string",
         };
         &SIGNATURE
     }

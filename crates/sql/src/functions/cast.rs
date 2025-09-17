@@ -14,10 +14,7 @@ impl Function for CastFunction {
             name: "CAST",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Converts a value from one type to another",
         };
         &SIGNATURE
     }
@@ -31,13 +28,13 @@ impl Function for CastFunction {
         }
 
         // The second argument must be a string literal representing the target type
-        // During semantic analysis, we can't know the actual target type yet
-        // So we return a generic nullable text type that will be refined at runtime
+        // We can't always know the exact type at semantic analysis time,
+        // but we try to parse it if possible
         match &arg_types[1] {
             DataType::Text | DataType::Str => {
-                // Return nullable text as a placeholder
-                // The actual return type depends on the target type string
-                Ok(DataType::Nullable(Box::new(DataType::Text)))
+                // We can't determine the exact type without the literal value
+                // Return the source type as the best guess
+                Ok(arg_types[0].clone())
             }
             _ => Err(Error::TypeMismatch {
                 expected: "string type for cast target".into(),

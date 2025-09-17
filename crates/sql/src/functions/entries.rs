@@ -15,10 +15,7 @@ impl Function for EntriesFunction {
             name: "ENTRIES",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns key-value pairs from a map as list of lists",
         };
         &SIGNATURE
     }

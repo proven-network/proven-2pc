@@ -6,6 +6,7 @@
 use crate::error::Result;
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
+use crate::semantic::BoundParameters;
 use crate::storage::MvccStorage;
 use crate::stream::TransactionContext;
 
@@ -14,6 +15,7 @@ pub fn execute_select(
     node: Node,
     storage: &MvccStorage,
     tx_ctx: &mut TransactionContext,
+    params: Option<&BoundParameters>,
 ) -> Result<ExecutionResult> {
     // Get schemas from storage
     let schemas = storage.get_schemas();
@@ -22,7 +24,7 @@ pub fn execute_select(
     let columns = node.get_column_names(&schemas);
 
     // Execute using read-only node execution
-    let rows = super::executor::execute_node_read(node, storage, tx_ctx)?;
+    let rows = super::executor::execute_node_read(node, storage, tx_ctx, params)?;
     let mut collected = Vec::new();
     for row in rows {
         collected.push(row?);

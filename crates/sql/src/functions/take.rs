@@ -15,10 +15,7 @@ impl Function for TakeFunction {
             name: "TAKE",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns the first N elements from a list",
         };
         &SIGNATURE
     }

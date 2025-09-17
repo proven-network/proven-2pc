@@ -17,10 +17,19 @@ mod upper;
 
 // Aggregate functions
 mod avg;
+mod avg_distinct;
 mod count;
+mod count_distinct;
 mod max;
+mod max_distinct;
 mod min;
+mod min_distinct;
+mod stdev;
+mod stdev_distinct;
 mod sum;
+mod sum_distinct;
+mod variance;
+mod variance_distinct;
 
 // Type functions
 mod cast;
@@ -71,14 +80,8 @@ pub struct FunctionSignature {
     pub min_args: usize,
     /// Maximum number of arguments (None for variadic)
     pub max_args: Option<usize>,
-    /// Expected argument types (None means any type accepted)
-    pub arg_types: Vec<Option<DataType>>,
-    /// Whether this function is deterministic
-    pub is_deterministic: bool,
     /// Whether this is an aggregate function
     pub is_aggregate: bool,
-    /// Description of the function
-    pub description: &'static str,
 }
 
 /// Trait for SQL functions
@@ -115,10 +118,19 @@ impl FunctionRegistry {
 
         // Register aggregate functions
         count::register(&mut registry);
+        count_distinct::register(&mut registry);
         sum::register(&mut registry);
+        sum_distinct::register(&mut registry);
         avg::register(&mut registry);
+        avg_distinct::register(&mut registry);
         min::register(&mut registry);
+        min_distinct::register(&mut registry);
         max::register(&mut registry);
+        max_distinct::register(&mut registry);
+        stdev::register(&mut registry);
+        stdev_distinct::register(&mut registry);
+        variance::register(&mut registry);
+        variance_distinct::register(&mut registry);
 
         // Register type functions
         cast::register(&mut registry);

@@ -15,10 +15,7 @@ impl Function for UnwrapFunction {
             name: "UNWRAP",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Path-based nested access for collections",
         };
         &SIGNATURE
     }

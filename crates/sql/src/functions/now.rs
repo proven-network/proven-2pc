@@ -14,10 +14,7 @@ impl Function for NowFunction {
             name: "NOW",
             min_args: 0,
             max_args: Some(0),
-            arg_types: vec![],
-            is_deterministic: false, // Depends on transaction context
             is_aggregate: false,
-            description: "Returns the current timestamp from the transaction context",
         };
         &SIGNATURE
     }
@@ -62,10 +59,7 @@ impl Function for CurrentTimestampFunction {
             name: "CURRENT_TIMESTAMP",
             min_args: 0,
             max_args: Some(0),
-            arg_types: vec![],
-            is_deterministic: false,
             is_aggregate: false,
-            description: "Alias for NOW() - returns current timestamp",
         };
         &SIGNATURE
     }
@@ -97,7 +91,6 @@ mod tests {
         assert_eq!(sig.name, "NOW");
         assert_eq!(sig.min_args, 0);
         assert_eq!(sig.max_args, Some(0));
-        assert!(!sig.is_deterministic); // Context-dependent
         assert!(!sig.is_aggregate);
     }
 

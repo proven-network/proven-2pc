@@ -232,11 +232,6 @@ impl QueryPredicates {
         self.reads.clear();
     }
 
-    /// Check if this is a read-only query
-    pub fn is_read_only(&self) -> bool {
-        self.writes.is_empty() && self.inserts.is_empty()
-    }
-
     /// Find conflicts with another set of predicates
     pub fn conflicts_with(&self, other: &QueryPredicates) -> Option<ConflictInfo> {
         // Read-Write conflicts: we read what they write

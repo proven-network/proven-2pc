@@ -6,6 +6,7 @@
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, expression};
 use crate::planning::plan::Node;
+use crate::semantic::BoundParameters;
 use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
 use crate::types::expression::Expression;
@@ -17,6 +18,7 @@ pub fn execute_update(
     source: Node,
     storage: &mut MvccStorage,
     tx_ctx: &mut TransactionContext,
+    params: Option<&BoundParameters>,
 ) -> Result<ExecutionResult> {
     // Phase 1: Read rows with IDs that match the WHERE clause
     let rows_to_update = {
@@ -26,7 +28,7 @@ pub fn execute_update(
         for (row_id, row) in iter {
             let matches = match &source {
                 Node::Filter { predicate, .. } => {
-                    expression::evaluate_with_arc(predicate, Some(&row), tx_ctx)?
+                    expression::evaluate_with_arc(predicate, Some(&row), tx_ctx, params)?
                         .to_bool()
                         .unwrap_or(false)
                 }
@@ -54,11 +56,11 @@ pub fn execute_update(
     for (row_id, current) in rows_to_update {
         let mut updated = current.to_vec();
         for &(col_idx, ref expr) in &assignments {
-            updated[col_idx] = expression::evaluate_with_arc(expr, Some(&current), tx_ctx)?;
+            updated[col_idx] = expression::evaluate_with_arc(expr, Some(&current), tx_ctx, params)?;
         }
 
         // Apply type coercion to match schema
-        let coerced_row = crate::semantic::coercion::coerce_row(updated, &schema)?;
+        let coerced_row = crate::coercion::coerce_row(updated, &schema)?;
 
         write_ops::update(storage, tx_ctx, &table, row_id, coerced_row)?;
         count += 1;

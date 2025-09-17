@@ -14,10 +14,7 @@ impl Function for RoundFunction {
             name: "ROUND",
             min_args: 1,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Rounds a number to specified decimal places",
         };
         &SIGNATURE
     }

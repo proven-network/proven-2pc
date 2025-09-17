@@ -18,6 +18,7 @@ use crate::stream::{
 };
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// SQL transaction engine with predicate-based conflict detection
 pub struct SqlTransactionEngine {
@@ -110,13 +111,14 @@ impl SqlTransactionEngine {
             analyzed
         };
 
-        // Check parameter count if provided
-        if let Some(ref params) = params {
+        // Validate and bind parameters if provided (but don't replace in AST)
+        let bound_params = if let Some(params) = params {
+            // Check parameter count
             let expected_count = if let Some(prepared) = self.prepared_cache.get(sql) {
                 prepared.param_count
             } else {
                 // Should not happen, but fallback to counting
-                analyzed.metadata.parameter_expectations.len()
+                analyzed.parameter_count()
             };
 
             if params.len() != expected_count {
@@ -126,9 +128,22 @@ impl SqlTransactionEngine {
                     params.len()
                 )));
             }
-        }
 
-        // Plan the analyzed statement (always done fresh for optimization)
+            // Bind parameters for validation (but don't replace in AST)
+            match crate::semantic::bind_parameters(&analyzed, params.to_vec()) {
+                Ok(bound) => Some(bound),
+                Err(e) => {
+                    return OperationResult::Complete(SqlResponse::Error(format!(
+                        "Parameter binding failed: {}",
+                        e
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
+        // Plan the bound statement
         let planner = Planner::new(
             self.storage.get_schemas(),
             self.storage.get_index_metadata(),
@@ -179,8 +194,13 @@ impl SqlTransactionEngine {
         let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
         tx_ctx.add_predicates(plan_predicates);
 
-        // Phase 5: Execute
-        match execution::execute(plan.clone(), &mut self.storage, tx_ctx) {
+        // Phase 5: Execute with parameters
+        match execution::execute_with_params(
+            plan.clone(),
+            &mut self.storage,
+            tx_ctx,
+            bound_params.as_ref(),
+        ) {
             Ok(result) => {
                 // Update schema cache if DDL operation
                 if plan.is_ddl() {

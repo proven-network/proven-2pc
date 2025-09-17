@@ -16,10 +16,7 @@ impl Function for MergeFunction {
             name: "MERGE",
             min_args: 1,
             max_args: None, // Variadic
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Merges multiple maps",
         };
         &SIGNATURE
     }

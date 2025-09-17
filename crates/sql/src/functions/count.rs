@@ -14,10 +14,7 @@ impl Function for CountFunction {
             name: "COUNT",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: true,
-            description: "Counts the number of non-NULL values",
         };
         &SIGNATURE
     }
@@ -73,7 +70,6 @@ mod tests {
         assert_eq!(sig.name, "COUNT");
         assert_eq!(sig.min_args, 1);
         assert_eq!(sig.max_args, Some(1));
-        assert!(sig.is_deterministic);
         assert!(sig.is_aggregate);
     }
 

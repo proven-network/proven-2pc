@@ -5,19 +5,20 @@
 //! transaction context.
 
 use crate::error::{Error, Result};
-use crate::semantic;
+use crate::semantic::BoundParameters;
 use crate::stream::transaction::TransactionContext;
 use crate::types::evaluator;
 use crate::types::expression::Expression;
 use crate::types::value::{Row, Value};
 use std::sync::Arc;
 
-/// Evaluate an expression to a value, using a row for column lookups
-/// and a transaction context for deterministic functions.
+/// Evaluate an expression to a value, using a row for column lookups,
+/// a transaction context for deterministic functions, and optional parameters.
 pub fn evaluate(
     expr: &Expression,
     row: Option<&Row>,
     context: &TransactionContext,
+    params: Option<&BoundParameters>,
 ) -> Result<Value> {
     use Expression::*;
     Ok(match expr {
@@ -29,34 +30,30 @@ pub fn evaluate(
             .cloned()
             .ok_or_else(|| Error::InvalidValue(format!("Column {} not found", i)))?,
 
-        Parameter(idx) => {
-            // Parameters should be bound before evaluation
-            return Err(Error::ExecutionError(format!(
-                "unbound parameter at position {}",
-                idx
-            )));
-        }
+        Parameter(idx) => params.and_then(|p| p.get(*idx)).cloned().ok_or_else(|| {
+            Error::ExecutionError(format!("unbound parameter at position {}", idx))
+        })?,
 
         // Logical operations
         And(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             evaluator::and(&l, &r)?
         }
         Or(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             evaluator::or(&l, &r)?
         }
         Not(expr) => {
-            let v = evaluate(expr, row, context)?;
+            let v = evaluate(expr, row, context, params)?;
             evaluator::not(&v)?
         }
 
         // Comparison operations with SQL NULL semantics and NaN handling
         Equal(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let mut r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let mut r = evaluate(rhs, row, context, params)?;
 
             // Special case: if comparing collections with JSON strings, parse the strings
             if matches!(l, Value::Map(_)) && matches!(r, Value::Str(_)) {
@@ -82,6 +79,7 @@ pub fn evaluate(
                         ),
                         row,
                         context,
+                        params,
                     );
                 }
             }
@@ -111,6 +109,7 @@ pub fn evaluate(
                         ),
                         row,
                         context,
+                        params,
                     );
                 }
             }
@@ -126,9 +125,10 @@ pub fn evaluate(
                         .iter()
                         .map(|(name, val)| (name.clone(), val.data_type()))
                         .collect();
-                    if let Ok(coerced) =
-                        semantic::coerce_value(parsed, &crate::types::DataType::Struct(schema))
-                    {
+                    if let Ok(coerced) = crate::coercion::coerce_value(
+                        parsed,
+                        &crate::types::DataType::Struct(schema),
+                    ) {
                         r = coerced;
                     }
                 }
@@ -145,7 +145,7 @@ pub fn evaluate(
                     .map(|(name, val)| (name.clone(), val.data_type()))
                     .collect();
                 if let Ok(coerced) =
-                    semantic::coerce_value(parsed, &crate::types::DataType::Struct(schema))
+                    crate::coercion::coerce_value(parsed, &crate::types::DataType::Struct(schema))
                 {
                     return evaluate(
                         &Expression::Equal(
@@ -154,6 +154,7 @@ pub fn evaluate(
                         ),
                         row,
                         context,
+                        params,
                     );
                 }
             }
@@ -184,8 +185,8 @@ pub fn evaluate(
         }
 
         NotEqual(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             // SQL semantics: any comparison with NULL returns NULL
             if l.is_null() || r.is_null() {
                 return Ok(Value::Null);
@@ -209,8 +210,8 @@ pub fn evaluate(
         }
 
         LessThan(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             if l.is_null() || r.is_null() {
                 return Ok(Value::Null);
             }
@@ -232,8 +233,8 @@ pub fn evaluate(
         }
 
         LessThanOrEqual(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             if l.is_null() || r.is_null() {
                 return Ok(Value::Null);
             }
@@ -255,8 +256,8 @@ pub fn evaluate(
         }
 
         GreaterThan(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             if l.is_null() || r.is_null() {
                 return Ok(Value::Null);
             }
@@ -278,8 +279,8 @@ pub fn evaluate(
         }
 
         GreaterThanOrEqual(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             if l.is_null() || r.is_null() {
                 return Ok(Value::Null);
             }
@@ -301,39 +302,39 @@ pub fn evaluate(
         }
 
         Is(expr, check_value) => {
-            let v = evaluate(expr, row, context)?;
+            let v = evaluate(expr, row, context, params)?;
             Value::boolean(v == *check_value)
         }
 
         // Arithmetic operations
         Add(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             evaluator::add(&l, &r)?
         }
         Subtract(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             evaluator::subtract(&l, &r)?
         }
         Multiply(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             evaluator::multiply(&l, &r)?
         }
         Divide(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             evaluator::divide(&l, &r)?
         }
         Remainder(lhs, rhs) => {
-            let l = evaluate(lhs, row, context)?;
-            let r = evaluate(rhs, row, context)?;
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
             evaluator::remainder(&l, &r)?
         }
 
         Negate(expr) => {
-            let value = evaluate(expr, row, context)?;
+            let value = evaluate(expr, row, context, params)?;
             match value {
                 Value::Null => Value::Null,
                 Value::I8(i) => Value::I8(-i),
@@ -392,18 +393,20 @@ pub fn evaluate(
             }
         }
 
-        Identity(expr) => evaluate(expr, row, context)?,
+        Identity(expr) => evaluate(expr, row, context, params)?,
 
         // Function calls
         Function(name, args) => {
-            let arg_values: Result<Vec<_>> =
-                args.iter().map(|arg| evaluate(arg, row, context)).collect();
+            let arg_values: Result<Vec<_>> = args
+                .iter()
+                .map(|arg| evaluate(arg, row, context, params))
+                .collect();
             crate::functions::execute_function(name, &arg_values?, context)?
         }
 
         // IN list operator
         InList(expr, list, negated) => {
-            let value = evaluate(expr, row, context)?;
+            let value = evaluate(expr, row, context, params)?;
 
             if value == Value::Null {
                 return Ok(Value::Null);
@@ -413,7 +416,7 @@ pub fn evaluate(
             let mut has_null = false;
 
             for item in list {
-                let item_value = evaluate(item, row, context)?;
+                let item_value = evaluate(item, row, context, params)?;
                 if item_value == Value::Null {
                     has_null = true;
                 } else if let Ok(std::cmp::Ordering::Equal) =
@@ -436,9 +439,9 @@ pub fn evaluate(
 
         // BETWEEN operator
         Between(expr, low, high, negated) => {
-            let value = evaluate(expr, row, context)?;
-            let low_value = evaluate(low, row, context)?;
-            let high_value = evaluate(high, row, context)?;
+            let value = evaluate(expr, row, context, params)?;
+            let low_value = evaluate(low, row, context, params)?;
+            let high_value = evaluate(high, row, context, params)?;
 
             if value == Value::Null || low_value == Value::Null || high_value == Value::Null {
                 return Ok(Value::Null);
@@ -461,8 +464,8 @@ pub fn evaluate(
 
         // Collection access expressions
         ArrayAccess(base, index) => {
-            let collection = evaluate(base, row, context)?;
-            let idx = evaluate(index, row, context)?;
+            let collection = evaluate(base, row, context, params)?;
+            let idx = evaluate(index, row, context, params)?;
 
             match (collection, idx) {
                 (Value::Array(arr), Value::I32(i)) if i >= 0 => {
@@ -483,7 +486,7 @@ pub fn evaluate(
         }
 
         FieldAccess(base, field) => {
-            let struct_val = evaluate(base, row, context)?;
+            let struct_val = evaluate(base, row, context, params)?;
             match struct_val {
                 Value::Struct(fields) => fields
                     .iter()
@@ -495,16 +498,18 @@ pub fn evaluate(
         }
 
         ArrayLiteral(elements) => {
-            let values: Result<Vec<_>> =
-                elements.iter().map(|e| evaluate(e, row, context)).collect();
+            let values: Result<Vec<_>> = elements
+                .iter()
+                .map(|e| evaluate(e, row, context, params))
+                .collect();
             Value::List(values?)
         }
 
         MapLiteral(pairs) => {
             let mut map = std::collections::HashMap::new();
             for (k, v) in pairs {
-                let key = evaluate(k, row, context)?;
-                let value = evaluate(v, row, context)?;
+                let key = evaluate(k, row, context, params)?;
+                let value = evaluate(v, row, context, params)?;
                 if let Value::Str(key_str) = key {
                     map.insert(key_str, value);
                 }
@@ -522,6 +527,7 @@ pub fn evaluate_with_arc(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
     context: &TransactionContext,
+    params: Option<&BoundParameters>,
 ) -> Result<Value> {
-    evaluate(expr, row.map(|r| r.as_ref()), context)
+    evaluate(expr, row.map(|r| r.as_ref()), context, params)
 }

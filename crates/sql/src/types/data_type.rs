@@ -45,6 +45,8 @@ pub enum DataType {
     Struct(Vec<(String, DataType)>),     // Named fields like records
     // Null handling
     Nullable(Box<DataType>),
+    // Unknown type - used when type depends on parameters that aren't bound yet
+    Unknown,
 }
 
 impl DataType {
@@ -102,6 +104,7 @@ impl fmt::Display for DataType {
                 write!(f, "STRUCT({})", field_strs.join(", "))
             }
             DataType::Nullable(inner) => write!(f, "{} NULL", inner),
+            DataType::Unknown => write!(f, "UNKNOWN"),
         }
     }
 }

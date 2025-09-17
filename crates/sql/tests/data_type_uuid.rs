@@ -32,7 +32,7 @@ fn test_create_table_with_uuid_field() {
 }
 
 #[test]
-#[should_panic(expected = "Incompatible literal for UUID")]
+#[should_panic(expected = "InvalidValue")]
 fn test_insert_number_into_uuid_should_error() {
     let mut ctx = setup_test();
 

@@ -14,10 +14,7 @@ impl Function for UpperFunction {
             name: "UPPER",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![], // Will be validated in validate()
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Converts a string to uppercase",
         };
         &SIGNATURE
     }
@@ -81,7 +78,6 @@ mod tests {
         assert_eq!(sig.name, "UPPER");
         assert_eq!(sig.min_args, 1);
         assert_eq!(sig.max_args, Some(1));
-        assert!(sig.is_deterministic);
         assert!(!sig.is_aggregate);
     }
 

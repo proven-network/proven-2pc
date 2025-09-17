@@ -14,10 +14,7 @@ impl Function for CoalesceFunction {
             name: "COALESCE",
             min_args: 1,
             max_args: None, // Variadic
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns the first non-NULL value from the arguments",
         };
         &SIGNATURE
     }
@@ -83,10 +80,7 @@ impl Function for IfNullFunction {
             name: "IFNULL",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns the first argument if not NULL, otherwise the second",
         };
         &SIGNATURE
     }
@@ -131,7 +125,6 @@ mod tests {
         assert_eq!(sig.name, "COALESCE");
         assert_eq!(sig.min_args, 1);
         assert_eq!(sig.max_args, None); // Variadic
-        assert!(sig.is_deterministic);
         assert!(!sig.is_aggregate);
     }
 

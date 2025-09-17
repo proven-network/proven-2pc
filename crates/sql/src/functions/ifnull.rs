@@ -15,10 +15,7 @@ impl Function for IfnullFunction {
             name: "IFNULL",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns first non-null value (alias for COALESCE)",
         };
         &SIGNATURE
     }

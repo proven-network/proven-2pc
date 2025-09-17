@@ -6,6 +6,7 @@
 use crate::error::{Error, Result};
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
+use crate::semantic::BoundParameters;
 use crate::storage::{MvccStorage, write_ops};
 use crate::stream::TransactionContext;
 use crate::types::value::Value;
@@ -17,6 +18,7 @@ pub fn execute_insert(
     source: Node,
     storage: &mut MvccStorage,
     tx_ctx: &mut TransactionContext,
+    params: Option<&BoundParameters>,
 ) -> Result<ExecutionResult> {
     // Get schema from storage
     let schemas = storage.get_schemas();
@@ -28,7 +30,7 @@ pub fn execute_insert(
     let rows_to_insert = {
         // Use immutable reference for reading
         let storage_ref = &*storage;
-        let rows = super::executor::execute_node_read(source, storage_ref, tx_ctx)?;
+        let rows = super::executor::execute_node_read(source, storage_ref, tx_ctx, params)?;
         rows.collect::<Result<Vec<_>>>()?
     }; // Immutable borrow ends here
 
@@ -91,7 +93,7 @@ pub fn execute_insert(
         };
 
         // Apply type coercion to match schema
-        let coerced_row = crate::semantic::coercion::coerce_row(final_row, schema)?;
+        let coerced_row = crate::coercion::coerce_row(final_row, schema)?;
 
         write_ops::insert(storage, tx_ctx, &table, coerced_row)?;
         count += 1;

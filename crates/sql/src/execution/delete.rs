@@ -6,6 +6,7 @@
 use crate::error::Result;
 use crate::execution::{ExecutionResult, expression};
 use crate::planning::plan::Node;
+use crate::semantic::BoundParameters;
 use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
 
@@ -15,6 +16,7 @@ pub fn execute_delete(
     source: Node,
     storage: &mut MvccStorage,
     tx_ctx: &mut TransactionContext,
+    params: Option<&BoundParameters>,
 ) -> Result<ExecutionResult> {
     // Phase 1: Read rows with IDs that match the WHERE clause
     let rows_to_delete = {
@@ -24,7 +26,7 @@ pub fn execute_delete(
         for (row_id, row) in iter {
             let matches = match &source {
                 Node::Filter { predicate, .. } => {
-                    expression::evaluate_with_arc(predicate, Some(&row), tx_ctx)?
+                    expression::evaluate_with_arc(predicate, Some(&row), tx_ctx, params)?
                         .to_bool()
                         .unwrap_or(false)
                 }

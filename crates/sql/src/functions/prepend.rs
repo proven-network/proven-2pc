@@ -15,10 +15,7 @@ impl Function for PrependFunction {
             name: "PREPEND",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Adds an element to the beginning of a list",
         };
         &SIGNATURE
     }

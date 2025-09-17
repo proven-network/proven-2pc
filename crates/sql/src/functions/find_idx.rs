@@ -15,10 +15,7 @@ impl Function for FindIdxFunction {
             name: "FIND_IDX",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Finds the index of an element in a list",
         };
         &SIGNATURE
     }

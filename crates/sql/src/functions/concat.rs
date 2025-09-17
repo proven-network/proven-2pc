@@ -14,10 +14,7 @@ impl Function for ConcatFunction {
             name: "CONCAT",
             min_args: 1,
             max_args: None, // Variadic
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Concatenates multiple strings or lists",
         };
         &SIGNATURE
     }
@@ -124,7 +121,6 @@ mod tests {
         assert_eq!(sig.name, "CONCAT");
         assert_eq!(sig.min_args, 1);
         assert_eq!(sig.max_args, None); // Variadic
-        assert!(sig.is_deterministic);
         assert!(!sig.is_aggregate);
     }
 

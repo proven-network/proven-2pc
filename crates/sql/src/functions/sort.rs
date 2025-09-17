@@ -15,10 +15,7 @@ impl Function for SortFunction {
             name: "SORT",
             min_args: 1,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Sorts elements in a list",
         };
         &SIGNATURE
     }

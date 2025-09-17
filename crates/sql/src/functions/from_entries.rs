@@ -16,10 +16,7 @@ impl Function for FromEntriesFunction {
             name: "FROM_ENTRIES",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Creates a map from a list of key-value pairs",
         };
         &SIGNATURE
     }

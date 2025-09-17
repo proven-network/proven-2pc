@@ -165,7 +165,8 @@ impl NestedLoopJoiner {
 
     /// Evaluate the join predicate for MVCC context
     fn evaluate_predicate(&self, row: &RowRef) -> Result<Value> {
-        expression::evaluate(&self.predicate, Some(row), &self.context)
+        // TODO: Thread parameters through join operations
+        expression::evaluate(&self.predicate, Some(row), &self.context, None)
     }
 }
 

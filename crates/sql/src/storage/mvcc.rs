@@ -37,15 +37,6 @@ impl StorageRow {
 // Alias for compatibility
 type Row = StorageRow;
 
-/// Key for identifying an index
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct IndexKey {
-    /// Table name
-    pub table: String,
-    /// Column name(s) - for composite indexes this contains multiple columns
-    pub columns: Vec<String>,
-}
-
 /// Composite index key that can hold multiple values
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum CompositeKey {

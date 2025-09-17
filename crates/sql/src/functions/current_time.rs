@@ -16,10 +16,7 @@ impl Function for CurrentTimeFunction {
             name: "CURRENT_TIME",
             min_args: 0,
             max_args: Some(0),
-            arg_types: vec![],
-            is_deterministic: false,
             is_aggregate: false,
-            description: "Returns the current time",
         };
         &SIGNATURE
     }

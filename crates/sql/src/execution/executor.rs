@@ -27,16 +27,17 @@ pub enum ExecutionResult {
     Ddl(String),
 }
 
-/// Execute a query plan - dispatches to read or write execution
-pub fn execute(
+/// Execute a query plan with parameters
+pub fn execute_with_params(
     plan: Plan,
     storage: &mut MvccStorage,
     tx_ctx: &mut TransactionContext,
+    params: Option<&crate::semantic::BoundParameters>,
 ) -> Result<ExecutionResult> {
     match plan {
         Plan::Select(node) => {
             // SELECT uses immutable storage reference
-            super::select::execute_select(*node, storage, tx_ctx)
+            super::select::execute_select(*node, storage, tx_ctx, params)
         }
 
         Plan::Insert {
@@ -45,7 +46,7 @@ pub fn execute(
             source,
         } => {
             // INSERT uses write execution with phased approach
-            super::insert::execute_insert(table, columns, *source, storage, tx_ctx)
+            super::insert::execute_insert(table, columns, *source, storage, tx_ctx, params)
         }
         Plan::Update {
             table,
@@ -53,12 +54,12 @@ pub fn execute(
             source,
         } => {
             // UPDATE uses write execution with phased approach
-            super::update::execute_update(table, assignments, *source, storage, tx_ctx)
+            super::update::execute_update(table, assignments, *source, storage, tx_ctx, params)
         }
 
         Plan::Delete { table, source } => {
             // DELETE uses write execution with phased approach
-            super::delete::execute_delete(table, *source, storage, tx_ctx)
+            super::delete::execute_delete(table, *source, storage, tx_ctx, params)
         }
 
         // DDL operations are delegated to storage
@@ -77,6 +78,7 @@ pub fn execute_node_read<'a>(
     node: Node,
     storage: &'a MvccStorage,
     tx_ctx: &mut TransactionContext,
+    params: Option<&crate::semantic::BoundParameters>,
 ) -> Result<Rows<'a>> {
     match node {
         Node::Scan { table, .. } => {
@@ -95,7 +97,7 @@ pub fn execute_node_read<'a>(
             // Evaluate the lookup values
             let mut filter_values = Vec::new();
             for value_expr in &values {
-                filter_values.push(expression::evaluate(value_expr, None, tx_ctx)?);
+                filter_values.push(expression::evaluate(value_expr, None, tx_ctx, params)?);
             }
 
             // Try to use index lookup first
@@ -185,7 +187,7 @@ pub fn execute_node_read<'a>(
                 .map(|exprs| {
                     exprs
                         .iter()
-                        .map(|e| expression::evaluate(e, None, tx_ctx))
+                        .map(|e| expression::evaluate(e, None, tx_ctx, params))
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?;
@@ -194,7 +196,7 @@ pub fn execute_node_read<'a>(
                 .map(|exprs| {
                     exprs
                         .iter()
-                        .map(|e| expression::evaluate(e, None, tx_ctx))
+                        .map(|e| expression::evaluate(e, None, tx_ctx, params))
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?;
@@ -297,14 +299,20 @@ pub fn execute_node_read<'a>(
         }
 
         Node::Filter { source, predicate } => {
-            let source_rows = execute_node_read(*source, storage, tx_ctx)?;
+            let source_rows = execute_node_read(*source, storage, tx_ctx, params)?;
 
-            // Clone transaction context for use in closure
+            // Clone transaction context and params for use in closure
             let tx_ctx_clone = tx_ctx.clone();
+            let params_clone = params.cloned();
 
             let filtered = source_rows.filter_map(move |row| match row {
                 Ok(row) => {
-                    match expression::evaluate_with_arc(&predicate, Some(&row), &tx_ctx_clone) {
+                    match expression::evaluate_with_arc(
+                        &predicate,
+                        Some(&row),
+                        &tx_ctx_clone,
+                        params_clone.as_ref(),
+                    ) {
                         Ok(v) if v.to_bool().unwrap_or(false) => Some(Ok(row)),
                         Ok(_) => None,
                         Err(e) => Some(Err(e)),
@@ -319,11 +327,17 @@ pub fn execute_node_read<'a>(
         Node::Values { rows } => {
             // Values node contains literal rows - convert Expression to Value lazily
             let tx_ctx_clone = tx_ctx.clone();
+            let params_clone = params.cloned();
 
             let values_iter = rows.into_iter().map(move |row| {
                 let mut value_row = Vec::new();
                 for expr in row {
-                    value_row.push(expression::evaluate(&expr, None, &tx_ctx_clone)?);
+                    value_row.push(expression::evaluate(
+                        &expr,
+                        None,
+                        &tx_ctx_clone,
+                        params_clone.as_ref(),
+                    )?);
                 }
                 Ok(Arc::new(value_row))
             });
@@ -336,10 +350,11 @@ pub fn execute_node_read<'a>(
             expressions,
             ..
         } => {
-            let source_rows = execute_node_read(*source, storage, tx_ctx)?;
+            let source_rows = execute_node_read(*source, storage, tx_ctx, params)?;
 
-            // Clone transaction context for use in closure
+            // Clone transaction context and params for use in closure
             let tx_ctx_clone = tx_ctx.clone();
+            let params_clone = params.cloned();
 
             let projected = source_rows.map(move |row| match row {
                 Ok(row) => {
@@ -349,6 +364,7 @@ pub fn execute_node_read<'a>(
                             expr,
                             Some(&row),
                             &tx_ctx_clone,
+                            params_clone.as_ref(),
                         )?);
                     }
                     Ok(Arc::new(result))
@@ -361,12 +377,12 @@ pub fn execute_node_read<'a>(
 
         // Limit and Offset are trivial with iterators
         Node::Limit { source, limit } => {
-            let rows = execute_node_read(*source, storage, tx_ctx)?;
+            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
             Ok(Box::new(rows.take(limit)))
         }
 
         Node::Offset { source, offset } => {
-            let rows = execute_node_read(*source, storage, tx_ctx)?;
+            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
             Ok(Box::new(rows.skip(offset)))
         }
 
@@ -380,7 +396,7 @@ pub fn execute_node_read<'a>(
             let mut aggregator = Aggregator::new(group_by, aggregates);
 
             // Process all source rows
-            let rows = execute_node_read(*source, storage, tx_ctx)?;
+            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
             for row in rows {
                 let row = row?;
                 // Use the transaction context for the aggregator
@@ -406,8 +422,8 @@ pub fn execute_node_read<'a>(
             let right_columns = right.column_count(&schemas);
 
             // Both can borrow storage immutably!
-            let left_rows = execute_node_read(*left, storage, tx_ctx)?;
-            let right_rows = execute_node_read(*right, storage, tx_ctx)?;
+            let left_rows = execute_node_read(*left, storage, tx_ctx, params)?;
+            let right_rows = execute_node_read(*right, storage, tx_ctx, params)?;
 
             join::execute_hash_join(
                 left_rows,
@@ -432,8 +448,8 @@ pub fn execute_node_read<'a>(
             let left_columns = left.column_count(&schemas);
             let right_columns = right.column_count(&schemas);
 
-            let left_rows = execute_node_read(*left, storage, tx_ctx)?;
-            let right_rows = execute_node_read(*right, storage, tx_ctx)?;
+            let left_rows = execute_node_read(*left, storage, tx_ctx, params)?;
+            let right_rows = execute_node_read(*right, storage, tx_ctx, params)?;
 
             // Use the standalone function for nested loop join
             join::execute_nested_loop_join(
@@ -449,7 +465,7 @@ pub fn execute_node_read<'a>(
 
         // Order By requires full materialization to sort
         Node::Order { source, order_by } => {
-            let rows = execute_node_read(*source, storage, tx_ctx)?;
+            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
 
             // Must materialize to sort
             let mut collected: Vec<_> = rows.collect::<Result<Vec<_>>>()?;
@@ -457,10 +473,10 @@ pub fn execute_node_read<'a>(
             // Sort based on order_by expressions
             collected.sort_by(|a, b| {
                 for (expr, direction) in &order_by {
-                    let val_a =
-                        expression::evaluate_with_arc(expr, Some(a), tx_ctx).unwrap_or(Value::Null);
-                    let val_b =
-                        expression::evaluate_with_arc(expr, Some(b), tx_ctx).unwrap_or(Value::Null);
+                    let val_a = expression::evaluate_with_arc(expr, Some(a), tx_ctx, params)
+                        .unwrap_or(Value::Null);
+                    let val_b = expression::evaluate_with_arc(expr, Some(b), tx_ctx, params)
+                        .unwrap_or(Value::Null);
 
                     let cmp = val_a
                         .partial_cmp(&val_b)

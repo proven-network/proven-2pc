@@ -15,10 +15,7 @@ impl Function for FlattenFunction {
             name: "FLATTEN",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Flattens nested lists by one level",
         };
         &SIGNATURE
     }

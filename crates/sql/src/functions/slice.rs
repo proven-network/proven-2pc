@@ -15,10 +15,7 @@ impl Function for SliceFunction {
             name: "SLICE",
             min_args: 2,
             max_args: Some(3),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Extracts a slice from a list",
         };
         &SIGNATURE
     }

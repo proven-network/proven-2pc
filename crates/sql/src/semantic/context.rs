@@ -38,6 +38,8 @@ pub struct AnalysisContext {
     tables: Vec<TableInfo>,
     /// Metadata being collected
     metadata: StatementMetadata,
+    /// Current function being analyzed (for parameter context)
+    current_function: Option<String>,
 }
 
 impl AnalysisContext {
@@ -47,6 +49,7 @@ impl AnalysisContext {
             schemas,
             tables: Vec::new(),
             metadata: StatementMetadata::new(),
+            current_function: None,
         }
     }
 
@@ -102,10 +105,17 @@ impl AnalysisContext {
                     .referenced_columns
                     .insert((table.name.clone(), column_name.to_string()));
 
+                // Wrap in Nullable if the column is nullable
+                let data_type = if column.nullable {
+                    DataType::Nullable(Box::new(column.datatype.clone()))
+                } else {
+                    column.datatype.clone()
+                };
+
                 return Ok(ColumnInfo {
                     table_name: table.name.clone(),
                     column_name: column_name.to_string(),
-                    data_type: column.datatype.clone(),
+                    data_type,
                     nullable: column.nullable,
                 });
             }
@@ -115,20 +125,36 @@ impl AnalysisContext {
             for table in &self.tables {
                 if let Some(column) = table.schema.columns.iter().find(|c| c.name == table_ref) {
                     // Found a column with this name - check if it's a struct
-                    if matches!(&column.datatype, DataType::Struct(_)) {
+                    if let DataType::Struct(fields) = &column.datatype {
                         // This is a struct field access, not a table.column reference
-                        // Return a synthetic column info for the field access
-                        // The actual field validation will happen during type checking
-                        self.metadata
-                            .referenced_columns
-                            .insert((table.name.clone(), table_ref.to_string()));
+                        // Find the field in the struct
+                        if let Some((_, field_type)) =
+                            fields.iter().find(|(name, _)| name == column_name)
+                        {
+                            self.metadata
+                                .referenced_columns
+                                .insert((table.name.clone(), table_ref.to_string()));
 
-                        return Ok(ColumnInfo {
-                            table_name: table.name.clone(),
-                            column_name: format!("{}.{}", table_ref, column_name),
-                            data_type: DataType::Nullable(Box::new(DataType::Text)), // Will be refined during type checking
-                            nullable: true,
-                        });
+                            // Return the actual field type from the struct
+                            let data_type = if column.nullable {
+                                // If the struct column is nullable, field access is also nullable
+                                DataType::Nullable(Box::new(field_type.clone()))
+                            } else {
+                                field_type.clone()
+                            };
+
+                            return Ok(ColumnInfo {
+                                table_name: table.name.clone(),
+                                column_name: format!("{}.{}", table_ref, column_name),
+                                data_type,
+                                nullable: column.nullable,
+                            });
+                        } else {
+                            return Err(Error::ExecutionError(format!(
+                                "Field '{}' not found in struct '{}'",
+                                column_name, table_ref
+                            )));
+                        }
                     }
                 }
             }
@@ -159,10 +185,17 @@ impl AnalysisContext {
             .referenced_columns
             .insert((table.name.clone(), column_name.to_string()));
 
+        // Wrap in Nullable if the column is nullable
+        let data_type = if column.nullable {
+            DataType::Nullable(Box::new(column.datatype.clone()))
+        } else {
+            column.datatype.clone()
+        };
+
         Ok(ColumnInfo {
             table_name: table.name.clone(),
             column_name: column_name.to_string(),
-            data_type: column.datatype.clone(),
+            data_type,
             nullable: column.nullable,
         })
     }
@@ -214,5 +247,76 @@ impl AnalysisContext {
     /// Set whether the statement is a mutation
     pub fn set_mutation(&mut self, is_mutation: bool) {
         self.metadata.is_mutation = is_mutation;
+    }
+
+    /// Set the current function being analyzed
+    pub fn set_current_function(&mut self, function_name: Option<String>) {
+        self.current_function = function_name;
+    }
+
+    /// Get the current function being analyzed
+    pub fn current_function(&self) -> Option<&String> {
+        self.current_function.as_ref()
+    }
+
+    /// Get reference to tables
+    pub fn tables(&self) -> &[TableInfo] {
+        &self.tables
+    }
+
+    /// Get column type without mutating the context (for type checking)
+    pub fn get_column_type(
+        &self,
+        table_ref: Option<&str>,
+        column_name: &str,
+    ) -> Option<(DataType, bool)> {
+        // If table reference is provided, look for that specific table
+        if let Some(table_ref) = table_ref {
+            // First try to find a matching table or alias
+            if let Some(table) = self
+                .tables
+                .iter()
+                .find(|t| t.name == table_ref || t.alias.as_deref() == Some(table_ref))
+            {
+                // Found a table - look for the column in it
+                if let Some(column) = table.schema.columns.iter().find(|c| c.name == column_name) {
+                    return Some((column.datatype.clone(), column.nullable));
+                }
+            }
+
+            // Didn't find a table - check if table_ref is actually a column with struct type
+            // This handles cases like "details.name" where details is a STRUCT column
+            for table in &self.tables {
+                if let Some(column) = table.schema.columns.iter().find(|c| c.name == table_ref) {
+                    // Found a column with this name - check if it's a struct
+                    if let DataType::Struct(fields) = &column.datatype {
+                        // This is a struct field access, not a table.column reference
+                        // Find the field in the struct
+                        if let Some((_, field_type)) =
+                            fields.iter().find(|(name, _)| name == column_name)
+                        {
+                            // Return the field type
+                            // If the struct column is nullable, field access is also nullable
+                            return Some((field_type.clone(), column.nullable));
+                        }
+                    }
+                }
+            }
+
+            return None;
+        }
+
+        // No table reference - search all tables
+        let mut found = None;
+        for table in &self.tables {
+            if let Some(column) = table.schema.columns.iter().find(|c| c.name == column_name) {
+                if found.is_some() {
+                    // Ambiguous column reference - return None
+                    return None;
+                }
+                found = Some((column.datatype.clone(), column.nullable));
+            }
+        }
+        found
     }
 }

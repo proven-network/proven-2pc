@@ -11,6 +11,4 @@ pub mod stats_cache;
 pub mod transaction;
 
 // Re-export commonly used types
-pub use operation::SqlOperation;
-pub use response::SqlResponse;
 pub use transaction::{TransactionContext, TransactionState};

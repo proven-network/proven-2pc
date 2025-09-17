@@ -6,6 +6,7 @@
 //! - Provides full lock visibility for distributed coordination
 //! - Ensures deterministic execution for Raft consensus
 
+mod coercion;
 mod error;
 mod execution;
 mod functions;

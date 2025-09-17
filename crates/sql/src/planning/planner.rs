@@ -179,8 +179,8 @@ impl Planner {
     /// Plan an analyzed statement
     pub fn plan(&self, analyzed: AnalyzedStatement) -> Result<Plan> {
         // Extract metadata for optimization hints
-        let metadata = analyzed.metadata;
-        let statement = analyzed.statement.into_statement();
+        let _metadata = analyzed.metadata.clone();
+        let statement = analyzed.into_statement();
         match statement {
             Statement::Explain(_) => {
                 Err(Error::ExecutionError("EXPLAIN not yet implemented".into()))

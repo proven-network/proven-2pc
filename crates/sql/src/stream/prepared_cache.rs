@@ -127,8 +127,9 @@ impl PreparedCache {
             .filter(|(_, stmt)| {
                 stmt.analyzed
                     .metadata
-                    .referenced_tables
-                    .contains(table_name)
+                    .table_access
+                    .iter()
+                    .any(|t| t.table == *table_name)
             })
             .map(|(sql, _)| sql.clone())
             .collect();

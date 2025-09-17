@@ -15,10 +15,7 @@ impl Function for GenerateUuidFunction {
             name: "GENERATE_UUID",
             min_args: 0,
             max_args: Some(0),
-            arg_types: vec![],
-            is_deterministic: false, // Depends on transaction context
             is_aggregate: false,
-            description: "Generates a deterministic UUID based on transaction context",
         };
         &SIGNATURE
     }

@@ -14,10 +14,7 @@ impl Function for LengthFunction {
             name: "LENGTH",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns the length of a string, array, list, map, or struct",
         };
         &SIGNATURE
     }

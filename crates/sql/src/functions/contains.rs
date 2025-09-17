@@ -15,10 +15,7 @@ impl Function for ContainsFunction {
             name: "CONTAINS",
             min_args: 2,
             max_args: Some(2),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Checks if element/key exists in collection",
         };
         &SIGNATURE
     }

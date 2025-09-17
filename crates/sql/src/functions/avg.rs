@@ -14,10 +14,7 @@ impl Function for AvgFunction {
             name: "AVG",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: true,
-            description: "Calculates the average of numeric values",
         };
         &SIGNATURE
     }
@@ -97,7 +94,6 @@ mod tests {
         assert_eq!(sig.name, "AVG");
         assert_eq!(sig.min_args, 1);
         assert_eq!(sig.max_args, Some(1));
-        assert!(sig.is_deterministic);
         assert!(sig.is_aggregate);
     }
 

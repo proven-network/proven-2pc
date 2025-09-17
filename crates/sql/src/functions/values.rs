@@ -15,10 +15,7 @@ impl Function for ValuesFunction {
             name: "VALUES",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns all values from a map as a list",
         };
         &SIGNATURE
     }
@@ -64,10 +61,7 @@ impl Function for MapValuesFunction {
             name: "MAP_VALUES",
             min_args: 1,
             max_args: Some(1),
-            arg_types: vec![],
-            is_deterministic: true,
             is_aggregate: false,
-            description: "Returns all values from a map as a list (alias for VALUES)",
         };
         &SIGNATURE
     }

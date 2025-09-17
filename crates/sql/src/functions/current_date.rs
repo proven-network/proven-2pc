@@ -16,10 +16,7 @@ impl Function for CurrentDateFunction {
             name: "CURRENT_DATE",
             min_args: 0,
             max_args: Some(0),
-            arg_types: vec![],
-            is_deterministic: false,
             is_aggregate: false,
-            description: "Returns the current date",
         };
         &SIGNATURE
     }
