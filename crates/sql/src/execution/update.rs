@@ -6,10 +6,10 @@
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, expression};
 use crate::planning::plan::Node;
-use crate::semantic::BoundParameters;
 use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
 use crate::types::expression::Expression;
+use crate::types::value::Value;
 
 /// Execute UPDATE with phased read-then-write approach
 pub fn execute_update(
@@ -18,7 +18,7 @@ pub fn execute_update(
     source: Node,
     storage: &mut MvccStorage,
     tx_ctx: &mut TransactionContext,
-    params: Option<&BoundParameters>,
+    params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Phase 1: Read rows with IDs that match the WHERE clause
     let rows_to_update = {

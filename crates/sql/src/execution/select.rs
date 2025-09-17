@@ -6,16 +6,16 @@
 use crate::error::Result;
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
-use crate::semantic::BoundParameters;
 use crate::storage::MvccStorage;
 use crate::stream::TransactionContext;
+use crate::types::value::Value;
 
 /// Execute a SELECT query using immutable storage reference
 pub fn execute_select(
     node: Node,
     storage: &MvccStorage,
     tx_ctx: &mut TransactionContext,
-    params: Option<&BoundParameters>,
+    params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Get schemas from storage
     let schemas = storage.get_schemas();

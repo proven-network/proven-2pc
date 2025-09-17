@@ -30,7 +30,6 @@ impl Function for MinDistinctFunction {
         // MIN_DISTINCT works with any comparable type
         // Returns the same type as input
         match &arg_types[0] {
-            DataType::Unknown => Ok(DataType::Unknown),
             DataType::Nullable(inner) => Ok(DataType::Nullable(inner.clone())),
             dt => Ok(dt.clone()),
         }
@@ -79,10 +78,8 @@ mod tests {
         assert_eq!(func.validate(&[DataType::Text]).unwrap(), DataType::Text);
         assert_eq!(func.validate(&[DataType::F64]).unwrap(), DataType::F64);
         assert_eq!(func.validate(&[DataType::Date]).unwrap(), DataType::Date);
-        assert_eq!(
-            func.validate(&[DataType::Unknown]).unwrap(),
-            DataType::Unknown
-        );
+        // MIN can work with Null (returns Null)
+        assert_eq!(func.validate(&[DataType::Null]).unwrap(), DataType::Null);
 
         // Wrong number of arguments
         assert!(func.validate(&[]).is_err());

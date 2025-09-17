@@ -29,7 +29,7 @@ impl BinaryOperator for RemainderOperator {
 
         let result = match (left_inner, right_inner) {
             // Unknown (NULL) with anything returns Unknown
-            (Unknown, _) | (_, Unknown) => Unknown,
+            (Null, _) | (_, Null) => Null,
 
             // Integer remainder
             (a, b) if a.is_integer() && b.is_integer() => promote_integer_types(a, b)?,

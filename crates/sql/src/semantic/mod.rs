@@ -14,7 +14,6 @@
 // New efficient implementation
 pub mod analyzer;
 pub mod caching_analyzer;
-pub mod parameters;
 pub mod statement;
 
 // Supporting modules
@@ -31,5 +30,4 @@ mod test_zero_copy;
 
 // Export the new implementation types as primary interface
 pub use caching_analyzer::CachingSemanticAnalyzer;
-pub use parameters::{BoundParameters, bind_parameters};
 pub use statement::AnalyzedStatement;

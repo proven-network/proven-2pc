@@ -32,7 +32,7 @@ impl TypeChecker {
         annotations: &mut TypeAnnotations,
     ) -> Result<TypeInfo> {
         let type_info = match expr {
-            Expression::Literal(lit) => self.check_literal(lit),
+            Expression::Literal(lit) => self.check_literal(lit, context)?,
 
             Expression::Column(table, col) => self.check_column(table.as_deref(), col, context)?,
 
@@ -42,13 +42,21 @@ impl TypeChecker {
                 self.check_function(name, args, expr_id, context, annotations)?
             }
 
-            Expression::Parameter(_idx) => {
-                // Parameters get their type from context later
-                TypeInfo {
-                    data_type: DataType::Unknown,
-                    nullable: true,
-                    is_aggregate: false,
-                    is_deterministic: false,
+            Expression::Parameter(idx) => {
+                // Parameters should have their type from context
+                // If we don't have parameter types, this is an error
+                if let Some(param_type) = context.get_parameter_type(*idx) {
+                    TypeInfo {
+                        data_type: param_type,
+                        nullable: true,
+                        is_aggregate: false,
+                        is_deterministic: false,
+                    }
+                } else {
+                    return Err(Error::ExecutionError(format!(
+                        "Parameter {} type not provided",
+                        idx
+                    )));
                 }
             }
 
@@ -94,10 +102,10 @@ impl TypeChecker {
                                 DataType::Nullable(elem_type.clone())
                             }
                             DataType::Map(_, value_type) => DataType::Nullable(value_type.clone()),
-                            _ => DataType::Unknown,
+                            _ => DataType::I64, // Default for unsupported nested types
                         }
                     }
-                    _ => DataType::Unknown,
+                    _ => DataType::I64, // Default for unsupported base types
                 };
 
                 TypeInfo {
@@ -113,10 +121,10 @@ impl TypeChecker {
                 let base_id = expr_id.child(0);
                 let base_type = self.check_expression(base, &base_id, context, annotations)?;
 
-                // For now, field access returns Unknown type
+                // For now, field access returns I64 as placeholder
                 // TODO: Implement struct field type resolution
                 TypeInfo {
-                    data_type: DataType::Unknown,
+                    data_type: DataType::I64,
                     nullable: true,
                     is_aggregate: base_type.is_aggregate,
                     is_deterministic: base_type.is_deterministic,
@@ -141,7 +149,7 @@ impl TypeChecker {
 
                 // Determine common element type
                 let element_type = if element_types.is_empty() {
-                    DataType::Unknown
+                    DataType::I64 // Default element type for empty arrays
                 } else {
                     // For now, use the first element's type
                     // TODO: Find common type among all elements
@@ -184,12 +192,12 @@ impl TypeChecker {
 
                 // Determine key and value types
                 let key_type = if key_types.is_empty() {
-                    DataType::Unknown
+                    DataType::Str // Default key type for empty maps
                 } else {
                     key_types[0].clone()
                 };
                 let value_type = if value_types.is_empty() {
-                    DataType::Unknown
+                    DataType::I64 // Default value type for empty maps
                 } else {
                     value_types[0].clone()
                 };
@@ -210,9 +218,9 @@ impl TypeChecker {
     }
 
     /// Check a literal value
-    fn check_literal(&self, lit: &Literal) -> TypeInfo {
+    fn check_literal(&self, lit: &Literal, _context: &AnalysisContext) -> Result<TypeInfo> {
         let data_type = match lit {
-            Literal::Null => DataType::Unknown, // NULL can be any type, determined by context
+            Literal::Null => DataType::Null, // NULL is explicitly Null type
             Literal::Boolean(_) => DataType::Bool,
             Literal::Integer(n) => {
                 // Choose appropriate integer type based on value
@@ -233,12 +241,12 @@ impl TypeChecker {
             Literal::Interval(_) => DataType::Interval,
         };
 
-        TypeInfo {
+        Ok(TypeInfo {
             data_type,
             nullable: matches!(lit, Literal::Null),
             is_aggregate: false,
             is_deterministic: true,
-        }
+        })
     }
 
     /// Check a column reference
@@ -707,14 +715,19 @@ impl TypeChecker {
         let mut any_nullable = false;
         let mut any_aggregate = false;
         let mut all_deterministic = true;
-        let mut has_parameters = false;
 
         for (i, arg) in args.iter().enumerate() {
             // Check if this argument is a parameter
-            if matches!(arg, Expression::Parameter(_)) {
-                has_parameters = true;
-                // For parameters, we use Unknown type and validate later
-                arg_types.push(DataType::Unknown);
+            if let Expression::Parameter(idx) = arg {
+                // For parameters, get type from context
+                if let Some(param_type) = context.get_parameter_type(*idx) {
+                    arg_types.push(param_type);
+                } else {
+                    return Err(Error::ExecutionError(format!(
+                        "Parameter {} type not provided for function {}",
+                        idx, name
+                    )));
+                }
             } else {
                 let arg_id = expr_id.child(i);
                 let arg_type = self.check_expression(arg, &arg_id, context, annotations)?;
@@ -727,13 +740,8 @@ impl TypeChecker {
         }
 
         // Get the return type from the function
-        // If there are parameters, we can't validate yet - use Unknown
-        let return_type = if has_parameters {
-            DataType::Unknown
-        } else {
-            // Validate and get return type from the function itself
-            func.validate(&arg_types)?
-        };
+        // Now we always have concrete types, so we can validate
+        let return_type = func.validate(&arg_types)?;
 
         // Check if this is a non-deterministic function
         let is_deterministic = all_deterministic

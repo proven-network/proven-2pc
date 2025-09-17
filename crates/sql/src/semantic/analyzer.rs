@@ -68,16 +68,21 @@ impl SemanticAnalyzer {
         // column_resolver is stateless, no update needed
     }
 
-    /// Analyze a statement and produce a lightweight result
-    pub fn analyze(&mut self, statement: Statement) -> Result<AnalyzedStatement> {
+    /// Analyze a statement with known parameter types for single-pass validation
+    pub fn analyze(
+        &mut self,
+        statement: Statement,
+        param_types: Vec<DataType>,
+    ) -> Result<AnalyzedStatement> {
         // Wrap the statement in Arc for sharing
         let ast = Arc::new(statement);
 
         // Create the analyzed statement
         let mut analyzed = AnalyzedStatement::new(ast.clone());
 
-        // Create analysis context
+        // Create analysis context with parameter types
         let mut context = AnalysisContext::new(self.schemas.clone());
+        context.set_parameter_types(param_types);
 
         // Perform analysis phases
         self.analyze_statement(&ast, &mut analyzed, &mut context)?;
@@ -87,6 +92,11 @@ impl SemanticAnalyzer {
         self.constraint_validator
             .validate(&mut analyzed, &context)?;
         self.function_validator.validate(&mut analyzed, &context)?;
+
+        // Validate functions with concrete parameter types if we have them
+        if context.has_parameter_types() {
+            self.validate_functions_with_params(&analyzed, &context)?;
+        }
 
         // Sort parameter slots by index
         analyzed.sort_parameters();
@@ -364,22 +374,45 @@ impl SemanticAnalyzer {
         analyzed: &mut AnalyzedStatement,
         context: &mut AnalysisContext,
     ) -> Result<()> {
-        // Determine context and acceptable types based on where the parameter appears
-        let (sql_context, acceptable_types) =
-            self.determine_parameter_context(&expr_id, context)?;
+        // If we have parameter types from context, use them
+        if let Some(param_type) = context.get_parameter_type(index) {
+            // We have the concrete type, no need for acceptable_types guessing
+            let (sql_context, _) = self.determine_parameter_context(&expr_id, context)?;
 
-        let slot = ParameterSlot {
-            index,
-            expression_id: expr_id,
-            acceptable_types,
-            coercion_context: CoercionContext {
-                sql_context: sql_context.clone(),
-                nullable: true, // Will be refined based on context
-            },
-            description: format!("Parameter {} in {:?}", index, sql_context),
-        };
+            let slot = ParameterSlot {
+                index,
+                expression_id: expr_id.clone(),
+                actual_type: Some(param_type.clone()),
+                acceptable_types: vec![param_type.clone()],
+                coercion_context: CoercionContext {
+                    sql_context: sql_context.clone(),
+                    nullable: true, // Will be refined based on context
+                },
+                description: format!("Parameter {} in {:?}", index, sql_context),
+                validated: true, // Already validated with concrete type
+            };
 
-        analyzed.add_parameter(slot);
+            analyzed.add_parameter(slot);
+        } else {
+            // Fallback: determine acceptable types from context
+            let (sql_context, acceptable_types) =
+                self.determine_parameter_context(&expr_id, context)?;
+
+            let slot = ParameterSlot {
+                index,
+                expression_id: expr_id,
+                actual_type: None,
+                acceptable_types,
+                coercion_context: CoercionContext {
+                    sql_context: sql_context.clone(),
+                    nullable: true, // Will be refined based on context
+                },
+                description: format!("Parameter {} in {:?}", index, sql_context),
+                validated: false,
+            };
+
+            analyzed.add_parameter(slot);
+        }
         Ok(())
     }
 
@@ -637,5 +670,101 @@ impl SemanticAnalyzer {
     fn is_deterministic_expression(&self, _expr: &Expression) -> bool {
         // Implementation would check for non-deterministic functions
         true
+    }
+
+    /// Validate functions that contain parameters now that we have concrete types
+    fn validate_functions_with_params(
+        &self,
+        statement: &AnalyzedStatement,
+        context: &AnalysisContext,
+    ) -> Result<()> {
+        use super::statement::SqlContext;
+        use std::collections::{BTreeMap, HashMap};
+
+        // Track all function calls that have parameters
+        let mut function_calls: HashMap<(String, ExpressionId), BTreeMap<usize, DataType>> =
+            HashMap::new();
+
+        // First pass: collect parameter types for functions
+        for slot in &statement.parameter_slots {
+            if let SqlContext::FunctionArgument {
+                ref function_name,
+                arg_index,
+            } = slot.coercion_context.sql_context
+            {
+                // Get the actual parameter type
+                let param_type = if let Some(ref actual) = slot.actual_type {
+                    actual.clone()
+                } else if let Some(param_type) = context.get_parameter_type(slot.index) {
+                    param_type.clone()
+                } else {
+                    continue; // Skip if we don't have type info
+                };
+
+                // Find the function's expression ID (parent of this parameter)
+                let func_expr_id =
+                    if let Some((_, parent_path)) = slot.expression_id.path().split_last() {
+                        ExpressionId::from_path(parent_path.to_vec())
+                    } else {
+                        continue;
+                    };
+
+                // Store the parameter type at its argument position
+                function_calls
+                    .entry((function_name.clone(), func_expr_id.clone()))
+                    .or_default()
+                    .insert(arg_index, param_type);
+            }
+        }
+
+        // Second pass: for each function with parameters, get non-parameter arg types
+        for ((function_name, func_expr_id), param_arg_types) in &mut function_calls {
+            // Get the function
+            let func = crate::functions::get_function(function_name).ok_or_else(|| {
+                Error::ExecutionError(format!("Unknown function: {}", function_name))
+            })?;
+
+            let sig = func.signature();
+
+            // For each possible argument, check if we already have it from parameters
+            for arg_idx in 0..sig.min_args {
+                if !param_arg_types.contains_key(&arg_idx) {
+                    // This argument is not a parameter, get its type from annotations
+                    let arg_expr_id = func_expr_id.child(arg_idx);
+
+                    if let Some(type_info) = statement.get_type(&arg_expr_id) {
+                        param_arg_types.insert(arg_idx, type_info.data_type.clone());
+                    }
+                }
+            }
+        }
+
+        // Final pass: validate each function with complete arg list
+        for ((function_name, _), arg_types_map) in function_calls {
+            let func = crate::functions::get_function(&function_name).ok_or_else(|| {
+                Error::ExecutionError(format!("Unknown function: {}", function_name))
+            })?;
+
+            // Build complete arg list in order
+            let mut arg_types = Vec::new();
+            let max_idx = arg_types_map.keys().max().copied().unwrap_or(0);
+
+            for i in 0..=max_idx {
+                if let Some(dt) = arg_types_map.get(&i) {
+                    arg_types.push(dt.clone());
+                } else {
+                    // Missing type info - this shouldn't happen with concrete parameter types
+                    return Err(Error::ExecutionError(format!(
+                        "Missing type information for argument {} of function {}",
+                        i, function_name
+                    )));
+                }
+            }
+
+            // Validate with the function's validate method
+            func.validate(&arg_types)?;
+        }
+
+        Ok(())
     }
 }

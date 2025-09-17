@@ -29,7 +29,7 @@ impl BinaryOperator for DivideOperator {
 
         let result = match (left_inner, right_inner) {
             // Unknown (NULL) with anything returns Unknown
-            (Unknown, _) | (_, Unknown) => Unknown,
+            (Null, _) | (_, Null) => Null,
 
             // Integer division returns integer (truncating)
             (I8, I8) => I8,

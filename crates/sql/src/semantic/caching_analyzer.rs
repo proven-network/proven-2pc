@@ -2,19 +2,32 @@
 //!
 //! This module provides a caching wrapper around the semantic analyzer that
 //! maintains an LRU cache of analyzed statements to avoid redundant analysis.
+//! The cache key includes both the statement and parameter types to enable
+//! single-pass validation with complete type information.
 
 use super::analyzer::SemanticAnalyzer;
 use super::statement::AnalyzedStatement;
 use crate::error::Result;
 use crate::parsing::ast::Statement;
+use crate::types::data_type::DataType;
 use crate::types::schema::Table;
 use lru::LruCache;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 /// Default capacity for the semantic cache
 const DEFAULT_CACHE_CAPACITY: usize = 500;
+
+/// Cache key that combines statement and parameter types
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct CacheKey {
+    /// Pointer address of the Arc<Statement> for fast comparison
+    statement_ptr: usize,
+    /// Parameter types in order
+    param_types: Vec<DataType>,
+}
 
 /// A caching wrapper around the semantic analyzer
 pub struct CachingSemanticAnalyzer {
@@ -22,8 +35,8 @@ pub struct CachingSemanticAnalyzer {
     analyzer: SemanticAnalyzer,
 
     /// LRU cache for analyzed statements
-    /// Key is the Arc pointer address of the parsed statement
-    cache: LruCache<usize, Arc<AnalyzedStatement>>,
+    /// Key includes both statement pointer and parameter types
+    cache: LruCache<CacheKey, Arc<AnalyzedStatement>>,
 }
 
 impl CachingSemanticAnalyzer {
@@ -42,20 +55,27 @@ impl CachingSemanticAnalyzer {
         }
     }
 
-    /// Analyze a statement with caching
-    /// Takes an Arc<Statement> from the CachingParser
-    pub fn analyze(&mut self, statement: Arc<Statement>) -> Result<Arc<AnalyzedStatement>> {
-        // Use the Arc pointer as cache key
-        let cache_key = Arc::as_ptr(&statement) as usize;
+    /// Analyze a statement with caching, using parameter types for complete validation
+    /// Takes an Arc<Statement> from the CachingParser and parameter types
+    pub fn analyze(
+        &mut self,
+        statement: Arc<Statement>,
+        param_types: Vec<DataType>,
+    ) -> Result<Arc<AnalyzedStatement>> {
+        // Create cache key combining statement pointer and parameter types
+        let cache_key = CacheKey {
+            statement_ptr: Arc::as_ptr(&statement) as usize,
+            param_types: param_types.clone(),
+        };
 
         // Check cache
         if let Some(analyzed) = self.cache.get(&cache_key) {
             return Ok(analyzed.clone());
         }
 
-        // Analyze the statement
+        // Analyze the statement with parameter types
         // We need to clone the inner statement for the analyzer
-        let analyzed = self.analyzer.analyze((*statement).clone())?;
+        let analyzed = self.analyzer.analyze((*statement).clone(), param_types)?;
         let arc_analyzed = Arc::new(analyzed);
 
         // Cache the result

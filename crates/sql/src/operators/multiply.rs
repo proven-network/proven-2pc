@@ -29,7 +29,7 @@ impl BinaryOperator for MultiplyOperator {
 
         let result = match (left_inner, right_inner) {
             // Unknown (NULL) with anything returns Unknown
-            (Unknown, _) | (_, Unknown) => Unknown,
+            (Null, _) | (_, Null) => Null,
 
             // Numeric multiplication only
             (a, b) if a.is_numeric() && b.is_numeric() => promote_numeric_types(a, b)?,

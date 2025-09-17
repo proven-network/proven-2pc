@@ -6,7 +6,6 @@
 
 use crate::error::{Error, Result};
 use crate::operators;
-use crate::semantic::BoundParameters;
 use crate::stream::transaction::TransactionContext;
 use crate::types::expression::Expression;
 use crate::types::value::{Row, Value};
@@ -18,7 +17,7 @@ pub fn evaluate(
     expr: &Expression,
     row: Option<&Row>,
     context: &TransactionContext,
-    params: Option<&BoundParameters>,
+    params: Option<&Vec<Value>>,
 ) -> Result<Value> {
     use Expression::*;
     Ok(match expr {
@@ -475,7 +474,7 @@ pub fn evaluate_with_arc(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
     context: &TransactionContext,
-    params: Option<&BoundParameters>,
+    params: Option<&Vec<Value>>,
 ) -> Result<Value> {
     evaluate(expr, row.map(|r| r.as_ref()), context, params)
 }

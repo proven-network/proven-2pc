@@ -54,10 +54,6 @@ impl Function for SumDistinctFunction {
                 let inner_result = self.validate(&[(**inner).clone()])?;
                 Ok(DataType::Nullable(Box::new(inner_result)))
             }
-            DataType::Unknown => {
-                // Parameters - can't validate yet
-                Ok(DataType::Unknown)
-            }
             _ => Err(Error::TypeMismatch {
                 expected: "numeric type".into(),
                 found: arg_types[0].to_string(),

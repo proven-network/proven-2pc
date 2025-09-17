@@ -347,13 +347,9 @@ pub fn multiply_integers(left: &Value, right: &Value) -> Result<Value> {
         }
 
         // Mixed signed/unsigned promotions (add remaining cases)
-        _ => add_integers(left, right) // Fallback to multiply via repeated addition (not ideal)
-            .or_else(|_| {
-                Err(Error::InvalidOperation(format!(
-                    "Cannot multiply {:?} and {:?}",
-                    left, right
-                )))
-            }),
+        _ => add_integers(left, right).map_err(|_| {
+            Error::InvalidOperation(format!("Cannot multiply {:?} and {:?}", left, right))
+        }),
     }
 }
 

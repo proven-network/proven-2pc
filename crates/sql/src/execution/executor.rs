@@ -32,7 +32,7 @@ pub fn execute_with_params(
     plan: Plan,
     storage: &mut MvccStorage,
     tx_ctx: &mut TransactionContext,
-    params: Option<&crate::semantic::BoundParameters>,
+    params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     match plan {
         Plan::Select(node) => {
@@ -78,7 +78,7 @@ pub fn execute_node_read<'a>(
     node: Node,
     storage: &'a MvccStorage,
     tx_ctx: &mut TransactionContext,
-    params: Option<&crate::semantic::BoundParameters>,
+    params: Option<&Vec<Value>>,
 ) -> Result<Rows<'a>> {
     match node {
         Node::Scan { table, .. } => {

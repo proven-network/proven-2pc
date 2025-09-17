@@ -40,6 +40,8 @@ pub struct AnalysisContext {
     metadata: StatementMetadata,
     /// Current function being analyzed (for parameter context)
     current_function: Option<String>,
+    /// Parameter types (if known)
+    parameter_types: Vec<DataType>,
 }
 
 impl AnalysisContext {
@@ -50,6 +52,7 @@ impl AnalysisContext {
             tables: Vec::new(),
             metadata: StatementMetadata::new(),
             current_function: None,
+            parameter_types: Vec::new(),
         }
     }
 
@@ -318,5 +321,20 @@ impl AnalysisContext {
             }
         }
         found
+    }
+
+    /// Set parameter types for the context
+    pub fn set_parameter_types(&mut self, types: Vec<DataType>) {
+        self.parameter_types = types;
+    }
+
+    /// Get parameter type by index
+    pub fn get_parameter_type(&self, index: usize) -> Option<DataType> {
+        self.parameter_types.get(index).cloned()
+    }
+
+    /// Check if we have parameter types
+    pub fn has_parameter_types(&self) -> bool {
+        !self.parameter_types.is_empty()
     }
 }

@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::fmt;
 
 /// SQL data types matching GlueSQL format
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataType {
     // Boolean
     Bool,
@@ -45,8 +45,8 @@ pub enum DataType {
     Struct(Vec<(String, DataType)>),     // Named fields like records
     // Null handling
     Nullable(Box<DataType>),
-    // Unknown type - used when type depends on parameters that aren't bound yet
-    Unknown,
+    // Explicit Null type (for NULL literals)
+    Null,
 }
 
 impl DataType {
@@ -63,47 +63,47 @@ impl DataType {
 
     /// Check if this type is numeric (integer, float, or decimal)
     pub fn is_numeric(&self) -> bool {
-        match self.base_type() {
+        matches!(
+            self.base_type(),
             DataType::I8
-            | DataType::I16
-            | DataType::I32
-            | DataType::I64
-            | DataType::I128
-            | DataType::U8
-            | DataType::U16
-            | DataType::U32
-            | DataType::U64
-            | DataType::U128
-            | DataType::F32
-            | DataType::F64
-            | DataType::Decimal(_, _) => true,
-            _ => false,
-        }
+                | DataType::I16
+                | DataType::I32
+                | DataType::I64
+                | DataType::I128
+                | DataType::U8
+                | DataType::U16
+                | DataType::U32
+                | DataType::U64
+                | DataType::U128
+                | DataType::F32
+                | DataType::F64
+                | DataType::Decimal(_, _)
+        )
     }
 
     /// Check if this type is an integer (signed or unsigned)
     pub fn is_integer(&self) -> bool {
-        match self.base_type() {
+        matches!(
+            self.base_type(),
             DataType::I8
-            | DataType::I16
-            | DataType::I32
-            | DataType::I64
-            | DataType::I128
-            | DataType::U8
-            | DataType::U16
-            | DataType::U32
-            | DataType::U64
-            | DataType::U128 => true,
-            _ => false,
-        }
+                | DataType::I16
+                | DataType::I32
+                | DataType::I64
+                | DataType::I128
+                | DataType::U8
+                | DataType::U16
+                | DataType::U32
+                | DataType::U64
+                | DataType::U128
+        )
     }
 
     /// Check if this type is an unsigned integer
     pub fn is_unsigned_integer(&self) -> bool {
-        match self.base_type() {
-            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128 => true,
-            _ => false,
-        }
+        matches!(
+            self.base_type(),
+            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128
+        )
     }
 }
 
@@ -149,7 +149,7 @@ impl fmt::Display for DataType {
                 write!(f, "STRUCT({})", field_strs.join(", "))
             }
             DataType::Nullable(inner) => write!(f, "{} NULL", inner),
-            DataType::Unknown => write!(f, "UNKNOWN"),
+            DataType::Null => write!(f, "NULL"),
         }
     }
 }

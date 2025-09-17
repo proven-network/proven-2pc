@@ -297,8 +297,8 @@ fn can_compare(left: &DataType, right: &DataType) -> bool {
 
     // Special cases that aren't covered by coercion
     match (left, right) {
-        // Unknown types can be compared with anything (will be checked at bind time)
-        (Unknown, _) | (_, Unknown) => true,
+        // Null types can be compared with anything
+        (Null, _) | (_, Null) => true,
 
         // Same types can always be compared
         _ if left == right => true,

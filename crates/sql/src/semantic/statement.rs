@@ -66,6 +66,9 @@ pub struct ParameterSlot {
     /// Location in the AST (for error reporting and binding)
     pub expression_id: ExpressionId,
 
+    /// The actual type if known
+    pub actual_type: Option<DataType>,
+
     /// Acceptable types in preference order
     pub acceptable_types: Vec<DataType>,
 
@@ -74,6 +77,9 @@ pub struct ParameterSlot {
 
     /// Human-readable description
     pub description: String,
+
+    /// Whether this parameter has been validated
+    pub validated: bool,
 }
 
 /// Context for parameter coercion

@@ -3,11 +3,10 @@
 #[cfg(test)]
 mod tests {
     use crate::parsing::parse_sql;
+    use crate::semantic::analyzer::SemanticAnalyzer;
     use crate::semantic::statement::SqlContext;
-    use crate::semantic::{analyzer::SemanticAnalyzer, bind_parameters};
     use crate::types::data_type::DataType;
     use crate::types::schema::{Column, Table};
-    use crate::types::value::Value;
     use std::collections::HashMap;
 
     #[test]
@@ -31,7 +30,9 @@ mod tests {
 
         // Analyze the query
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let analyzed = analyzer.analyze(ast).unwrap();
+        let analyzed = analyzer
+            .analyze(ast, vec![DataType::I64, DataType::Text])
+            .unwrap();
 
         // Verify parameters were detected
         assert_eq!(analyzed.parameter_count(), 2);
@@ -59,19 +60,20 @@ mod tests {
         let users_table = Table::new("users".to_string(), vec![id_col, active_col]).unwrap();
         schemas.insert("users".to_string(), users_table);
 
-        // Analyze the query
+        // Analyze the query with parameter types
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let analyzed = analyzer.analyze(ast).unwrap();
+        let param_types = vec![DataType::I64, DataType::Bool];
+        let analyzed = analyzer.analyze(ast, param_types).unwrap();
 
-        // Bind parameters
-        let values = vec![Value::integer(42), Value::boolean(true)];
-        let bound = bind_parameters(&analyzed, values).unwrap();
+        // Verify analysis with parameter types
+        assert_eq!(analyzed.parameter_count(), 2);
+        assert!(analyzed.has_parameters());
 
-        // Verify binding
-        assert_eq!(bound.values.len(), 2);
-        assert!(bound.validated);
-        assert_eq!(bound.get(0), Some(&Value::integer(42)));
-        assert_eq!(bound.get(1), Some(&Value::boolean(true)));
+        // Check that parameters have been validated
+        for slot in &analyzed.parameter_slots {
+            assert!(slot.validated);
+            assert!(slot.actual_type.is_some());
+        }
     }
 
     #[test]
@@ -92,7 +94,7 @@ mod tests {
 
         // Analyze the query
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let analyzed = analyzer.analyze(ast).unwrap();
+        let analyzed = analyzer.analyze(ast, vec![DataType::I64]).unwrap();
 
         // Clone the analyzed statement (should share Arc)
         let analyzed_clone = analyzed.clone();
@@ -107,21 +109,33 @@ mod tests {
         let sql = "SELECT ? AS col1, ? AS col2";
         let ast = parse_sql(sql).unwrap();
 
-        // Analyze the query
+        // Analyze the query without parameter types should fail
         let schemas = HashMap::new();
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let analyzed = analyzer.analyze(ast).unwrap();
+        let result = analyzer.analyze(ast.clone(), vec![]);
 
-        // Try to bind with wrong number of parameters
-        let values = vec![Value::integer(42)]; // Only one value for two parameters
-        let result = bind_parameters(&analyzed, values);
-
-        // Should fail validation
+        // Should fail because we didn't provide parameter types
         assert!(result.is_err());
         if let Err(e) = result {
             let error_msg = format!("{}", e);
-            assert!(error_msg.contains("Parameter count mismatch"));
+            assert!(error_msg.contains("Parameter 0 type not provided"));
         }
+
+        // Try to analyze with wrong number of parameter types
+        let wrong_param_types = vec![DataType::I64]; // Only one type for two parameters
+        let result2 = analyzer.analyze(ast.clone(), wrong_param_types);
+
+        // Should also fail because parameter 1 doesn't have a type
+        assert!(result2.is_err());
+        if let Err(e) = result2 {
+            let error_msg = format!("{}", e);
+            assert!(error_msg.contains("Parameter 1 type not provided"));
+        }
+
+        // Correct analysis with right parameter types
+        let param_types = vec![DataType::I64, DataType::Bool];
+        let analyzed_correct = analyzer.analyze(ast, param_types).unwrap();
+        assert_eq!(analyzed_correct.parameter_count(), 2);
     }
 
     #[test]
@@ -133,7 +147,9 @@ mod tests {
         // Create an empty schema (no tables needed for this test)
         let schemas = HashMap::new();
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let analyzed = analyzer.analyze(ast).unwrap();
+        let analyzed = analyzer
+            .analyze(ast, vec![DataType::Text, DataType::I64])
+            .unwrap();
 
         // Check that parameters have correct context
         assert_eq!(analyzed.parameter_slots.len(), 2);
@@ -175,7 +191,7 @@ mod tests {
 
         let schemas = HashMap::new();
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let result = analyzer.analyze(ast);
+        let result = analyzer.analyze(ast, vec![]);
 
         // Should fail because ABS doesn't accept strings
         assert!(result.is_err());
@@ -193,7 +209,7 @@ mod tests {
 
         let schemas = HashMap::new();
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let result = analyzer.analyze(ast);
+        let result = analyzer.analyze(ast, vec![]);
 
         assert!(result.is_err());
         if let Err(e) = result {
@@ -206,7 +222,7 @@ mod tests {
         let ast2 = parse_sql(sql2).unwrap();
 
         let mut analyzer2 = SemanticAnalyzer::new(HashMap::new());
-        let result2 = analyzer2.analyze(ast2);
+        let result2 = analyzer2.analyze(ast2, vec![]);
 
         assert!(result2.is_err());
         if let Err(e) = result2 {
@@ -223,7 +239,8 @@ mod tests {
 
         let schemas = HashMap::new();
         let mut analyzer = SemanticAnalyzer::new(schemas);
-        let analyzed = analyzer.analyze(ast).unwrap();
+        let param_types = vec![DataType::I64];
+        let analyzed = analyzer.analyze(ast, param_types).unwrap();
 
         // Should have one parameter
         assert_eq!(analyzed.parameter_count(), 1);

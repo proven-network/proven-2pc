@@ -87,8 +87,14 @@ impl SqlTransactionEngine {
             }
         };
 
-        // Step 2: Semantic analysis with caching
-        let analyzed = match self.analyzer.analyze(statement) {
+        // Get parameter types if provided
+        let param_types = params
+            .as_ref()
+            .map(|p| p.iter().map(|v| v.data_type()).collect())
+            .unwrap_or_default();
+
+        // Step 2: Semantic analysis with caching and parameter types
+        let analyzed = match self.analyzer.analyze(statement, param_types) {
             Ok(a) => a,
             Err(e) => {
                 return OperationResult::Complete(SqlResponse::Error(format!(
@@ -98,32 +104,17 @@ impl SqlTransactionEngine {
             }
         };
 
-        // Validate and bind parameters if provided (but don't replace in AST)
-        let bound_params = if let Some(params) = params {
-            // Check parameter count
+        // Check parameter count if parameters were provided
+        if let Some(ref param_values) = params {
             let expected_count = analyzed.parameter_count();
-
-            if params.len() != expected_count {
+            if param_values.len() != expected_count {
                 return OperationResult::Complete(SqlResponse::Error(format!(
                     "Expected {} parameters, got {}",
                     expected_count,
-                    params.len()
+                    param_values.len()
                 )));
             }
-
-            // Bind parameters for validation (but don't replace in AST)
-            match crate::semantic::bind_parameters(&analyzed, params.to_vec()) {
-                Ok(bound) => Some(bound),
-                Err(e) => {
-                    return OperationResult::Complete(SqlResponse::Error(format!(
-                        "Parameter binding failed: {}",
-                        e
-                    )));
-                }
-            }
-        } else {
-            None
-        };
+        }
 
         // Step 3: Plan the statement with caching
         let plan = match self.planner.plan(analyzed.clone()) {
@@ -173,7 +164,7 @@ impl SqlTransactionEngine {
             (*plan).clone(),
             &mut self.storage,
             tx_ctx,
-            bound_params.as_ref(),
+            params.as_ref(),
         ) {
             Ok(result) => {
                 // Update schema cache if DDL operation

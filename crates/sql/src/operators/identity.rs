@@ -41,8 +41,8 @@ impl UnaryOperator for IdentityOperator {
             // Interval can have identity applied
             Interval => Ok(wrap_nullable(inner.clone(), nullable)),
 
-            // Unknown type (NULL) can have identity applied (result is NULL)
-            Unknown => Ok(wrap_nullable(Unknown, nullable)),
+            // Null type can have identity applied (result is NULL)
+            Null => Ok(wrap_nullable(Null, nullable)),
 
             _ => Err(Error::InvalidValue(format!(
                 "Cannot apply unary plus to non-numeric type: {}",

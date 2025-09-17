@@ -74,7 +74,8 @@ mod tests {
         assert_eq!(func.validate(&[DataType::I32]).unwrap(), DataType::I64);
         assert_eq!(func.validate(&[DataType::Text]).unwrap(), DataType::I64);
         assert_eq!(func.validate(&[DataType::Bool]).unwrap(), DataType::I64);
-        assert_eq!(func.validate(&[DataType::Unknown]).unwrap(), DataType::I64);
+        // COUNT works with any type, even NULL
+        assert_eq!(func.validate(&[DataType::Null]).unwrap(), DataType::I64);
 
         // Wrong number of arguments
         assert!(func.validate(&[]).is_err());

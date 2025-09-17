@@ -28,7 +28,7 @@ impl BinaryOperator for EqualOperator {
         // Check if types are comparable
         match (left_inner, right_inner) {
             // Unknown types (parameters) can be compared with anything
-            (Unknown, _) | (_, Unknown) => Ok(Bool),
+            (Null, _) | (_, Null) => Ok(Bool),
 
             // Same types are always comparable
             (a, b) if a == b => Ok(Bool),

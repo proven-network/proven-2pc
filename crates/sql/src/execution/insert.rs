@@ -6,7 +6,6 @@
 use crate::error::{Error, Result};
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
-use crate::semantic::BoundParameters;
 use crate::storage::{MvccStorage, write_ops};
 use crate::stream::TransactionContext;
 use crate::types::value::Value;
@@ -18,7 +17,7 @@ pub fn execute_insert(
     source: Node,
     storage: &mut MvccStorage,
     tx_ctx: &mut TransactionContext,
-    params: Option<&BoundParameters>,
+    params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Get schema from storage
     let schemas = storage.get_schemas();
