@@ -5,14 +5,12 @@
 //! zero-copy parameter binding.
 
 use super::context::AnalysisContext;
-use super::resolver::{ColumnResolver, TableResolver};
 use super::statement::{
     AnalyzedStatement, CoercionContext, ExpressionId, ParameterSlot, SqlContext, StatementType,
     TypeInfo,
 };
-use super::type_checker::TypeChecker;
 use super::validators::{
-    ConstraintValidator, ExpressionValidator, FunctionValidator, StatementValidator,
+    ConstraintValidator, ExpressionValidator, FunctionValidator, StatementValidator, TypeValidator,
 };
 
 use crate::error::{Error, Result};
@@ -29,9 +27,7 @@ pub struct SemanticAnalyzer {
     schemas: HashMap<String, Table>,
 
     /// Component analyzers
-    table_resolver: TableResolver,
-    column_resolver: ColumnResolver,
-    type_checker: TypeChecker,
+    type_checker: TypeValidator,
     expression_validator: ExpressionValidator,
     statement_validator: StatementValidator,
     constraint_validator: ConstraintValidator,
@@ -41,9 +37,7 @@ pub struct SemanticAnalyzer {
 impl SemanticAnalyzer {
     /// Create a new semantic analyzer
     pub fn new(schemas: HashMap<String, Table>) -> Self {
-        let table_resolver = TableResolver::new(schemas.clone());
-        let column_resolver = ColumnResolver;
-        let type_checker = TypeChecker::new();
+        let type_checker = TypeValidator::new();
         let expression_validator = ExpressionValidator::new();
         let statement_validator = StatementValidator::new();
         let constraint_validator = ConstraintValidator::new();
@@ -51,8 +45,6 @@ impl SemanticAnalyzer {
 
         Self {
             schemas,
-            table_resolver,
-            column_resolver,
             type_checker,
             expression_validator,
             statement_validator,
@@ -63,9 +55,7 @@ impl SemanticAnalyzer {
 
     /// Update schemas (for cache invalidation)
     pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
-        self.schemas = schemas.clone();
-        self.table_resolver = TableResolver::new(schemas);
-        // column_resolver is stateless, no update needed
+        self.schemas = schemas;
     }
 
     /// Analyze a statement with known parameter types for single-pass validation
@@ -169,24 +159,22 @@ impl SemanticAnalyzer {
         context: &mut AnalysisContext,
     ) -> Result<()> {
         // Resolve tables from FROM clause
-        self.table_resolver.resolve_statement(
-            &Statement::Dml(DmlStatement::Select(Box::new(select.clone()))),
-            context,
-        )?;
-
-        // Resolve column references
-        self.column_resolver.resolve_statement(
-            &Statement::Dml(DmlStatement::Select(Box::new(select.clone()))),
-            context,
-        )?;
+        for from_clause in &select.from {
+            Self::resolve_from_clause(from_clause, context)?;
+        }
 
         // Type check and annotate expressions
         let mut output_schema = Vec::new();
 
-        // Process projections
+        // Process projections and check for aggregates
         for (i, (expr, alias)) in select.select.iter().enumerate() {
             let expr_id = ExpressionId::from_path(vec![0, i]); // SELECT, projection i
             let type_info = self.analyze_expression(expr, expr_id.clone(), analyzed, context)?;
+
+            // Check if this expression contains aggregates
+            if type_info.is_aggregate {
+                analyzed.metadata.has_aggregates = true;
+            }
 
             let column_name = alias.clone().unwrap_or_else(|| format!("column_{}", i));
 
@@ -210,13 +198,23 @@ impl SemanticAnalyzer {
         // Process HAVING
         if let Some(having_expr) = &select.having {
             let expr_id = ExpressionId::from_path(vec![3]); // HAVING
-            self.analyze_expression(having_expr, expr_id, analyzed, context)?;
+            let type_info = self.analyze_expression(having_expr, expr_id, analyzed, context)?;
+
+            // HAVING often contains aggregates
+            if type_info.is_aggregate {
+                analyzed.metadata.has_aggregates = true;
+            }
         }
 
         // Process ORDER BY
         for (i, (order_expr, _)) in select.order_by.iter().enumerate() {
             let expr_id = ExpressionId::from_path(vec![4, i]); // ORDER BY, expression i
-            self.analyze_expression(order_expr, expr_id, analyzed, context)?;
+            let type_info = self.analyze_expression(order_expr, expr_id, analyzed, context)?;
+
+            // ORDER BY can contain aggregates in SELECT with GROUP BY
+            if type_info.is_aggregate {
+                analyzed.metadata.has_aggregates = true;
+            }
         }
 
         Ok(())
@@ -461,7 +459,7 @@ impl SemanticAnalyzer {
         analyzed: &mut AnalyzedStatement,
         context: &mut AnalysisContext,
     ) -> Result<()> {
-        // Get table schema
+        // Validate table exists
         let schema = self
             .schemas
             .get(table)
@@ -477,6 +475,9 @@ impl SemanticAnalyzer {
         // Analyze the insert source
         match source {
             crate::parsing::ast::InsertSource::Values(rows) => {
+                // For VALUES, add target table to context for reference
+                context.add_table(table.to_string(), None)?;
+
                 for (row_idx, row) in rows.iter().enumerate() {
                     for (col_idx, expr) in row.iter().enumerate() {
                         let expr_id = ExpressionId::from_path(vec![5, row_idx, col_idx]);
@@ -485,10 +486,15 @@ impl SemanticAnalyzer {
                 }
             }
             crate::parsing::ast::InsertSource::Select(select) => {
+                // For INSERT ... SELECT, analyze SELECT first without target table in context
+                // SELECT has its own FROM clause
                 self.analyze_select(select, analyzed, context)?;
+
+                // Note: target table is tracked via the metadata from analyzing the SELECT
             }
             crate::parsing::ast::InsertSource::DefaultValues => {
-                // No expressions to analyze
+                // Add target table to context
+                context.add_table(table.to_string(), None)?;
             }
         }
 
@@ -597,8 +603,26 @@ impl SemanticAnalyzer {
                 }
             }
         }
+    }
 
-        analyzed.metadata.is_deterministic = ctx_metadata.is_deterministic;
+    /// Resolve a FROM clause (from TableResolver logic)
+    fn resolve_from_clause(
+        from: &crate::parsing::ast::FromClause,
+        context: &mut AnalysisContext,
+    ) -> Result<()> {
+        use crate::parsing::ast::FromClause;
+
+        match from {
+            FromClause::Table { name, alias } => {
+                context.add_table(name.clone(), alias.clone())?;
+            }
+            FromClause::Join { left, right, .. } => {
+                // Recursively resolve both sides
+                Self::resolve_from_clause(left, context)?;
+                Self::resolve_from_clause(right, context)?;
+            }
+        }
+        Ok(())
     }
 
     /// Get statement type

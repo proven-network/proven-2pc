@@ -9,8 +9,6 @@ pub struct StatementMetadata {
     pub referenced_tables: HashSet<String>,
     /// Columns referenced (table_name, column_name)
     pub referenced_columns: HashSet<(String, String)>,
-    /// Whether the statement is deterministic
-    pub is_deterministic: bool,
 }
 
 impl StatementMetadata {
@@ -18,7 +16,6 @@ impl StatementMetadata {
         Self {
             referenced_tables: HashSet::new(),
             referenced_columns: HashSet::new(),
-            is_deterministic: true,
         }
     }
 }

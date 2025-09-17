@@ -32,7 +32,7 @@ fn test_create_table_with_uuid_field() {
 }
 
 #[test]
-#[should_panic(expected = "InvalidValue")]
+#[should_panic(expected = "TypeMismatch")]
 fn test_insert_number_into_uuid_should_error() {
     let mut ctx = setup_test();
 

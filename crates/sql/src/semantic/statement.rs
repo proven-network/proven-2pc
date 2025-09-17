@@ -48,9 +48,6 @@ pub struct TypeInfo {
 
     /// If this is an aggregate expression
     pub is_aggregate: bool,
-
-    /// If this is deterministic
-    pub is_deterministic: bool,
 }
 
 /// Enhanced parameter slot with full context
@@ -114,9 +111,6 @@ pub struct StatementMetadata {
 
     /// Whether statement modifies data
     pub is_mutation: bool,
-
-    /// Whether all expressions are deterministic
-    pub is_deterministic: bool,
 
     /// Whether statement contains aggregates
     pub has_aggregates: bool,

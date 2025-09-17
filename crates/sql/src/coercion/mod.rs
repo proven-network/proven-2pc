@@ -44,8 +44,9 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
         (DataType::U32, DataType::I64 | DataType::I128) => true,
         (DataType::U64, DataType::I128) => true,
 
-        // Float widening
-        (DataType::F32, DataType::F64) => true,
+        // Float conversions
+        (DataType::F32, DataType::F64) => true, // Widening is always safe
+        (DataType::F64, DataType::F32) => true, // Narrowing allowed (runtime will check range)
 
         // Integer to float (may lose precision but allowed)
         (DataType::I8 | DataType::I16 | DataType::I32, DataType::F32 | DataType::F64) => true,
@@ -59,6 +60,14 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
 
         // Float to Decimal
         (DataType::F32 | DataType::F64, DataType::Decimal(_, _)) => true,
+
+        // Float to unsigned integers (for large literals parsed as float)
+        // This happens when literals exceed I128::MAX
+        (
+            DataType::F64,
+            DataType::U128 | DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8,
+        ) => true,
+        (DataType::F32, DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8) => true,
 
         // String to date/time types (parsing)
         (DataType::Str, DataType::Date | DataType::Time | DataType::Timestamp | DataType::Uuid) => {
@@ -80,11 +89,16 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
 
         // For parameterized queries: allow narrowing with runtime checks
         // This is important for parameter binding where we don't know the exact value
+        (DataType::I128, DataType::I64 | DataType::I32 | DataType::I16 | DataType::I8) => true,
         (DataType::I64, DataType::I32 | DataType::I16 | DataType::I8) => true,
         (DataType::I32, DataType::I16 | DataType::I8) => true,
         (DataType::I16, DataType::I8) => true,
 
         // Allow signed to unsigned with runtime checks for parameters
+        (
+            DataType::I128,
+            DataType::U128 | DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8,
+        ) => true,
         (
             DataType::I64,
             DataType::U128 | DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8,
@@ -101,7 +115,6 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
             DataType::I8,
             DataType::U128 | DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8,
         ) => true,
-        (DataType::I128, DataType::U128) => true,
 
         _ => false,
     }

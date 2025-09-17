@@ -49,7 +49,7 @@ pub enum Error {
     #[error("Invalid value: {0}")]
     InvalidValue(String),
 
-    #[error("NULL constraint violation on column: {0}")]
+    #[error("NULL constraint violation: column '{0}' is required but no value was provided")]
     NullConstraintViolation(String),
 
     #[error("Operation would block")]

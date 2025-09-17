@@ -4,20 +4,20 @@
 //! TypeInfo entries indexed by ExpressionId paths without modifying
 //! the AST itself.
 
-use super::context::AnalysisContext;
-use super::statement::{ExpressionId, TypeAnnotations, TypeInfo};
 use crate::error::{Error, Result};
 use crate::operators;
 use crate::parsing::ast::{Expression, Literal, Operator};
+use crate::semantic::context::AnalysisContext;
+use crate::semantic::statement::{ExpressionId, TypeAnnotations, TypeInfo};
 use crate::types::data_type::DataType;
 
 /// Type checker that produces TypeInfo annotations
 ///
 /// This type checker delegates function validation to the functions module
 /// to avoid redundancy and maintain a single source of truth.
-pub struct TypeChecker;
+pub struct TypeValidator;
 
-impl TypeChecker {
+impl TypeValidator {
     /// Create a new type checker
     pub fn new() -> Self {
         Self
@@ -50,7 +50,6 @@ impl TypeChecker {
                         data_type: param_type,
                         nullable: true,
                         is_aggregate: false,
-                        is_deterministic: false,
                     }
                 } else {
                     return Err(Error::ExecutionError(format!(
@@ -66,7 +65,6 @@ impl TypeChecker {
                     data_type: DataType::Struct(vec![]), // Placeholder
                     nullable: true,
                     is_aggregate: false,
-                    is_deterministic: true,
                 }
             }
 
@@ -76,7 +74,6 @@ impl TypeChecker {
                     data_type: DataType::I64, // Placeholder
                     nullable: true,
                     is_aggregate: false,
-                    is_deterministic: true,
                 }
             }
 
@@ -112,7 +109,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: true, // Array/Map access can return null if index/key not found
                     is_aggregate: base_type.is_aggregate,
-                    is_deterministic: base_type.is_deterministic,
                 }
             }
 
@@ -127,7 +123,6 @@ impl TypeChecker {
                     data_type: DataType::I64,
                     nullable: true,
                     is_aggregate: base_type.is_aggregate,
-                    is_deterministic: base_type.is_deterministic,
                 }
             }
 
@@ -136,7 +131,6 @@ impl TypeChecker {
                 let mut element_types = Vec::new();
                 let mut any_nullable = false;
                 let mut any_aggregate = false;
-                let mut all_deterministic = true;
 
                 for (i, elem) in elements.iter().enumerate() {
                     let elem_id = expr_id.child(i);
@@ -144,7 +138,6 @@ impl TypeChecker {
                     element_types.push(elem_type.data_type);
                     any_nullable = any_nullable || elem_type.nullable;
                     any_aggregate = any_aggregate || elem_type.is_aggregate;
-                    all_deterministic = all_deterministic && elem_type.is_deterministic;
                 }
 
                 // Determine common element type
@@ -160,7 +153,6 @@ impl TypeChecker {
                     data_type: DataType::Array(Box::new(element_type), None),
                     nullable: any_nullable,
                     is_aggregate: any_aggregate,
-                    is_deterministic: all_deterministic,
                 }
             }
 
@@ -170,7 +162,6 @@ impl TypeChecker {
                 let mut value_types = Vec::new();
                 let mut any_nullable = false;
                 let mut any_aggregate = false;
-                let mut all_deterministic = true;
 
                 for (i, (key, value)) in entries.iter().enumerate() {
                     let key_id = expr_id.child(i * 2);
@@ -185,9 +176,6 @@ impl TypeChecker {
                     any_nullable = any_nullable || key_type.nullable || value_type.nullable;
                     any_aggregate =
                         any_aggregate || key_type.is_aggregate || value_type.is_aggregate;
-                    all_deterministic = all_deterministic
-                        && key_type.is_deterministic
-                        && value_type.is_deterministic;
                 }
 
                 // Determine key and value types
@@ -206,7 +194,6 @@ impl TypeChecker {
                     data_type: DataType::Map(Box::new(key_type), Box::new(value_type)),
                     nullable: any_nullable,
                     is_aggregate: any_aggregate,
-                    is_deterministic: all_deterministic,
                 }
             }
         };
@@ -245,7 +232,6 @@ impl TypeChecker {
             data_type,
             nullable: matches!(lit, Literal::Null),
             is_aggregate: false,
-            is_deterministic: true,
         })
     }
 
@@ -269,7 +255,6 @@ impl TypeChecker {
                 data_type: final_type,
                 nullable,
                 is_aggregate: false,
-                is_deterministic: true,
             })
         } else {
             // Column not found - return error
@@ -302,7 +287,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -321,7 +305,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -340,7 +323,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -358,7 +340,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -376,7 +357,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -396,7 +376,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -414,7 +393,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -434,7 +412,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -454,7 +431,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -473,7 +449,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -491,7 +466,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -509,7 +483,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -527,7 +500,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -545,7 +517,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -560,7 +531,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
-                    is_deterministic: expr_type.is_deterministic,
                 })
             }
 
@@ -574,7 +544,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
-                    is_deterministic: expr_type.is_deterministic,
                 })
             }
 
@@ -588,7 +557,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
-                    is_deterministic: expr_type.is_deterministic,
                 })
             }
 
@@ -602,7 +570,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
-                    is_deterministic: expr_type.is_deterministic,
                 })
             }
 
@@ -615,7 +582,6 @@ impl TypeChecker {
                     data_type: DataType::Bool,
                     nullable: false, // IS NULL/IS NOT NULL always returns non-null boolean
                     is_aggregate: expr_type.is_aggregate,
-                    is_deterministic: expr_type.is_deterministic,
                 })
             }
 
@@ -634,7 +600,6 @@ impl TypeChecker {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
-                    is_deterministic: left_type.is_deterministic && right_type.is_deterministic,
                 })
             }
 
@@ -646,21 +611,17 @@ impl TypeChecker {
 
                 let mut any_nullable = expr_type.nullable;
                 let mut any_aggregate = expr_type.is_aggregate;
-                let mut all_deterministic = expr_type.is_deterministic;
-
                 for (i, item) in list.iter().enumerate() {
                     let item_id = expr_id.child(i + 1);
                     let item_type = self.check_expression(item, &item_id, context, annotations)?;
                     any_nullable = any_nullable || item_type.nullable;
                     any_aggregate = any_aggregate || item_type.is_aggregate;
-                    all_deterministic = all_deterministic && item_type.is_deterministic;
                 }
 
                 Ok(TypeInfo {
                     data_type: DataType::Bool,
                     nullable: any_nullable,
                     is_aggregate: any_aggregate,
-                    is_deterministic: all_deterministic,
                 })
             }
 
@@ -683,9 +644,6 @@ impl TypeChecker {
                     is_aggregate: expr_type.is_aggregate
                         || low_type.is_aggregate
                         || high_type.is_aggregate,
-                    is_deterministic: expr_type.is_deterministic
-                        && low_type.is_deterministic
-                        && high_type.is_deterministic,
                 })
             }
         }
@@ -714,7 +672,6 @@ impl TypeChecker {
         let mut arg_types = Vec::new();
         let mut any_nullable = false;
         let mut any_aggregate = false;
-        let mut all_deterministic = true;
 
         for (i, arg) in args.iter().enumerate() {
             // Check if this argument is a parameter
@@ -735,26 +692,25 @@ impl TypeChecker {
                 arg_types.push(arg_type.data_type.clone());
                 any_nullable = any_nullable || arg_type.nullable;
                 any_aggregate = any_aggregate || arg_type.is_aggregate;
-                all_deterministic = all_deterministic && arg_type.is_deterministic;
             }
+        }
+
+        // Check for nested aggregate functions - not allowed in SQL
+        if is_aggregate && any_aggregate {
+            return Err(Error::ExecutionError(format!(
+                "Cannot nest aggregate function '{}' inside another aggregate function",
+                name.to_uppercase()
+            )));
         }
 
         // Get the return type from the function
         // Now we always have concrete types, so we can validate
         let return_type = func.validate(&arg_types)?;
 
-        // Check if this is a non-deterministic function
-        let is_deterministic = all_deterministic
-            && !matches!(
-                name.to_lowercase().as_str(),
-                "random" | "rand" | "now" | "current_timestamp" | "current_date" | "current_time"
-            );
-
         Ok(TypeInfo {
             data_type: return_type,
             nullable: any_nullable,
             is_aggregate: is_aggregate || any_aggregate,
-            is_deterministic,
         })
     }
 }

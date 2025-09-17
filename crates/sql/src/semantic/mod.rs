@@ -11,18 +11,23 @@
 //! - Infers parameter types from context
 //! - Produces a lightweight analyzed statement with Arc-wrapped AST
 
-// New efficient implementation
 pub mod analyzer;
 pub mod caching_analyzer;
-pub mod statement;
-
-// Supporting modules
 pub mod context;
-pub mod resolver;
-pub mod type_checker;
+pub mod statement;
 pub mod types;
-pub mod validators; // New zero-copy validators
+pub mod validators;
 
+#[cfg(test)]
+mod test_aggregate_nesting;
+#[cfg(test)]
+mod test_default_validation;
+#[cfg(test)]
+mod test_foreign_key_validation;
+#[cfg(test)]
+mod test_group_by_validation;
+#[cfg(test)]
+mod test_insert_validation;
 #[cfg(test)]
 mod test_zero_copy;
 // #[cfg(test)]
