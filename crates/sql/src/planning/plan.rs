@@ -3,11 +3,8 @@
 //! Plan nodes form a tree that is executed recursively. Each node pulls
 //! from its children and processes the rows.
 
-use crate::error::Result;
 use crate::types::expression::Expression;
 pub use crate::types::query::{Direction, JoinType};
-use crate::types::value::Row;
-use std::sync::Arc;
 
 /// An index column in the execution plan
 /// Uses AST expression for now - will be converted to types::expression later

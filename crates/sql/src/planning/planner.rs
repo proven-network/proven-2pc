@@ -15,6 +15,7 @@ use crate::parsing::ast::{
     Statement,
 };
 use crate::semantic::AnalyzedStatement;
+use crate::storage::mvcc::IndexMetadata;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use crate::types::statistics::DatabaseStatistics;
@@ -174,6 +175,72 @@ impl Planner {
     /// Clear statistics (useful when they become stale)
     pub fn clear_statistics(&mut self) {
         self.statistics = None;
+    }
+
+    /// Update schemas (for cache invalidation)
+    pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
+        self.schemas = schemas.clone();
+        self.optimizer = Optimizer::new(schemas);
+    }
+
+    /// Update indexes (for cache invalidation)
+    pub fn update_indexes(&mut self, index_metadata: HashMap<String, Vec<IndexMetadata>>) {
+        // Convert storage index metadata to planner IndexInfo
+        let mut indexes = HashMap::new();
+        for (table_name, table_indexes) in index_metadata {
+            let mut index_infos = Vec::new();
+            for metadata in table_indexes {
+                let columns = metadata
+                    .columns
+                    .iter()
+                    .map(|col| {
+                        // Check if this is a simple column name or a complex expression
+                        if !col.expression.contains('(')
+                            && !col.expression.contains('+')
+                            && !col.expression.contains('-')
+                            && !col.expression.contains('*')
+                            && !col.expression.contains('/')
+                        {
+                            // Simple column name
+                            IndexColumn {
+                                name: col.expression.clone(),
+                                expression: Some(AstExpression::Column(
+                                    None,
+                                    col.expression.clone(),
+                                )),
+                                direction: col.direction.map(|d| match d {
+                                    crate::types::query::Direction::Ascending => AstDirection::Asc,
+                                    crate::types::query::Direction::Descending => {
+                                        AstDirection::Desc
+                                    }
+                                }),
+                            }
+                        } else {
+                            // Complex expression
+                            IndexColumn {
+                                name: col.expression.clone(),
+                                expression: None,
+                                direction: col.direction.map(|d| match d {
+                                    crate::types::query::Direction::Ascending => AstDirection::Asc,
+                                    crate::types::query::Direction::Descending => {
+                                        AstDirection::Desc
+                                    }
+                                }),
+                            }
+                        }
+                    })
+                    .collect();
+
+                index_infos.push(IndexInfo {
+                    name: metadata.name.clone(),
+                    table: metadata.table.clone(),
+                    unique: metadata.unique,
+                    columns,
+                });
+            }
+            indexes.insert(table_name, index_infos);
+        }
+        self.indexes = indexes;
     }
 
     /// Plan an analyzed statement

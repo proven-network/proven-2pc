@@ -61,6 +61,13 @@ impl SemanticAnalyzer {
         }
     }
 
+    /// Update schemas (for cache invalidation)
+    pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
+        self.schemas = schemas.clone();
+        self.table_resolver = TableResolver::new(schemas);
+        // column_resolver is stateless, no update needed
+    }
+
     /// Analyze a statement and produce a lightweight result
     pub fn analyze(&mut self, statement: Statement) -> Result<AnalyzedStatement> {
         // Wrap the statement in Arc for sharing

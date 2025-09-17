@@ -7,18 +7,17 @@ use proven_hlc::HlcTimestamp;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution;
-use crate::planning::planner::Planner;
-use crate::semantic::SemanticAnalyzer;
+use crate::parsing::CachingParser;
+use crate::planning::caching_planner::CachingPlanner;
+use crate::semantic::CachingSemanticAnalyzer;
 use crate::storage::mvcc::MvccStorage;
 use crate::stream::{
     operation::SqlOperation,
-    prepared_cache::{PreparedCache, PreparedStatement},
     response::{SqlResponse, convert_execution_result},
     transaction::TransactionContext,
 };
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// SQL transaction engine with predicate-based conflict detection
 pub struct SqlTransactionEngine {
@@ -31,25 +30,34 @@ pub struct SqlTransactionEngine {
     /// Current migration version
     migration_version: u32,
 
-    /// Prepared statement cache
-    prepared_cache: PreparedCache,
+    /// Caching parser for SQL statements
+    parser: CachingParser,
 
-    /// Semantic analyzer for validation and type checking
-    analyzer: SemanticAnalyzer,
+    /// Caching semantic analyzer for validation and type checking
+    analyzer: CachingSemanticAnalyzer,
+
+    /// Caching planner for query plans
+    planner: CachingPlanner,
 }
 
 impl SqlTransactionEngine {
     /// Create a new SQL transaction engine
     pub fn new() -> Self {
         let storage = MvccStorage::new();
-        let analyzer = SemanticAnalyzer::new(storage.get_schemas());
+        let schemas = storage.get_schemas();
+        let indexes = storage.get_index_metadata();
+
+        let parser = CachingParser::new();
+        let analyzer = CachingSemanticAnalyzer::new(schemas.clone());
+        let planner = CachingPlanner::new(schemas, indexes);
 
         Self {
             storage,
             active_transactions: HashMap::new(),
             migration_version: 0,
-            prepared_cache: PreparedCache::new(),
+            parser,
             analyzer,
+            planner,
         }
     }
 
@@ -68,58 +76,32 @@ impl SqlTransactionEngine {
             )));
         }
 
-        // Parse and analyze, using cache when possible
-        let analyzed = if let Some(prepared) = self.prepared_cache.get(sql) {
-            // Use cached semantic analysis
-            prepared.analyzed.clone()
-        } else {
-            // Parse and analyze
-            let statement = match crate::parsing::parse_sql(sql) {
-                Ok(stmt) => stmt,
-                Err(e) => {
-                    return OperationResult::Complete(SqlResponse::Error(format!(
-                        "Parse error: {:?}",
-                        e
-                    )));
-                }
-            };
+        // Step 1: Parse SQL with caching
+        let statement = match self.parser.parse(sql) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Parse error: {:?}",
+                    e
+                )));
+            }
+        };
 
-            // Count parameters in the ORIGINAL statement (before optimization)
-            let original_param_count = count_statement_parameters(&statement);
-
-            // Semantic analysis - validates and type checks
-            let analyzed = match self.analyzer.analyze(statement) {
-                Ok(a) => a,
-                Err(e) => {
-                    return OperationResult::Complete(SqlResponse::Error(format!(
-                        "Semantic error: {:?}",
-                        e
-                    )));
-                }
-            };
-
-            // Cache the analyzed statement
-            self.prepared_cache.insert(
-                sql.to_string(),
-                PreparedStatement {
-                    analyzed: analyzed.clone(),
-                    param_count: original_param_count,
-                    param_locations: Vec::new(), // Not tracking locations for now
-                },
-            );
-
-            analyzed
+        // Step 2: Semantic analysis with caching
+        let analyzed = match self.analyzer.analyze(statement) {
+            Ok(a) => a,
+            Err(e) => {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Semantic error: {:?}",
+                    e
+                )));
+            }
         };
 
         // Validate and bind parameters if provided (but don't replace in AST)
         let bound_params = if let Some(params) = params {
             // Check parameter count
-            let expected_count = if let Some(prepared) = self.prepared_cache.get(sql) {
-                prepared.param_count
-            } else {
-                // Should not happen, but fallback to counting
-                analyzed.parameter_count()
-            };
+            let expected_count = analyzed.parameter_count();
 
             if params.len() != expected_count {
                 return OperationResult::Complete(SqlResponse::Error(format!(
@@ -130,7 +112,7 @@ impl SqlTransactionEngine {
             }
 
             // Bind parameters for validation (but don't replace in AST)
-            match crate::semantic::bind_parameters(&analyzed, params.to_vec()) {
+            match crate::semantic::bind_parameters(&*analyzed, params.to_vec()) {
                 Ok(bound) => Some(bound),
                 Err(e) => {
                     return OperationResult::Complete(SqlResponse::Error(format!(
@@ -143,12 +125,8 @@ impl SqlTransactionEngine {
             None
         };
 
-        // Plan the bound statement
-        let planner = Planner::new(
-            self.storage.get_schemas(),
-            self.storage.get_index_metadata(),
-        );
-        let plan = match planner.plan(analyzed) {
+        // Step 3: Plan the statement with caching
+        let plan = match self.planner.plan(analyzed.clone()) {
             Ok(p) => p,
             Err(e) => {
                 return OperationResult::Complete(SqlResponse::Error(format!(
@@ -158,12 +136,8 @@ impl SqlTransactionEngine {
             }
         };
 
-        // Phase 3: Extract predicates from the plan
-        let planner = Planner::new(
-            self.storage.get_schemas(),
-            self.storage.get_index_metadata(),
-        );
-        let plan_predicates = planner.extract_predicates(&plan);
+        // Phase 4: Extract predicates from the plan
+        let plan_predicates = self.planner.extract_predicates(&*plan);
 
         for (other_tx_id, other_tx) in &self.active_transactions {
             if other_tx_id == &txn_id {
@@ -190,13 +164,13 @@ impl SqlTransactionEngine {
             }
         }
 
-        // Phase 4: Add predicates to transaction context
+        // Phase 5: Add predicates to transaction context
         let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
         tx_ctx.add_predicates(plan_predicates);
 
-        // Phase 5: Execute with parameters
+        // Phase 6: Execute with parameters
         match execution::execute_with_params(
-            plan.clone(),
+            (*plan).clone(),
             &mut self.storage,
             tx_ctx,
             bound_params.as_ref(),
@@ -205,12 +179,17 @@ impl SqlTransactionEngine {
                 // Update schema cache if DDL operation
                 if plan.is_ddl() {
                     // Schema updates are handled internally by storage
-                    // Update the semantic analyzer with new schemas
-                    self.analyzer = SemanticAnalyzer::new(self.storage.get_schemas());
+                    // Update all caches with new schemas
+                    let schemas = self.storage.get_schemas();
+                    let indexes = self.storage.get_index_metadata();
 
-                    // Invalidate cache entries for affected tables
-                    // For now, just clear the entire cache on DDL
-                    self.prepared_cache.clear();
+                    // Clear parser cache on schema change
+                    self.parser.clear();
+                    // Update analyzer with new schemas
+                    self.analyzer.update_schemas(schemas.clone());
+                    // Update planner with new schemas and indexes
+                    self.planner.update_schemas(schemas);
+                    self.planner.update_indexes(indexes);
                 }
                 OperationResult::Complete(convert_execution_result(result))
             }
@@ -347,194 +326,21 @@ impl TransactionEngine for SqlTransactionEngine {
         // Clear existing state
         self.storage = MvccStorage::new();
         self.active_transactions.clear();
-        self.prepared_cache = PreparedCache::new();
         self.migration_version = 0; // Reset migration version
 
         // Restore storage from compacted data
         self.storage.restore_from_compacted(compacted);
 
+        // Reinitialize all caches with new storage schemas
+        let schemas = self.storage.get_schemas();
+        let indexes = self.storage.get_index_metadata();
+
+        self.parser.clear();
+        self.analyzer = CachingSemanticAnalyzer::new(schemas.clone());
+        self.planner = CachingPlanner::new(schemas, indexes);
+
         Ok(())
     }
-}
-
-/// Count the number of parameter placeholders in an AST statement (before planning)
-fn count_statement_parameters(stmt: &crate::parsing::Statement) -> usize {
-    use crate::parsing::dml::DmlStatement;
-    use crate::parsing::{Expression, InsertSource, Statement};
-
-    let mut max_idx = 0;
-
-    fn count_expr_params(expr: &Expression, max_idx: &mut usize) {
-        match expr {
-            Expression::Parameter(idx) => {
-                *max_idx = (*max_idx).max(*idx + 1);
-            }
-            Expression::Operator(op) => {
-                use crate::parsing::Operator;
-                match op {
-                    Operator::And(l, r)
-                    | Operator::Or(l, r)
-                    | Operator::Equal(l, r)
-                    | Operator::NotEqual(l, r)
-                    | Operator::GreaterThan(l, r)
-                    | Operator::GreaterThanOrEqual(l, r)
-                    | Operator::LessThan(l, r)
-                    | Operator::LessThanOrEqual(l, r)
-                    | Operator::Add(l, r)
-                    | Operator::Subtract(l, r)
-                    | Operator::Multiply(l, r)
-                    | Operator::Divide(l, r)
-                    | Operator::Remainder(l, r)
-                    | Operator::Exponentiate(l, r)
-                    | Operator::Like(l, r) => {
-                        count_expr_params(l, max_idx);
-                        count_expr_params(r, max_idx);
-                    }
-                    Operator::Not(e)
-                    | Operator::Factorial(e)
-                    | Operator::Identity(e)
-                    | Operator::Negate(e) => {
-                        count_expr_params(e, max_idx);
-                    }
-                    Operator::Is(e, _) => {
-                        count_expr_params(e, max_idx);
-                    }
-                    Operator::InList { expr, list, .. } => {
-                        count_expr_params(expr, max_idx);
-                        for e in list {
-                            count_expr_params(e, max_idx);
-                        }
-                    }
-                    Operator::Between {
-                        expr, low, high, ..
-                    } => {
-                        count_expr_params(expr, max_idx);
-                        count_expr_params(low, max_idx);
-                        count_expr_params(high, max_idx);
-                    }
-                }
-            }
-            Expression::Function(_, args) => {
-                for arg in args {
-                    count_expr_params(arg, max_idx);
-                }
-            }
-            Expression::All | Expression::Column(_, _) | Expression::Literal(_) => {}
-            Expression::Case {
-                operand,
-                when_clauses,
-                else_clause,
-            } => {
-                if let Some(op) = operand {
-                    count_expr_params(op, max_idx);
-                }
-                for (cond, result) in when_clauses {
-                    count_expr_params(cond, max_idx);
-                    count_expr_params(result, max_idx);
-                }
-                if let Some(else_expr) = else_clause {
-                    count_expr_params(else_expr, max_idx);
-                }
-            }
-            Expression::ArrayAccess { base, index } => {
-                count_expr_params(base, max_idx);
-                count_expr_params(index, max_idx);
-            }
-            Expression::FieldAccess { base, field: _ } => {
-                count_expr_params(base, max_idx);
-            }
-            Expression::ArrayLiteral(elements) => {
-                for e in elements {
-                    count_expr_params(e, max_idx);
-                }
-            }
-            Expression::MapLiteral(pairs) => {
-                for (k, v) in pairs {
-                    count_expr_params(k, max_idx);
-                    count_expr_params(v, max_idx);
-                }
-            }
-        }
-    }
-
-    if let Statement::Dml(dml_stmt) = stmt {
-        match dml_stmt {
-            DmlStatement::Select(select) => {
-                // Check all parts of SELECT
-                for (expr, _) in &select.select {
-                    count_expr_params(expr, &mut max_idx);
-                }
-                if let Some(where_clause) = &select.r#where {
-                    count_expr_params(where_clause, &mut max_idx);
-                }
-                for expr in &select.group_by {
-                    count_expr_params(expr, &mut max_idx);
-                }
-                if let Some(having) = &select.having {
-                    count_expr_params(having, &mut max_idx);
-                }
-                for (expr, _) in &select.order_by {
-                    count_expr_params(expr, &mut max_idx);
-                }
-            }
-            DmlStatement::Insert { source, .. } => {
-                match source {
-                    InsertSource::Values(values) => {
-                        for row in values {
-                            for expr in row {
-                                count_expr_params(expr, &mut max_idx);
-                            }
-                        }
-                    }
-                    InsertSource::DefaultValues => {
-                        // No parameters in DEFAULT VALUES
-                    }
-                    InsertSource::Select(select) => {
-                        // Count params in the SELECT statement
-                        for (expr, _) in &select.select {
-                            count_expr_params(expr, &mut max_idx);
-                        }
-                        if let Some(where_expr) = &select.r#where {
-                            count_expr_params(where_expr, &mut max_idx);
-                        }
-                        for expr in &select.group_by {
-                            count_expr_params(expr, &mut max_idx);
-                        }
-                        if let Some(having_expr) = &select.having {
-                            count_expr_params(having_expr, &mut max_idx);
-                        }
-                        for (expr, _) in &select.order_by {
-                            count_expr_params(expr, &mut max_idx);
-                        }
-                        if let Some(limit_expr) = &select.limit {
-                            count_expr_params(limit_expr, &mut max_idx);
-                        }
-                        if let Some(offset_expr) = &select.offset {
-                            count_expr_params(offset_expr, &mut max_idx);
-                        }
-                    }
-                }
-            }
-            DmlStatement::Update { set, r#where, .. } => {
-                for expr in set.values().flatten() {
-                    count_expr_params(expr, &mut max_idx);
-                }
-
-                if let Some(where_clause) = r#where {
-                    count_expr_params(where_clause, &mut max_idx);
-                }
-            }
-            DmlStatement::Delete {
-                r#where: Some(where_clause),
-                ..
-            } => {
-                count_expr_params(where_clause, &mut max_idx);
-            }
-            DmlStatement::Delete { r#where: None, .. } => {}
-        }
-    }
-
-    max_idx
 }
 
 impl Default for SqlTransactionEngine {

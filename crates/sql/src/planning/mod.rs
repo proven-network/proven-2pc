@@ -5,6 +5,7 @@
 //! - Plan node definitions for the execution tree
 //! - Query optimizer with transformation rules
 
+pub mod caching_planner;
 pub mod optimizer;
 pub mod plan;
 pub mod planner;

@@ -8,6 +8,7 @@ bytes.workspace = true
 chrono.workspace = true
 ciborium.workspace = true
 hex.workspace = true
+lru.workspace = true
 parking_lot.workspace = true
 proven-engine.workspace = true
 proven-hlc.workspace = true
