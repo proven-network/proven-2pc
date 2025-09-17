@@ -4,7 +4,7 @@
 //! passing parameter values separately through the execution pipeline.
 
 use crate::error::{Error, Result};
-use crate::semantic::analyzed::{AnalyzedStatement, ParameterSlot};
+use crate::semantic::statement::{AnalyzedStatement, ParameterSlot};
 use crate::types::value::Value;
 
 /// Bound parameters ready for execution
@@ -104,7 +104,7 @@ fn validate_functions_with_parameters(
     statement: &AnalyzedStatement,
     bound: &BoundParameters,
 ) -> Result<()> {
-    use super::analyzed::{ExpressionId, SqlContext};
+    use super::statement::{ExpressionId, SqlContext};
     use crate::types::data_type::DataType;
     use std::collections::HashMap;
 
@@ -126,13 +126,13 @@ fn validate_functions_with_parameters(
 
             // Find the function's expression ID (parent of the parameter)
             // The parameter's expression_id has the arg_index as the last element
-            let mut func_expr_id = slot.expression_id.clone();
+            let func_expr_id = slot.expression_id.clone();
             if let Some(path) = func_expr_id.path().split_last() {
                 let parent_id = ExpressionId::from_path(path.1.to_vec());
 
                 function_params
                     .entry((function_name.clone(), parent_id))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((arg_index, value_type));
             }
         }

@@ -4,12 +4,12 @@
 //! and separate type annotations, enabling efficient caching and
 //! zero-copy parameter binding.
 
-use super::analyzed::{
+use super::context::AnalysisContext;
+use super::resolver::{ColumnResolver, TableResolver};
+use super::statement::{
     AccessType, AnalyzedStatement, CoercionContext, ExpressionId, ParameterSlot, SqlContext,
     StatementType, TableAccess, TypeInfo,
 };
-use super::context::AnalysisContext;
-use super::resolver::{ColumnResolver, TableResolver};
 use super::type_checker::TypeChecker;
 use super::validators::{
     ConstraintValidator, ExpressionValidator, FunctionValidator, StatementValidator,
@@ -249,15 +249,15 @@ impl SemanticAnalyzer {
                     }
 
                     // Check max args
-                    if let Some(max) = sig.max_args {
-                        if args.len() > max {
-                            return Err(Error::ExecutionError(format!(
-                                "Function {} accepts at most {} arguments, got {}",
-                                name.to_uppercase(),
-                                max,
-                                args.len()
-                            )));
-                        }
+                    if let Some(max) = sig.max_args
+                        && args.len() > max
+                    {
+                        return Err(Error::ExecutionError(format!(
+                            "Function {} accepts at most {} arguments, got {}",
+                            name.to_uppercase(),
+                            max,
+                            args.len()
+                        )));
                     }
                 } else {
                     return Err(Error::ExecutionError(format!(
@@ -622,7 +622,6 @@ impl SemanticAnalyzer {
                 DdlStatement::DropTable { .. } => StatementType::DropTable,
                 DdlStatement::CreateIndex { .. } => StatementType::CreateIndex,
                 DdlStatement::DropIndex { .. } => StatementType::DropIndex,
-                _ => StatementType::Other,
             },
             _ => StatementType::Other,
         }

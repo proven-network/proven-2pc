@@ -4,8 +4,8 @@
 //! TypeInfo entries indexed by ExpressionId paths without modifying
 //! the AST itself.
 
-use super::analyzed::{ExpressionId, TypeAnnotations, TypeInfo};
 use super::context::AnalysisContext;
+use super::statement::{ExpressionId, TypeAnnotations, TypeInfo};
 use crate::error::{Error, Result};
 use crate::parsing::ast::{Expression, Literal, Operator};
 use crate::types::data_type::DataType;

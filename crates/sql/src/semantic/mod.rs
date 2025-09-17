@@ -12,10 +12,10 @@
 //! - Produces a lightweight analyzed statement with Arc-wrapped AST
 
 // New efficient implementation
-pub mod analyzed;
 pub mod analyzer;
 pub mod caching_analyzer;
 pub mod parameters;
+pub mod statement;
 
 // Supporting modules
 pub mod context;
@@ -30,6 +30,6 @@ mod test_zero_copy;
 // mod type_checker_test;
 
 // Export the new implementation types as primary interface
-pub use analyzed::AnalyzedStatement;
 pub use caching_analyzer::CachingSemanticAnalyzer;
 pub use parameters::{BoundParameters, bind_parameters};
+pub use statement::AnalyzedStatement;

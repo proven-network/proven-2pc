@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::parsing::parse_sql;
-    use crate::semantic::analyzed::SqlContext;
+    use crate::semantic::statement::SqlContext;
     use crate::semantic::{analyzer::SemanticAnalyzer, bind_parameters};
     use crate::types::data_type::DataType;
     use crate::types::schema::{Column, Table};

@@ -6,7 +6,7 @@
 use super::plan::Plan;
 use super::planner::Planner;
 use crate::error::Result;
-use crate::semantic::analyzed::AnalyzedStatement;
+use crate::semantic::statement::AnalyzedStatement;
 use crate::storage::mvcc::IndexMetadata;
 use crate::types::schema::Table;
 use lru::LruCache;

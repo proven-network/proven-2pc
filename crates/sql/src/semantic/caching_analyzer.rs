@@ -3,8 +3,8 @@
 //! This module provides a caching wrapper around the semantic analyzer that
 //! maintains an LRU cache of analyzed statements to avoid redundant analysis.
 
-use super::analyzed::AnalyzedStatement;
 use super::analyzer::SemanticAnalyzer;
+use super::statement::AnalyzedStatement;
 use crate::error::Result;
 use crate::parsing::ast::Statement;
 use crate::types::schema::Table;

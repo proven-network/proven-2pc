@@ -112,7 +112,7 @@ impl SqlTransactionEngine {
             }
 
             // Bind parameters for validation (but don't replace in AST)
-            match crate::semantic::bind_parameters(&*analyzed, params.to_vec()) {
+            match crate::semantic::bind_parameters(&analyzed, params.to_vec()) {
                 Ok(bound) => Some(bound),
                 Err(e) => {
                     return OperationResult::Complete(SqlResponse::Error(format!(
@@ -137,7 +137,7 @@ impl SqlTransactionEngine {
         };
 
         // Phase 4: Extract predicates from the plan
-        let plan_predicates = self.planner.extract_predicates(&*plan);
+        let plan_predicates = self.planner.extract_predicates(&plan);
 
         for (other_tx_id, other_tx) in &self.active_transactions {
             if other_tx_id == &txn_id {

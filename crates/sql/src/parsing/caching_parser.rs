@@ -211,10 +211,8 @@ fn count_parameters(stmt: &Statement) -> usize {
                 let mut count = 0;
 
                 // SET expressions
-                for expr in set.values() {
-                    if let Some(e) = expr {
-                        count += count_expr_params(e);
-                    }
+                for e in set.values().flatten() {
+                    count += count_expr_params(e);
                 }
 
                 // WHERE clause

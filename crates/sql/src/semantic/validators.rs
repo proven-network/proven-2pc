@@ -5,8 +5,8 @@
 
 use crate::error::{Error, Result};
 use crate::parsing::ast::{DdlStatement, DmlStatement, Expression, Operator, Statement};
-use crate::semantic::analyzed::{AnalyzedStatement, ExpressionId, SqlContext};
 use crate::semantic::context::AnalysisContext;
+use crate::semantic::statement::{AnalyzedStatement, ExpressionId, SqlContext};
 use crate::types::data_type::DataType;
 
 /// Validates expressions and collects parameter requirements
@@ -66,15 +66,14 @@ impl ExpressionValidator {
                 self.validate(right, &expr_id.child(1), analyzed, context)?;
 
                 // Check types are boolean if not parameters
-                if let Some(left_type) = analyzed.get_type(&expr_id.child(0)) {
-                    if !matches!(left_type.data_type, DataType::Bool)
-                        && !matches!(left.as_ref(), Expression::Parameter(_))
-                    {
-                        return Err(Error::TypeMismatch {
-                            expected: "boolean".to_string(),
-                            found: format!("{:?}", left_type.data_type),
-                        });
-                    }
+                if let Some(left_type) = analyzed.get_type(&expr_id.child(0))
+                    && !matches!(left_type.data_type, DataType::Bool)
+                    && !matches!(left.as_ref(), Expression::Parameter(_))
+                {
+                    return Err(Error::TypeMismatch {
+                        expected: "boolean".to_string(),
+                        found: format!("{:?}", left_type.data_type),
+                    });
                 }
                 Ok(())
             }
@@ -143,12 +142,13 @@ impl StatementValidator {
                 }
 
                 // HAVING requires GROUP BY or aggregates
-                if select.having.is_some() && select.group_by.is_empty() {
-                    if !analyzed.metadata.has_aggregates {
-                        return Err(Error::ExecutionError(
-                            "HAVING requires GROUP BY or aggregate functions".to_string(),
-                        ));
-                    }
+                if select.having.is_some()
+                    && select.group_by.is_empty()
+                    && !analyzed.metadata.has_aggregates
+                {
+                    return Err(Error::ExecutionError(
+                        "HAVING requires GROUP BY or aggregate functions".to_string(),
+                    ));
                 }
                 Ok(())
             }
@@ -194,14 +194,13 @@ impl ConstraintValidator {
                     for slot in &mut analyzed.parameter_slots {
                         if let SqlContext::InsertValue { column_index } =
                             slot.coercion_context.sql_context
+                            && column_index < schema.columns.len()
                         {
-                            if column_index < schema.columns.len() {
-                                let col = &schema.columns[column_index];
-                                if !col.nullable {
-                                    slot.coercion_context.nullable = false;
-                                    slot.description =
-                                        format!("Parameter for non-nullable column '{}'", col.name);
-                                }
+                            let col = &schema.columns[column_index];
+                            if !col.nullable {
+                                slot.coercion_context.nullable = false;
+                                slot.description =
+                                    format!("Parameter for non-nullable column '{}'", col.name);
                             }
                         }
                     }
@@ -264,11 +263,11 @@ impl FunctionValidator {
                     let sig = func.signature();
 
                     // Check argument count
-                    if let Some(max) = sig.max_args {
-                        if arg_index >= max {
-                            // This would be caught during analysis
-                            continue;
-                        }
+                    if let Some(max) = sig.max_args
+                        && arg_index >= max
+                    {
+                        // This would be caught during analysis
+                        continue;
                     }
 
                     // Note: We don't set acceptable_types here because functions

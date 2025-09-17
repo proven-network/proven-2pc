@@ -1,6 +1,5 @@
 //! Type definitions for semantic analysis
 
-use crate::parsing::ast::Expression;
 use crate::types::data_type::DataType;
 use std::collections::HashSet;
 
