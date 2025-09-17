@@ -236,7 +236,10 @@ impl ConstraintValidator {
     }
 }
 
-/// Validates functions and infers parameter types
+/// Validates functions with parameters
+///
+/// This validator simply updates parameter descriptions for better error messages.
+/// Actual function validation is delegated to the functions module.
 pub struct FunctionValidator;
 
 impl FunctionValidator {
@@ -245,39 +248,39 @@ impl FunctionValidator {
         Self
     }
 
-    /// Validate functions and infer parameter types
+    /// Update parameter descriptions for function arguments
+    ///
+    /// The actual validation happens in the functions module when we have
+    /// concrete parameter values. This just improves error messages.
     pub fn validate(
         &self,
         analyzed: &mut AnalyzedStatement,
         _context: &AnalysisContext,
     ) -> Result<()> {
-        // Update parameter requirements based on function context
+        // Just update descriptions for better error messages
         for slot in &mut analyzed.parameter_slots {
             if let SqlContext::FunctionArgument {
                 ref function_name,
                 arg_index,
             } = slot.coercion_context.sql_context
             {
-                // Look up the actual function signature
+                // Get function to check if it's aggregate
                 if let Some(func) = crate::functions::get_function(function_name) {
                     let sig = func.signature();
 
-                    // Check argument count
-                    if let Some(max) = sig.max_args
-                        && arg_index >= max
-                    {
-                        // This would be caught during analysis
-                        continue;
-                    }
-
-                    // Note: We don't set acceptable_types here because functions
-                    // use their validate() method for type checking, not static lists
-
-                    // Mark aggregate functions
-                    if sig.is_aggregate {
-                        slot.description =
-                            format!("Parameter for aggregate function '{}'", function_name);
-                    }
+                    slot.description = if sig.is_aggregate {
+                        format!(
+                            "Parameter {} for aggregate function '{}'",
+                            arg_index + 1,
+                            function_name
+                        )
+                    } else {
+                        format!(
+                            "Parameter {} for function '{}'",
+                            arg_index + 1,
+                            function_name
+                        )
+                    };
                 }
             }
         }

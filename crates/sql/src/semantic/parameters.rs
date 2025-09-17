@@ -100,68 +100,106 @@ pub fn bind_parameters(
 }
 
 /// Validate functions that contain parameters now that we have actual types
+///
+/// This function reconstructs the complete argument list for each function call
+/// that contains parameters, combining both parameter and non-parameter argument types.
 fn validate_functions_with_parameters(
     statement: &AnalyzedStatement,
     bound: &BoundParameters,
 ) -> Result<()> {
     use super::statement::{ExpressionId, SqlContext};
     use crate::types::data_type::DataType;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
-    // Group parameters by their function context
-    let mut function_params: HashMap<(String, ExpressionId), Vec<(usize, DataType)>> =
+    // Track all function calls that have parameters
+    // Map: (function_name, function_expr_id) -> Map<arg_index, DataType>
+    let mut function_calls: HashMap<(String, ExpressionId), BTreeMap<usize, DataType>> =
         HashMap::new();
 
+    // First pass: collect parameter types for functions
     for slot in &statement.parameter_slots {
         if let SqlContext::FunctionArgument {
             ref function_name,
             arg_index,
         } = slot.coercion_context.sql_context
         {
-            // Get the actual value type for this parameter
+            // Get the actual parameter value type
             let value = bound.values.get(slot.index).ok_or_else(|| {
                 Error::ExecutionError(format!("Missing parameter {}", slot.index))
             })?;
             let value_type = value.data_type();
 
-            // Find the function's expression ID (parent of the parameter)
-            // The parameter's expression_id has the arg_index as the last element
-            let func_expr_id = slot.expression_id.clone();
-            if let Some(path) = func_expr_id.path().split_last() {
-                let parent_id = ExpressionId::from_path(path.1.to_vec());
+            // Find the function's expression ID (parent of this parameter)
+            let func_expr_id =
+                if let Some((_, parent_path)) = slot.expression_id.path().split_last() {
+                    ExpressionId::from_path(parent_path.to_vec())
+                } else {
+                    continue; // Skip if we can't find parent
+                };
 
-                function_params
-                    .entry((function_name.clone(), parent_id))
-                    .or_default()
-                    .push((arg_index, value_type));
+            // Store the parameter type at its argument position
+            function_calls
+                .entry((function_name.clone(), func_expr_id.clone()))
+                .or_default()
+                .insert(arg_index, value_type);
+        }
+    }
+
+    // Second pass: for each function with parameters, get non-parameter arg types from annotations
+    for ((function_name, func_expr_id), param_arg_types) in &mut function_calls {
+        // Get the function to know how many args it expects
+        let func = crate::functions::get_function(function_name)
+            .ok_or_else(|| Error::ExecutionError(format!("Unknown function: {}", function_name)))?;
+
+        let sig = func.signature();
+
+        // For each possible argument index, check if we already have it from parameters
+        // If not, try to get it from type annotations
+        for arg_idx in 0..sig.min_args {
+            if !param_arg_types.contains_key(&arg_idx) {
+                // This argument is not a parameter, get its type from annotations
+                let arg_expr_id = func_expr_id.child(arg_idx);
+
+                if let Some(type_info) = statement.get_type(&arg_expr_id) {
+                    // Skip Unknown types - these are likely unresolved references
+                    if !matches!(type_info.data_type, DataType::Unknown) {
+                        param_arg_types.insert(arg_idx, type_info.data_type.clone());
+                    }
+                }
             }
         }
     }
 
-    // Now validate each function that had parameters
-    for ((function_name, _expr_id), param_args) in function_params {
+    // Final pass: validate each function with complete arg list
+    for ((function_name, _), arg_types_map) in function_calls {
         // Get the function
         let func = crate::functions::get_function(&function_name)
             .ok_or_else(|| Error::ExecutionError(format!("Unknown function: {}", function_name)))?;
 
-        // We need to reconstruct the complete argument list
-        // The param_args only contains parameters, but the function might have non-parameter args too
-        // For now, we'll validate with just the parameter types we have
-        // TODO: We should properly track all args (both params and non-params) for complete validation
+        // Build complete arg list in order
+        let mut arg_types = Vec::new();
+        let max_idx = arg_types_map.keys().max().copied().unwrap_or(0);
 
-        // Sort args by index to ensure correct order
-        let mut param_args = param_args;
-        param_args.sort_by_key(|(idx, _)| *idx);
+        for i in 0..=max_idx {
+            if let Some(dt) = arg_types_map.get(&i) {
+                arg_types.push(dt.clone());
+            } else {
+                // We're missing type information for this argument
+                // This can happen if it's a complex expression we couldn't resolve
+                arg_types.push(DataType::Unknown);
+            }
+        }
 
-        // For validation, we need the complete arg list
-        // This is a limitation - we're only validating with parameter types
-        // Ideally we'd track the full function signature during analysis
-        if param_args.len() == func.signature().min_args {
-            // If we have all args as parameters, we can validate
-            let arg_types: Vec<DataType> = param_args.into_iter().map(|(_, dt)| dt).collect();
+        // Only validate if we have enough type information
+        // Skip validation if too many Unknown types
+        let unknown_count = arg_types
+            .iter()
+            .filter(|dt| matches!(dt, DataType::Unknown))
+            .count();
+        if unknown_count == 0 || (arg_types.len() > 1 && unknown_count < arg_types.len() / 2) {
+            // Validate with the function's validate method
             func.validate(&arg_types)?;
         }
-        // Otherwise skip validation - we don't have complete type info
     }
 
     Ok(())
