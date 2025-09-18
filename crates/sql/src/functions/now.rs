@@ -12,8 +12,6 @@ impl Function for NowFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "NOW",
-            min_args: 0,
-            max_args: Some(0),
             is_aggregate: false,
         };
         &SIGNATURE
@@ -57,8 +55,6 @@ impl Function for CurrentTimestampFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "CURRENT_TIMESTAMP",
-            min_args: 0,
-            max_args: Some(0),
             is_aggregate: false,
         };
         &SIGNATURE
@@ -89,8 +85,6 @@ mod tests {
         let func = NowFunction;
         let sig = func.signature();
         assert_eq!(sig.name, "NOW");
-        assert_eq!(sig.min_args, 0);
-        assert_eq!(sig.max_args, Some(0));
         assert!(!sig.is_aggregate);
     }
 

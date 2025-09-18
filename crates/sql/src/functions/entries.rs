@@ -13,8 +13,6 @@ impl Function for EntriesFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "ENTRIES",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: false,
         };
         &SIGNATURE

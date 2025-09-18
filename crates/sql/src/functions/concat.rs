@@ -12,8 +12,6 @@ impl Function for ConcatFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "CONCAT",
-            min_args: 1,
-            max_args: None, // Variadic
             is_aggregate: false,
         };
         &SIGNATURE
@@ -119,8 +117,6 @@ mod tests {
         let func = ConcatFunction;
         let sig = func.signature();
         assert_eq!(sig.name, "CONCAT");
-        assert_eq!(sig.min_args, 1);
-        assert_eq!(sig.max_args, None); // Variadic
         assert!(!sig.is_aggregate);
     }
 

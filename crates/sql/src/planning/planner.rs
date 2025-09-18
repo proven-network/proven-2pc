@@ -378,17 +378,49 @@ impl Planner {
                     let left_node = self.plan_from(&[*left.clone()], context)?;
                     let right_node = self.plan_from(&[*right.clone()], context)?;
 
+                    // Extract table names from the nodes
+                    let (left_table, right_table) =
+                        self.extract_table_names(&left_node, &right_node);
+
                     let join_node = if let Some(pred) = predicate {
                         // Check if this is an equi-join
                         if let Some((left_col, right_col)) =
                             self.extract_equi_join_columns(pred, &left_node, &right_node, context)
                         {
-                            Node::HashJoin {
-                                left: Box::new(left_node),
-                                right: Box::new(right_node),
-                                left_col,
-                                right_col,
-                                join_type: Self::convert_join_type(r#type),
+                            // Check join hints for selectivity guidance
+                            let use_hash_join =
+                                if let (Some(lt), Some(rt)) = (&left_table, &right_table) {
+                                    context
+                                        .analyzed
+                                        .join_hints
+                                        .iter()
+                                        .find(|h| {
+                                            (h.left_table == *lt && h.right_table == *rt)
+                                                || (h.left_table == *rt && h.right_table == *lt)
+                                        })
+                                        .map(|h| h.selectivity_estimate > 0.1) // Use hash join for higher selectivity
+                                        .unwrap_or(true) // Default to hash join
+                                } else {
+                                    true // Default to hash join
+                                };
+
+                            if use_hash_join {
+                                Node::HashJoin {
+                                    left: Box::new(left_node),
+                                    right: Box::new(right_node),
+                                    left_col,
+                                    right_col,
+                                    join_type: Self::convert_join_type(r#type),
+                                }
+                            } else {
+                                // Use nested loop for very selective joins
+                                let join_predicate = context.resolve_expression(pred)?;
+                                Node::NestedLoopJoin {
+                                    left: Box::new(left_node),
+                                    right: Box::new(right_node),
+                                    predicate: join_predicate,
+                                    join_type: Self::convert_join_type(r#type),
+                                }
                             }
                         } else {
                             let join_predicate = context.resolve_expression(pred)?;
@@ -717,7 +749,10 @@ impl Planner {
     ) -> Option<&'a crate::semantic::analyzer::IndexHint> {
         // Check optimization output for index hints
         if let Some(opt_output) = context.analyzed.metadata.optimization_output.as_ref() {
-            opt_output.index_hints.iter().find(|hint| hint.table == table)
+            opt_output
+                .index_hints
+                .iter()
+                .find(|hint| hint.table == table)
         } else {
             None
         }
@@ -730,41 +765,47 @@ impl Planner {
     ) -> Result<Vec<AggregateFunc>> {
         let mut aggregates = Vec::new();
 
-        for (expr, _) in select {
-            if let AstExpression::Function(name, args) = expr {
-                let func_name = name.to_uppercase();
+        // Use aggregate_expressions from metadata to quickly identify aggregates
+        for (idx, (expr, _)) in select.iter().enumerate() {
+            let expr_id = crate::semantic::statement::ExpressionId::from_path(vec![idx]);
 
-                let arg = if args.is_empty() {
-                    Expression::Constant(crate::types::value::Value::integer(1))
-                } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
-                    if func_name.ends_with("_DISTINCT") {
-                        Expression::All
-                    } else {
+            // Check if this expression is marked as an aggregate
+            if context.analyzed.aggregate_expressions.contains(&expr_id) {
+                if let AstExpression::Function(name, args) = expr {
+                    let func_name = name.to_uppercase();
+
+                    let arg = if args.is_empty() {
                         Expression::Constant(crate::types::value::Value::integer(1))
-                    }
-                } else {
-                    context.resolve_expression(&args[0])?
-                };
+                    } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
+                        if func_name.ends_with("_DISTINCT") {
+                            Expression::All
+                        } else {
+                            Expression::Constant(crate::types::value::Value::integer(1))
+                        }
+                    } else {
+                        context.resolve_expression(&args[0])?
+                    };
 
-                let agg = match func_name.as_str() {
-                    "COUNT" => AggregateFunc::Count(arg),
-                    "COUNT_DISTINCT" => AggregateFunc::CountDistinct(arg),
-                    "SUM" => AggregateFunc::Sum(arg),
-                    "SUM_DISTINCT" => AggregateFunc::SumDistinct(arg),
-                    "AVG" => AggregateFunc::Avg(arg),
-                    "AVG_DISTINCT" => AggregateFunc::AvgDistinct(arg),
-                    "MIN" => AggregateFunc::Min(arg),
-                    "MIN_DISTINCT" => AggregateFunc::MinDistinct(arg),
-                    "MAX" => AggregateFunc::Max(arg),
-                    "MAX_DISTINCT" => AggregateFunc::MaxDistinct(arg),
-                    "STDEV" => AggregateFunc::StDev(arg),
-                    "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg),
-                    "VARIANCE" => AggregateFunc::Variance(arg),
-                    "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg),
-                    _ => continue,
-                };
+                    let agg = match func_name.as_str() {
+                        "COUNT" => AggregateFunc::Count(arg),
+                        "COUNT_DISTINCT" => AggregateFunc::CountDistinct(arg),
+                        "SUM" => AggregateFunc::Sum(arg),
+                        "SUM_DISTINCT" => AggregateFunc::SumDistinct(arg),
+                        "AVG" => AggregateFunc::Avg(arg),
+                        "AVG_DISTINCT" => AggregateFunc::AvgDistinct(arg),
+                        "MIN" => AggregateFunc::Min(arg),
+                        "MIN_DISTINCT" => AggregateFunc::MinDistinct(arg),
+                        "MAX" => AggregateFunc::Max(arg),
+                        "MAX_DISTINCT" => AggregateFunc::MaxDistinct(arg),
+                        "STDEV" => AggregateFunc::StDev(arg),
+                        "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg),
+                        "VARIANCE" => AggregateFunc::Variance(arg),
+                        "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg),
+                        _ => continue,
+                    };
 
-                aggregates.push(agg);
+                    aggregates.push(agg);
+                }
             }
         }
 
@@ -779,6 +820,10 @@ impl Planner {
         let mut expressions = Vec::new();
         let mut aliases = Vec::new();
 
+        // Use column_usage to optimize projection if needed
+        // For example, we could check which columns are actually used
+        let column_usage = &context.analyzed.column_usage;
+
         for (expr, alias) in select {
             match expr {
                 AstExpression::All => {
@@ -786,13 +831,22 @@ impl Planner {
                     for table in &context.tables {
                         if let Some(schema) = self.schemas.get(&table.name) {
                             for (i, col) in schema.columns.iter().enumerate() {
-                                expressions.push(Expression::Column(table.start_column + i));
-                                aliases.push(Some(col.name.clone()));
+                                // Check if this column is actually used anywhere
+                                let key = (table.name.clone(), col.name.clone());
+                                if column_usage.contains_key(&key) {
+                                    // Column is used - include it
+                                    expressions.push(Expression::Column(table.start_column + i));
+                                    aliases.push(Some(col.name.clone()));
+                                } else {
+                                    // Still include it for SELECT * but could optimize later
+                                    expressions.push(Expression::Column(table.start_column + i));
+                                    aliases.push(Some(col.name.clone()));
+                                }
                             }
                         }
                     }
                 }
-                AstExpression::Column(table_ref, col_name) if alias.is_none() => {
+                AstExpression::Column(_table_ref, col_name) if alias.is_none() => {
                     expressions.push(context.resolve_expression(expr)?);
                     aliases.push(Some(col_name.clone()));
                 }
@@ -880,6 +934,22 @@ impl Planner {
         // Simplified for now
         None
     }
+
+    fn extract_table_names(
+        &self,
+        left_node: &Node,
+        right_node: &Node,
+    ) -> (Option<String>, Option<String>) {
+        let left_table = match left_node {
+            Node::Scan { table, .. } => Some(table.clone()),
+            _ => None,
+        };
+        let right_table = match right_node {
+            Node::Scan { table, .. } => Some(table.clone()),
+            _ => None,
+        };
+        (left_table, right_table)
+    }
 }
 
 /// Context that uses AnalyzedStatement for resolution
@@ -948,7 +1018,10 @@ impl<'a> AnalyzedPlanContext<'a> {
     }
 
     /// Get type information for an expression if available
-    fn get_type_info(&self, expr_id: &ExpressionId) -> Option<&crate::semantic::statement::TypeInfo> {
+    fn get_type_info(
+        &self,
+        expr_id: &ExpressionId,
+    ) -> Option<&crate::semantic::statement::TypeInfo> {
         self.analyzed.type_annotations.get(expr_id)
     }
 
@@ -979,11 +1052,18 @@ impl<'a> AnalyzedPlanContext<'a> {
 
     /// Resolve expression with metadata support
     fn resolve_expression_with_metadata(&self, expr: &AstExpression) -> Result<Expression> {
+        // TODO: In a future optimization, we could use expression templates here
+        // to identify expressions that should be computed once and cached
+        // For now, we proceed with normal resolution
+
         match expr {
             AstExpression::Column(table_ref, column_name) => {
                 // Use the optimized column resolution map (O(1) lookup)
-                if let Some(resolution) = self.analyzed.column_resolution_map
-                    .get(table_ref.as_deref(), column_name) {
+                if let Some(resolution) = self
+                    .analyzed
+                    .column_resolution_map
+                    .get(table_ref.as_deref(), column_name)
+                {
                     return Ok(Expression::Column(resolution.global_offset));
                 }
 
@@ -1002,7 +1082,7 @@ impl<'a> AnalyzedPlanContext<'a> {
                 }
                 Ok(Expression::Parameter(*idx))
             }
-            _ => self.resolve_expression_simple(expr)
+            _ => self.resolve_expression_simple(expr),
         }
     }
 
@@ -1040,7 +1120,7 @@ impl<'a> AnalyzedPlanContext<'a> {
             AstExpression::Parameter(idx) => {
                 // Parameter slots are checked in resolve_expression_with_metadata
                 Ok(Expression::Parameter(*idx))
-            },
+            }
 
             AstExpression::Function(name, args) => {
                 let resolved_args = args
@@ -1136,7 +1216,8 @@ impl<'a> AnalyzedPlanContext<'a> {
                     if let crate::types::data_type::DataType::Struct(fields) = &col.datatype {
                         // Verify the field exists
                         if fields.iter().any(|(name, _)| name == column_name) {
-                            let base_expr = self.resolve_column_in_table(table, &struct_col_name)?;
+                            let base_expr =
+                                self.resolve_column_in_table(table, &struct_col_name)?;
                             return Ok(Expression::FieldAccess(
                                 Box::new(base_expr),
                                 column_name.to_string(),

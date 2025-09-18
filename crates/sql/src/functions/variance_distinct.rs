@@ -12,8 +12,6 @@ impl Function for VarianceDistinctFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "VARIANCE_DISTINCT",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: true,
         };
         &SIGNATURE
@@ -93,8 +91,6 @@ mod tests {
         let func = VarianceDistinctFunction;
         let sig = func.signature();
         assert_eq!(sig.name, "VARIANCE_DISTINCT");
-        assert_eq!(sig.min_args, 1);
-        assert_eq!(sig.max_args, Some(1));
         assert!(sig.is_aggregate);
     }
 

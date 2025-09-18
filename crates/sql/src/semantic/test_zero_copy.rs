@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::parsing::parse_sql;
+    use crate::parsing::Parser;
     use crate::semantic::analyzer::SemanticAnalyzer;
     use crate::semantic::statement::SqlContext;
     use crate::types::data_type::DataType;
@@ -13,7 +13,7 @@ mod tests {
     fn test_parameter_analysis() {
         // Parse a query with parameters
         let sql = "SELECT * FROM users WHERE id = ? AND name = ?";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         // Create a test schema with users table
         let mut schemas = HashMap::new();
@@ -47,7 +47,7 @@ mod tests {
     fn test_parameter_binding() {
         // Parse a query with parameters
         let sql = "SELECT * FROM users WHERE id = ? AND active = ?";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         // Create a test schema
         let mut schemas = HashMap::new();
@@ -77,7 +77,7 @@ mod tests {
     fn test_arc_ast_sharing() {
         // Parse a query
         let sql = "SELECT name FROM users WHERE id = ?";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         // Create a test schema
         let mut schemas = HashMap::new();
@@ -105,7 +105,7 @@ mod tests {
     fn test_parameter_validation_error() {
         // Parse a SELECT query with parameters (doesn't require table to exist)
         let sql = "SELECT ? AS col1, ? AS col2";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         // Analyze the query without parameter types should fail
         let schemas = HashMap::new();
@@ -141,7 +141,7 @@ mod tests {
     fn test_function_parameter_context() {
         // Parse a query with parameters in functions
         let sql = "SELECT LENGTH(?) AS len, ABS(?) AS absolute";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         // Create an empty schema (no tables needed for this test)
         let schemas = HashMap::new();
@@ -186,7 +186,7 @@ mod tests {
     fn test_function_validation_errors() {
         // Test that semantic analysis fails for invalid function arguments
         let sql = "SELECT ABS('not a number')";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         let schemas = HashMap::new();
         let analyzer = SemanticAnalyzer::new(schemas);
@@ -205,7 +205,7 @@ mod tests {
     fn test_function_arg_count_validation() {
         // Test min args validation
         let sql = "SELECT ABS()";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         let schemas = HashMap::new();
         let analyzer = SemanticAnalyzer::new(schemas);
@@ -219,7 +219,7 @@ mod tests {
 
         // Test max args validation
         let sql2 = "SELECT ABS(1, 2)";
-        let ast2 = parse_sql(sql2).unwrap();
+        let ast2 = Parser::parse(sql2).unwrap();
 
         let analyzer2 = SemanticAnalyzer::new(HashMap::new());
         let result2 = analyzer2.analyze(ast2, vec![]);
@@ -236,7 +236,7 @@ mod tests {
     fn test_function_with_parameter_validation() {
         // Test that parameters in functions work
         let sql = "SELECT ABS(?)";
-        let ast = parse_sql(sql).unwrap();
+        let ast = Parser::parse(sql).unwrap();
 
         let schemas = HashMap::new();
         let analyzer = SemanticAnalyzer::new(schemas);

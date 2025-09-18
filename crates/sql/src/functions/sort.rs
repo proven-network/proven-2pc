@@ -13,8 +13,6 @@ impl Function for SortFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "SORT",
-            min_args: 1,
-            max_args: Some(2),
             is_aggregate: false,
         };
         &SIGNATURE

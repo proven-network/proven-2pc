@@ -83,26 +83,4 @@ impl CachingPlanner {
         self.planner.update_indexes(indexes);
         self.cache.clear();
     }
-
-    /// Clear the cache
-    pub fn clear(&mut self) {
-        self.cache.clear();
-    }
-
-    /// Get cache statistics
-    pub fn cache_stats(&self) -> CacheStats {
-        CacheStats {
-            size: self.cache.len(),
-            capacity: self.cache.cap().get(),
-        }
-    }
-}
-
-/// Cache statistics
-#[derive(Debug, Clone)]
-pub struct CacheStats {
-    /// Current number of entries in cache
-    pub size: usize,
-    /// Maximum capacity
-    pub capacity: usize,
 }

@@ -67,12 +67,83 @@ impl BinaryOperator for EqualOperator {
         use Value::*;
 
         // NULL comparison always returns NULL
-        match (left, right) {
-            (Null, _) | (_, Null) => Ok(Null),
+        if left.is_null() || right.is_null() {
+            return Ok(Null);
+        }
+
+        // Handle special cases for collection/string comparisons
+        let (left_val, right_val) = match (left, right) {
+            // Map comparison with JSON string
+            (Map(_), Str(s)) | (Str(s), Map(_)) if s.starts_with('{') && s.ends_with('}') => {
+                if let Ok(parsed) = Value::parse_json_object(s) {
+                    if matches!(left, Map(_)) {
+                        (left.clone(), parsed)
+                    } else {
+                        (parsed, right.clone())
+                    }
+                } else {
+                    (left.clone(), right.clone())
+                }
+            }
+
+            // Array/List comparison with JSON string
+            (Array(_) | List(_), Str(s)) | (Str(s), Array(_) | List(_))
+                if s.starts_with('[') && s.ends_with(']') =>
+            {
+                if let Ok(parsed) = Value::parse_json_array(s) {
+                    if matches!(left, Array(_) | List(_)) {
+                        (left.clone(), parsed)
+                    } else {
+                        (parsed, right.clone())
+                    }
+                } else {
+                    (left.clone(), right.clone())
+                }
+            }
+
+            // Struct comparison with JSON string
+            (Struct(fields), Str(s)) | (Str(s), Struct(fields))
+                if s.starts_with('{') && s.ends_with('}') =>
+            {
+                if let Ok(parsed) = Value::parse_json_object(s) {
+                    // Try to coerce to struct type
+                    let schema: Vec<(String, crate::types::DataType)> = fields
+                        .iter()
+                        .map(|(name, val)| (name.clone(), val.data_type()))
+                        .collect();
+
+                    if let Ok(coerced) = crate::coercion::coerce_value(
+                        parsed.clone(),
+                        &crate::types::DataType::Struct(schema),
+                    ) {
+                        if matches!(left, Struct(_)) {
+                            (left.clone(), coerced)
+                        } else {
+                            (coerced, right.clone())
+                        }
+                    } else {
+                        (left.clone(), right.clone())
+                    }
+                } else {
+                    (left.clone(), right.clone())
+                }
+            }
+
+            // Default case - no conversion needed
+            _ => (left.clone(), right.clone()),
+        };
+
+        // IEEE 754 semantics: NaN is never equal to anything, including itself
+        match (&left_val, &right_val) {
+            (F32(a), _) | (_, F32(a)) if a.is_nan() => Ok(Bool(false)),
+            (F64(a), _) | (_, F64(a)) if a.is_nan() => Ok(Bool(false)),
             _ => {
-                // Use the compare function from operators module
-                let ordering = crate::operators::compare(left, right)?;
-                Ok(Bool(ordering == std::cmp::Ordering::Equal))
+                // Use the compare function for final comparison
+                match crate::operators::compare(&left_val, &right_val) {
+                    Ok(std::cmp::Ordering::Equal) => Ok(Bool(true)),
+                    Ok(_) => Ok(Bool(false)),
+                    Err(_) => Ok(Bool(false)), // Type mismatch means not equal
+                }
             }
         }
     }

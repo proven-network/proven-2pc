@@ -14,8 +14,6 @@ impl Function for CurrentTimeFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "CURRENT_TIME",
-            min_args: 0,
-            max_args: Some(0),
             is_aggregate: false,
         };
         &SIGNATURE

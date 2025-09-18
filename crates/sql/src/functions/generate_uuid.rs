@@ -13,8 +13,6 @@ impl Function for GenerateUuidFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "GENERATE_UUID",
-            min_args: 0,
-            max_args: Some(0),
             is_aggregate: false,
         };
         &SIGNATURE

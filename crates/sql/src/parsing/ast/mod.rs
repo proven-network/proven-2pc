@@ -23,6 +23,8 @@ pub use expressions::{Expression, Literal, Operator};
 #[derive(Debug, Clone)]
 pub enum Statement {
     /// EXPLAIN: explains a SQL statement's execution plan.
+    /// TODO: should handle this
+    #[allow(dead_code)]
     Explain(Box<Statement>),
 
     /// DDL statements (CREATE, DROP, ALTER)

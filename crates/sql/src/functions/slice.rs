@@ -13,8 +13,6 @@ impl Function for SliceFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "SLICE",
-            min_args: 2,
-            max_args: Some(3),
             is_aggregate: false,
         };
         &SIGNATURE

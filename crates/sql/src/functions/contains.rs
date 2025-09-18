@@ -13,8 +13,6 @@ impl Function for ContainsFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "CONTAINS",
-            min_args: 2,
-            max_args: Some(2),
             is_aggregate: false,
         };
         &SIGNATURE

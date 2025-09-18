@@ -13,8 +13,6 @@ impl Function for FindIdxFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "FIND_IDX",
-            min_args: 2,
-            max_args: Some(2),
             is_aggregate: false,
         };
         &SIGNATURE

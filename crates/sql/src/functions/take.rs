@@ -13,8 +13,6 @@ impl Function for TakeFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "TAKE",
-            min_args: 2,
-            max_args: Some(2),
             is_aggregate: false,
         };
         &SIGNATURE

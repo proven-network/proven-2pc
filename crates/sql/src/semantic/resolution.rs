@@ -120,13 +120,6 @@ impl NameResolver {
         Ok(resolution_map)
     }
 
-    /// Validate all function names in the statement
-    pub fn validate_functions(&self, statement: &Statement) -> Result<Vec<String>> {
-        let mut functions = Vec::new();
-        self.collect_functions_from_statement(statement, &mut functions)?;
-        Ok(functions)
-    }
-
     /// Recursively collect and validate functions
     fn collect_functions_from_statement(
         &self,

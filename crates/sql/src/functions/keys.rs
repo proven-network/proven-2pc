@@ -13,8 +13,6 @@ impl Function for KeysFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "KEYS",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: false,
         };
         &SIGNATURE
@@ -57,8 +55,6 @@ impl Function for MapKeysFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "MAP_KEYS",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: false,
         };
         &SIGNATURE

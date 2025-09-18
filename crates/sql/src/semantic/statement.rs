@@ -12,6 +12,21 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 use std::sync::Arc;
 
+/// How a column is used in a query
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColumnUsage {
+    /// Used in SELECT clause
+    Projected,
+    /// Used in WHERE/HAVING clause
+    Filtered,
+    /// Used in GROUP BY clause
+    Grouped,
+    /// Used in ORDER BY clause
+    Ordered,
+    /// Used in JOIN conditions
+    Joined,
+}
+
 /// Complete output of semantic analysis
 #[derive(Debug, Clone)]
 pub struct AnalyzedStatement {
@@ -32,6 +47,24 @@ pub struct AnalyzedStatement {
 
     /// Pre-resolved column mappings for O(1) lookups
     pub column_resolution_map: ColumnResolutionMap,
+
+    /// Aggregate expressions in the statement (structural info)
+    pub aggregate_expressions: HashSet<ExpressionId>,
+
+    /// How each column is used in the query (projection, filter, etc.)
+    pub column_usage: HashMap<(String, String), HashSet<ColumnUsage>>,
+
+    /// Expression dependency graph for common subexpression elimination
+    pub expression_dependencies: HashMap<ExpressionId, Vec<ExpressionId>>,
+
+    /// Nullability of output columns (parallel to output_schema)
+    pub output_nullability: Vec<bool>,
+
+    /// Join optimization hints from semantic analysis
+    pub join_hints: Vec<crate::semantic::analyzer::JoinHint>,
+
+    /// Expression templates for caching and common subexpression elimination
+    pub expression_templates: Vec<crate::semantic::analyzer::ExpressionTemplate>,
 }
 
 /// Template for a predicate that can be evaluated with parameters
@@ -261,17 +294,13 @@ impl AnalyzedStatement {
             parameter_slots: Vec::new(),
             predicate_templates: Vec::new(),
             column_resolution_map: ColumnResolutionMap::default(),
+            aggregate_expressions: HashSet::new(),
+            column_usage: HashMap::new(),
+            expression_dependencies: HashMap::new(),
+            output_nullability: Vec::new(),
+            join_hints: Vec::new(),
+            expression_templates: Vec::new(),
         }
-    }
-
-    /// Get type info for an expression
-    pub fn get_type(&self, id: &ExpressionId) -> Option<&TypeInfo> {
-        self.type_annotations.get(id)
-    }
-
-    /// Add a type annotation
-    pub fn annotate(&mut self, id: ExpressionId, info: TypeInfo) {
-        self.type_annotations.annotate(id, info);
     }
 
     /// Add a parameter slot
@@ -294,6 +323,14 @@ impl AnalyzedStatement {
         self.predicate_templates.push(template);
     }
 
+    /// Track how a column is used
+    pub fn add_column_usage(&mut self, table: String, column: String, usage: ColumnUsage) {
+        self.column_usage
+            .entry((table, column))
+            .or_insert_with(HashSet::new)
+            .insert(usage);
+    }
+
     /// Extract predicates using actual parameter values
     /// This doesn't walk the tree - just evaluates pre-extracted templates
     pub fn extract_predicates(&self, params: &[Value]) -> QueryPredicates {
@@ -304,8 +341,8 @@ impl AnalyzedStatement {
             Statement::Dml(dml) => match dml {
                 DmlStatement::Select(_) => (true, false, false),
                 DmlStatement::Insert { .. } => (false, false, true), // Only insert, not write
-                DmlStatement::Update { .. } => (true, true, false), // Read then write
-                DmlStatement::Delete { .. } => (true, true, false), // Read then write
+                DmlStatement::Update { .. } => (true, true, false),  // Read then write
+                DmlStatement::Delete { .. } => (true, true, false),  // Read then write
             },
             _ => (false, false, false), // DDL operations
         };
@@ -476,12 +513,6 @@ impl AnalyzedStatement {
             }
         }
     }
-
-    /// Convert to a statement by cloning the Arc contents
-    /// This is used for compatibility with existing planner
-    pub fn into_statement(self) -> Statement {
-        (*self.ast).clone()
-    }
 }
 
 impl TypeAnnotations {
@@ -508,24 +539,9 @@ impl ExpressionId {
         path.push(index);
         Self(path)
     }
-
-    /// Get the path
-    pub fn path(&self) -> &[usize] {
-        &self.0
-    }
 }
 
-impl StatementMetadata {
-    /// Add a referenced column
-    pub fn add_column_reference(&mut self, table: String, column: String) {
-        self.referenced_columns.insert((table, column));
-    }
-
-    /// Set the output schema
-    pub fn set_output_schema(&mut self, schema: Vec<(String, DataType)>) {
-        self.output_schema = Some(schema);
-    }
-}
+impl StatementMetadata {}
 
 impl ColumnResolutionMap {
     /// Add a column resolution

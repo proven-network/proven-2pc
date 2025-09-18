@@ -13,8 +13,6 @@ impl Function for ValuesFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "VALUES",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: false,
         };
         &SIGNATURE
@@ -59,8 +57,6 @@ impl Function for MapValuesFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "MAP_VALUES",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: false,
         };
         &SIGNATURE

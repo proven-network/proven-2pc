@@ -14,8 +14,6 @@ impl Function for FromEntriesFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "FROM_ENTRIES",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: false,
         };
         &SIGNATURE

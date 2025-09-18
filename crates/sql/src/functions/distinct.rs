@@ -13,8 +13,6 @@ impl Function for DistinctFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "DISTINCT",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: false,
         };
         &SIGNATURE

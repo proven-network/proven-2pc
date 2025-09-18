@@ -12,8 +12,6 @@ impl Function for CoalesceFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "COALESCE",
-            min_args: 1,
-            max_args: None, // Variadic
             is_aggregate: false,
         };
         &SIGNATURE
@@ -78,8 +76,6 @@ impl Function for IfNullFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "IFNULL",
-            min_args: 2,
-            max_args: Some(2),
             is_aggregate: false,
         };
         &SIGNATURE
@@ -123,8 +119,6 @@ mod tests {
         let func = CoalesceFunction;
         let sig = func.signature();
         assert_eq!(sig.name, "COALESCE");
-        assert_eq!(sig.min_args, 1);
-        assert_eq!(sig.max_args, None); // Variadic
         assert!(!sig.is_aggregate);
     }
 

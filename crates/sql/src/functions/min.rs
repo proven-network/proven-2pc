@@ -12,8 +12,6 @@ impl Function for MinFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "MIN",
-            min_args: 1,
-            max_args: Some(1),
             is_aggregate: true,
         };
         &SIGNATURE
@@ -60,8 +58,6 @@ mod tests {
         let func = MinFunction;
         let sig = func.signature();
         assert_eq!(sig.name, "MIN");
-        assert_eq!(sig.min_args, 1);
-        assert_eq!(sig.max_args, Some(1));
         assert!(sig.is_aggregate);
     }
 

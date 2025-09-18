@@ -11,18 +11,9 @@ pub mod caching_parser;
 mod lexer;
 mod parser;
 
-use crate::error::Result;
-
 pub use caching_parser::CachingParser;
 pub use lexer::{Keyword, Lexer, Token};
 pub use parser::Parser;
 
 // Re-export commonly used AST types from the new structure
 pub use ast::{Operator, Statement};
-
-// Re-export submodules for more specific access
-
-/// Parse a SQL statement string into an AST
-pub fn parse_sql(sql: &str) -> Result<Statement> {
-    Parser::parse(sql)
-}

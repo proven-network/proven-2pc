@@ -341,7 +341,9 @@ impl TypeChecker {
         };
 
         // Store the type annotation
-        analyzed.annotate(expr_id, type_info.clone());
+        analyzed
+            .type_annotations
+            .annotate(expr_id, type_info.clone());
         Ok(type_info)
     }
 
@@ -376,8 +378,6 @@ impl TypeChecker {
             resolution: None,
         }
     }
-
-    /// Infer type of a column reference
 
     /// Infer type of an operator expression
     fn infer_operator_type(
@@ -1352,15 +1352,5 @@ impl TypeChecker {
             is_aggregate: is_aggregate || any_aggregate,
             resolution: None,
         })
-    }
-
-    /// Infer subquery return types
-    pub fn infer_subquery_types(
-        &self,
-        _statement: &Arc<Statement>,
-        _expression_types: &HashMap<ExpressionId, TypeInfo>,
-    ) -> Result<HashMap<usize, Vec<DataType>>> {
-        // For now, return empty map - subqueries need special handling
-        Ok(HashMap::new())
     }
 }

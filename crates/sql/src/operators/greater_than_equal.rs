@@ -61,12 +61,21 @@ impl BinaryOperator for GreaterThanEqualOperator {
         use Value::*;
 
         // NULL comparison always returns NULL
+        if left.is_null() || right.is_null() {
+            return Ok(Null);
+        }
+
+        // IEEE 754 semantics: comparisons with NaN always return false
         match (left, right) {
-            (Null, _) | (_, Null) => Ok(Null),
+            (F32(a), _) | (_, F32(a)) if a.is_nan() => Ok(Bool(false)),
+            (F64(a), _) | (_, F64(a)) if a.is_nan() => Ok(Bool(false)),
             _ => {
                 // Use the compare function from operators module
-                let ordering = crate::operators::compare(left, right)?;
-                Ok(Bool(ordering != std::cmp::Ordering::Less))
+                match crate::operators::compare(left, right) {
+                    Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => Ok(Bool(true)),
+                    Ok(_) => Ok(Bool(false)),
+                    Err(_) => Ok(Bool(false)), // Type mismatch returns false
+                }
             }
         }
     }

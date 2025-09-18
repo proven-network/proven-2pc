@@ -49,255 +49,41 @@ pub fn evaluate(
             operators::execute_not(&v)?
         }
 
-        // Comparison operations with SQL NULL semantics and NaN handling
+        // Comparison operations
         Equal(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
-            let mut r = evaluate(rhs, row, context, params)?;
-
-            // Special case: if comparing collections with JSON strings, parse the strings
-            if matches!(l, Value::Map(_)) && matches!(r, Value::Str(_)) {
-                if let Value::Str(s) = &r
-                    && s.starts_with('{')
-                    && s.ends_with('}')
-                    && let Ok(parsed) = Value::parse_json_object(s)
-                    && matches!(parsed, Value::Map(_))
-                {
-                    r = parsed;
-                }
-            } else if matches!(r, Value::Map(_)) && matches!(l, Value::Str(_)) {
-                if let Value::Str(s) = &l
-                    && s.starts_with('{')
-                    && s.ends_with('}')
-                    && let Ok(parsed) = Value::parse_json_object(s)
-                    && matches!(parsed, Value::Map(_))
-                {
-                    return evaluate(
-                        &Expression::Equal(
-                            Box::new(Expression::Constant(parsed)),
-                            Box::new(Expression::Constant(r)),
-                        ),
-                        row,
-                        context,
-                        params,
-                    );
-                }
-            }
-            // Handle Array/List comparison
-            else if (matches!(l, Value::Array(_)) || matches!(l, Value::List(_)))
-                && matches!(r, Value::Str(_))
-            {
-                if let Value::Str(s) = &r
-                    && s.starts_with('[')
-                    && s.ends_with(']')
-                    && let Ok(parsed) = Value::parse_json_array(s)
-                {
-                    r = parsed;
-                }
-            } else if (matches!(r, Value::Array(_)) || matches!(r, Value::List(_)))
-                && matches!(l, Value::Str(_))
-            {
-                if let Value::Str(s) = &l
-                    && s.starts_with('[')
-                    && s.ends_with(']')
-                    && let Ok(parsed) = Value::parse_json_array(s)
-                {
-                    return evaluate(
-                        &Expression::Equal(
-                            Box::new(Expression::Constant(parsed)),
-                            Box::new(Expression::Constant(r)),
-                        ),
-                        row,
-                        context,
-                        params,
-                    );
-                }
-            }
-            // Handle Struct comparison
-            else if matches!(l, Value::Struct(_)) && matches!(r, Value::Str(_)) {
-                if let Value::Str(s) = &r
-                    && s.starts_with('{')
-                    && s.ends_with('}')
-                    && let Ok(parsed) = Value::parse_json_object(s)
-                    && let Value::Struct(fields) = &l
-                {
-                    let schema: Vec<(String, crate::types::DataType)> = fields
-                        .iter()
-                        .map(|(name, val)| (name.clone(), val.data_type()))
-                        .collect();
-                    if let Ok(coerced) = crate::coercion::coerce_value(
-                        parsed,
-                        &crate::types::DataType::Struct(schema),
-                    ) {
-                        r = coerced;
-                    }
-                }
-            } else if matches!(r, Value::Struct(_))
-                && matches!(l, Value::Str(_))
-                && let Value::Str(s) = &l
-                && s.starts_with('{')
-                && s.ends_with('}')
-                && let Ok(parsed) = Value::parse_json_object(s)
-                && let Value::Struct(fields) = &r
-            {
-                let schema: Vec<(String, crate::types::DataType)> = fields
-                    .iter()
-                    .map(|(name, val)| (name.clone(), val.data_type()))
-                    .collect();
-                if let Ok(coerced) =
-                    crate::coercion::coerce_value(parsed, &crate::types::DataType::Struct(schema))
-                {
-                    return evaluate(
-                        &Expression::Equal(
-                            Box::new(Expression::Constant(coerced)),
-                            Box::new(Expression::Constant(r)),
-                        ),
-                        row,
-                        context,
-                        params,
-                    );
-                }
-            }
-
-            // SQL semantics: any comparison with NULL returns NULL
-            if l.is_null() || r.is_null() {
-                return Ok(Value::Null);
-            }
-
-            // IEEE 754 semantics: NaN is never equal to anything, including itself
-            let has_nan = match (&l, &r) {
-                (Value::F32(a), _) if a.is_nan() => true,
-                (_, Value::F32(b)) if b.is_nan() => true,
-                (Value::F64(a), _) if a.is_nan() => true,
-                (_, Value::F64(b)) if b.is_nan() => true,
-                _ => false,
-            };
-            if has_nan {
-                return Ok(Value::boolean(false));
-            }
-
-            // Use operators::compare for type-aware comparison
-            match operators::compare(&l, &r) {
-                Ok(std::cmp::Ordering::Equal) => Value::boolean(true),
-                Ok(_) => Value::boolean(false),
-                Err(_) => Value::boolean(false), // Type mismatch means not equal
-            }
+            let r = evaluate(rhs, row, context, params)?;
+            operators::execute_equal(&l, &r)?
         }
 
         NotEqual(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            // SQL semantics: any comparison with NULL returns NULL
-            if l.is_null() || r.is_null() {
-                return Ok(Value::Null);
-            }
-            // IEEE 754 semantics: NaN is never equal to anything, so always not equal
-            let has_nan = match (&l, &r) {
-                (Value::F32(a), _) if a.is_nan() => true,
-                (_, Value::F32(b)) if b.is_nan() => true,
-                (Value::F64(a), _) if a.is_nan() => true,
-                (_, Value::F64(b)) if b.is_nan() => true,
-                _ => false,
-            };
-            if has_nan {
-                return Ok(Value::boolean(true));
-            }
-            match operators::compare(&l, &r) {
-                Ok(std::cmp::Ordering::Equal) => Value::boolean(false),
-                Ok(_) => Value::boolean(true),
-                Err(_) => Value::boolean(true), // Type mismatch means not equal
-            }
+            operators::execute_not_equal(&l, &r)?
         }
 
         LessThan(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            if l.is_null() || r.is_null() {
-                return Ok(Value::Null);
-            }
-            let has_nan = match (&l, &r) {
-                (Value::F32(a), _) if a.is_nan() => true,
-                (_, Value::F32(b)) if b.is_nan() => true,
-                (Value::F64(a), _) if a.is_nan() => true,
-                (_, Value::F64(b)) if b.is_nan() => true,
-                _ => false,
-            };
-            if has_nan {
-                return Ok(Value::boolean(false));
-            }
-            match operators::compare(&l, &r) {
-                Ok(std::cmp::Ordering::Less) => Value::boolean(true),
-                Ok(_) => Value::boolean(false),
-                Err(_) => Value::boolean(false),
-            }
+            operators::execute_less_than(&l, &r)?
         }
 
         LessThanOrEqual(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            if l.is_null() || r.is_null() {
-                return Ok(Value::Null);
-            }
-            let has_nan = match (&l, &r) {
-                (Value::F32(a), _) if a.is_nan() => true,
-                (_, Value::F32(b)) if b.is_nan() => true,
-                (Value::F64(a), _) if a.is_nan() => true,
-                (_, Value::F64(b)) if b.is_nan() => true,
-                _ => false,
-            };
-            if has_nan {
-                return Ok(Value::boolean(false));
-            }
-            match operators::compare(&l, &r) {
-                Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => Value::boolean(true),
-                Ok(_) => Value::boolean(false),
-                Err(_) => Value::boolean(false),
-            }
+            operators::execute_less_than_equal(&l, &r)?
         }
 
         GreaterThan(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            if l.is_null() || r.is_null() {
-                return Ok(Value::Null);
-            }
-            let has_nan = match (&l, &r) {
-                (Value::F32(a), _) if a.is_nan() => true,
-                (_, Value::F32(b)) if b.is_nan() => true,
-                (Value::F64(a), _) if a.is_nan() => true,
-                (_, Value::F64(b)) if b.is_nan() => true,
-                _ => false,
-            };
-            if has_nan {
-                return Ok(Value::boolean(false));
-            }
-            match operators::compare(&l, &r) {
-                Ok(std::cmp::Ordering::Greater) => Value::boolean(true),
-                Ok(_) => Value::boolean(false),
-                Err(_) => Value::boolean(false),
-            }
+            operators::execute_greater_than(&l, &r)?
         }
 
         GreaterThanOrEqual(lhs, rhs) => {
             let l = evaluate(lhs, row, context, params)?;
             let r = evaluate(rhs, row, context, params)?;
-            if l.is_null() || r.is_null() {
-                return Ok(Value::Null);
-            }
-            let has_nan = match (&l, &r) {
-                (Value::F32(a), _) if a.is_nan() => true,
-                (_, Value::F32(b)) if b.is_nan() => true,
-                (Value::F64(a), _) if a.is_nan() => true,
-                (_, Value::F64(b)) if b.is_nan() => true,
-                _ => false,
-            };
-            if has_nan {
-                return Ok(Value::boolean(false));
-            }
-            match operators::compare(&l, &r) {
-                Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => Value::boolean(true),
-                Ok(_) => Value::boolean(false),
-                Err(_) => Value::boolean(false),
-            }
+            operators::execute_greater_than_equal(&l, &r)?
         }
 
         Is(expr, check_value) => {
@@ -340,6 +126,23 @@ pub fn evaluate(
         Identity(expr) => {
             let value = evaluate(expr, row, context, params)?;
             operators::execute_identity(&value)?
+        }
+
+        Factorial(expr) => {
+            let value = evaluate(expr, row, context, params)?;
+            operators::execute_factorial(&value)?
+        }
+
+        Exponentiate(lhs, rhs) => {
+            let l = evaluate(lhs, row, context, params)?;
+            let r = evaluate(rhs, row, context, params)?;
+            operators::execute_exponentiate(&l, &r)?
+        }
+
+        Like(expr, pattern) => {
+            let value = evaluate(expr, row, context, params)?;
+            let pattern_value = evaluate(pattern, row, context, params)?;
+            operators::execute_like(&value, &pattern_value)?
         }
 
         // Function calls
@@ -463,9 +266,6 @@ pub fn evaluate(
             }
             Value::Map(map)
         }
-
-        // Other expression types
-        _ => Value::Null,
     })
 }
 

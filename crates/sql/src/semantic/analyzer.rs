@@ -22,9 +22,6 @@ pub struct ResolutionOutput {
 
     /// Column resolution map for O(1) lookups
     pub column_map: ColumnResolutionMap,
-
-    /// Resolved function names (validated to exist)
-    pub functions: Vec<String>,
 }
 
 /// Output from type inference phase
@@ -37,9 +34,6 @@ pub struct TypeOutput {
 
     /// Parameter slots with type and context information
     pub parameter_slots: Vec<ParameterSlot>,
-
-    /// Inferred return types for subqueries
-    pub subquery_types: HashMap<usize, Vec<DataType>>,
 
     /// Statement type metadata
     pub statement_type: StatementType,
@@ -160,14 +154,7 @@ impl SemanticAnalyzer {
         // Build column resolution map
         let column_map = resolver.build_column_map(&tables, &self.schemas)?;
 
-        // Validate function names
-        let functions = resolver.validate_functions(ast)?;
-
-        Ok(ResolutionOutput {
-            tables,
-            column_map,
-            functions,
-        })
+        Ok(ResolutionOutput { tables, column_map })
     }
 
     /// Phase 2: Type Inference
@@ -191,9 +178,6 @@ impl SemanticAnalyzer {
         // Build parameter slots with context information
         let parameter_slots = self.build_parameter_slots(ast, &expression_types, param_types)?;
 
-        // Infer subquery return types
-        let subquery_types = checker.infer_subquery_types(ast, &expression_types)?;
-
         // Determine statement type
         let statement_type = self.get_statement_type(ast);
 
@@ -204,7 +188,6 @@ impl SemanticAnalyzer {
             has_aggregates,
             expression_types,
             parameter_slots,
-            subquery_types,
             statement_type,
         })
     }
@@ -285,17 +268,29 @@ impl SemanticAnalyzer {
         _validation: ValidationOutput,
         optimization: OptimizationOutput,
     ) -> AnalyzedStatement {
-        let mut analyzed = AnalyzedStatement::new(ast);
+        let mut analyzed = AnalyzedStatement::new(ast.clone());
 
         // Add resolution data
         analyzed.column_resolution_map = resolution.column_map;
 
-        // Add type annotations
+        // Add aggregate expressions first (while we still have types)
+        for (expr_id, type_info) in &types.expression_types {
+            if type_info.is_aggregate {
+                analyzed.aggregate_expressions.insert(expr_id.clone());
+            }
+        }
+
+        // Track column usage and output nullability first (while we have references)
+        self.track_column_usage(&ast, &mut analyzed).unwrap_or(());
+        self.compute_output_nullability(&ast, &types, &mut analyzed)
+            .unwrap_or(());
+
+        // Add type annotations (moving ownership)
         for (expr_id, type_info) in types.expression_types {
             analyzed.type_annotations.annotate(expr_id, type_info);
         }
 
-        // Add parameter slots
+        // Add parameter slots (moving ownership)
         for slot in types.parameter_slots {
             analyzed.add_parameter(slot);
         }
@@ -304,14 +299,21 @@ impl SemanticAnalyzer {
         analyzed.metadata.statement_type = types.statement_type;
         analyzed.metadata.has_aggregates = types.has_aggregates;
 
-        // Clone predicate templates for conflict detection before adding optimization output
+        // Clone optimization data before moving
         let templates = optimization.predicate_templates.clone();
+        let join_hints = optimization.join_hints.clone();
+        let expression_templates = optimization.expression_templates.clone();
+
         analyzed.metadata.optimization_output = Some(Box::new(optimization));
 
         // Add predicate templates separately for conflict detection
         for template in templates {
             analyzed.add_predicate_template(template);
         }
+
+        // Add join hints and expression templates
+        analyzed.join_hints = join_hints;
+        analyzed.expression_templates = expression_templates;
 
         // Sort parameters by index for consistent ordering
         analyzed.sort_parameters();
@@ -700,6 +702,138 @@ impl SemanticAnalyzer {
             }
             _ => {} // Literals, columns, etc. don't contain parameters
         }
+    }
+
+    /// Track how columns are used in the statement
+    fn track_column_usage(
+        &self,
+        statement: &Arc<Statement>,
+        analyzed: &mut AnalyzedStatement,
+    ) -> Result<()> {
+        use super::statement::ColumnUsage;
+        use crate::parsing::ast::DmlStatement;
+
+        if let Statement::Dml(DmlStatement::Select(select)) = statement.as_ref() {
+            // Track SELECT columns (projected)
+            for (expr, _) in &select.select {
+                self.track_column_in_expression(expr, ColumnUsage::Projected, analyzed);
+            }
+
+            // Track WHERE columns (filtered)
+            if let Some(where_expr) = &select.r#where {
+                self.track_column_in_expression(where_expr, ColumnUsage::Filtered, analyzed);
+            }
+
+            // Track GROUP BY columns
+            for expr in &select.group_by {
+                self.track_column_in_expression(expr, ColumnUsage::Grouped, analyzed);
+            }
+
+            // Track HAVING columns (filtered)
+            if let Some(having) = &select.having {
+                self.track_column_in_expression(having, ColumnUsage::Filtered, analyzed);
+            }
+
+            // Track ORDER BY columns
+            for (expr, _) in &select.order_by {
+                self.track_column_in_expression(expr, ColumnUsage::Ordered, analyzed);
+            }
+        }
+        Ok(())
+    }
+
+    /// Track columns in an expression
+    fn track_column_in_expression(
+        &self,
+        expr: &Expression,
+        usage: super::statement::ColumnUsage,
+        analyzed: &mut AnalyzedStatement,
+    ) {
+        use crate::parsing::ast::{Expression, Operator};
+
+        match expr {
+            Expression::Column(table, column) => {
+                // Try to resolve the table name
+                if let Some(resolution) =
+                    analyzed.column_resolution_map.get(table.as_deref(), column)
+                {
+                    analyzed.add_column_usage(resolution.table_name.clone(), column.clone(), usage);
+                }
+            }
+            Expression::Operator(op) => {
+                // Recursively track columns in operator expressions
+                match op {
+                    Operator::And(l, r)
+                    | Operator::Or(l, r)
+                    | Operator::Equal(l, r)
+                    | Operator::NotEqual(l, r)
+                    | Operator::GreaterThan(l, r)
+                    | Operator::GreaterThanOrEqual(l, r)
+                    | Operator::LessThan(l, r)
+                    | Operator::LessThanOrEqual(l, r)
+                    | Operator::Add(l, r)
+                    | Operator::Subtract(l, r)
+                    | Operator::Multiply(l, r)
+                    | Operator::Divide(l, r)
+                    | Operator::Remainder(l, r)
+                    | Operator::Exponentiate(l, r)
+                    | Operator::Like(l, r) => {
+                        self.track_column_in_expression(l, usage, analyzed);
+                        self.track_column_in_expression(r, usage, analyzed);
+                    }
+                    Operator::Not(e)
+                    | Operator::Negate(e)
+                    | Operator::Identity(e)
+                    | Operator::Factorial(e) => {
+                        self.track_column_in_expression(e, usage, analyzed);
+                    }
+                    Operator::Between {
+                        expr, low, high, ..
+                    } => {
+                        self.track_column_in_expression(expr, usage, analyzed);
+                        self.track_column_in_expression(low, usage, analyzed);
+                        self.track_column_in_expression(high, usage, analyzed);
+                    }
+                    Operator::InList { expr, list, .. } => {
+                        self.track_column_in_expression(expr, usage, analyzed);
+                        for item in list {
+                            self.track_column_in_expression(item, usage, analyzed);
+                        }
+                    }
+                    Operator::Is(e, _) => {
+                        self.track_column_in_expression(e, usage, analyzed);
+                    }
+                }
+            }
+            Expression::Function(_, args) => {
+                for arg in args {
+                    self.track_column_in_expression(arg, usage, analyzed);
+                }
+            }
+            _ => {} // Other expressions don't contain columns
+        }
+    }
+
+    /// Compute output nullability
+    fn compute_output_nullability(
+        &self,
+        statement: &Arc<Statement>,
+        types: &TypeOutput,
+        analyzed: &mut AnalyzedStatement,
+    ) -> Result<()> {
+        use crate::parsing::ast::DmlStatement;
+
+        if let Statement::Dml(DmlStatement::Select(select)) = statement.as_ref() {
+            for (idx, _) in select.select.iter().enumerate() {
+                let expr_id = ExpressionId::from_path(vec![idx]);
+                if let Some(type_info) = types.expression_types.get(&expr_id) {
+                    analyzed.output_nullability.push(type_info.nullable);
+                } else {
+                    analyzed.output_nullability.push(true); // Default to nullable
+                }
+            }
+        }
+        Ok(())
     }
 }
 

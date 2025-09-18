@@ -561,15 +561,153 @@ impl MetadataBuilder {
     pub fn analyze_joins(
         &self,
         statement: &Arc<Statement>,
-        _input: &super::analyzer::OptimizationInput,
+        input: &super::analyzer::OptimizationInput,
     ) -> Result<Vec<JoinHint>> {
-        let hints = Vec::new();
+        let mut hints = Vec::new();
 
-        // TODO: Implement join analysis
-        // This would analyze join conditions, estimate selectivity,
-        // and provide hints for join ordering
+        if let Statement::Dml(DmlStatement::Select(select)) = statement.as_ref() {
+            // Analyze each join in the FROM clause
+            for from_clause in &select.from {
+                self.analyze_from_joins(from_clause, &mut hints, input)?;
+            }
+        }
 
         Ok(hints)
+    }
+
+    /// Recursively analyze joins in FROM clause
+    fn analyze_from_joins(
+        &self,
+        from: &crate::parsing::ast::FromClause,
+        hints: &mut Vec<JoinHint>,
+        input: &super::analyzer::OptimizationInput,
+    ) -> Result<()> {
+        use crate::parsing::ast::{FromClause, common::JoinType as AstJoinType};
+
+        if let FromClause::Join {
+            left,
+            right,
+            r#type,
+            predicate,
+        } = from
+        {
+            // Recursively analyze nested joins
+            self.analyze_from_joins(left, hints, input)?;
+            self.analyze_from_joins(right, hints, input)?;
+
+            // Extract table names from left and right
+            let left_table = self.extract_table_from_clause(left);
+            let right_table = self.extract_table_from_clause(right);
+
+            if let (Some(left_table), Some(right_table)) = (left_table, right_table) {
+                // Estimate selectivity based on join predicate
+                let selectivity = if let Some(pred) = predicate {
+                    self.estimate_join_selectivity(pred, &left_table, &right_table, input)
+                } else {
+                    1.0 // Cross join has selectivity 1.0
+                };
+
+                // Convert join type
+                let join_type = match r#type {
+                    AstJoinType::Inner => super::analyzer::JoinType::Inner,
+                    AstJoinType::Left => super::analyzer::JoinType::Left,
+                    AstJoinType::Right => super::analyzer::JoinType::Right,
+                    AstJoinType::Full => super::analyzer::JoinType::Full,
+                    AstJoinType::Cross => super::analyzer::JoinType::Inner,
+                };
+
+                hints.push(JoinHint {
+                    left_table,
+                    right_table,
+                    join_type,
+                    selectivity_estimate: selectivity,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extract table name from FROM clause
+    fn extract_table_from_clause(&self, from: &crate::parsing::ast::FromClause) -> Option<String> {
+        use crate::parsing::ast::FromClause;
+
+        match from {
+            FromClause::Table { name, .. } => Some(name.clone()),
+            FromClause::Join { left, .. } => self.extract_table_from_clause(left),
+        }
+    }
+
+    /// Estimate selectivity of join predicate
+    fn estimate_join_selectivity(
+        &self,
+        pred: &Expression,
+        left_table: &str,
+        right_table: &str,
+        input: &super::analyzer::OptimizationInput,
+    ) -> f64 {
+        use crate::parsing::ast::Operator;
+
+        match pred {
+            Expression::Operator(Operator::Equal(left, right)) => {
+                // Check if it's an equi-join on indexed columns
+                if let (Expression::Column(_lt, lc), Expression::Column(_rt, rc)) =
+                    (left.as_ref(), right.as_ref())
+                {
+                    let left_indexed = self.is_column_indexed(left_table, lc, input);
+                    let right_indexed = self.is_column_indexed(right_table, rc, input);
+
+                    if left_indexed && right_indexed {
+                        // Both columns indexed - very selective
+                        0.001
+                    } else if left_indexed || right_indexed {
+                        // One column indexed - moderately selective
+                        0.01
+                    } else {
+                        // No indexes - less selective
+                        0.1
+                    }
+                } else {
+                    // Not a simple column comparison
+                    0.2
+                }
+            }
+            Expression::Operator(Operator::And(left, right)) => {
+                // AND of predicates - multiply selectivities
+                let left_sel = self.estimate_join_selectivity(left, left_table, right_table, input);
+                let right_sel =
+                    self.estimate_join_selectivity(right, left_table, right_table, input);
+                left_sel * right_sel
+            }
+            Expression::Operator(Operator::Or(left, right)) => {
+                // OR of predicates - use inclusion-exclusion principle
+                let left_sel = self.estimate_join_selectivity(left, left_table, right_table, input);
+                let right_sel =
+                    self.estimate_join_selectivity(right, left_table, right_table, input);
+                left_sel + right_sel - (left_sel * right_sel)
+            }
+            _ => {
+                // Conservative estimate for complex predicates
+                0.3
+            }
+        }
+    }
+
+    /// Check if a column is indexed
+    fn is_column_indexed(
+        &self,
+        table: &str,
+        column: &str,
+        _input: &super::analyzer::OptimizationInput,
+    ) -> bool {
+        if let Some(schema) = self.schemas.get(table) {
+            schema
+                .columns
+                .iter()
+                .any(|col| col.name == column && col.index)
+        } else {
+            false
+        }
     }
 
     /// Build expression templates for new phase architecture
@@ -578,13 +716,175 @@ impl MetadataBuilder {
         statement: &Arc<Statement>,
         _input: &super::analyzer::OptimizationInput,
     ) -> Result<Vec<ExpressionTemplate>> {
-        let templates = Vec::new();
+        let mut templates = Vec::new();
+        let mut expression_counts: HashMap<String, (ExpressionId, usize)> = HashMap::new();
 
-        // TODO: Implement expression template building
-        // This would identify expressions that can be pre-computed
-        // or cached for better performance
+        // First pass: count occurrences of each expression
+        if let Statement::Dml(dml) = statement.as_ref() {
+            match dml {
+                DmlStatement::Select(select) => {
+                    // Check SELECT expressions
+                    for (idx, (expr, _)) in select.select.iter().enumerate() {
+                        let expr_id = ExpressionId::from_path(vec![idx]);
+                        self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
+                    }
+
+                    // Check WHERE clause
+                    if let Some(where_expr) = &select.r#where {
+                        let expr_id = ExpressionId::from_path(vec![2000]);
+                        self.count_expression_occurrences(
+                            where_expr,
+                            &expr_id,
+                            &mut expression_counts,
+                        );
+                    }
+
+                    // Check GROUP BY
+                    for (idx, expr) in select.group_by.iter().enumerate() {
+                        let expr_id = ExpressionId::from_path(vec![3000 + idx]);
+                        self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
+                    }
+
+                    // Check HAVING
+                    if let Some(having) = &select.having {
+                        let expr_id = ExpressionId::from_path(vec![3500]);
+                        self.count_expression_occurrences(having, &expr_id, &mut expression_counts);
+                    }
+
+                    // Check ORDER BY
+                    for (idx, (expr, _)) in select.order_by.iter().enumerate() {
+                        let expr_id = ExpressionId::from_path(vec![4000 + idx]);
+                        self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
+                    }
+                }
+                _ => {} // Other DML types don't benefit as much from expression caching
+            }
+        }
+
+        // Second pass: create templates for expressions that appear multiple times
+        // and are deterministic (no side effects)
+        for (template_str, (expr_id, count)) in expression_counts {
+            if count > 1 {
+                // Only cache expressions that appear more than once
+                templates.push(ExpressionTemplate {
+                    id: expr_id,
+                    template: template_str,
+                    is_deterministic: true, // We only track deterministic expressions
+                });
+            }
+        }
 
         Ok(templates)
+    }
+
+    /// Count occurrences of expressions for caching
+    fn count_expression_occurrences(
+        &self,
+        expr: &Expression,
+        expr_id: &ExpressionId,
+        counts: &mut HashMap<String, (ExpressionId, usize)>,
+    ) {
+        use crate::parsing::ast::Operator;
+
+        // Check if this is a cacheable expression
+        if self.is_cacheable_expression(expr) {
+            let template = self.expression_to_template(expr);
+            counts
+                .entry(template)
+                .and_modify(|(_id, count)| *count += 1)
+                .or_insert((expr_id.clone(), 1));
+        }
+
+        // Recursively check sub-expressions
+        match expr {
+            Expression::Operator(op) => match op {
+                Operator::And(l, r)
+                | Operator::Or(l, r)
+                | Operator::Equal(l, r)
+                | Operator::NotEqual(l, r)
+                | Operator::GreaterThan(l, r)
+                | Operator::GreaterThanOrEqual(l, r)
+                | Operator::LessThan(l, r)
+                | Operator::LessThanOrEqual(l, r)
+                | Operator::Add(l, r)
+                | Operator::Subtract(l, r)
+                | Operator::Multiply(l, r)
+                | Operator::Divide(l, r)
+                | Operator::Remainder(l, r)
+                | Operator::Exponentiate(l, r)
+                | Operator::Like(l, r) => {
+                    self.count_expression_occurrences(l, &expr_id.child(0), counts);
+                    self.count_expression_occurrences(r, &expr_id.child(1), counts);
+                }
+                Operator::Not(e)
+                | Operator::Negate(e)
+                | Operator::Identity(e)
+                | Operator::Factorial(e) => {
+                    self.count_expression_occurrences(e, &expr_id.child(0), counts);
+                }
+                Operator::Between {
+                    expr, low, high, ..
+                } => {
+                    self.count_expression_occurrences(expr, &expr_id.child(0), counts);
+                    self.count_expression_occurrences(low, &expr_id.child(1), counts);
+                    self.count_expression_occurrences(high, &expr_id.child(2), counts);
+                }
+                Operator::InList { expr, list, .. } => {
+                    self.count_expression_occurrences(expr, &expr_id.child(0), counts);
+                    for (i, item) in list.iter().enumerate() {
+                        self.count_expression_occurrences(item, &expr_id.child(i + 1), counts);
+                    }
+                }
+                Operator::Is(e, _) => {
+                    self.count_expression_occurrences(e, &expr_id.child(0), counts);
+                }
+            },
+            Expression::Function(_, args) => {
+                for (i, arg) in args.iter().enumerate() {
+                    self.count_expression_occurrences(arg, &expr_id.child(i), counts);
+                }
+            }
+            _ => {} // Literals, columns don't need recursive checking
+        }
+    }
+
+    /// Check if an expression is cacheable
+    fn is_cacheable_expression(&self, expr: &Expression) -> bool {
+        use crate::parsing::ast::Operator;
+
+        match expr {
+            // Complex expressions worth caching
+            Expression::Function(name, _) => {
+                // Most functions are deterministic and worth caching
+                // Except for non-deterministic ones like RANDOM
+                !matches!(name.to_uppercase().as_str(), "RANDOM" | "RAND" | "UUID")
+            }
+            Expression::Operator(op) => {
+                match op {
+                    // Arithmetic and complex operations worth caching
+                    Operator::Multiply(_, _)
+                    | Operator::Divide(_, _)
+                    | Operator::Exponentiate(_, _)
+                    | Operator::Factorial(_) => true,
+                    // String operations can be expensive
+                    Operator::Like(_, _) => true,
+                    // Complex predicates
+                    Operator::Between { .. } | Operator::InList { .. } => true,
+                    // Simple operations not worth caching
+                    _ => false,
+                }
+            }
+            // Simple values not worth caching
+            Expression::Literal(_) | Expression::Column(_, _) | Expression::Parameter(_) => false,
+            _ => false,
+        }
+    }
+
+    /// Convert expression to a template string for comparison
+    fn expression_to_template(&self, expr: &Expression) -> String {
+        // Create a normalized string representation of the expression
+        // This allows us to identify identical expressions
+        format!("{:?}", expr)
     }
 
     /// Extract predicate templates from WHERE clause (new architecture)

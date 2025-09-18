@@ -64,16 +64,13 @@ impl BinaryOperator for NotEqualOperator {
     }
 
     fn execute(&self, left: &Value, right: &Value) -> Result<Value> {
-        use Value::*;
+        // Reuse equal operator logic and negate the result
+        let equal_result = super::equal::EqualOperator.execute(left, right)?;
 
-        // NULL comparison always returns NULL
-        match (left, right) {
-            (Null, _) | (_, Null) => Ok(Null),
-            _ => {
-                // Use the compare function from operators module
-                let ordering = crate::operators::compare(left, right)?;
-                Ok(Bool(ordering != std::cmp::Ordering::Equal))
-            }
+        match equal_result {
+            Value::Null => Ok(Value::Null),
+            Value::Bool(b) => Ok(Value::Bool(!b)),
+            _ => unreachable!("Equal operator should only return Bool or Null"),
         }
     }
 }

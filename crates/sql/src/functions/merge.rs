@@ -14,8 +14,6 @@ impl Function for MergeFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "MERGE",
-            min_args: 1,
-            max_args: None, // Variadic
             is_aggregate: false,
         };
         &SIGNATURE

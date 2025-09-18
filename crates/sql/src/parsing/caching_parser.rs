@@ -59,23 +59,10 @@ impl CachingParser {
         Ok(arc_statement)
     }
 
-    /// Get the parameter count for a SQL statement
-    pub fn get_param_count(&self, sql: &str) -> Option<usize> {
-        self.param_counts.get(&normalize_sql(sql)).copied()
-    }
-
     /// Clear the cache
     pub fn clear(&mut self) {
         self.cache.clear();
         self.param_counts.clear();
-    }
-
-    /// Get cache statistics
-    pub fn cache_stats(&self) -> CacheStats {
-        CacheStats {
-            size: self.cache.len(),
-            capacity: self.cache.cap().get(),
-        }
     }
 }
 
@@ -83,15 +70,6 @@ impl Default for CachingParser {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Cache statistics
-#[derive(Debug, Clone)]
-pub struct CacheStats {
-    /// Current number of entries in cache
-    pub size: usize,
-    /// Maximum capacity
-    pub capacity: usize,
 }
 
 /// Normalize SQL for consistent caching

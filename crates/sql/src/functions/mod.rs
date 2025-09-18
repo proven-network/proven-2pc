@@ -76,10 +76,6 @@ mod values;
 pub struct FunctionSignature {
     /// Function name (uppercase)
     pub name: &'static str,
-    /// Minimum number of arguments
-    pub min_args: usize,
-    /// Maximum number of arguments (None for variadic)
-    pub max_args: Option<usize>,
     /// Whether this is an aggregate function
     pub is_aggregate: bool,
 }
@@ -191,11 +187,6 @@ pub fn get_function(name: &str) -> Option<&'static dyn Function> {
         .functions
         .get(&name.to_uppercase())
         .map(|f| f.as_ref())
-}
-
-/// Check if a function exists
-pub fn function_exists(name: &str) -> bool {
-    REGISTRY.functions.contains_key(&name.to_uppercase())
 }
 
 /// Check if a function is an aggregate

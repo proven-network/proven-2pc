@@ -12,8 +12,6 @@ impl Function for RoundFunction {
     fn signature(&self) -> &FunctionSignature {
         static SIGNATURE: FunctionSignature = FunctionSignature {
             name: "ROUND",
-            min_args: 1,
-            max_args: Some(2),
             is_aggregate: false,
         };
         &SIGNATURE
