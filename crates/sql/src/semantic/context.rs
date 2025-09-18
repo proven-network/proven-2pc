@@ -257,6 +257,14 @@ impl AnalysisContext {
         self.tables.first().map(|t| t.name.clone())
     }
 
+    /// Get all tables with their aliases
+    pub fn get_all_tables(&self) -> Vec<(Option<String>, String)> {
+        self.tables
+            .iter()
+            .map(|t| (t.alias.clone(), t.name.clone()))
+            .collect()
+    }
+
     /// Get full column information including resolution data
     pub fn get_column_info(
         &self,

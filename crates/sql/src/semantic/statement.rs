@@ -29,6 +29,9 @@ pub struct AnalyzedStatement {
 
     /// Pre-extracted predicate templates for conflict detection
     pub predicate_templates: Vec<PredicateTemplate>,
+
+    /// Pre-resolved column mappings for O(1) lookups
+    pub column_resolution_map: ColumnResolutionMap,
 }
 
 /// Template for a predicate that can be evaluated with parameters
@@ -205,6 +208,37 @@ pub enum StatementType {
     Other,
 }
 
+/// Pre-resolved column mappings for O(1) lookups during planning
+#[derive(Debug, Clone, Default)]
+pub struct ColumnResolutionMap {
+    /// Direct lookup: (table_qualifier, column_name) -> resolution
+    pub columns: HashMap<(Option<String>, String), ColumnResolution>,
+
+    /// Ambiguous columns that need table qualification
+    pub ambiguous: HashSet<String>,
+}
+
+/// Pre-resolved column information
+#[derive(Debug, Clone)]
+pub struct ColumnResolution {
+    /// Index of table in FROM clause (0-based)
+    pub table_index: usize,
+
+    /// Index of column within table
+    pub column_index: usize,
+
+    /// Global column offset for execution
+    pub global_offset: usize,
+
+    /// Actual table name (not alias)
+    pub table_name: String,
+
+    /// Column metadata
+    pub data_type: DataType,
+    pub nullable: bool,
+    pub is_indexed: bool,
+}
+
 // Implementation methods
 impl AnalyzedStatement {
     /// Create a new analyzed statement
@@ -215,6 +249,7 @@ impl AnalyzedStatement {
             metadata: StatementMetadata::default(),
             parameter_slots: Vec::new(),
             predicate_templates: Vec::new(),
+            column_resolution_map: ColumnResolutionMap::default(),
         }
     }
 
@@ -463,5 +498,46 @@ impl StatementMetadata {
     /// Set the output schema
     pub fn set_output_schema(&mut self, schema: Vec<(String, DataType)>) {
         self.output_schema = Some(schema);
+    }
+}
+
+impl ColumnResolutionMap {
+    /// Add a column resolution
+    pub fn add_resolution(
+        &mut self,
+        table_alias: Option<String>,
+        column_name: String,
+        resolution: ColumnResolution,
+    ) {
+        // Check if this column is ambiguous (exists without qualifier)
+        if table_alias.is_some() {
+            // Also add without qualifier if it's unambiguous
+            let unqualified_key = (None, column_name.clone());
+            if !self.columns.contains_key(&unqualified_key)
+                && !self.ambiguous.contains(&column_name)
+            {
+                self.columns.insert(unqualified_key, resolution.clone());
+            }
+        }
+
+        self.columns.insert((table_alias, column_name), resolution);
+    }
+
+    /// Mark a column as ambiguous (needs qualification)
+    pub fn mark_ambiguous(&mut self, column_name: String) {
+        self.ambiguous.insert(column_name.clone());
+        // Remove any unqualified entry
+        self.columns.remove(&(None, column_name));
+    }
+
+    /// Get a column resolution
+    pub fn get(&self, table_alias: Option<&str>, column_name: &str) -> Option<&ColumnResolution> {
+        self.columns
+            .get(&(table_alias.map(|s| s.to_string()), column_name.to_string()))
+    }
+
+    /// Check if a column is ambiguous
+    pub fn is_ambiguous(&self, column_name: &str) -> bool {
+        self.ambiguous.contains(column_name)
     }
 }

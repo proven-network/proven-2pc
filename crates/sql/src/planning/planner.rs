@@ -931,7 +931,18 @@ impl<'a> AnalyzedPlanContext<'a> {
             }
 
             AstExpression::Column(table_ref, column_name) => {
-                // Find the table
+                // Use the pre-resolved column resolution map for O(1) lookup
+                if let Some(resolution) = self
+                    .analyzed
+                    .column_resolution_map
+                    .get(table_ref.as_deref(), column_name)
+                {
+                    // Calculate the absolute column position
+                    // The resolution contains the global offset which is the absolute position
+                    return Ok(Expression::Column(resolution.global_offset));
+                }
+
+                // If not found in resolution map, check if it's a struct field access
                 let table = if let Some(tref) = table_ref {
                     self.tables
                         .iter()
@@ -939,18 +950,11 @@ impl<'a> AnalyzedPlanContext<'a> {
                 } else if self.tables.len() == 1 {
                     self.tables.first()
                 } else {
-                    // Try to find column in any table
-                    for table in &self.tables {
-                        if let Some(schema) = self.schemas.get(&table.name) {
-                            if schema.columns.iter().any(|c| &c.name == column_name) {
-                                return self.resolve_column_in_table(table, column_name);
-                            }
-                        }
-                    }
                     return Err(Error::ColumnNotFound(column_name.clone()));
                 };
 
                 if let Some(table) = table {
+                    // This shouldn't happen if semantic analysis was successful
                     self.resolve_column_in_table(table, column_name)
                 } else {
                     // No table found with this name - check if it's a struct column

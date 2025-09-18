@@ -163,6 +163,9 @@ impl SemanticAnalyzer {
             Self::resolve_from_clause(from_clause, context)?;
         }
 
+        // Build column resolution map for O(1) lookups
+        self.build_column_resolution_map(analyzed, context)?;
+
         // Type check and annotate expressions
         let mut output_schema = Vec::new();
 
@@ -489,6 +492,9 @@ impl SemanticAnalyzer {
                 // For VALUES, add target table to context for reference
                 context.add_table(table.to_string(), None)?;
 
+                // Build column resolution map for O(1) lookups
+                self.build_column_resolution_map(analyzed, context)?;
+
                 for (row_idx, row) in rows.iter().enumerate() {
                     for (col_idx, expr) in row.iter().enumerate() {
                         let expr_id = ExpressionId::from_path(vec![5, row_idx, col_idx]);
@@ -509,6 +515,9 @@ impl SemanticAnalyzer {
             crate::parsing::ast::InsertSource::DefaultValues => {
                 // Add target table to context
                 context.add_table(table.to_string(), None)?;
+
+                // Build column resolution map for O(1) lookups
+                self.build_column_resolution_map(analyzed, context)?;
             }
         }
 
@@ -526,6 +535,9 @@ impl SemanticAnalyzer {
     ) -> Result<()> {
         // Validate table exists and add to context
         context.add_table(table.to_string(), None)?;
+
+        // Build column resolution map for O(1) lookups
+        self.build_column_resolution_map(analyzed, context)?;
 
         // Get table schema
         let _schema = self
@@ -570,6 +582,9 @@ impl SemanticAnalyzer {
     ) -> Result<()> {
         // Validate table exists and add to context
         context.add_table(table.to_string(), None)?;
+
+        // Build column resolution map for O(1) lookups
+        self.build_column_resolution_map(analyzed, context)?;
 
         // Table access tracking removed - not used downstream
 
@@ -1044,6 +1059,68 @@ impl SemanticAnalyzer {
     }
 
     /// Convert an expression to a PredicateValue
+    /// Build column resolution map for O(1) lookups
+    fn build_column_resolution_map(
+        &self,
+        analyzed: &mut AnalyzedStatement,
+        context: &AnalysisContext,
+    ) -> Result<()> {
+        use super::statement::{ColumnResolution, ColumnResolutionMap};
+
+        let mut resolution_map = ColumnResolutionMap::default();
+        let mut column_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        // Track global offset across all tables
+        let mut global_offset = 0;
+
+        // Get all tables in the order they were added
+        let tables = context.get_all_tables();
+
+        for (table_index, (alias, table_name)) in tables.iter().enumerate() {
+            // Get the table schema
+            if let Some(schema) = self.schemas.get(table_name) {
+                for (column_index, column) in schema.columns.iter().enumerate() {
+                    // Track how many times this column name appears
+                    *column_counts.entry(column.name.clone()).or_insert(0) += 1;
+
+                    // Check if there's an index on this column
+                    let is_indexed = column.index;
+
+                    let resolution = ColumnResolution {
+                        table_index,
+                        column_index,
+                        global_offset,
+                        table_name: table_name.clone(),
+                        data_type: column.datatype.clone(),
+                        nullable: column.nullable,
+                        is_indexed,
+                    };
+
+                    // Add with table qualifier (alias if present, otherwise actual table name)
+                    let table_qualifier = alias.clone().unwrap_or_else(|| table_name.clone());
+                    resolution_map.add_resolution(
+                        Some(table_qualifier),
+                        column.name.clone(),
+                        resolution,
+                    );
+
+                    global_offset += 1;
+                }
+            }
+        }
+
+        // Mark ambiguous columns
+        for (column_name, count) in column_counts {
+            if count > 1 {
+                resolution_map.mark_ambiguous(column_name);
+            }
+        }
+
+        analyzed.column_resolution_map = resolution_map;
+        Ok(())
+    }
+
     fn expression_to_predicate_value(&self, expr: &Expression) -> super::statement::PredicateValue {
         use super::statement::PredicateValue;
         use crate::parsing::ast::Literal;
