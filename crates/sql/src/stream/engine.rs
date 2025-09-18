@@ -137,11 +137,11 @@ impl SqlTransactionEngine {
                 use crate::semantic::predicate::ConflictInfo;
                 let retry_on = match conflict {
                     // If they're reading and we want to write, we can retry after they prepare
-                    ConflictInfo::WriteRead { .. } => RetryOn::Prepare,
+                    ConflictInfo::WriteRead => RetryOn::Prepare,
                     // For all other conflicts, we must wait until commit/abort
-                    ConflictInfo::ReadWrite { .. }
-                    | ConflictInfo::WriteWrite { .. }
-                    | ConflictInfo::InsertInsert { .. } => RetryOn::CommitOrAbort,
+                    ConflictInfo::ReadWrite
+                    | ConflictInfo::WriteWrite
+                    | ConflictInfo::InsertInsert => RetryOn::CommitOrAbort,
                 };
 
                 return OperationResult::WouldBlock {

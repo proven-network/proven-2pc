@@ -23,6 +23,14 @@ pub struct MetadataBuilder {
     schemas: HashMap<String, Table>,
 }
 
+/// Helper struct for range extraction
+struct RangeInfo {
+    table: String,
+    column: String,
+    lower: Option<(PredicateValue, bool)>,
+    upper: Option<(PredicateValue, bool)>,
+}
+
 impl MetadataBuilder {
     /// Create a new metadata builder
     pub fn new(schemas: HashMap<String, Table>) -> Self {
@@ -497,10 +505,16 @@ impl MetadataBuilder {
                 DmlStatement::Select(select) => {
                     if let Some(where_expr) = &select.r#where {
                         self.extract_templates_new(where_expr, &mut templates, input);
-                    } else if let Some((_, table)) = input.tables.first() {
-                        templates.push(PredicateTemplate::FullTable {
-                            table: table.clone(),
-                        });
+                    }
+
+                    // If no predicates were extracted (unsupported WHERE conditions),
+                    // fall back to FullTable
+                    if templates.is_empty() {
+                        if let Some((_, table)) = input.tables.first() {
+                            templates.push(PredicateTemplate::FullTable {
+                                table: table.clone(),
+                            });
+                        }
                     }
                 }
                 DmlStatement::Insert {
@@ -519,7 +533,10 @@ impl MetadataBuilder {
                 DmlStatement::Update { table, r#where, .. } => {
                     if let Some(where_expr) = r#where {
                         self.extract_templates_new(where_expr, &mut templates, input);
-                    } else {
+                    }
+
+                    // Fall back to FullTable if no predicates extracted
+                    if templates.is_empty() {
                         templates.push(PredicateTemplate::FullTable {
                             table: table.clone(),
                         });
@@ -528,7 +545,10 @@ impl MetadataBuilder {
                 DmlStatement::Delete { table, r#where } => {
                     if let Some(where_expr) = r#where {
                         self.extract_templates_new(where_expr, &mut templates, input);
-                    } else {
+                    }
+
+                    // Fall back to FullTable if no predicates extracted
+                    if templates.is_empty() {
                         templates.push(PredicateTemplate::FullTable {
                             table: table.clone(),
                         });
@@ -898,41 +918,223 @@ impl MetadataBuilder {
             use Operator::*;
             match op {
                 Equal(left, right) => {
-                    // Check for primary key equality
-                    if let (Expression::Column(table, col), Expression::Literal(_)) =
-                        (left.as_ref(), right.as_ref())
-                        && let Some(schema) =
-                            self.get_schema_for_column(table.as_deref(), col, input)
-                        && let Some(pk_idx) = schema.primary_key
-                        && schema.columns[pk_idx].name == *col
-                    {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
                         let value = self.expression_to_predicate_value(right);
-                        templates.push(PredicateTemplate::PrimaryKey {
-                            table: schema.name.clone(),
-                            value,
-                        });
-                        return;
-                    }
 
-                    // Check for indexed column
-                    if let Expression::Column(table, col) = left.as_ref()
-                        && self.is_indexed_new(table.as_deref(), col, input)
-                    {
-                        let value = self.expression_to_predicate_value(right);
-                        templates.push(PredicateTemplate::IndexedColumn {
-                            table: self.resolve_table_name(table.as_deref(), col, input),
-                            column: col.clone(),
-                            value,
-                        });
+                        // Check for primary key equality
+                        if let Some(schema) =
+                            self.get_schema_for_column(table.as_deref(), col, input)
+                            && let Some(pk_idx) = schema.primary_key
+                            && schema.columns[pk_idx].name == *col
+                        {
+                            templates.push(PredicateTemplate::PrimaryKey {
+                                table: table_name,
+                                value,
+                            });
+                            return;
+                        }
+
+                        // Check for indexed column
+                        if self.is_indexed_new(table.as_deref(), col, input) {
+                            templates.push(PredicateTemplate::IndexedColumn {
+                                table: table_name,
+                                column: col.clone(),
+                                value,
+                            });
+                        } else {
+                            // Regular equality predicate (non-indexed)
+                            templates.push(PredicateTemplate::Equality {
+                                table: table_name,
+                                column_name: col.clone(),
+                                column_index: 0, // Will be resolved later if needed
+                                value_expr: value,
+                            });
+                        }
                     }
                 }
                 And(left, right) => {
+                    // Check if both sides are range conditions on the same column
+                    // This handles BETWEEN-style queries: col >= X AND col <= Y
+                    if let (Some(range1), Some(range2)) = (
+                        self.try_extract_range(left, input),
+                        self.try_extract_range(right, input),
+                    ) {
+                        if range1.table == range2.table && range1.column == range2.column {
+                            // Merge the two ranges
+                            let merged = PredicateTemplate::Range {
+                                table: range1.table,
+                                column_name: range1.column,
+                                column_index: 0,
+                                lower: range1.lower.or(range2.lower),
+                                upper: range1.upper.or(range2.upper),
+                            };
+                            templates.push(merged);
+                            return;
+                        }
+                    }
+
+                    // Otherwise, extract separately
                     self.extract_templates_new(left, templates, input);
                     self.extract_templates_new(right, templates, input);
+                }
+
+                // Range predicates
+                GreaterThan(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        templates.push(PredicateTemplate::Range {
+                            table: table_name,
+                            column_name: col.clone(),
+                            column_index: 0, // Will be resolved later if needed
+                            lower: Some((value, false)), // exclusive
+                            upper: None,
+                        });
+                    }
+                }
+
+                GreaterThanOrEqual(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        templates.push(PredicateTemplate::Range {
+                            table: table_name,
+                            column_name: col.clone(),
+                            column_index: 0,
+                            lower: Some((value, true)), // inclusive
+                            upper: None,
+                        });
+                    }
+                }
+
+                LessThan(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        templates.push(PredicateTemplate::Range {
+                            table: table_name,
+                            column_name: col.clone(),
+                            column_index: 0,
+                            lower: None,
+                            upper: Some((value, false)), // exclusive
+                        });
+                    }
+                }
+
+                LessThanOrEqual(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        templates.push(PredicateTemplate::Range {
+                            table: table_name,
+                            column_name: col.clone(),
+                            column_index: 0,
+                            lower: None,
+                            upper: Some((value, true)), // inclusive
+                        });
+                    }
+                }
+
+                InList { expr, list, .. } => {
+                    if let Expression::Column(table, col) = expr.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let values: Vec<PredicateValue> = list
+                            .iter()
+                            .map(|v| self.expression_to_predicate_value(v))
+                            .collect();
+
+                        // Check if it's on the primary key
+                        if let Some(schema) =
+                            self.get_schema_for_column(table.as_deref(), col, input)
+                            && let Some(pk_idx) = schema.primary_key
+                            && schema.columns[pk_idx].name == *col
+                        {
+                            // For primary key IN lists, create individual PK predicates
+                            for value in values {
+                                templates.push(PredicateTemplate::PrimaryKey {
+                                    table: table_name.clone(),
+                                    value,
+                                });
+                            }
+                        } else {
+                            // Regular IN list predicate
+                            templates.push(PredicateTemplate::InList {
+                                table: table_name,
+                                column_name: col.clone(),
+                                column_index: 0,
+                                values,
+                            });
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
+    }
+
+    /// Try to extract a range from an expression
+    fn try_extract_range(
+        &self,
+        expr: &Expression,
+        input: &super::analyzer::OptimizationInput,
+    ) -> Option<RangeInfo> {
+        if let Expression::Operator(op) = expr {
+            use Operator::*;
+            match op {
+                GreaterThan(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        return Some(RangeInfo {
+                            table: table_name,
+                            column: col.clone(),
+                            lower: Some((value, false)),
+                            upper: None,
+                        });
+                    }
+                }
+                GreaterThanOrEqual(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        return Some(RangeInfo {
+                            table: table_name,
+                            column: col.clone(),
+                            lower: Some((value, true)),
+                            upper: None,
+                        });
+                    }
+                }
+                LessThan(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        return Some(RangeInfo {
+                            table: table_name,
+                            column: col.clone(),
+                            lower: None,
+                            upper: Some((value, false)),
+                        });
+                    }
+                }
+                LessThanOrEqual(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                        let value = self.expression_to_predicate_value(right);
+                        return Some(RangeInfo {
+                            table: table_name,
+                            column: col.clone(),
+                            lower: None,
+                            upper: Some((value, true)),
+                        });
+                    }
                 }
                 _ => {}
             }
         }
+        None
     }
 
     /// Build INSERT predicate templates (new architecture)

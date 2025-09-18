@@ -669,3 +669,526 @@ fn test_aggregation_conflict() {
     engine.commit(tx2).unwrap();
     engine.commit(tx3).unwrap();
 }
+
+#[test]
+fn test_non_overlapping_ranges_no_conflict() {
+    let mut engine = create_engine();
+
+    // Create table with data
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE events (id INT PRIMARY KEY, timestamp INT, type TEXT)".to_string(),
+        },
+        tx1,
+    );
+    // Insert events across a wide time range
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO events VALUES
+                  (1, 100, 'login'), (2, 200, 'click'), (3, 300, 'logout'),
+                  (4, 1100, 'login'), (5, 1200, 'click'), (6, 1300, 'logout')"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query old events (timestamp < 500)
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM events WHERE timestamp < 500".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Query recent events (timestamp > 1000) - should NOT block
+    // These ranges don't overlap: (−∞, 500) vs (1000, +∞)
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM events WHERE timestamp > 1000".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Non-overlapping ranges should not conflict"
+    );
+
+    // Both can commit
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_compound_predicates_different_columns() {
+    let mut engine = create_engine();
+
+    // Create table with composite data
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE orders (
+                    id INT PRIMARY KEY,
+                    city TEXT,
+                    status TEXT,
+                    amount INT
+                  )"
+            .to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO orders VALUES
+                  (1, 'NYC', 'pending', 100),
+                  (2, 'LA', 'pending', 200),
+                  (3, 'NYC', 'shipped', 150),
+                  (4, 'LA', 'shipped', 250)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Update NYC pending orders
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE orders SET amount = amount * 1.1
+                  WHERE city = 'NYC' AND status = 'pending'"
+                .to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update LA shipped orders - should NOT block
+    // Different combination: (NYC, pending) vs (LA, shipped)
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE orders SET amount = amount * 0.9
+                  WHERE city = 'LA' AND status = 'shipped'"
+                .to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Different compound predicates should not conflict"
+    );
+
+    // Both can commit
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_between_ranges_no_overlap() {
+    let mut engine = create_engine();
+
+    // Create table with numeric data
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE measurements (id INT PRIMARY KEY, value INT, sensor TEXT)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO measurements VALUES
+                  (1, 10, 'A'), (2, 25, 'B'), (3, 40, 'A'),
+                  (4, 60, 'B'), (5, 75, 'A'), (6, 90, 'B')"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Process low values (10-30)
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE measurements SET sensor = 'LOW'
+                  WHERE value >= 10 AND value <= 30"
+                .to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Process high values (70-100) - should NOT block
+    // Ranges [10, 30] and [70, 100] don't overlap
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE measurements SET sensor = 'HIGH'
+                  WHERE value >= 70 AND value <= 100"
+                .to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Non-overlapping BETWEEN ranges should not conflict"
+    );
+
+    // Both can commit
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_in_list_predicates() {
+    let mut engine = create_engine();
+
+    // Create table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE tasks (id INT PRIMARY KEY, status TEXT, priority INT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO tasks VALUES
+                  (1, 'open', 1), (2, 'open', 2), (3, 'open', 3),
+                  (4, 'done', 1), (5, 'done', 2), (6, 'done', 3)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Update specific tasks by ID
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE tasks SET priority = 5 WHERE id IN (1, 2, 3)".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update different specific tasks - should NOT block
+    // IN lists (1,2,3) and (4,5,6) don't overlap
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE tasks SET priority = 0 WHERE id IN (4, 5, 6)".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Non-overlapping IN lists should not conflict"
+    );
+
+    // Both can commit
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_overlapping_ranges_do_conflict() {
+    let mut engine = create_engine();
+
+    // Create table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE data (id INT PRIMARY KEY, value INT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO data VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)".to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query values 20-40
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM data WHERE value >= 20 AND value <= 40".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update overlapping range 30-50 - SHOULD block
+    // Ranges [20, 40] and [30, 50] overlap at [30, 40]
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE data SET value = value + 1 WHERE value >= 30 AND value <= 50".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Overlapping ranges should conflict"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.abort(tx3).unwrap();
+}
+
+#[test]
+fn test_same_column_different_values_no_conflict() {
+    let mut engine = create_engine();
+
+    // Create indexed table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE users (id INT PRIMARY KEY, status TEXT, country TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE INDEX idx_status ON users(status)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO users VALUES
+                  (1, 'active', 'US'), (2, 'inactive', 'UK'),
+                  (3, 'active', 'CA'), (4, 'pending', 'US')"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query active users
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM users WHERE status = 'active'".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update inactive users - should NOT block
+    // Different equality predicates on indexed column
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE users SET country = 'GB' WHERE status = 'inactive'".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Different equality values on same column should not conflict"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_complex_and_predicates_partial_overlap() {
+    let mut engine = create_engine();
+
+    // Create table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE products (
+                    id INT PRIMARY KEY,
+                    category TEXT,
+                    price INT,
+                    in_stock BOOLEAN
+                  )"
+            .to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO products VALUES
+                  (1, 'electronics', 100, true),
+                  (2, 'electronics', 200, false),
+                  (3, 'books', 20, true),
+                  (4, 'books', 30, true),
+                  (5, 'electronics', 300, true)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query expensive electronics
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM products
+                  WHERE category = 'electronics' AND price > 150"
+                .to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update cheap books - should NOT block
+    // (electronics AND price > 150) doesn't overlap with (books AND price < 50)
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE products SET in_stock = false
+                  WHERE category = 'books' AND price < 50"
+                .to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Non-overlapping compound predicates should not conflict"
+    );
+
+    // Transaction 4: Update expensive electronics - SHOULD block
+    // This overlaps with tx2's predicate
+    let tx4 = timestamp(4);
+    engine.begin_transaction(tx4);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE products SET price = price * 0.9
+                  WHERE category = 'electronics' AND price > 200"
+                .to_string(),
+        },
+        tx4,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Overlapping compound predicates should conflict"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+    engine.abort(tx4).unwrap();
+}
+
+#[test]
+fn test_not_equal_predicate() {
+    let mut engine = create_engine();
+
+    // Create table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE items (id INT PRIMARY KEY, type TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO items VALUES
+                  (1, 'A'), (2, 'B'), (3, 'A'), (4, 'C'), (5, 'B')"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query all non-A items
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM items WHERE type != 'A'".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update type B items - SHOULD block
+    // Since NOT EQUAL is not extracted as a specific predicate,
+    // tx2 falls back to FullTable predicate, which conflicts with everything
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE items SET type = 'D' WHERE type = 'B'".to_string(),
+        },
+        tx3,
+    );
+    // FullTable predicate (from tx2) should block tx3's equality predicate
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "NOT EQUAL should use conservative FullTable predicate and block"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.abort(tx3).unwrap();
+}

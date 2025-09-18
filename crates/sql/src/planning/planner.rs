@@ -1353,7 +1353,6 @@ impl<'a> AnalyzedPlanContext<'a> {
                     *negated,
                 )
             }
-            _ => return Err(Error::ExecutionError("Operator not yet supported".into())),
         })
     }
 }

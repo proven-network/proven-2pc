@@ -238,19 +238,13 @@ impl QueryPredicates {
         for our_read in &self.reads {
             for their_write in &other.writes {
                 if our_read.conflicts_with(their_write) {
-                    return Some(ConflictInfo::ReadWrite {
-                        our_predicate: our_read.clone(),
-                        their_predicate: their_write.clone(),
-                    });
+                    return Some(ConflictInfo::ReadWrite);
                 }
             }
             // Also check against their inserts
             for their_insert in &other.inserts {
                 if our_read.conflicts_with(their_insert) {
-                    return Some(ConflictInfo::ReadWrite {
-                        our_predicate: our_read.clone(),
-                        their_predicate: their_insert.clone(),
-                    });
+                    return Some(ConflictInfo::ReadWrite);
                 }
             }
         }
@@ -259,10 +253,7 @@ impl QueryPredicates {
         for our_write in &self.writes {
             for their_write in &other.writes {
                 if our_write.conflicts_with(their_write) {
-                    return Some(ConflictInfo::WriteWrite {
-                        our_predicate: our_write.clone(),
-                        their_predicate: their_write.clone(),
-                    });
+                    return Some(ConflictInfo::WriteWrite);
                 }
             }
         }
@@ -271,10 +262,7 @@ impl QueryPredicates {
         for our_write in &self.writes {
             for their_read in &other.reads {
                 if our_write.conflicts_with(their_read) {
-                    return Some(ConflictInfo::WriteRead {
-                        our_predicate: our_write.clone(),
-                        their_predicate: their_read.clone(),
-                    });
+                    return Some(ConflictInfo::WriteRead);
                 }
             }
         }
@@ -283,10 +271,7 @@ impl QueryPredicates {
         for our_insert in &self.inserts {
             for their_read in &other.reads {
                 if our_insert.conflicts_with(their_read) {
-                    return Some(ConflictInfo::WriteRead {
-                        our_predicate: our_insert.clone(),
-                        their_predicate: their_read.clone(),
-                    });
+                    return Some(ConflictInfo::WriteRead);
                 }
             }
         }
@@ -295,10 +280,7 @@ impl QueryPredicates {
         for our_insert in &self.inserts {
             for their_insert in &other.inserts {
                 if our_insert.conflicts_with(their_insert) {
-                    return Some(ConflictInfo::InsertInsert {
-                        our_predicate: our_insert.clone(),
-                        their_predicate: their_insert.clone(),
-                    });
+                    return Some(ConflictInfo::InsertInsert);
                 }
             }
         }
@@ -311,64 +293,11 @@ impl QueryPredicates {
 #[derive(Debug, Clone)]
 pub enum ConflictInfo {
     /// We're trying to read what they're writing
-    ReadWrite {
-        our_predicate: Predicate,
-        their_predicate: Predicate,
-    },
+    ReadWrite,
     /// We're both trying to write to the same data
-    WriteWrite {
-        our_predicate: Predicate,
-        their_predicate: Predicate,
-    },
+    WriteWrite,
     /// They're reading what we're writing
-    WriteRead {
-        our_predicate: Predicate,
-        their_predicate: Predicate,
-    },
+    WriteRead,
     /// We're both inserting (possibly same PK)
-    InsertInsert {
-        our_predicate: Predicate,
-        their_predicate: Predicate,
-    },
-}
-
-impl ConflictInfo {
-    /// Get a human-readable description of the conflict
-    pub fn description(&self) -> String {
-        match self {
-            ConflictInfo::ReadWrite {
-                our_predicate,
-                their_predicate,
-            } => {
-                format!(
-                    "Read-Write conflict: reading from {} while other transaction is writing to {}",
-                    our_predicate.table, their_predicate.table
-                )
-            }
-            ConflictInfo::WriteWrite {
-                our_predicate,
-                their_predicate: _,
-            } => {
-                format!(
-                    "Write-Write conflict: both writing to table {}",
-                    our_predicate.table
-                )
-            }
-            ConflictInfo::WriteRead {
-                our_predicate,
-                their_predicate,
-            } => {
-                format!(
-                    "Write-Read conflict: writing to {} while other transaction is reading from {}",
-                    our_predicate.table, their_predicate.table
-                )
-            }
-            ConflictInfo::InsertInsert { our_predicate, .. } => {
-                format!(
-                    "Insert-Insert conflict: both inserting into table {}",
-                    our_predicate.table
-                )
-            }
-        }
-    }
+    InsertInsert,
 }
