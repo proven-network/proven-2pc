@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn test_nested_aggregates_invalid() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Invalid: SUM(COUNT(amount)) - can't nest aggregates
         let sql = "SELECT SUM(COUNT(amount)) FROM sales";
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn test_aggregate_in_non_aggregate_function_valid() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Valid: ROUND(AVG(amount)) - non-aggregate function with aggregate argument
         let sql = "SELECT ROUND(AVG(amount)) FROM sales";
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn test_multiple_aggregates_same_select_valid() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Valid: Multiple aggregates in same SELECT
         let sql = "SELECT SUM(amount), COUNT(*), MAX(amount) FROM sales";

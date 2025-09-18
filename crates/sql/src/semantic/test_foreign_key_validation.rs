@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn test_valid_foreign_key_insert() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         let sql =
             "INSERT INTO employees (id, name, dept_id, manager_id) VALUES (1, 'Alice', 10, 5)";
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn test_valid_nullable_foreign_key_null() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // manager_id is nullable, so NULL is allowed
         let sql =
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn test_invalid_non_nullable_foreign_key_null() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // dept_id is non-nullable foreign key, NULL not allowed
         let sql =
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_foreign_key_type_mismatch() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Trying to insert string into dept_name which should reference departments.id (I32)
         let sql = "INSERT INTO invalid_fk (id, dept_name) VALUES (1, 'Engineering')";
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn test_foreign_key_nonexistent_table() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         let sql = "INSERT INTO bad_ref (id, fake_id) VALUES (1, 10)";
         let parsed = Parser::parse(sql).unwrap();
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn test_update_foreign_key_to_null() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Cannot update non-nullable foreign key to NULL
         let sql = "UPDATE employees SET dept_id = NULL WHERE id = 1";
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn test_update_nullable_foreign_key_to_null() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Can update nullable foreign key to NULL
         let sql = "UPDATE employees SET manager_id = NULL WHERE id = 1";
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn test_self_referential_foreign_key() {
         let schemas = create_test_schemas();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Self-referential foreign key (employees.manager_id -> employees.id)
         let sql = "INSERT INTO employees (id, name, dept_id, manager_id) VALUES (2, 'Bob', 10, 1)";

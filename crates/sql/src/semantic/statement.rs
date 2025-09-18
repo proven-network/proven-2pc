@@ -71,6 +71,13 @@ pub enum PredicateTemplate {
         value: PredicateValue,
     },
 
+    /// Indexed column predicate
+    IndexedColumn {
+        table: String,
+        column: String,
+        value: PredicateValue,
+    },
+
     /// Complex predicate that needs runtime evaluation
     Complex {
         table: String,
@@ -191,6 +198,9 @@ pub struct StatementMetadata {
 
     /// Whether statement contains aggregates
     pub has_aggregates: bool,
+
+    /// Optimization hints from semantic analysis
+    pub optimization_output: Option<Box<crate::semantic::analyzer::OptimizationOutput>>,
 }
 
 /// Statement type for quick identification
@@ -204,6 +214,7 @@ pub enum StatementType {
     DropTable,
     CreateIndex,
     DropIndex,
+    Explain,
     #[default]
     Other,
 }
@@ -292,7 +303,7 @@ impl AnalyzedStatement {
         let (is_read, is_write, is_insert) = match &*self.ast {
             Statement::Dml(dml) => match dml {
                 DmlStatement::Select(_) => (true, false, false),
-                DmlStatement::Insert { .. } => (false, true, true), // Write and insert
+                DmlStatement::Insert { .. } => (false, false, true), // Only insert, not write
                 DmlStatement::Update { .. } => (true, true, false), // Read then write
                 DmlStatement::Delete { .. } => (true, true, false), // Read then write
             },
@@ -353,6 +364,21 @@ impl AnalyzedStatement {
             PredicateTemplate::PrimaryKey { table, value } => {
                 let pk_value = self.evaluate_predicate_value(value, params)?;
                 Some(Predicate::primary_key(table.clone(), pk_value))
+            }
+
+            PredicateTemplate::IndexedColumn {
+                table,
+                column,
+                value,
+            } => {
+                let evaluated = self.evaluate_predicate_value(value, params)?;
+                Some(Predicate {
+                    table: table.clone(),
+                    condition: PredicateCondition::Equals {
+                        column: column.clone(),
+                        value: evaluated,
+                    },
+                })
             }
 
             PredicateTemplate::Range {
@@ -539,5 +565,24 @@ impl ColumnResolutionMap {
     /// Check if a column is ambiguous
     pub fn is_ambiguous(&self, column_name: &str) -> bool {
         self.ambiguous.contains(column_name)
+    }
+
+    /// Resolve a column reference (tries qualified, then unqualified if not ambiguous)
+    pub fn resolve(
+        &self,
+        table_alias: Option<&str>,
+        column_name: &str,
+    ) -> Option<&ColumnResolution> {
+        // First try with the exact qualifier
+        if let Some(res) = self.get(table_alias, column_name) {
+            return Some(res);
+        }
+
+        // If no qualifier given and column is not ambiguous, try unqualified
+        if table_alias.is_none() && !self.is_ambiguous(column_name) {
+            return self.get(None, column_name);
+        }
+
+        None
     }
 }

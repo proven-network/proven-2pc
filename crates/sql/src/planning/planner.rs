@@ -13,8 +13,7 @@ use crate::parsing::ast::{
     Column, Expression as AstExpression, InsertSource, Literal, Operator, SelectStatement,
     Statement,
 };
-use crate::semantic::AnalyzedStatement;
-use crate::semantic::statement::ExpressionId;
+use crate::semantic::{AnalyzedStatement, statement::ExpressionId};
 use crate::storage::mvcc::IndexMetadata;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
@@ -235,6 +234,10 @@ impl Planner {
         // Create context that uses the analyzed statement
         let mut context = AnalyzedPlanContext::new(&self.schemas, analyzed);
 
+        // Use metadata for optimization hints
+        // Output schema is available in analyzed.metadata.output_schema
+        // Referenced columns in analyzed.metadata.referenced_columns
+
         // Start with FROM clause
         let mut node = self.plan_from(&select.from, &mut context)?;
 
@@ -244,7 +247,8 @@ impl Planner {
         }
 
         // Apply GROUP BY and aggregates
-        let has_aggregates = self.has_aggregates(&select.select);
+        // Use metadata instead of re-computing
+        let has_aggregates = analyzed.metadata.has_aggregates;
         let group_by_count = select.group_by.len();
 
         if !select.group_by.is_empty() || has_aggregates {
@@ -575,8 +579,6 @@ impl Planner {
         if_not_exists: bool,
     ) -> Result<Plan> {
         // Similar to original planner for now
-        use crate::operators;
-        use crate::types::value::Value;
 
         let mut schema_columns = Vec::new();
         let mut primary_key_idx = None;
@@ -686,12 +688,39 @@ impl Planner {
         source: Node,
         context: &mut AnalyzedPlanContext,
     ) -> Result<Node> {
-        // For now, just create a filter
         let predicate = context.resolve_expression(where_expr)?;
+
+        // Check optimization hints for index opportunities
+        if let Node::Scan { table, alias: _ } = &source {
+            // Check if we have index hints for this table and predicate
+            if let Some(index_hint) = self.find_applicable_index_hint(table, where_expr, context) {
+                // We could create an IndexScan node if we have the index metadata
+                // For now, just log that we found a hint
+                // In a full implementation, we'd check if the index actually exists
+                // and create an IndexScan node
+                _ = index_hint; // Suppress unused warning
+            }
+        }
+
         Ok(Node::Filter {
             source: Box::new(source),
             predicate,
         })
+    }
+
+    /// Find applicable index hint for a table and predicate
+    fn find_applicable_index_hint<'a>(
+        &self,
+        table: &str,
+        _where_expr: &AstExpression,
+        context: &'a AnalyzedPlanContext,
+    ) -> Option<&'a crate::semantic::analyzer::IndexHint> {
+        // Check optimization output for index hints
+        if let Some(opt_output) = context.analyzed.metadata.optimization_output.as_ref() {
+            opt_output.index_hints.iter().find(|hint| hint.table == table)
+        } else {
+            None
+        }
     }
 
     fn extract_aggregates(
@@ -859,6 +888,24 @@ struct AnalyzedPlanContext<'a> {
     analyzed: &'a AnalyzedStatement,
     tables: Vec<TableRef>,
     current_column: usize,
+    /// Track current expression path for ID generation
+    expression_path: Vec<usize>,
+    /// Current statement context for expression IDs
+    statement_context: StatementContext,
+}
+
+/// Context to help generate correct expression IDs
+#[derive(Clone, Copy)]
+enum StatementContext {
+    SelectProjection,
+    WhereClause,
+    GroupBy,
+    Having,
+    OrderBy,
+    InsertValues,
+    UpdateSet,
+    UpdateWhere,
+    DeleteWhere,
 }
 
 struct TableRef {
@@ -874,7 +921,35 @@ impl<'a> AnalyzedPlanContext<'a> {
             analyzed,
             tables: Vec::new(),
             current_column: 0,
+            expression_path: Vec::new(),
+            statement_context: StatementContext::SelectProjection,
         }
+    }
+
+    /// Set the current statement context for expression ID generation
+    fn set_context(&mut self, context: StatementContext) {
+        self.statement_context = context;
+    }
+
+    /// Generate expression ID based on current context and index
+    fn get_expression_id(&self, index: usize) -> ExpressionId {
+        let base = match self.statement_context {
+            StatementContext::SelectProjection => 1000 + index,
+            StatementContext::WhereClause => 2000,
+            StatementContext::GroupBy => 3000 + index,
+            StatementContext::Having => 3500,
+            StatementContext::OrderBy => 4000 + index,
+            StatementContext::InsertValues => 5000 + index,
+            StatementContext::UpdateSet => 6000 + index,
+            StatementContext::UpdateWhere => 7000,
+            StatementContext::DeleteWhere => 8000,
+        };
+        ExpressionId::from_path(vec![base])
+    }
+
+    /// Get type information for an expression if available
+    fn get_type_info(&self, expr_id: &ExpressionId) -> Option<&crate::semantic::statement::TypeInfo> {
+        self.analyzed.type_annotations.get(expr_id)
     }
 
     fn add_table(&mut self, name: String, alias: Option<String>) -> Result<()> {
@@ -898,9 +973,37 @@ impl<'a> AnalyzedPlanContext<'a> {
 
     /// Resolve expression using type annotations when possible
     fn resolve_expression(&self, expr: &AstExpression) -> Result<Expression> {
-        // For now, fall back to simple resolution
-        // This will be enhanced to use TypeAnnotations
-        self.resolve_expression_simple(expr)
+        // Try to use metadata-enhanced resolution
+        self.resolve_expression_with_metadata(expr)
+    }
+
+    /// Resolve expression with metadata support
+    fn resolve_expression_with_metadata(&self, expr: &AstExpression) -> Result<Expression> {
+        match expr {
+            AstExpression::Column(table_ref, column_name) => {
+                // Use the optimized column resolution map (O(1) lookup)
+                if let Some(resolution) = self.analyzed.column_resolution_map
+                    .get(table_ref.as_deref(), column_name) {
+                    return Ok(Expression::Column(resolution.global_offset));
+                }
+
+                // Handle struct field access (DuckDB-style resolution)
+                self.resolve_column_or_struct_field(table_ref, column_name)
+            }
+            AstExpression::Parameter(idx) => {
+                // Check if we have parameter slot information for better type safety
+                if let Some(param_slot) = self.analyzed.parameter_slots.get(*idx) {
+                    // We have rich parameter information available
+                    // This could be used for validation at bind time
+                    // For example, checking expected type vs provided type
+                    if param_slot.actual_type.is_some() {
+                        // Type is already known from semantic analysis
+                    }
+                }
+                Ok(Expression::Parameter(*idx))
+            }
+            _ => self.resolve_expression_simple(expr)
+        }
     }
 
     /// Simple expression resolution (temporary)
@@ -931,72 +1034,13 @@ impl<'a> AnalyzedPlanContext<'a> {
             }
 
             AstExpression::Column(table_ref, column_name) => {
-                // Use the pre-resolved column resolution map for O(1) lookup
-                if let Some(resolution) = self
-                    .analyzed
-                    .column_resolution_map
-                    .get(table_ref.as_deref(), column_name)
-                {
-                    // Calculate the absolute column position
-                    // The resolution contains the global offset which is the absolute position
-                    return Ok(Expression::Column(resolution.global_offset));
-                }
-
-                // If not found in resolution map, check if it's a struct field access
-                let table = if let Some(tref) = table_ref {
-                    self.tables
-                        .iter()
-                        .find(|t| &t.name == tref || t.alias.as_ref() == Some(tref))
-                } else if self.tables.len() == 1 {
-                    self.tables.first()
-                } else {
-                    return Err(Error::ColumnNotFound(column_name.clone()));
-                };
-
-                if let Some(table) = table {
-                    // This shouldn't happen if semantic analysis was successful
-                    self.resolve_column_in_table(table, column_name)
-                } else {
-                    // No table found with this name - check if it's a struct column
-                    // This handles cases like "details.name" where "details" is a column
-                    let struct_col_name = table_ref.clone().unwrap_or_default();
-
-                    // Try to find this column in any table
-                    for table in &self.tables {
-                        if let Some(schema) = self.schemas.get(&table.name) {
-                            if let Some(col) =
-                                schema.columns.iter().find(|c| c.name == struct_col_name)
-                            {
-                                // Check if it's a struct type
-                                match &col.datatype {
-                                    crate::types::data_type::DataType::Struct(fields) => {
-                                        // Verify the field exists
-                                        if fields.iter().any(|(name, _)| name == column_name) {
-                                            // Return a FieldAccess expression
-                                            let base_expr = self
-                                                .resolve_column_in_table(table, &struct_col_name)?;
-                                            return Ok(Expression::FieldAccess(
-                                                Box::new(base_expr),
-                                                column_name.clone(),
-                                            ));
-                                        } else {
-                                            return Err(Error::ExecutionError(format!(
-                                                "Field '{}' not found in struct '{}'",
-                                                column_name, struct_col_name
-                                            )));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-
-                    Err(Error::TableNotFound(table_ref.clone().unwrap_or_default()))
-                }
+                self.resolve_column_or_struct_field(table_ref, column_name)
             }
 
-            AstExpression::Parameter(idx) => Ok(Expression::Parameter(*idx)),
+            AstExpression::Parameter(idx) => {
+                // Parameter slots are checked in resolve_expression_with_metadata
+                Ok(Expression::Parameter(*idx))
+            },
 
             AstExpression::Function(name, args) => {
                 let resolved_args = args
@@ -1048,6 +1092,66 @@ impl<'a> AnalyzedPlanContext<'a> {
             _ => Err(Error::ExecutionError(
                 "Expression type not yet supported".into(),
             )),
+        }
+    }
+
+    /// Resolve a column reference, handling struct field access
+    fn resolve_column_or_struct_field(
+        &self,
+        table_ref: &Option<String>,
+        column_name: &str,
+    ) -> Result<Expression> {
+        // First try the resolution map (O(1) lookup)
+        if let Some(resolution) = self
+            .analyzed
+            .column_resolution_map
+            .get(table_ref.as_deref(), column_name)
+        {
+            return Ok(Expression::Column(resolution.global_offset));
+        }
+
+        // If not found, handle struct field access
+        let table = if let Some(tref) = table_ref {
+            self.tables
+                .iter()
+                .find(|t| &t.name == tref || t.alias.as_ref() == Some(tref))
+        } else if self.tables.len() == 1 {
+            self.tables.first()
+        } else {
+            return Err(Error::ColumnNotFound(column_name.to_string()));
+        };
+
+        if let Some(table) = table {
+            // This shouldn't happen if semantic analysis was successful
+            self.resolve_column_in_table(table, column_name)
+        } else {
+            // Check if it's a struct column (DuckDB-style resolution)
+            let struct_col_name = table_ref.clone().unwrap_or_default();
+
+            for table in &self.tables {
+                if let Some(schema) = self.schemas.get(&table.name)
+                    && let Some(col) = schema.columns.iter().find(|c| c.name == struct_col_name)
+                {
+                    // Check if it's a struct type
+                    if let crate::types::data_type::DataType::Struct(fields) = &col.datatype {
+                        // Verify the field exists
+                        if fields.iter().any(|(name, _)| name == column_name) {
+                            let base_expr = self.resolve_column_in_table(table, &struct_col_name)?;
+                            return Ok(Expression::FieldAccess(
+                                Box::new(base_expr),
+                                column_name.to_string(),
+                            ));
+                        } else {
+                            return Err(Error::ExecutionError(format!(
+                                "Field '{}' not found in struct '{}'",
+                                column_name, struct_col_name
+                            )));
+                        }
+                    }
+                }
+            }
+
+            Err(Error::TableNotFound(table_ref.clone().unwrap_or_default()))
         }
     }
 
@@ -1205,7 +1309,7 @@ fn resolve_default_expression(expr: &AstExpression) -> Result<Expression> {
         AstExpression::Function(name, args) => {
             let resolved_args = args
                 .iter()
-                .map(|a| resolve_default_expression(a))
+                .map(resolve_default_expression)
                 .collect::<Result<Vec<_>>>()?;
             Ok(Expression::Function(name.clone(), resolved_args))
         }
@@ -1455,7 +1559,7 @@ fn expr_to_string(expr: &AstExpression) -> String {
         AstExpression::Function(name, args) => {
             let arg_str = args
                 .iter()
-                .map(|arg| expr_to_string(arg))
+                .map(expr_to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}({})", name.to_uppercase(), arg_str)

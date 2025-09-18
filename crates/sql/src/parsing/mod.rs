@@ -21,7 +21,6 @@ pub use parser::Parser;
 pub use ast::{Operator, Statement};
 
 // Re-export submodules for more specific access
-pub use ast::dml;
 
 /// Parse a SQL statement string into an AST
 pub fn parse_sql(sql: &str) -> Result<Statement> {

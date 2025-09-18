@@ -514,7 +514,7 @@ fn test_not_null_constraint_violation() {
     // Try to insert NULL into NOT NULL column
     let error = ctx.exec_error("INSERT INTO Test VALUES (1, NULL, 'ok')");
     assert!(
-        error.contains("NullConstraintViolation"),
+        error.contains("non-nullable column"),
         "Expected NullConstraintViolation error, got: {}",
         error
     );

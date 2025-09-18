@@ -13,11 +13,14 @@
 
 pub mod analyzer;
 pub mod caching_analyzer;
-pub mod context;
 pub mod predicate;
 pub mod statement;
-pub mod types;
-pub mod validators;
+
+// New phase-based modules
+pub mod optimization;
+pub mod resolution;
+pub mod typing;
+pub mod validation;
 
 #[cfg(test)]
 mod test_aggregate_nesting;

@@ -23,7 +23,7 @@ pub trait BinaryOperator: Send + Sync {
     }
 
     /// Check if this operator is commutative (a op b = b op a) for given types
-    fn is_commutative(&self, left: &DataType, right: &DataType) -> bool {
+    fn is_commutative(&self, _left: &DataType, _right: &DataType) -> bool {
         false
     }
 

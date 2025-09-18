@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn test_insert_with_all_columns() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Valid: All columns specified
         let sql = "INSERT INTO users (id, name, status, created_at, email) VALUES (1, 'Alice', 'active', 1234567890, 'alice@example.com')";
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn test_insert_omit_columns_with_defaults() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Valid: Omitting status and created_at which have defaults
         let sql = "INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')";
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn test_insert_omit_nullable_column() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Valid: Omitting email which is nullable
         let sql = "INSERT INTO users (id, name, status, created_at) VALUES (1, 'Alice', 'active', 1234567890)";
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn test_insert_missing_required_column_no_default() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Invalid: Missing 'name' which is required and has no default
         let sql = "INSERT INTO users (id, status) VALUES (1, 'active')";
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_insert_missing_primary_key() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Invalid: Missing 'id' which is primary key
         let sql = "INSERT INTO users (name, status) VALUES ('Alice', 'active')";
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn test_insert_all_defaults_and_nullable() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Valid: Only required columns without defaults
         let sql = "INSERT INTO users (id, name) VALUES (1, 'Alice')";
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn test_insert_values_without_column_list() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Valid when all columns are provided in order
         let sql =
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn test_insert_values_without_column_list_missing_values() {
         let schemas = create_test_schema();
-        let mut analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas);
 
         // Invalid: Not enough values when column list is omitted
         let sql = "INSERT INTO users VALUES (1, 'Alice')";
