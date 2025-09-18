@@ -82,15 +82,13 @@ impl NameResolver {
         let mut column_counts: HashMap<String, usize> = HashMap::new();
         let mut global_offset = 0;
 
-        for (table_index, (alias, table_name)) in tables.iter().enumerate() {
+        for (alias, table_name) in tables.iter() {
             if let Some(schema) = schemas.get(table_name) {
-                for (column_index, column) in schema.columns.iter().enumerate() {
+                for column in schema.columns.iter() {
                     // Track column name frequency
                     *column_counts.entry(column.name.clone()).or_insert(0) += 1;
 
                     let resolution = ColumnResolution {
-                        table_index,
-                        column_index,
                         global_offset,
                         table_name: table_name.clone(),
                         data_type: column.datatype.clone(),

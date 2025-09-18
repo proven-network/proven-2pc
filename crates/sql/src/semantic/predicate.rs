@@ -32,14 +32,17 @@ pub enum PredicateCondition {
     /// Equality check on a column
     Equals { column: String, value: Value },
 
-    /// Conjunction (AND) of multiple conditions
-    And(Vec<PredicateCondition>),
+    /// LIKE pattern matching on a column
+    Like { column: String, pattern: String },
 
-    /// Disjunction (OR) of multiple conditions
+    /// IS NULL check on a column
+    IsNull { column: String },
+
+    /// IS NOT NULL check on a column
+    IsNotNull { column: String },
+
+    /// Disjunction (OR) of multiple conditions (used for IN lists)
     Or(Vec<PredicateCondition>),
-
-    /// Arbitrary expression (fallback for complex predicates)
-    Expression(crate::types::Expression),
 }
 
 impl Predicate {
@@ -135,18 +138,83 @@ impl PredicateCondition {
                 PredicateCondition::Equals { column: c1, value },
             ) if c1 == c2 => Self::value_in_range(value, start, end),
 
-            // Conjunction: overlaps if any part overlaps
-            (PredicateCondition::And(preds), other) | (other, PredicateCondition::And(preds)) => {
-                preds.iter().any(|p| p.overlaps(other))
+            // LIKE patterns: conservatively check if patterns might match overlapping rows
+            (
+                PredicateCondition::Like {
+                    column: c1,
+                    pattern: p1,
+                },
+                PredicateCondition::Like {
+                    column: c2,
+                    pattern: p2,
+                },
+            ) if c1 == c2 => Self::like_patterns_might_overlap(p1, p2),
+
+            // LIKE vs Equals: check if value might match pattern
+            (
+                PredicateCondition::Like {
+                    column: c1,
+                    pattern,
+                },
+                PredicateCondition::Equals { column: c2, value },
+            )
+            | (
+                PredicateCondition::Equals { column: c2, value },
+                PredicateCondition::Like {
+                    column: c1,
+                    pattern,
+                },
+            ) if c1 == c2 => {
+                // Check if the value actually matches the LIKE pattern
+                Self::value_matches_like_pattern(value, pattern)
             }
 
-            // Disjunction: overlaps if any part overlaps
+            // IS NULL and IS NOT NULL are disjoint
+            (
+                PredicateCondition::IsNull { column: c1 },
+                PredicateCondition::IsNotNull { column: c2 },
+            )
+            | (
+                PredicateCondition::IsNotNull { column: c2 },
+                PredicateCondition::IsNull { column: c1 },
+            ) if c1 == c2 => false,
+
+            // IS NULL overlaps with IS NULL on same column
+            (
+                PredicateCondition::IsNull { column: c1 },
+                PredicateCondition::IsNull { column: c2 },
+            ) => c1 == c2,
+
+            // IS NOT NULL overlaps with IS NOT NULL on same column
+            (
+                PredicateCondition::IsNotNull { column: c1 },
+                PredicateCondition::IsNotNull { column: c2 },
+            ) => c1 == c2,
+
+            // IS NULL doesn't overlap with non-null values
+            (
+                PredicateCondition::IsNull { column: c1 },
+                PredicateCondition::Equals { column: c2, .. },
+            )
+            | (
+                PredicateCondition::Equals { column: c2, .. },
+                PredicateCondition::IsNull { column: c1 },
+            ) if c1 == c2 => false,
+
+            // IS NOT NULL might overlap with non-null values
+            (
+                PredicateCondition::IsNotNull { column: c1 },
+                PredicateCondition::Equals { column: c2, .. },
+            )
+            | (
+                PredicateCondition::Equals { column: c2, .. },
+                PredicateCondition::IsNotNull { column: c1 },
+            ) if c1 == c2 => true,
+
+            // Disjunction (OR): overlaps if any part overlaps
             (PredicateCondition::Or(preds), other) | (other, PredicateCondition::Or(preds)) => {
                 preds.iter().any(|p| p.overlaps(other))
             }
-
-            // Expression: conservatively assume overlap
-            (PredicateCondition::Expression(_), _) | (_, PredicateCondition::Expression(_)) => true,
 
             // Default: no overlap
             _ => false,
@@ -197,6 +265,71 @@ impl PredicateCondition {
         };
 
         after_start && before_end
+    }
+
+    /// Check if two LIKE patterns might match overlapping sets of values
+    fn like_patterns_might_overlap(p1: &str, p2: &str) -> bool {
+        // For suffix patterns like '%@gmail.com' and '%@yahoo.com'
+        if p1.starts_with('%') && p2.starts_with('%') {
+            let suffix1 = &p1[1..];
+            let suffix2 = &p2[1..];
+            // If suffixes are completely different, they don't overlap
+            if suffix1 != suffix2 && !suffix1.ends_with(suffix2) && !suffix2.ends_with(suffix1) {
+                return false;
+            }
+        }
+
+        // For prefix patterns like '/home/%' and '/var/%'
+        if p1.ends_with('%') && p2.ends_with('%') {
+            let prefix1 = &p1[..p1.len() - 1];
+            let prefix2 = &p2[..p2.len() - 1];
+            // If prefixes are completely different, they don't overlap
+            if prefix1 != prefix2 && !prefix1.starts_with(prefix2) && !prefix2.starts_with(prefix1)
+            {
+                return false;
+            }
+        }
+
+        // Conservative: if we can't determine, assume they might overlap
+        true
+    }
+
+    /// Check if a value matches a SQL LIKE pattern
+    fn value_matches_like_pattern(value: &Value, pattern: &str) -> bool {
+        // Only string values can match LIKE patterns
+        let value_str = match value {
+            Value::Str(s) => s,
+            _ => return false,
+        };
+
+        // Handle prefix patterns (e.g., 'prefix%')
+        if pattern.ends_with('%') && !pattern[..pattern.len() - 1].contains('%') {
+            let prefix = &pattern[..pattern.len() - 1];
+            return value_str.starts_with(prefix);
+        }
+
+        // Handle suffix patterns (e.g., '%suffix')
+        if pattern.starts_with('%') && !pattern[1..].contains('%') {
+            let suffix = &pattern[1..];
+            return value_str.ends_with(suffix);
+        }
+
+        // Handle infix patterns (e.g., '%infix%')
+        if pattern.starts_with('%') && pattern.ends_with('%') && pattern.len() > 2 {
+            let infix = &pattern[1..pattern.len() - 1];
+            if !infix.contains('%') {
+                return value_str.contains(infix);
+            }
+        }
+
+        // Handle exact match (no wildcards)
+        if !pattern.contains('%') && !pattern.contains('_') {
+            return value_str == pattern;
+        }
+
+        // For complex patterns with multiple % or _ wildcards,
+        // conservatively assume they might match
+        true
     }
 }
 

@@ -12,29 +12,11 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 use std::sync::Arc;
 
-/// How a column is used in a query
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ColumnUsage {
-    /// Used in SELECT clause
-    Projected,
-    /// Used in WHERE/HAVING clause
-    Filtered,
-    /// Used in GROUP BY clause
-    Grouped,
-    /// Used in ORDER BY clause
-    Ordered,
-    /// Used in JOIN conditions
-    Joined,
-}
-
 /// Complete output of semantic analysis
 #[derive(Debug, Clone)]
 pub struct AnalyzedStatement {
     /// Shared, immutable reference to the original AST
     pub ast: Arc<Statement>,
-
-    /// Type annotations for all expressions in the AST
-    pub type_annotations: TypeAnnotations,
 
     /// Statement metadata for optimization and validation
     pub metadata: StatementMetadata,
@@ -51,20 +33,11 @@ pub struct AnalyzedStatement {
     /// Aggregate expressions in the statement (structural info)
     pub aggregate_expressions: HashSet<ExpressionId>,
 
-    /// How each column is used in the query (projection, filter, etc.)
-    pub column_usage: HashMap<(String, String), HashSet<ColumnUsage>>,
-
-    /// Expression dependency graph for common subexpression elimination
-    pub expression_dependencies: HashMap<ExpressionId, Vec<ExpressionId>>,
-
     /// Nullability of output columns (parallel to output_schema)
     pub output_nullability: Vec<bool>,
 
     /// Join optimization hints from semantic analysis
     pub join_hints: Vec<crate::semantic::analyzer::JoinHint>,
-
-    /// Expression templates for caching and common subexpression elimination
-    pub expression_templates: Vec<crate::semantic::analyzer::ExpressionTemplate>,
 }
 
 /// Template for a predicate that can be evaluated with parameters
@@ -77,7 +50,6 @@ pub enum PredicateTemplate {
     Equality {
         table: String,
         column_name: String,
-        column_index: usize,
         value_expr: PredicateValue,
     },
 
@@ -85,7 +57,6 @@ pub enum PredicateTemplate {
     Range {
         table: String,
         column_name: String,
-        column_index: usize,
         lower: Option<(PredicateValue, bool)>, // (value, inclusive)
         upper: Option<(PredicateValue, bool)>, // (value, inclusive)
     },
@@ -94,7 +65,6 @@ pub enum PredicateTemplate {
     InList {
         table: String,
         column_name: String,
-        column_index: usize,
         values: Vec<PredicateValue>,
     },
 
@@ -111,11 +81,18 @@ pub enum PredicateTemplate {
         value: PredicateValue,
     },
 
-    /// Complex predicate that needs runtime evaluation
-    Complex {
+    /// LIKE pattern matching predicate
+    Like {
         table: String,
-        expression_id: ExpressionId,
+        column_name: String,
+        pattern: String,
     },
+
+    /// IS NULL predicate
+    IsNull { table: String, column_name: String },
+
+    /// IS NOT NULL predicate
+    IsNotNull { table: String, column_name: String },
 }
 
 /// Value in a predicate - either constant, parameter, or expression
@@ -124,14 +101,6 @@ pub enum PredicateValue {
     Constant(Value),
     Parameter(usize),
     Expression(ExpressionId), // For complex expressions we evaluate at runtime
-}
-
-/// Type annotations for expressions in the AST
-#[derive(Debug, Clone, Default)]
-pub struct TypeAnnotations {
-    /// Maps expression IDs to their type information
-    /// The ID is computed based on the expression's position in the AST
-    annotations: HashMap<ExpressionId, TypeInfo>,
 }
 
 /// Unique identifier for an expression in the AST
@@ -149,22 +118,6 @@ pub struct TypeInfo {
 
     /// If this is an aggregate expression
     pub is_aggregate: bool,
-
-    /// Resolution information for columns (NEW)
-    pub resolution: Option<ResolvedColumn>,
-}
-
-/// Information about a resolved column reference
-#[derive(Debug, Clone)]
-pub struct ResolvedColumn {
-    /// The actual table name (not alias)
-    pub table_name: String,
-
-    /// The column name
-    pub column_name: String,
-
-    /// Index of the column within the table
-    pub column_index: usize,
 }
 
 /// Enhanced parameter slot with full context
@@ -173,45 +126,8 @@ pub struct ParameterSlot {
     /// Parameter index (0-based)
     pub index: usize,
 
-    /// Location in the AST (for error reporting and binding)
-    pub expression_id: ExpressionId,
-
     /// The actual type if known
     pub actual_type: Option<DataType>,
-
-    /// Coercion context and hints
-    pub coercion_context: CoercionContext,
-
-    /// Human-readable description
-    pub description: String,
-}
-
-/// Context for parameter coercion
-#[derive(Debug, Clone)]
-pub struct CoercionContext {
-    /// The SQL context (WHERE, INSERT, etc.)
-    pub sql_context: SqlContext,
-
-    /// Whether NULL is acceptable
-    pub nullable: bool,
-}
-
-/// SQL context where a parameter appears
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlContext {
-    WhereClause,
-    InsertValue {
-        column_index: usize,
-    },
-    HavingClause,
-    JoinCondition,
-    SelectProjection,
-    OrderBy,
-    GroupBy,
-    FunctionArgument {
-        function_name: String,
-        arg_index: usize,
-    },
 }
 
 /// Statement metadata for planning and optimization
@@ -219,15 +135,6 @@ pub enum SqlContext {
 pub struct StatementMetadata {
     /// Statement type
     pub statement_type: StatementType,
-
-    /// All columns referenced
-    pub referenced_columns: HashSet<(String, String)>, // (table, column)
-
-    /// Output schema for SELECT statements
-    pub output_schema: Option<Vec<(String, DataType)>>,
-
-    /// Whether statement modifies data
-    pub is_mutation: bool,
 
     /// Whether statement contains aggregates
     pub has_aggregates: bool,
@@ -265,12 +172,6 @@ pub struct ColumnResolutionMap {
 /// Pre-resolved column information
 #[derive(Debug, Clone)]
 pub struct ColumnResolution {
-    /// Index of table in FROM clause (0-based)
-    pub table_index: usize,
-
-    /// Index of column within table
-    pub column_index: usize,
-
     /// Global column offset for execution
     pub global_offset: usize,
 
@@ -289,17 +190,13 @@ impl AnalyzedStatement {
     pub fn new(ast: Arc<Statement>) -> Self {
         Self {
             ast,
-            type_annotations: TypeAnnotations::default(),
             metadata: StatementMetadata::default(),
             parameter_slots: Vec::new(),
             predicate_templates: Vec::new(),
             column_resolution_map: ColumnResolutionMap::default(),
             aggregate_expressions: HashSet::new(),
-            column_usage: HashMap::new(),
-            expression_dependencies: HashMap::new(),
             output_nullability: Vec::new(),
             join_hints: Vec::new(),
-            expression_templates: Vec::new(),
         }
     }
 
@@ -321,14 +218,6 @@ impl AnalyzedStatement {
     /// Add a predicate template
     pub fn add_predicate_template(&mut self, template: PredicateTemplate) {
         self.predicate_templates.push(template);
-    }
-
-    /// Track how a column is used
-    pub fn add_column_usage(&mut self, table: String, column: String, usage: ColumnUsage) {
-        self.column_usage
-            .entry((table, column))
-            .or_insert_with(HashSet::new)
-            .insert(usage);
     }
 
     /// Extract predicates using actual parameter values
@@ -493,11 +382,31 @@ impl AnalyzedStatement {
                 })
             }
 
-            PredicateTemplate::Complex { table, .. } => {
-                // For complex predicates, fall back to full table scan
-                // Could be improved by evaluating the expression
-                Some(Predicate::full_table(table.clone()))
-            }
+            PredicateTemplate::Like {
+                table,
+                column_name,
+                pattern,
+            } => Some(Predicate {
+                table: table.clone(),
+                condition: PredicateCondition::Like {
+                    column: column_name.clone(),
+                    pattern: pattern.clone(),
+                },
+            }),
+
+            PredicateTemplate::IsNull { table, column_name } => Some(Predicate {
+                table: table.clone(),
+                condition: PredicateCondition::IsNull {
+                    column: column_name.clone(),
+                },
+            }),
+
+            PredicateTemplate::IsNotNull { table, column_name } => Some(Predicate {
+                table: table.clone(),
+                condition: PredicateCondition::IsNotNull {
+                    column: column_name.clone(),
+                },
+            }),
         }
     }
 
@@ -512,18 +421,6 @@ impl AnalyzedStatement {
                 None
             }
         }
-    }
-}
-
-impl TypeAnnotations {
-    /// Add a type annotation
-    pub fn annotate(&mut self, id: ExpressionId, info: TypeInfo) {
-        self.annotations.insert(id, info);
-    }
-
-    /// Get type information
-    pub fn get(&self, id: &ExpressionId) -> Option<&TypeInfo> {
-        self.annotations.get(id)
     }
 }
 
@@ -572,12 +469,6 @@ impl ColumnResolutionMap {
         self.columns.remove(&(None, column_name));
     }
 
-    /// Get a column resolution
-    pub fn get(&self, table_alias: Option<&str>, column_name: &str) -> Option<&ColumnResolution> {
-        self.columns
-            .get(&(table_alias.map(|s| s.to_string()), column_name.to_string()))
-    }
-
     /// Check if a column is ambiguous
     pub fn is_ambiguous(&self, column_name: &str) -> bool {
         self.ambiguous.contains(column_name)
@@ -590,13 +481,16 @@ impl ColumnResolutionMap {
         column_name: &str,
     ) -> Option<&ColumnResolution> {
         // First try with the exact qualifier
-        if let Some(res) = self.get(table_alias, column_name) {
+        if let Some(res) = self
+            .columns
+            .get(&(table_alias.map(|s| s.to_string()), column_name.to_string()))
+        {
             return Some(res);
         }
 
         // If no qualifier given and column is not ambiguous, try unqualified
         if table_alias.is_none() && !self.is_ambiguous(column_name) {
-            return self.get(None, column_name);
+            return self.columns.get(&(None, column_name.to_string()));
         }
 
         None

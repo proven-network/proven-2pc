@@ -10,5 +10,4 @@ pub mod value;
 
 // Re-export key types - matching toydb's pattern
 pub use data_type::DataType;
-pub use expression::Expression;
 pub use value::Value;

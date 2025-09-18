@@ -8,7 +8,7 @@
 //! - DISTINCT usage
 //! - DEFAULT value validation
 
-use super::statement::{AnalyzedStatement, ExpressionId};
+use super::statement::ExpressionId;
 use crate::error::{Error, Result};
 use crate::parsing::ast::{DmlStatement, Expression, Literal, SelectStatement, Statement};
 use std::collections::HashSet;
@@ -23,66 +23,6 @@ impl SemanticValidator {
     /// Create a new semantic validator
     pub fn new() -> Self {
         Self {}
-    }
-
-    /// Main validation entry point
-    pub fn validate(&self, statement: &Statement, analyzed: &AnalyzedStatement) -> Result<()> {
-        match statement {
-            Statement::Dml(dml) => self.validate_dml(dml, analyzed),
-            Statement::Ddl(_) => {
-                // DDL validation is simpler
-                Ok(())
-            }
-            Statement::Explain(_) => Ok(()),
-        }
-    }
-
-    /// Validate DML statements
-    fn validate_dml(&self, statement: &DmlStatement, analyzed: &AnalyzedStatement) -> Result<()> {
-        match statement {
-            DmlStatement::Select(select) => self.validate_select(select, analyzed),
-            DmlStatement::Insert {
-                table: _,
-                columns,
-                source,
-            } => self.validate_insert(columns.as_ref(), source, analyzed),
-            DmlStatement::Update { set, .. } => self.validate_update(set, analyzed),
-            DmlStatement::Delete { .. } => {
-                // DELETE has minimal validation
-                Ok(())
-            }
-        }
-    }
-
-    /// Validate SELECT statement
-    fn validate_select(
-        &self,
-        select: &SelectStatement,
-        _analyzed: &AnalyzedStatement,
-    ) -> Result<()> {
-        // Check if SELECT contains aggregates
-        let has_aggregates = self.select_has_aggregates(select);
-
-        // If we have GROUP BY, validate it
-        if !select.group_by.is_empty() {
-            self.validate_group_by(select)?;
-        } else if has_aggregates {
-            // Aggregates without GROUP BY is valid - entire table is one group
-            // But we need to check that non-aggregate expressions are valid
-            self.validate_aggregates_without_group_by(select)?;
-        }
-
-        // Validate ORDER BY
-        self.validate_order_by(select)?;
-
-        // Validate HAVING clause - it requires either GROUP BY or aggregates
-        if select.having.is_some() && select.group_by.is_empty() && !has_aggregates {
-            return Err(Error::ExecutionError(
-                "HAVING clause requires GROUP BY or aggregate functions".into(),
-            ));
-        }
-
-        Ok(())
     }
 
     /// Validate GROUP BY rules
@@ -218,94 +158,6 @@ impl SemanticValidator {
         Ok(())
     }
 
-    /// Validate DISTINCT usage
-    fn validate_distinct(&self, _select: &SelectStatement) -> Result<()> {
-        // DISTINCT is generally valid
-        // Could add specific validations here
-        Ok(())
-    }
-
-    /// Validate INSERT statement
-    fn validate_insert(
-        &self,
-        _columns: Option<&Vec<String>>,
-        _source: &crate::parsing::ast::InsertSource,
-        _analyzed: &AnalyzedStatement,
-    ) -> Result<()> {
-        // This old method doesn't have access to schemas
-        // The new validate_insert_new handles validation properly
-        Ok(())
-    }
-
-    /// Validate UPDATE statement
-    fn validate_update(
-        &self,
-        _set: &std::collections::BTreeMap<String, Option<Expression>>,
-        _analyzed: &AnalyzedStatement,
-    ) -> Result<()> {
-        // This old method doesn't have access to schemas
-        // The new validate_update_new handles validation properly
-        Ok(())
-    }
-
-    /// Validate DEFAULT expressions
-    pub fn validate_default_expression(&self, expr: &Expression) -> Result<()> {
-        // DEFAULT expressions should be deterministic and not reference columns
-        match expr {
-            Expression::Column(_, _) => Err(Error::ExecutionError(
-                "DEFAULT expressions cannot reference columns".into(),
-            )),
-            Expression::Function(name, _) => {
-                // Check if function exists
-                let func_name = name.to_uppercase();
-
-                if crate::functions::get_function(&func_name).is_some() {
-                    // All functions are deterministic and safe for DEFAULT expressions
-                    Ok(())
-                } else {
-                    Err(Error::ExecutionError(format!(
-                        "Unknown function in DEFAULT: {}",
-                        name
-                    )))
-                }
-            }
-            Expression::Operator(op) => {
-                // Recursively validate operator arguments
-                use crate::parsing::ast::Operator;
-                match op {
-                    Operator::And(l, r)
-                    | Operator::Or(l, r)
-                    | Operator::Equal(l, r)
-                    | Operator::NotEqual(l, r)
-                    | Operator::GreaterThan(l, r)
-                    | Operator::GreaterThanOrEqual(l, r)
-                    | Operator::LessThan(l, r)
-                    | Operator::LessThanOrEqual(l, r)
-                    | Operator::Add(l, r)
-                    | Operator::Subtract(l, r)
-                    | Operator::Multiply(l, r)
-                    | Operator::Divide(l, r)
-                    | Operator::Remainder(l, r)
-                    | Operator::Exponentiate(l, r)
-                    | Operator::Like(l, r) => {
-                        self.validate_default_expression(l)?;
-                        self.validate_default_expression(r)?;
-                    }
-                    Operator::Not(e)
-                    | Operator::Negate(e)
-                    | Operator::Identity(e)
-                    | Operator::Factorial(e) => {
-                        self.validate_default_expression(e)?;
-                    }
-                    _ => {}
-                }
-                Ok(())
-            }
-            Expression::Literal(_) | Expression::Parameter(_) => Ok(()),
-            _ => Ok(()),
-        }
-    }
-
     /// Check if an expression is an aggregate
     fn is_aggregate_expression(expr: &Expression) -> bool {
         match expr {
@@ -351,39 +203,13 @@ impl SemanticValidator {
                         negated: _,
                     } => {
                         Self::is_aggregate_expression(expr)
-                            || list.iter().any(|e| Self::is_aggregate_expression(e))
+                            || list.iter().any(Self::is_aggregate_expression)
                     }
                     Operator::Is(e, _) => Self::is_aggregate_expression(e),
                 }
             }
             _ => false,
         }
-    }
-
-    /// Check if SELECT has any aggregate functions
-    fn select_has_aggregates(&self, select: &SelectStatement) -> bool {
-        // Check SELECT list
-        for (expr, _) in &select.select {
-            if Self::is_aggregate_expression(expr) {
-                return true;
-            }
-        }
-
-        // Check HAVING clause
-        if let Some(having) = &select.having
-            && Self::is_aggregate_expression(having)
-        {
-            return true;
-        }
-
-        // Check ORDER BY
-        for (expr, _) in &select.order_by {
-            if Self::is_aggregate_expression(expr) {
-                return true;
-            }
-        }
-
-        false
     }
 
     /// Validate aggregates without GROUP BY
@@ -498,7 +324,7 @@ impl SemanticValidator {
                 if crate::functions::is_aggregate(&name.to_uppercase()) {
                     // This is the outer aggregate - check its arguments for nested aggregates
                     for arg in args {
-                        self.validate_no_nested_aggregates(arg)?;
+                        Self::validate_no_nested_aggregates(arg)?;
                     }
                 }
                 Ok(())
@@ -508,7 +334,7 @@ impl SemanticValidator {
     }
 
     /// Check for nested aggregate functions
-    fn validate_no_nested_aggregates(&self, expr: &Expression) -> Result<()> {
+    fn validate_no_nested_aggregates(expr: &Expression) -> Result<()> {
         match expr {
             Expression::Function(name, args) => {
                 if crate::functions::is_aggregate(&name.to_uppercase()) {
@@ -520,7 +346,7 @@ impl SemanticValidator {
                 }
                 // Check arguments recursively
                 for arg in args {
-                    self.validate_no_nested_aggregates(arg)?;
+                    Self::validate_no_nested_aggregates(arg)?;
                 }
                 Ok(())
             }
@@ -542,14 +368,14 @@ impl SemanticValidator {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::Like(l, r) => {
-                        self.validate_no_nested_aggregates(l)?;
-                        self.validate_no_nested_aggregates(r)?;
+                        Self::validate_no_nested_aggregates(l)?;
+                        Self::validate_no_nested_aggregates(r)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
                     | Operator::Identity(e)
                     | Operator::Factorial(e) => {
-                        self.validate_no_nested_aggregates(e)?;
+                        Self::validate_no_nested_aggregates(e)?;
                     }
                     Operator::Between {
                         expr,
@@ -557,22 +383,22 @@ impl SemanticValidator {
                         high,
                         negated: _,
                     } => {
-                        self.validate_no_nested_aggregates(expr)?;
-                        self.validate_no_nested_aggregates(low)?;
-                        self.validate_no_nested_aggregates(high)?;
+                        Self::validate_no_nested_aggregates(expr)?;
+                        Self::validate_no_nested_aggregates(low)?;
+                        Self::validate_no_nested_aggregates(high)?;
                     }
                     Operator::InList {
                         expr,
                         list,
                         negated: _,
                     } => {
-                        self.validate_no_nested_aggregates(expr)?;
+                        Self::validate_no_nested_aggregates(expr)?;
                         for item in list {
-                            self.validate_no_nested_aggregates(item)?;
+                            Self::validate_no_nested_aggregates(item)?;
                         }
                     }
                     Operator::Is(e, _) => {
-                        self.validate_no_nested_aggregates(e)?;
+                        Self::validate_no_nested_aggregates(e)?;
                     }
                 }
                 Ok(())
@@ -618,36 +444,6 @@ impl SemanticValidator {
         }
 
         Ok(violations)
-    }
-
-    /// Collect warnings for a statement
-    pub fn collect_warnings(
-        &self,
-        statement: &Arc<Statement>,
-        _input: &super::analyzer::ValidationInput,
-    ) -> Vec<String> {
-        let mut warnings = Vec::new();
-
-        // Add warnings for potentially inefficient patterns
-        if let Statement::Dml(DmlStatement::Select(select)) = statement.as_ref() {
-            // Warn about SELECT * with GROUP BY
-            if !select.group_by.is_empty() {
-                for (expr, _) in &select.select {
-                    if matches!(expr, Expression::All) {
-                        warnings.push("SELECT * with GROUP BY may be inefficient".to_string());
-                    }
-                }
-            }
-
-            // Warn about ORDER BY without LIMIT
-            if !select.order_by.is_empty() && select.limit.is_none() {
-                warnings.push(
-                    "ORDER BY without LIMIT may be inefficient for large result sets".to_string(),
-                );
-            }
-        }
-
-        warnings
     }
 
     /// Validate DML for new architecture

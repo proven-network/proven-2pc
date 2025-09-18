@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::statement::{
-    AnalyzedStatement, CoercionContext, ColumnResolutionMap, ExpressionId, ParameterSlot,
-    PredicateTemplate, SqlContext, StatementType, TypeInfo,
+    AnalyzedStatement, ColumnResolutionMap, ExpressionId, ParameterSlot, PredicateTemplate,
+    StatementType, TypeInfo,
 };
 
 /// Output from name resolution phase
@@ -39,19 +39,6 @@ pub struct TypeOutput {
     pub statement_type: StatementType,
 }
 
-/// Output from validation phase
-#[derive(Debug)]
-pub struct ValidationOutput {
-    /// Validation passed
-    pub valid: bool,
-
-    /// Warnings (non-fatal issues)
-    pub warnings: Vec<String>,
-
-    /// Constraint violations detected
-    pub constraint_violations: Vec<String>,
-}
-
 /// Output from optimization phase
 #[derive(Debug, Clone)]
 pub struct OptimizationOutput {
@@ -63,46 +50,19 @@ pub struct OptimizationOutput {
 
     /// Join ordering hints
     pub join_hints: Vec<JoinHint>,
-
-    /// Expression templates for pre-computation
-    pub expression_templates: Vec<ExpressionTemplate>,
 }
 
 #[derive(Debug, Clone)]
 pub struct IndexHint {
     pub table: String,
-    pub column: String,
-    pub predicate_type: PredicateType,
-}
-
-#[derive(Debug, Clone)]
-pub enum PredicateType {
-    Equality,
-    Range,
-    Prefix,
+    // TODO: Add column and predicate_type back when index selection is improved
 }
 
 #[derive(Debug, Clone)]
 pub struct JoinHint {
     pub left_table: String,
     pub right_table: String,
-    pub join_type: JoinType,
     pub selectivity_estimate: f64,
-}
-
-#[derive(Debug, Clone)]
-pub enum JoinType {
-    Inner,
-    Left,
-    Right,
-    Full,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExpressionTemplate {
-    pub id: super::statement::ExpressionId,
-    pub template: String,
-    pub is_deterministic: bool,
 }
 
 /// Phase-based analyzer with explicit data flow
@@ -135,13 +95,13 @@ impl SemanticAnalyzer {
         let types = self.infer_types(&ast, &resolution, &param_types)?;
 
         // Phase 3: Semantic Validation (uses resolution and type outputs)
-        let validation = self.validate(&ast, &resolution, &types)?;
+        self.validate(&ast, &resolution, &types)?;
 
         // Phase 4: Optimization Metadata (uses all previous outputs)
         let optimization = self.build_optimization_metadata(&ast, &resolution, &types)?;
 
         // Build final analyzed statement
-        Ok(self.build_analyzed_statement(ast, resolution, types, validation, optimization))
+        Ok(self.build_analyzed_statement(ast, resolution, types, optimization))
     }
 
     /// Phase 1: Name Resolution
@@ -169,7 +129,6 @@ impl SemanticAnalyzer {
         // Create immutable view of resolution data
         let resolution_view = ResolutionView {
             column_map: &resolution.column_map,
-            tables: &resolution.tables,
         };
 
         // Infer types for all expressions
@@ -196,15 +155,13 @@ impl SemanticAnalyzer {
     fn validate(
         &self,
         ast: &Arc<Statement>,
-        resolution: &ResolutionOutput,
+        _resolution: &ResolutionOutput,
         types: &TypeOutput,
-    ) -> Result<ValidationOutput> {
+    ) -> Result<()> {
         let validator = super::validation::SemanticValidator::new();
 
         // Create immutable views of previous phase outputs
         let validation_input = ValidationInput {
-            tables: &resolution.tables,
-            column_map: &resolution.column_map,
             expression_types: &types.expression_types,
             schemas: &self.schemas,
         };
@@ -212,14 +169,18 @@ impl SemanticAnalyzer {
         // Run all validations
         let violations = validator.validate_all(ast, &validation_input)?;
 
-        // Collect warnings (non-fatal)
-        let warnings = validator.collect_warnings(ast, &validation_input);
+        // Could collect warnings here if needed in the future
+        // let warnings = validator.collect_warnings(ast, &validation_input);
 
-        Ok(ValidationOutput {
-            valid: violations.is_empty(),
-            warnings,
-            constraint_violations: violations,
-        })
+        // If there are violations, return an error
+        if !violations.is_empty() {
+            return Err(crate::error::Error::InvalidOperation(format!(
+                "Validation failed: {}",
+                violations.join("; ")
+            )));
+        }
+
+        Ok(())
     }
 
     /// Phase 4: Build Optimization Metadata
@@ -227,7 +188,7 @@ impl SemanticAnalyzer {
         &self,
         ast: &Arc<Statement>,
         resolution: &ResolutionOutput,
-        types: &TypeOutput,
+        _types: &TypeOutput,
     ) -> Result<OptimizationOutput> {
         let builder = super::optimization::MetadataBuilder::new(self.schemas.clone());
 
@@ -235,7 +196,6 @@ impl SemanticAnalyzer {
         let opt_input = OptimizationInput {
             tables: &resolution.tables,
             column_map: &resolution.column_map,
-            expression_types: &types.expression_types,
             schemas: &self.schemas,
         };
 
@@ -248,14 +208,10 @@ impl SemanticAnalyzer {
         // Analyze joins
         let join_hints = builder.analyze_joins(ast, &opt_input)?;
 
-        // Build expression templates
-        let expression_templates = builder.build_expression_templates(ast, &opt_input)?;
-
         Ok(OptimizationOutput {
             predicate_templates,
             index_hints,
             join_hints,
-            expression_templates,
         })
     }
 
@@ -265,7 +221,6 @@ impl SemanticAnalyzer {
         ast: Arc<Statement>,
         resolution: ResolutionOutput,
         types: TypeOutput,
-        _validation: ValidationOutput,
         optimization: OptimizationOutput,
     ) -> AnalyzedStatement {
         let mut analyzed = AnalyzedStatement::new(ast.clone());
@@ -280,15 +235,9 @@ impl SemanticAnalyzer {
             }
         }
 
-        // Track column usage and output nullability first (while we have references)
-        self.track_column_usage(&ast, &mut analyzed).unwrap_or(());
+        // Compute output nullability
         self.compute_output_nullability(&ast, &types, &mut analyzed)
             .unwrap_or(());
-
-        // Add type annotations (moving ownership)
-        for (expr_id, type_info) in types.expression_types {
-            analyzed.type_annotations.annotate(expr_id, type_info);
-        }
 
         // Add parameter slots (moving ownership)
         for slot in types.parameter_slots {
@@ -302,7 +251,6 @@ impl SemanticAnalyzer {
         // Clone optimization data before moving
         let templates = optimization.predicate_templates.clone();
         let join_hints = optimization.join_hints.clone();
-        let expression_templates = optimization.expression_templates.clone();
 
         analyzed.metadata.optimization_output = Some(Box::new(optimization));
 
@@ -311,9 +259,8 @@ impl SemanticAnalyzer {
             analyzed.add_predicate_template(template);
         }
 
-        // Add join hints and expression templates
+        // Add join hints
         analyzed.join_hints = join_hints;
-        analyzed.expression_templates = expression_templates;
 
         // Sort parameters by index for consistent ordering
         analyzed.sort_parameters();
@@ -350,7 +297,7 @@ impl SemanticAnalyzer {
         let mut slots = Vec::new();
 
         // Walk the AST to find parameters
-        self.collect_parameters(ast.as_ref(), expression_types, param_types, &mut slots)?;
+        Self::collect_parameters(ast.as_ref(), expression_types, param_types, &mut slots)?;
 
         // Sort by parameter index for consistent ordering
         slots.sort_by_key(|s| s.index);
@@ -360,7 +307,6 @@ impl SemanticAnalyzer {
 
     /// Collect parameter slots from the statement
     fn collect_parameters(
-        &self,
         statement: &Statement,
         expression_types: &HashMap<super::statement::ExpressionId, TypeInfo>,
         param_types: &[DataType],
@@ -372,7 +318,7 @@ impl SemanticAnalyzer {
                     // Check SELECT list
                     for (idx, (expr, _)) in select.select.iter().enumerate() {
                         let expr_id = ExpressionId::from_path(vec![idx]);
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             expr,
                             &expr_id,
                             expression_types,
@@ -384,7 +330,7 @@ impl SemanticAnalyzer {
                     // Check WHERE clause
                     if let Some(where_expr) = &select.r#where {
                         let expr_id = ExpressionId::from_path(vec![1000]);
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             where_expr,
                             &expr_id,
                             expression_types,
@@ -396,7 +342,7 @@ impl SemanticAnalyzer {
                     // Check GROUP BY
                     for (idx, expr) in select.group_by.iter().enumerate() {
                         let expr_id = ExpressionId::from_path(vec![2000 + idx]);
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             expr,
                             &expr_id,
                             expression_types,
@@ -408,7 +354,7 @@ impl SemanticAnalyzer {
                     // Check HAVING
                     if let Some(having) = &select.having {
                         let expr_id = ExpressionId::from_path(vec![3000]);
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             having,
                             &expr_id,
                             expression_types,
@@ -420,7 +366,7 @@ impl SemanticAnalyzer {
                     // Check ORDER BY
                     for (idx, (expr, _)) in select.order_by.iter().enumerate() {
                         let expr_id = ExpressionId::from_path(vec![4000 + idx]);
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             expr,
                             &expr_id,
                             expression_types,
@@ -436,7 +382,7 @@ impl SemanticAnalyzer {
                             for (row_idx, row) in rows.iter().enumerate() {
                                 for (col_idx, expr) in row.iter().enumerate() {
                                     let expr_id = ExpressionId::from_path(vec![row_idx, col_idx]);
-                                    self.collect_params_from_expr(
+                                    Self::collect_params_from_expr(
                                         expr,
                                         &expr_id,
                                         expression_types,
@@ -447,7 +393,7 @@ impl SemanticAnalyzer {
                             }
                         }
                         InsertSource::Select(select) => {
-                            self.collect_parameters(
+                            Self::collect_parameters(
                                 &Statement::Dml(DmlStatement::Select(select.clone())),
                                 expression_types,
                                 param_types,
@@ -461,7 +407,7 @@ impl SemanticAnalyzer {
                     for (idx, (_, expr_opt)) in set.iter().enumerate() {
                         if let Some(expr) = expr_opt {
                             let expr_id = ExpressionId::from_path(vec![6000 + idx]);
-                            self.collect_params_from_expr(
+                            Self::collect_params_from_expr(
                                 expr,
                                 &expr_id,
                                 expression_types,
@@ -473,7 +419,7 @@ impl SemanticAnalyzer {
 
                     if let Some(where_expr) = r#where {
                         let expr_id = ExpressionId::from_path(vec![7000]);
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             where_expr,
                             &expr_id,
                             expression_types,
@@ -485,7 +431,7 @@ impl SemanticAnalyzer {
                 DmlStatement::Delete { r#where, .. } => {
                     if let Some(where_expr) = r#where {
                         let expr_id = ExpressionId::from_path(vec![8000]);
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             where_expr,
                             &expr_id,
                             expression_types,
@@ -502,7 +448,6 @@ impl SemanticAnalyzer {
 
     /// Collect parameters from an expression
     fn collect_params_from_expr(
-        &self,
         expr: &Expression,
         expr_id: &ExpressionId,
         expression_types: &HashMap<super::statement::ExpressionId, TypeInfo>,
@@ -522,13 +467,7 @@ impl SemanticAnalyzer {
                 // Create a ParameterSlot with proper structure
                 let slot = ParameterSlot {
                     index: *idx,
-                    expression_id: expr_id.clone(),
                     actual_type: Some(data_type),
-                    coercion_context: CoercionContext {
-                        sql_context: SqlContext::WhereClause, // Default context
-                        nullable: true,
-                    },
-                    description: format!("Parameter {}", idx),
                 };
 
                 // Only add if not already present
@@ -554,14 +493,14 @@ impl SemanticAnalyzer {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::Like(l, r) => {
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             l,
                             &expr_id.child(0),
                             expression_types,
                             param_types,
                             slots,
                         );
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             r,
                             &expr_id.child(1),
                             expression_types,
@@ -573,7 +512,7 @@ impl SemanticAnalyzer {
                     | Operator::Negate(e)
                     | Operator::Identity(e)
                     | Operator::Factorial(e) => {
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             e,
                             &expr_id.child(0),
                             expression_types,
@@ -584,21 +523,21 @@ impl SemanticAnalyzer {
                     Operator::Between {
                         expr, low, high, ..
                     } => {
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             expr,
                             &expr_id.child(0),
                             expression_types,
                             param_types,
                             slots,
                         );
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             low,
                             &expr_id.child(1),
                             expression_types,
                             param_types,
                             slots,
                         );
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             high,
                             &expr_id.child(2),
                             expression_types,
@@ -607,7 +546,7 @@ impl SemanticAnalyzer {
                         );
                     }
                     Operator::InList { expr, list, .. } => {
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             expr,
                             &expr_id.child(0),
                             expression_types,
@@ -615,7 +554,7 @@ impl SemanticAnalyzer {
                             slots,
                         );
                         for (i, item) in list.iter().enumerate() {
-                            self.collect_params_from_expr(
+                            Self::collect_params_from_expr(
                                 item,
                                 &expr_id.child(i + 1),
                                 expression_types,
@@ -625,7 +564,7 @@ impl SemanticAnalyzer {
                         }
                     }
                     Operator::Is(e, _) => {
-                        self.collect_params_from_expr(
+                        Self::collect_params_from_expr(
                             e,
                             &expr_id.child(0),
                             expression_types,
@@ -637,7 +576,7 @@ impl SemanticAnalyzer {
             }
             Expression::Function(_, args) => {
                 for (i, arg) in args.iter().enumerate() {
-                    self.collect_params_from_expr(
+                    Self::collect_params_from_expr(
                         arg,
                         &expr_id.child(i),
                         expression_types,
@@ -647,14 +586,14 @@ impl SemanticAnalyzer {
                 }
             }
             Expression::ArrayAccess { base, index } => {
-                self.collect_params_from_expr(
+                Self::collect_params_from_expr(
                     base,
                     &expr_id.child(0),
                     expression_types,
                     param_types,
                     slots,
                 );
-                self.collect_params_from_expr(
+                Self::collect_params_from_expr(
                     index,
                     &expr_id.child(1),
                     expression_types,
@@ -663,7 +602,7 @@ impl SemanticAnalyzer {
                 );
             }
             Expression::FieldAccess { base, .. } => {
-                self.collect_params_from_expr(
+                Self::collect_params_from_expr(
                     base,
                     &expr_id.child(0),
                     expression_types,
@@ -673,7 +612,7 @@ impl SemanticAnalyzer {
             }
             Expression::ArrayLiteral(elements) => {
                 for (i, elem) in elements.iter().enumerate() {
-                    self.collect_params_from_expr(
+                    Self::collect_params_from_expr(
                         elem,
                         &expr_id.child(i),
                         expression_types,
@@ -684,14 +623,14 @@ impl SemanticAnalyzer {
             }
             Expression::MapLiteral(entries) => {
                 for (i, (key, val)) in entries.iter().enumerate() {
-                    self.collect_params_from_expr(
+                    Self::collect_params_from_expr(
                         key,
                         &expr_id.child(i * 2),
                         expression_types,
                         param_types,
                         slots,
                     );
-                    self.collect_params_from_expr(
+                    Self::collect_params_from_expr(
                         val,
                         &expr_id.child(i * 2 + 1),
                         expression_types,
@@ -701,116 +640,6 @@ impl SemanticAnalyzer {
                 }
             }
             _ => {} // Literals, columns, etc. don't contain parameters
-        }
-    }
-
-    /// Track how columns are used in the statement
-    fn track_column_usage(
-        &self,
-        statement: &Arc<Statement>,
-        analyzed: &mut AnalyzedStatement,
-    ) -> Result<()> {
-        use super::statement::ColumnUsage;
-        use crate::parsing::ast::DmlStatement;
-
-        if let Statement::Dml(DmlStatement::Select(select)) = statement.as_ref() {
-            // Track SELECT columns (projected)
-            for (expr, _) in &select.select {
-                self.track_column_in_expression(expr, ColumnUsage::Projected, analyzed);
-            }
-
-            // Track WHERE columns (filtered)
-            if let Some(where_expr) = &select.r#where {
-                self.track_column_in_expression(where_expr, ColumnUsage::Filtered, analyzed);
-            }
-
-            // Track GROUP BY columns
-            for expr in &select.group_by {
-                self.track_column_in_expression(expr, ColumnUsage::Grouped, analyzed);
-            }
-
-            // Track HAVING columns (filtered)
-            if let Some(having) = &select.having {
-                self.track_column_in_expression(having, ColumnUsage::Filtered, analyzed);
-            }
-
-            // Track ORDER BY columns
-            for (expr, _) in &select.order_by {
-                self.track_column_in_expression(expr, ColumnUsage::Ordered, analyzed);
-            }
-        }
-        Ok(())
-    }
-
-    /// Track columns in an expression
-    fn track_column_in_expression(
-        &self,
-        expr: &Expression,
-        usage: super::statement::ColumnUsage,
-        analyzed: &mut AnalyzedStatement,
-    ) {
-        use crate::parsing::ast::{Expression, Operator};
-
-        match expr {
-            Expression::Column(table, column) => {
-                // Try to resolve the table name
-                if let Some(resolution) =
-                    analyzed.column_resolution_map.get(table.as_deref(), column)
-                {
-                    analyzed.add_column_usage(resolution.table_name.clone(), column.clone(), usage);
-                }
-            }
-            Expression::Operator(op) => {
-                // Recursively track columns in operator expressions
-                match op {
-                    Operator::And(l, r)
-                    | Operator::Or(l, r)
-                    | Operator::Equal(l, r)
-                    | Operator::NotEqual(l, r)
-                    | Operator::GreaterThan(l, r)
-                    | Operator::GreaterThanOrEqual(l, r)
-                    | Operator::LessThan(l, r)
-                    | Operator::LessThanOrEqual(l, r)
-                    | Operator::Add(l, r)
-                    | Operator::Subtract(l, r)
-                    | Operator::Multiply(l, r)
-                    | Operator::Divide(l, r)
-                    | Operator::Remainder(l, r)
-                    | Operator::Exponentiate(l, r)
-                    | Operator::Like(l, r) => {
-                        self.track_column_in_expression(l, usage, analyzed);
-                        self.track_column_in_expression(r, usage, analyzed);
-                    }
-                    Operator::Not(e)
-                    | Operator::Negate(e)
-                    | Operator::Identity(e)
-                    | Operator::Factorial(e) => {
-                        self.track_column_in_expression(e, usage, analyzed);
-                    }
-                    Operator::Between {
-                        expr, low, high, ..
-                    } => {
-                        self.track_column_in_expression(expr, usage, analyzed);
-                        self.track_column_in_expression(low, usage, analyzed);
-                        self.track_column_in_expression(high, usage, analyzed);
-                    }
-                    Operator::InList { expr, list, .. } => {
-                        self.track_column_in_expression(expr, usage, analyzed);
-                        for item in list {
-                            self.track_column_in_expression(item, usage, analyzed);
-                        }
-                    }
-                    Operator::Is(e, _) => {
-                        self.track_column_in_expression(e, usage, analyzed);
-                    }
-                }
-            }
-            Expression::Function(_, args) => {
-                for arg in args {
-                    self.track_column_in_expression(arg, usage, analyzed);
-                }
-            }
-            _ => {} // Other expressions don't contain columns
         }
     }
 
@@ -840,13 +669,10 @@ impl SemanticAnalyzer {
 /// Immutable view of resolution data for type checking
 pub struct ResolutionView<'a> {
     pub column_map: &'a ColumnResolutionMap,
-    pub tables: &'a [(Option<String>, String)],
 }
 
 /// Immutable input for validation phase
 pub struct ValidationInput<'a> {
-    pub tables: &'a [(Option<String>, String)],
-    pub column_map: &'a ColumnResolutionMap,
     pub expression_types: &'a HashMap<super::statement::ExpressionId, TypeInfo>,
     pub schemas: &'a HashMap<String, Table>,
 }
@@ -855,6 +681,5 @@ pub struct ValidationInput<'a> {
 pub struct OptimizationInput<'a> {
     pub tables: &'a [(Option<String>, String)],
     pub column_map: &'a ColumnResolutionMap,
-    pub expression_types: &'a HashMap<super::statement::ExpressionId, TypeInfo>,
     pub schemas: &'a HashMap<String, Table>,
 }

@@ -32,10 +32,6 @@ mod test_foreign_key_validation;
 mod test_group_by_validation;
 #[cfg(test)]
 mod test_insert_validation;
-#[cfg(test)]
-mod test_zero_copy;
-// #[cfg(test)]
-// mod type_checker_test;
 
 // Export the new implementation types as primary interface
 pub use caching_analyzer::CachingSemanticAnalyzer;

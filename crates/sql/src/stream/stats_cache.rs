@@ -8,6 +8,8 @@ use crate::types::statistics::DatabaseStatistics;
 use std::time::{Duration, Instant};
 
 /// Statistics cache for query optimization
+/// TODO: Do proper stats caching
+#[allow(dead_code)]
 pub struct StatisticsCache {
     /// Cached statistics
     stats: Option<DatabaseStatistics>,
@@ -25,6 +27,7 @@ pub struct StatisticsCache {
     max_age: Duration,
 }
 
+#[allow(dead_code)]
 impl StatisticsCache {
     /// Create a new statistics cache
     pub fn new(update_interval: usize) -> Self {

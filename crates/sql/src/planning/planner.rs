@@ -1,7 +1,7 @@
 //! Query planner v2 that leverages semantic analysis results
 //!
-//! This planner uses the TypeAnnotations and metadata from AnalyzedStatement
-//! instead of re-walking and re-resolving the AST.
+//! This planner uses the column resolution map and metadata from AnalyzedStatement
+//! for efficient O(1) column lookups and conflict detection.
 
 use super::optimizer::Optimizer;
 use super::plan::{AggregateFunc, Direction, JoinType, Node, Plan};
@@ -13,133 +13,33 @@ use crate::parsing::ast::{
     Column, Expression as AstExpression, InsertSource, Literal, Operator, SelectStatement,
     Statement,
 };
-use crate::semantic::{AnalyzedStatement, statement::ExpressionId};
+use crate::semantic::AnalyzedStatement;
 use crate::storage::mvcc::IndexMetadata;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
-use crate::types::statistics::DatabaseStatistics;
 use std::collections::{BTreeMap, HashMap};
 
 /// Query planner that leverages semantic analysis
 pub struct Planner {
     schemas: HashMap<String, Table>,
     optimizer: Optimizer,
-    /// Available indexes: table_name -> list of indexes
-    indexes: HashMap<String, Vec<IndexInfo>>,
-    /// Optional statistics for optimization
-    statistics: Option<DatabaseStatistics>,
-}
-
-/// Index metadata for planning
-#[derive(Debug, Clone)]
-pub struct IndexInfo {
-    pub name: String,
-    pub table: String,
-    pub columns: Vec<IndexColumn>,
-    pub unique: bool,
-}
-
-/// Index column info for planning
-#[derive(Debug, Clone)]
-pub struct IndexColumn {
-    pub name: String,
-    pub expression: Option<AstExpression>,
-    pub direction: Option<AstDirection>,
 }
 
 impl Planner {
     /// Create a new planner
     pub fn new(
         schemas: HashMap<String, Table>,
-        index_metadata: HashMap<String, Vec<IndexMetadata>>,
+        _index_metadata: HashMap<String, Vec<IndexMetadata>>,
     ) -> Self {
         let optimizer = Optimizer::new(schemas.clone());
 
-        // Convert storage index metadata to planner IndexInfo
-        let indexes = Self::convert_indexes(index_metadata, &schemas);
-
-        Self {
-            schemas,
-            optimizer,
-            indexes,
-            statistics: None,
-        }
-    }
-
-    /// Convert index metadata from storage format
-    fn convert_indexes(
-        index_metadata: HashMap<String, Vec<IndexMetadata>>,
-        schemas: &HashMap<String, Table>,
-    ) -> HashMap<String, Vec<IndexInfo>> {
-        let mut indexes = HashMap::new();
-
-        for (table_name, table_indexes) in index_metadata {
-            let mut index_infos = Vec::new();
-            for metadata in table_indexes {
-                let columns = metadata
-                    .columns
-                    .iter()
-                    .map(|col| {
-                        IndexColumn {
-                            name: col.expression.clone(),
-                            expression: None, // Simplified for now
-                            direction: col.direction.map(|d| match d {
-                                crate::types::query::Direction::Ascending => AstDirection::Asc,
-                                crate::types::query::Direction::Descending => AstDirection::Desc,
-                            }),
-                        }
-                    })
-                    .collect();
-
-                index_infos.push(IndexInfo {
-                    name: metadata.name,
-                    table: metadata.table,
-                    columns,
-                    unique: metadata.unique,
-                });
-            }
-
-            if !index_infos.is_empty() {
-                indexes.insert(table_name, index_infos);
-            }
-        }
-
-        // Add schema-defined indexes
-        for (table_name, schema) in schemas {
-            let table_indexes = indexes.entry(table_name.clone()).or_insert_with(Vec::new);
-            for column in &schema.columns {
-                if column.primary_key || column.unique || column.index {
-                    let exists = table_indexes
-                        .iter()
-                        .any(|idx| idx.columns.len() == 1 && idx.columns[0].name == column.name);
-                    if !exists {
-                        table_indexes.push(IndexInfo {
-                            name: column.name.clone(),
-                            table: table_name.clone(),
-                            columns: vec![IndexColumn {
-                                name: column.name.clone(),
-                                expression: None,
-                                direction: None,
-                            }],
-                            unique: column.primary_key || column.unique,
-                        });
-                    }
-                }
-            }
-        }
-
-        indexes
+        Self { schemas, optimizer }
     }
 
     /// Update schemas (for cache invalidation)
     pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
         self.schemas = schemas.clone();
         self.optimizer = Optimizer::new(schemas);
-    }
-
-    /// Update indexes (for cache invalidation)
-    pub fn update_indexes(&mut self, index_metadata: HashMap<String, Vec<IndexMetadata>>) {
-        self.indexes = Self::convert_indexes(index_metadata, &self.schemas);
     }
 
     /// Plan an analyzed statement - the main entry point
@@ -673,10 +573,6 @@ impl Planner {
         }
     }
 
-    fn has_aggregates(&self, select: &[(AstExpression, Option<String>)]) -> bool {
-        select.iter().any(|(expr, _)| self.is_aggregate_expr(expr))
-    }
-
     fn is_aggregate_expr(&self, expr: &AstExpression) -> bool {
         match expr {
             AstExpression::Function(name, _) => {
@@ -820,10 +716,6 @@ impl Planner {
         let mut expressions = Vec::new();
         let mut aliases = Vec::new();
 
-        // Use column_usage to optimize projection if needed
-        // For example, we could check which columns are actually used
-        let column_usage = &context.analyzed.column_usage;
-
         for (expr, alias) in select {
             match expr {
                 AstExpression::All => {
@@ -831,17 +723,8 @@ impl Planner {
                     for table in &context.tables {
                         if let Some(schema) = self.schemas.get(&table.name) {
                             for (i, col) in schema.columns.iter().enumerate() {
-                                // Check if this column is actually used anywhere
-                                let key = (table.name.clone(), col.name.clone());
-                                if column_usage.contains_key(&key) {
-                                    // Column is used - include it
-                                    expressions.push(Expression::Column(table.start_column + i));
-                                    aliases.push(Some(col.name.clone()));
-                                } else {
-                                    // Still include it for SELECT * but could optimize later
-                                    expressions.push(Expression::Column(table.start_column + i));
-                                    aliases.push(Some(col.name.clone()));
-                                }
+                                expressions.push(Expression::Column(table.start_column + i));
+                                aliases.push(Some(col.name.clone()));
                             }
                         }
                     }
@@ -958,24 +841,6 @@ struct AnalyzedPlanContext<'a> {
     analyzed: &'a AnalyzedStatement,
     tables: Vec<TableRef>,
     current_column: usize,
-    /// Track current expression path for ID generation
-    expression_path: Vec<usize>,
-    /// Current statement context for expression IDs
-    statement_context: StatementContext,
-}
-
-/// Context to help generate correct expression IDs
-#[derive(Clone, Copy)]
-enum StatementContext {
-    SelectProjection,
-    WhereClause,
-    GroupBy,
-    Having,
-    OrderBy,
-    InsertValues,
-    UpdateSet,
-    UpdateWhere,
-    DeleteWhere,
 }
 
 struct TableRef {
@@ -991,38 +856,7 @@ impl<'a> AnalyzedPlanContext<'a> {
             analyzed,
             tables: Vec::new(),
             current_column: 0,
-            expression_path: Vec::new(),
-            statement_context: StatementContext::SelectProjection,
         }
-    }
-
-    /// Set the current statement context for expression ID generation
-    fn set_context(&mut self, context: StatementContext) {
-        self.statement_context = context;
-    }
-
-    /// Generate expression ID based on current context and index
-    fn get_expression_id(&self, index: usize) -> ExpressionId {
-        let base = match self.statement_context {
-            StatementContext::SelectProjection => 1000 + index,
-            StatementContext::WhereClause => 2000,
-            StatementContext::GroupBy => 3000 + index,
-            StatementContext::Having => 3500,
-            StatementContext::OrderBy => 4000 + index,
-            StatementContext::InsertValues => 5000 + index,
-            StatementContext::UpdateSet => 6000 + index,
-            StatementContext::UpdateWhere => 7000,
-            StatementContext::DeleteWhere => 8000,
-        };
-        ExpressionId::from_path(vec![base])
-    }
-
-    /// Get type information for an expression if available
-    fn get_type_info(
-        &self,
-        expr_id: &ExpressionId,
-    ) -> Option<&crate::semantic::statement::TypeInfo> {
-        self.analyzed.type_annotations.get(expr_id)
     }
 
     fn add_table(&mut self, name: String, alias: Option<String>) -> Result<()> {
@@ -1062,7 +896,7 @@ impl<'a> AnalyzedPlanContext<'a> {
                 if let Some(resolution) = self
                     .analyzed
                     .column_resolution_map
-                    .get(table_ref.as_deref(), column_name)
+                    .resolve(table_ref.as_deref(), column_name)
                 {
                     return Ok(Expression::Column(resolution.global_offset));
                 }
@@ -1185,7 +1019,7 @@ impl<'a> AnalyzedPlanContext<'a> {
         if let Some(resolution) = self
             .analyzed
             .column_resolution_map
-            .get(table_ref.as_deref(), column_name)
+            .resolve(table_ref.as_deref(), column_name)
         {
             return Ok(Expression::Column(resolution.global_offset));
         }

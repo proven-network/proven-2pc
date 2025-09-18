@@ -1192,3 +1192,277 @@ fn test_not_equal_predicate() {
     engine.commit(tx2).unwrap();
     engine.abort(tx3).unwrap();
 }
+
+#[test]
+fn test_like_predicates_no_conflict() {
+    let mut engine = create_engine();
+
+    // Create table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE users (id INT PRIMARY KEY, email TEXT, name TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO users VALUES
+                  (1, 'alice@gmail.com', 'Alice'),
+                  (2, 'bob@yahoo.com', 'Bob'),
+                  (3, 'charlie@gmail.com', 'Charlie'),
+                  (4, 'dave@outlook.com', 'Dave')"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query gmail users
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM users WHERE email LIKE '%@gmail.com'".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update yahoo users - should NOT block
+    // Different LIKE patterns that don't overlap
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE users SET name = UPPER(name) WHERE email LIKE '%@yahoo.com'".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Non-overlapping LIKE patterns should not conflict"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_is_null_predicates() {
+    let mut engine = create_engine();
+
+    // Create table with nullable column
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE orders (
+                    id INT PRIMARY KEY,
+                    customer_id INT,
+                    notes TEXT
+                  )"
+            .to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO orders VALUES
+                  (1, 100, 'Rush order'),
+                  (2, 101, NULL),
+                  (3, NULL, 'Guest checkout'),
+                  (4, 102, NULL)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query orders with notes
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM orders WHERE notes IS NOT NULL".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update orders without notes - should NOT block
+    // IS NULL vs IS NOT NULL are disjoint predicates
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE orders SET notes = 'Pending review' WHERE notes IS NULL".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "IS NULL and IS NOT NULL should not conflict"
+    );
+
+    // Transaction 4: Query orders without customers
+    let tx4 = timestamp(4);
+    engine.begin_transaction(tx4);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM orders WHERE customer_id IS NULL".to_string(),
+        },
+        tx4,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // All should be able to commit
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+    engine.commit(tx4).unwrap();
+}
+
+#[test]
+fn test_like_prefix_patterns() {
+    let mut engine = create_engine();
+
+    // Create table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE files (id INT PRIMARY KEY, path TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO files VALUES
+                  (1, '/home/user/doc1.txt'),
+                  (2, '/var/log/app.log'),
+                  (3, '/home/user/doc2.txt'),
+                  (4, '/etc/config.conf')"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query /home files
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM files WHERE path LIKE '/home/%'".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update /var files - should NOT block
+    // Prefix patterns '/home/%' and '/var/%' don't overlap
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE files SET path = '/var/log/archived/' || path WHERE path LIKE '/var/%'"
+                .to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Non-overlapping LIKE prefixes should not conflict"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_like_vs_equals_no_conflict() {
+    let mut engine = create_engine();
+
+    // Create table
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE products (id INT PRIMARY KEY, name TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO products VALUES
+                  (1, 'apple'), (2, 'banana'), (3, 'apricot'), (4, 'orange')"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query products starting with 'ap'
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM products WHERE name LIKE 'ap%'".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Update 'banana' - should NOT block
+    // 'banana' doesnt match pattern 'ap%'
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE products SET name = 'BANANA' WHERE name = 'banana'".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::Complete(_)),
+        "Equality predicate 'banana' should not conflict with LIKE 'ap%'"
+    );
+
+    // Transaction 4: Update 'apple' - SHOULD block
+    // 'apple' matches pattern 'ap%'
+    let tx4 = timestamp(4);
+    engine.begin_transaction(tx4);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE products SET name = 'APPLE' WHERE name = 'apple'".to_string(),
+        },
+        tx4,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Equality predicate 'apple' should conflict with LIKE 'ap%'"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+    engine.abort(tx4).unwrap();
+}

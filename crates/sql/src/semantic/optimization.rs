@@ -7,12 +7,10 @@
 //! - Index applicability information
 //! - Expression templates (future)
 
-use super::analyzer::{ExpressionTemplate, IndexHint, JoinHint, PredicateType};
-use super::statement::{AnalyzedStatement, ExpressionId, PredicateTemplate, PredicateValue};
+use super::analyzer::{IndexHint, JoinHint};
+use super::statement::{ExpressionId, PredicateTemplate, PredicateValue};
 use crate::error::Result;
-use crate::parsing::ast::{
-    DmlStatement, Expression, InsertSource, Literal, Operator, SelectStatement, Statement,
-};
+use crate::parsing::ast::{DmlStatement, Expression, InsertSource, Literal, Operator, Statement};
 use crate::types::schema::Table;
 use crate::types::value::Value;
 use std::collections::HashMap;
@@ -35,366 +33,6 @@ impl MetadataBuilder {
     /// Create a new metadata builder
     pub fn new(schemas: HashMap<String, Table>) -> Self {
         Self { schemas }
-    }
-
-    /// Extract the primary table name from a statement
-    fn extract_primary_table(&self, statement: &Statement) -> Option<String> {
-        match statement {
-            Statement::Dml(dml) => match dml {
-                DmlStatement::Select(select) => {
-                    // For SELECT, use the first table in FROM clause
-                    use crate::parsing::ast::FromClause;
-                    if let Some(first_from) = select.from.first() {
-                        match first_from {
-                            FromClause::Table { name, alias: _ } => Some(name.clone()),
-                            FromClause::Join { left, .. } => {
-                                if let FromClause::Table { name, alias: _ } = left.as_ref() {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                }
-                DmlStatement::Insert { table, .. } => Some(table.clone()),
-                DmlStatement::Update { table, .. } => Some(table.clone()),
-                DmlStatement::Delete { table, .. } => Some(table.clone()),
-            },
-            _ => None,
-        }
-    }
-
-    /// Main entry point: build all optimization metadata
-    pub fn build_metadata(
-        &self,
-        statement: &Statement,
-        analyzed: &mut AnalyzedStatement,
-    ) -> Result<()> {
-        // Build predicate templates for conflict detection
-        self.build_predicate_templates(statement, analyzed)?;
-
-        // Analyze index applicability
-        self.analyze_index_usage(statement, analyzed)?;
-
-        // Future: Build expression templates
-        // self.build_expression_templates(statement, analyzed)?;
-
-        // Future: Analyze join structure
-        // self.analyze_joins(statement, analyzed)?;
-
-        Ok(())
-    }
-
-    /// Build predicate templates for efficient conflict detection
-    fn build_predicate_templates(
-        &self,
-        statement: &Statement,
-        analyzed: &mut AnalyzedStatement,
-    ) -> Result<()> {
-        match statement {
-            Statement::Dml(dml) => match dml {
-                DmlStatement::Select(select) => {
-                    self.build_select_predicates(statement, select, analyzed)
-                }
-                DmlStatement::Insert {
-                    table,
-                    columns,
-                    source,
-                } => self.build_insert_predicates(table, columns.as_ref(), source, analyzed),
-                DmlStatement::Update { table, r#where, .. } => {
-                    if let Some(where_expr) = r#where {
-                        self.extract_predicate_templates(where_expr, table, analyzed);
-                    } else {
-                        analyzed.add_predicate_template(PredicateTemplate::FullTable {
-                            table: table.clone(),
-                        });
-                    }
-                    Ok(())
-                }
-                DmlStatement::Delete { table, r#where } => {
-                    if let Some(where_expr) = r#where {
-                        self.extract_predicate_templates(where_expr, table, analyzed);
-                    } else {
-                        analyzed.add_predicate_template(PredicateTemplate::FullTable {
-                            table: table.clone(),
-                        });
-                    }
-                    Ok(())
-                }
-            },
-            _ => Ok(()), // DDL doesn't need predicate templates
-        }
-    }
-
-    /// Build predicate templates for SELECT
-    fn build_select_predicates(
-        &self,
-        statement: &Statement,
-        select: &SelectStatement,
-        analyzed: &mut AnalyzedStatement,
-    ) -> Result<()> {
-        // Extract predicates from WHERE clause
-        // Get primary table from the statement
-        let primary_table = self.extract_primary_table(statement);
-        if let Some(table) = primary_table {
-            if let Some(where_expr) = &select.r#where {
-                self.extract_predicate_templates(where_expr, &table, analyzed);
-            } else {
-                // No WHERE clause - reading entire table
-                analyzed.add_predicate_template(PredicateTemplate::FullTable { table });
-            }
-        }
-        Ok(())
-    }
-
-    /// Build predicate templates for INSERT
-    fn build_insert_predicates(
-        &self,
-        table: &str,
-        columns: Option<&Vec<String>>,
-        source: &InsertSource,
-        analyzed: &mut AnalyzedStatement,
-    ) -> Result<()> {
-        match source {
-            InsertSource::Values(rows) => {
-                // Try to extract primary key predicate if we're inserting a single row
-                if rows.len() == 1
-                    && let Some(schema) = self.schemas.get(table)
-                    && let Some(pk_idx) = schema.primary_key
-                {
-                    let pk_col = &schema.columns[pk_idx];
-
-                    // Determine column order: either from explicit columns or table schema order
-                    let col_idx = if let Some(cols) = columns {
-                        // Explicit columns provided
-                        cols.iter().position(|c| c == &pk_col.name)
-                    } else {
-                        // No explicit columns - use table schema order
-                        // This assumes VALUES match the table column order
-                        Some(pk_idx)
-                    };
-
-                    // Find the primary key value in the INSERT
-                    if let Some(col_idx) = col_idx
-                        && let Some(pk_value) = rows[0].get(col_idx)
-                    {
-                        let value = self.expression_to_predicate_value(pk_value);
-                        analyzed.add_predicate_template(PredicateTemplate::PrimaryKey {
-                            table: table.to_string(),
-                            value,
-                        });
-                        return Ok(());
-                    }
-                }
-
-                // Fall back to full table for multi-row inserts or when we can't find PK
-                analyzed.add_predicate_template(PredicateTemplate::FullTable {
-                    table: table.to_string(),
-                });
-            }
-            InsertSource::Select(_) => {
-                // INSERT ... SELECT affects the whole table
-                analyzed.add_predicate_template(PredicateTemplate::FullTable {
-                    table: table.to_string(),
-                });
-            }
-            InsertSource::DefaultValues => {
-                // Single row insert with defaults
-                analyzed.add_predicate_template(PredicateTemplate::FullTable {
-                    table: table.to_string(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Extract predicate templates from a WHERE clause expression
-    fn extract_predicate_templates(
-        &self,
-        expr: &Expression,
-        table: &str,
-        analyzed: &mut AnalyzedStatement,
-    ) {
-        match expr {
-            Expression::Operator(op) => match op {
-                // Equality predicates: column = value
-                Operator::Equal(left, right) => {
-                    if let Expression::Column(_, col_name) = &**left {
-                        let col_index = self.schemas.get(table).and_then(|schema| {
-                            schema.columns.iter().position(|c| &c.name == col_name)
-                        });
-
-                        if let Some(col_idx) = col_index {
-                            let value_expr = self.expression_to_predicate_value(right);
-                            analyzed.add_predicate_template(PredicateTemplate::Equality {
-                                table: table.to_string(),
-                                column_name: col_name.clone(),
-                                column_index: col_idx,
-                                value_expr,
-                            });
-                        } else {
-                            analyzed.add_predicate_template(PredicateTemplate::Complex {
-                                table: table.to_string(),
-                                expression_id: ExpressionId::from_path(vec![]),
-                            });
-                        }
-                    } else if let Expression::Column(_, col_name) = &**right {
-                        // Handle value = column (reversed)
-                        let col_index = self.schemas.get(table).and_then(|schema| {
-                            schema.columns.iter().position(|c| &c.name == col_name)
-                        });
-
-                        if let Some(col_idx) = col_index {
-                            let value_expr = self.expression_to_predicate_value(left);
-                            analyzed.add_predicate_template(PredicateTemplate::Equality {
-                                table: table.to_string(),
-                                column_name: col_name.clone(),
-                                column_index: col_idx,
-                                value_expr,
-                            });
-                        } else {
-                            analyzed.add_predicate_template(PredicateTemplate::Complex {
-                                table: table.to_string(),
-                                expression_id: ExpressionId::from_path(vec![]),
-                            });
-                        }
-                    } else {
-                        // Complex comparison
-                        analyzed.add_predicate_template(PredicateTemplate::Complex {
-                            table: table.to_string(),
-                            expression_id: ExpressionId::from_path(vec![]),
-                        });
-                    }
-                }
-
-                // AND: recurse on both sides
-                Operator::And(left, right) => {
-                    self.extract_predicate_templates(left, table, analyzed);
-                    self.extract_predicate_templates(right, table, analyzed);
-                }
-
-                // OR: complex predicate for now
-                Operator::Or(_, _) => {
-                    analyzed.add_predicate_template(PredicateTemplate::Complex {
-                        table: table.to_string(),
-                        expression_id: ExpressionId::from_path(vec![]),
-                    });
-                }
-
-                // Range predicates
-                Operator::GreaterThan(left, right) | Operator::GreaterThanOrEqual(left, right) => {
-                    if let Expression::Column(_, col_name) = &**left {
-                        let col_index = self.schemas.get(table).and_then(|schema| {
-                            schema.columns.iter().position(|c| &c.name == col_name)
-                        });
-
-                        if let Some(col_idx) = col_index {
-                            let inclusive = matches!(op, Operator::GreaterThanOrEqual(_, _));
-                            let value_expr = self.expression_to_predicate_value(right);
-                            analyzed.add_predicate_template(PredicateTemplate::Range {
-                                table: table.to_string(),
-                                column_name: col_name.clone(),
-                                column_index: col_idx,
-                                lower: Some((value_expr, inclusive)),
-                                upper: None,
-                            });
-                        }
-                    }
-                }
-
-                Operator::LessThan(left, right) | Operator::LessThanOrEqual(left, right) => {
-                    if let Expression::Column(_, col_name) = &**left {
-                        let col_index = self.schemas.get(table).and_then(|schema| {
-                            schema.columns.iter().position(|c| &c.name == col_name)
-                        });
-
-                        if let Some(col_idx) = col_index {
-                            let inclusive = matches!(op, Operator::LessThanOrEqual(_, _));
-                            let value_expr = self.expression_to_predicate_value(right);
-                            analyzed.add_predicate_template(PredicateTemplate::Range {
-                                table: table.to_string(),
-                                column_name: col_name.clone(),
-                                column_index: col_idx,
-                                lower: None,
-                                upper: Some((value_expr, inclusive)),
-                            });
-                        }
-                    }
-                }
-
-                // BETWEEN
-                Operator::Between {
-                    expr,
-                    low,
-                    high,
-                    negated,
-                } => {
-                    if !*negated && let Expression::Column(_, col_name) = &**expr {
-                        let col_index = self.schemas.get(table).and_then(|schema| {
-                            schema.columns.iter().position(|c| &c.name == col_name)
-                        });
-
-                        if let Some(col_idx) = col_index {
-                            let low_value = self.expression_to_predicate_value(low);
-                            let high_value = self.expression_to_predicate_value(high);
-                            analyzed.add_predicate_template(PredicateTemplate::Range {
-                                table: table.to_string(),
-                                column_name: col_name.clone(),
-                                column_index: col_idx,
-                                lower: Some((low_value, true)),
-                                upper: Some((high_value, true)),
-                            });
-                        }
-                    }
-                }
-
-                // IN list
-                Operator::InList {
-                    expr,
-                    list,
-                    negated: _,
-                } => {
-                    if let Expression::Column(_, col_name) = &**expr {
-                        let col_index = self.schemas.get(table).and_then(|schema| {
-                            schema.columns.iter().position(|c| &c.name == col_name)
-                        });
-
-                        if let Some(col_idx) = col_index {
-                            let values: Vec<PredicateValue> = list
-                                .iter()
-                                .map(|e| self.expression_to_predicate_value(e))
-                                .collect();
-
-                            analyzed.add_predicate_template(PredicateTemplate::InList {
-                                table: table.to_string(),
-                                column_name: col_name.clone(),
-                                column_index: col_idx,
-                                values,
-                            });
-                        }
-                    }
-                }
-
-                // Other operators are complex predicates
-                _ => {
-                    analyzed.add_predicate_template(PredicateTemplate::Complex {
-                        table: table.to_string(),
-                        expression_id: ExpressionId::from_path(vec![]),
-                    });
-                }
-            },
-
-            // Non-operator expressions are complex predicates
-            _ => {
-                analyzed.add_predicate_template(PredicateTemplate::Complex {
-                    table: table.to_string(),
-                    expression_id: ExpressionId::from_path(vec![]),
-                });
-            }
-        }
     }
 
     /// Convert an expression to a PredicateValue
@@ -426,70 +64,6 @@ impl MetadataBuilder {
             Expression::Parameter(idx) => PredicateValue::Parameter(*idx),
             _ => PredicateValue::Expression(ExpressionId::from_path(vec![])),
         }
-    }
-
-    /// Analyze which predicates can use indexes
-    fn analyze_index_usage(
-        &self,
-        statement: &Statement,
-        analyzed: &mut AnalyzedStatement,
-    ) -> Result<()> {
-        // Check each predicate template to see if it can use an index
-        for template in &analyzed.predicate_templates {
-            match template {
-                PredicateTemplate::Equality {
-                    table, column_name, ..
-                }
-                | PredicateTemplate::Range {
-                    table, column_name, ..
-                } => {
-                    // Check if this column has an index
-                    if let Some(schema) = self.schemas.get(table) {
-                        for column in &schema.columns {
-                            if column.name == *column_name && column.index {
-                                // Mark that this predicate can use an index
-                                // This information is stored in the predicate template itself
-                                // The planner will use it during optimization
-                                break;
-                            }
-                        }
-                    }
-                }
-                PredicateTemplate::PrimaryKey { .. } => {
-                    // Primary key predicates always use the primary key index
-                    // No additional analysis needed
-                }
-                _ => {
-                    // Other predicate types don't benefit from simple indexes
-                }
-            }
-        }
-
-        // For SELECT statements, analyze ORDER BY for index usage
-        if let Statement::Dml(DmlStatement::Select(select)) = statement
-            && !select.order_by.is_empty()
-        {
-            // Check if ORDER BY columns have indexes
-            for (expr, _) in &select.order_by {
-                if let Expression::Column(_table_ref, col_name) = expr {
-                    // Find the table (could be aliased)
-                    let primary_table = self.extract_primary_table(statement);
-                    if let Some(table) = primary_table
-                        && let Some(schema) = self.schemas.get(&table)
-                    {
-                        for column in &schema.columns {
-                            if column.name == *col_name && column.index {
-                                // This ORDER BY can potentially use an index
-                                // Store this information for the planner
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Build predicates for new phase architecture
@@ -602,12 +176,12 @@ impl MetadataBuilder {
         hints: &mut Vec<JoinHint>,
         input: &super::analyzer::OptimizationInput,
     ) -> Result<()> {
-        use crate::parsing::ast::{FromClause, common::JoinType as AstJoinType};
+        use crate::parsing::ast::FromClause;
 
         if let FromClause::Join {
             left,
             right,
-            r#type,
+            r#type: _,
             predicate,
         } = from
         {
@@ -616,8 +190,8 @@ impl MetadataBuilder {
             self.analyze_from_joins(right, hints, input)?;
 
             // Extract table names from left and right
-            let left_table = self.extract_table_from_clause(left);
-            let right_table = self.extract_table_from_clause(right);
+            let left_table = Self::extract_table_from_clause(left);
+            let right_table = Self::extract_table_from_clause(right);
 
             if let (Some(left_table), Some(right_table)) = (left_table, right_table) {
                 // Estimate selectivity based on join predicate
@@ -627,19 +201,12 @@ impl MetadataBuilder {
                     1.0 // Cross join has selectivity 1.0
                 };
 
-                // Convert join type
-                let join_type = match r#type {
-                    AstJoinType::Inner => super::analyzer::JoinType::Inner,
-                    AstJoinType::Left => super::analyzer::JoinType::Left,
-                    AstJoinType::Right => super::analyzer::JoinType::Right,
-                    AstJoinType::Full => super::analyzer::JoinType::Full,
-                    AstJoinType::Cross => super::analyzer::JoinType::Inner,
-                };
+                // Join type was here but is currently unused
+                // Could be re-added when join type optimization is implemented
 
                 hints.push(JoinHint {
                     left_table,
                     right_table,
-                    join_type,
                     selectivity_estimate: selectivity,
                 });
             }
@@ -649,12 +216,12 @@ impl MetadataBuilder {
     }
 
     /// Extract table name from FROM clause
-    fn extract_table_from_clause(&self, from: &crate::parsing::ast::FromClause) -> Option<String> {
+    fn extract_table_from_clause(from: &crate::parsing::ast::FromClause) -> Option<String> {
         use crate::parsing::ast::FromClause;
 
         match from {
             FromClause::Table { name, .. } => Some(name.clone()),
-            FromClause::Join { left, .. } => self.extract_table_from_clause(left),
+            FromClause::Join { left, .. } => Self::extract_table_from_clause(left),
         }
     }
 
@@ -730,176 +297,6 @@ impl MetadataBuilder {
         }
     }
 
-    /// Build expression templates for new phase architecture
-    pub fn build_expression_templates(
-        &self,
-        statement: &Arc<Statement>,
-        _input: &super::analyzer::OptimizationInput,
-    ) -> Result<Vec<ExpressionTemplate>> {
-        let mut templates = Vec::new();
-        let mut expression_counts: HashMap<String, (ExpressionId, usize)> = HashMap::new();
-
-        // First pass: count occurrences of each expression
-        if let Statement::Dml(dml) = statement.as_ref()
-            && let DmlStatement::Select(select) = dml
-        {
-            // Check SELECT expressions
-            for (idx, (expr, _)) in select.select.iter().enumerate() {
-                let expr_id = ExpressionId::from_path(vec![idx]);
-                self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
-            }
-
-            // Check WHERE clause
-            if let Some(where_expr) = &select.r#where {
-                let expr_id = ExpressionId::from_path(vec![2000]);
-                self.count_expression_occurrences(where_expr, &expr_id, &mut expression_counts);
-            }
-
-            // Check GROUP BY
-            for (idx, expr) in select.group_by.iter().enumerate() {
-                let expr_id = ExpressionId::from_path(vec![3000 + idx]);
-                self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
-            }
-
-            // Check HAVING
-            if let Some(having) = &select.having {
-                let expr_id = ExpressionId::from_path(vec![3500]);
-                self.count_expression_occurrences(having, &expr_id, &mut expression_counts);
-            }
-
-            // Check ORDER BY
-            for (idx, (expr, _)) in select.order_by.iter().enumerate() {
-                let expr_id = ExpressionId::from_path(vec![4000 + idx]);
-                self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
-            }
-        }
-
-        // Second pass: create templates for expressions that appear multiple times
-        // and are deterministic (no side effects)
-        for (template_str, (expr_id, count)) in expression_counts {
-            if count > 1 {
-                // Only cache expressions that appear more than once
-                templates.push(ExpressionTemplate {
-                    id: expr_id,
-                    template: template_str,
-                    is_deterministic: true, // We only track deterministic expressions
-                });
-            }
-        }
-
-        Ok(templates)
-    }
-
-    /// Count occurrences of expressions for caching
-    fn count_expression_occurrences(
-        &self,
-        expr: &Expression,
-        expr_id: &ExpressionId,
-        counts: &mut HashMap<String, (ExpressionId, usize)>,
-    ) {
-        use crate::parsing::ast::Operator;
-
-        // Check if this is a cacheable expression
-        if self.is_cacheable_expression(expr) {
-            let template = self.expression_to_template(expr);
-            counts
-                .entry(template)
-                .and_modify(|(_id, count)| *count += 1)
-                .or_insert((expr_id.clone(), 1));
-        }
-
-        // Recursively check sub-expressions
-        match expr {
-            Expression::Operator(op) => match op {
-                Operator::And(l, r)
-                | Operator::Or(l, r)
-                | Operator::Equal(l, r)
-                | Operator::NotEqual(l, r)
-                | Operator::GreaterThan(l, r)
-                | Operator::GreaterThanOrEqual(l, r)
-                | Operator::LessThan(l, r)
-                | Operator::LessThanOrEqual(l, r)
-                | Operator::Add(l, r)
-                | Operator::Subtract(l, r)
-                | Operator::Multiply(l, r)
-                | Operator::Divide(l, r)
-                | Operator::Remainder(l, r)
-                | Operator::Exponentiate(l, r)
-                | Operator::Like(l, r) => {
-                    self.count_expression_occurrences(l, &expr_id.child(0), counts);
-                    self.count_expression_occurrences(r, &expr_id.child(1), counts);
-                }
-                Operator::Not(e)
-                | Operator::Negate(e)
-                | Operator::Identity(e)
-                | Operator::Factorial(e) => {
-                    self.count_expression_occurrences(e, &expr_id.child(0), counts);
-                }
-                Operator::Between {
-                    expr, low, high, ..
-                } => {
-                    self.count_expression_occurrences(expr, &expr_id.child(0), counts);
-                    self.count_expression_occurrences(low, &expr_id.child(1), counts);
-                    self.count_expression_occurrences(high, &expr_id.child(2), counts);
-                }
-                Operator::InList { expr, list, .. } => {
-                    self.count_expression_occurrences(expr, &expr_id.child(0), counts);
-                    for (i, item) in list.iter().enumerate() {
-                        self.count_expression_occurrences(item, &expr_id.child(i + 1), counts);
-                    }
-                }
-                Operator::Is(e, _) => {
-                    self.count_expression_occurrences(e, &expr_id.child(0), counts);
-                }
-            },
-            Expression::Function(_, args) => {
-                for (i, arg) in args.iter().enumerate() {
-                    self.count_expression_occurrences(arg, &expr_id.child(i), counts);
-                }
-            }
-            _ => {} // Literals, columns don't need recursive checking
-        }
-    }
-
-    /// Check if an expression is cacheable
-    fn is_cacheable_expression(&self, expr: &Expression) -> bool {
-        use crate::parsing::ast::Operator;
-
-        match expr {
-            // Complex expressions worth caching
-            Expression::Function(name, _) => {
-                // Most functions are deterministic and worth caching
-                // Except for non-deterministic ones like RANDOM
-                !matches!(name.to_uppercase().as_str(), "RANDOM" | "RAND" | "UUID")
-            }
-            Expression::Operator(op) => {
-                match op {
-                    // Arithmetic and complex operations worth caching
-                    Operator::Multiply(_, _)
-                    | Operator::Divide(_, _)
-                    | Operator::Exponentiate(_, _)
-                    | Operator::Factorial(_) => true,
-                    // String operations can be expensive
-                    Operator::Like(_, _) => true,
-                    // Complex predicates
-                    Operator::Between { .. } | Operator::InList { .. } => true,
-                    // Simple operations not worth caching
-                    _ => false,
-                }
-            }
-            // Simple values not worth caching
-            Expression::Literal(_) | Expression::Column(_, _) | Expression::Parameter(_) => false,
-            _ => false,
-        }
-    }
-
-    /// Convert expression to a template string for comparison
-    fn expression_to_template(&self, expr: &Expression) -> String {
-        // Create a normalized string representation of the expression
-        // This allows us to identify identical expressions
-        format!("{:?}", expr)
-    }
-
     /// Extract predicate templates from WHERE clause (new architecture)
     fn extract_templates_new(
         &self,
@@ -940,7 +337,6 @@ impl MetadataBuilder {
                             templates.push(PredicateTemplate::Equality {
                                 table: table_name,
                                 column_name: col.clone(),
-                                column_index: 0, // Will be resolved later if needed
                                 value_expr: value,
                             });
                         }
@@ -959,7 +355,6 @@ impl MetadataBuilder {
                         let merged = PredicateTemplate::Range {
                             table: range1.table,
                             column_name: range1.column,
-                            column_index: 0,
                             lower: range1.lower.or(range2.lower),
                             upper: range1.upper.or(range2.upper),
                         };
@@ -980,7 +375,6 @@ impl MetadataBuilder {
                         templates.push(PredicateTemplate::Range {
                             table: table_name,
                             column_name: col.clone(),
-                            column_index: 0, // Will be resolved later if needed
                             lower: Some((value, false)), // exclusive
                             upper: None,
                         });
@@ -994,7 +388,6 @@ impl MetadataBuilder {
                         templates.push(PredicateTemplate::Range {
                             table: table_name,
                             column_name: col.clone(),
-                            column_index: 0,
                             lower: Some((value, true)), // inclusive
                             upper: None,
                         });
@@ -1008,7 +401,6 @@ impl MetadataBuilder {
                         templates.push(PredicateTemplate::Range {
                             table: table_name,
                             column_name: col.clone(),
-                            column_index: 0,
                             lower: None,
                             upper: Some((value, false)), // exclusive
                         });
@@ -1022,10 +414,66 @@ impl MetadataBuilder {
                         templates.push(PredicateTemplate::Range {
                             table: table_name,
                             column_name: col.clone(),
-                            column_index: 0,
                             lower: None,
                             upper: Some((value, true)), // inclusive
                         });
+                    }
+                }
+
+                // LIKE predicates
+                Like(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+
+                        // Extract pattern as string value
+                        if let Expression::Literal(Literal::String(pattern)) = right.as_ref() {
+                            templates.push(PredicateTemplate::Like {
+                                table: table_name,
+                                column_name: col.clone(),
+                                pattern: pattern.clone(),
+                            });
+                        } else {
+                            // Pattern comes from parameter - for now just use empty pattern
+                            // In a real implementation, we'd handle parameter substitution
+                            templates.push(PredicateTemplate::Like {
+                                table: table_name,
+                                column_name: col.clone(),
+                                pattern: String::new(), // Will be filled from params
+                            });
+                        }
+                    }
+                }
+
+                // IS NULL / IS NOT NULL predicates
+                Is(expr, literal) => {
+                    if let Expression::Column(table, col) = expr.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+
+                        // Check if it's IS NULL or IS NOT NULL based on the literal
+                        if let Literal::Null = literal {
+                            templates.push(PredicateTemplate::IsNull {
+                                table: table_name,
+                                column_name: col.clone(),
+                            });
+                        }
+                    }
+                }
+
+                // Handle NOT operator for IS NOT NULL
+                Not(expr) => {
+                    // Check if it's NOT (col IS NULL) which is equivalent to IS NOT NULL
+                    if let Expression::Operator(Operator::Is(inner, Literal::Null)) = expr.as_ref()
+                    {
+                        if let Expression::Column(table, col) = inner.as_ref() {
+                            let table_name = self.resolve_table_name(table.as_deref(), col, input);
+                            templates.push(PredicateTemplate::IsNotNull {
+                                table: table_name,
+                                column_name: col.clone(),
+                            });
+                        }
+                    } else {
+                        // For other NOT expressions, just recurse
+                        self.extract_templates_new(expr, templates, input);
                     }
                 }
 
@@ -1055,7 +503,6 @@ impl MetadataBuilder {
                             templates.push(PredicateTemplate::InList {
                                 table: table_name,
                                 column_name: col.clone(),
-                                column_index: 0,
                                 values,
                             });
                         }
@@ -1191,8 +638,6 @@ impl MetadataBuilder {
                     {
                         hints.push(IndexHint {
                             table: self.resolve_table_name(table.as_deref(), col, input),
-                            column: col.clone(),
-                            predicate_type: PredicateType::Equality,
                         });
                     }
                 }
@@ -1205,8 +650,6 @@ impl MetadataBuilder {
                     {
                         hints.push(IndexHint {
                             table: self.resolve_table_name(table.as_deref(), col, input),
-                            column: col.clone(),
-                            predicate_type: PredicateType::Range,
                         });
                     }
                 }
@@ -1220,8 +663,6 @@ impl MetadataBuilder {
                     {
                         hints.push(IndexHint {
                             table: self.resolve_table_name(table.as_deref(), col, input),
-                            column: col.clone(),
-                            predicate_type: PredicateType::Prefix,
                         });
                     }
                 }
