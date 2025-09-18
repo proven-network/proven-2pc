@@ -114,7 +114,7 @@ impl SemanticValidator {
         group_by_exprs: &HashSet<String>,
     ) -> Result<()> {
         // If it's an aggregate, it's always ok
-        if self.is_aggregate_expression(expr) {
+        if Self::is_aggregate_expression(expr) {
             return Ok(());
         }
 
@@ -307,7 +307,7 @@ impl SemanticValidator {
     }
 
     /// Check if an expression is an aggregate
-    fn is_aggregate_expression(&self, expr: &Expression) -> bool {
+    fn is_aggregate_expression(expr: &Expression) -> bool {
         match expr {
             Expression::Function(name, _) => crate::functions::is_aggregate(&name.to_uppercase()),
             Expression::Operator(op) => {
@@ -329,31 +329,31 @@ impl SemanticValidator {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::Like(l, r) => {
-                        self.is_aggregate_expression(l) || self.is_aggregate_expression(r)
+                        Self::is_aggregate_expression(l) || Self::is_aggregate_expression(r)
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
                     | Operator::Identity(e)
-                    | Operator::Factorial(e) => self.is_aggregate_expression(e),
+                    | Operator::Factorial(e) => Self::is_aggregate_expression(e),
                     Operator::Between {
                         expr,
                         low,
                         high,
                         negated: _,
                     } => {
-                        self.is_aggregate_expression(expr)
-                            || self.is_aggregate_expression(low)
-                            || self.is_aggregate_expression(high)
+                        Self::is_aggregate_expression(expr)
+                            || Self::is_aggregate_expression(low)
+                            || Self::is_aggregate_expression(high)
                     }
                     Operator::InList {
                         expr,
                         list,
                         negated: _,
                     } => {
-                        self.is_aggregate_expression(expr)
-                            || list.iter().any(|e| self.is_aggregate_expression(e))
+                        Self::is_aggregate_expression(expr)
+                            || list.iter().any(|e| Self::is_aggregate_expression(e))
                     }
-                    Operator::Is(e, _) => self.is_aggregate_expression(e),
+                    Operator::Is(e, _) => Self::is_aggregate_expression(e),
                 }
             }
             _ => false,
@@ -364,21 +364,21 @@ impl SemanticValidator {
     fn select_has_aggregates(&self, select: &SelectStatement) -> bool {
         // Check SELECT list
         for (expr, _) in &select.select {
-            if self.is_aggregate_expression(expr) {
+            if Self::is_aggregate_expression(expr) {
                 return true;
             }
         }
 
         // Check HAVING clause
         if let Some(having) = &select.having
-            && self.is_aggregate_expression(having)
+            && Self::is_aggregate_expression(having)
         {
             return true;
         }
 
         // Check ORDER BY
         for (expr, _) in &select.order_by {
-            if self.is_aggregate_expression(expr) {
+            if Self::is_aggregate_expression(expr) {
                 return true;
             }
         }
@@ -410,7 +410,7 @@ impl SemanticValidator {
     /// Validate expression in aggregate context (no GROUP BY)
     fn validate_aggregate_context(&self, expr: &Expression) -> Result<()> {
         // If the entire expression is an aggregate, it's valid
-        if self.is_aggregate_expression(expr) {
+        if Self::is_aggregate_expression(expr) {
             // But check for nested aggregates
             return self.validate_no_nested_aggregates_in_aggregate(expr);
         }

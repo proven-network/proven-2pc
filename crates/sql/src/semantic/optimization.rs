@@ -509,12 +509,12 @@ impl MetadataBuilder {
 
                     // If no predicates were extracted (unsupported WHERE conditions),
                     // fall back to FullTable
-                    if templates.is_empty() {
-                        if let Some((_, table)) = input.tables.first() {
-                            templates.push(PredicateTemplate::FullTable {
-                                table: table.clone(),
-                            });
-                        }
+                    if templates.is_empty()
+                        && let Some((_, table)) = input.tables.first()
+                    {
+                        templates.push(PredicateTemplate::FullTable {
+                            table: table.clone(),
+                        });
                     }
                 }
                 DmlStatement::Insert {
@@ -740,44 +740,37 @@ impl MetadataBuilder {
         let mut expression_counts: HashMap<String, (ExpressionId, usize)> = HashMap::new();
 
         // First pass: count occurrences of each expression
-        if let Statement::Dml(dml) = statement.as_ref() {
-            match dml {
-                DmlStatement::Select(select) => {
-                    // Check SELECT expressions
-                    for (idx, (expr, _)) in select.select.iter().enumerate() {
-                        let expr_id = ExpressionId::from_path(vec![idx]);
-                        self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
-                    }
+        if let Statement::Dml(dml) = statement.as_ref()
+            && let DmlStatement::Select(select) = dml
+        {
+            // Check SELECT expressions
+            for (idx, (expr, _)) in select.select.iter().enumerate() {
+                let expr_id = ExpressionId::from_path(vec![idx]);
+                self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
+            }
 
-                    // Check WHERE clause
-                    if let Some(where_expr) = &select.r#where {
-                        let expr_id = ExpressionId::from_path(vec![2000]);
-                        self.count_expression_occurrences(
-                            where_expr,
-                            &expr_id,
-                            &mut expression_counts,
-                        );
-                    }
+            // Check WHERE clause
+            if let Some(where_expr) = &select.r#where {
+                let expr_id = ExpressionId::from_path(vec![2000]);
+                self.count_expression_occurrences(where_expr, &expr_id, &mut expression_counts);
+            }
 
-                    // Check GROUP BY
-                    for (idx, expr) in select.group_by.iter().enumerate() {
-                        let expr_id = ExpressionId::from_path(vec![3000 + idx]);
-                        self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
-                    }
+            // Check GROUP BY
+            for (idx, expr) in select.group_by.iter().enumerate() {
+                let expr_id = ExpressionId::from_path(vec![3000 + idx]);
+                self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
+            }
 
-                    // Check HAVING
-                    if let Some(having) = &select.having {
-                        let expr_id = ExpressionId::from_path(vec![3500]);
-                        self.count_expression_occurrences(having, &expr_id, &mut expression_counts);
-                    }
+            // Check HAVING
+            if let Some(having) = &select.having {
+                let expr_id = ExpressionId::from_path(vec![3500]);
+                self.count_expression_occurrences(having, &expr_id, &mut expression_counts);
+            }
 
-                    // Check ORDER BY
-                    for (idx, (expr, _)) in select.order_by.iter().enumerate() {
-                        let expr_id = ExpressionId::from_path(vec![4000 + idx]);
-                        self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
-                    }
-                }
-                _ => {} // Other DML types don't benefit as much from expression caching
+            // Check ORDER BY
+            for (idx, (expr, _)) in select.order_by.iter().enumerate() {
+                let expr_id = ExpressionId::from_path(vec![4000 + idx]);
+                self.count_expression_occurrences(expr, &expr_id, &mut expression_counts);
             }
         }
 
@@ -959,19 +952,19 @@ impl MetadataBuilder {
                     if let (Some(range1), Some(range2)) = (
                         self.try_extract_range(left, input),
                         self.try_extract_range(right, input),
-                    ) {
-                        if range1.table == range2.table && range1.column == range2.column {
-                            // Merge the two ranges
-                            let merged = PredicateTemplate::Range {
-                                table: range1.table,
-                                column_name: range1.column,
-                                column_index: 0,
-                                lower: range1.lower.or(range2.lower),
-                                upper: range1.upper.or(range2.upper),
-                            };
-                            templates.push(merged);
-                            return;
-                        }
+                    ) && range1.table == range2.table
+                        && range1.column == range2.column
+                    {
+                        // Merge the two ranges
+                        let merged = PredicateTemplate::Range {
+                            table: range1.table,
+                            column_name: range1.column,
+                            column_index: 0,
+                            lower: range1.lower.or(range2.lower),
+                            upper: range1.upper.or(range2.upper),
+                        };
+                        templates.push(merged);
+                        return;
                     }
 
                     // Otherwise, extract separately

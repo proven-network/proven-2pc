@@ -770,42 +770,42 @@ impl Planner {
             let expr_id = crate::semantic::statement::ExpressionId::from_path(vec![idx]);
 
             // Check if this expression is marked as an aggregate
-            if context.analyzed.aggregate_expressions.contains(&expr_id) {
-                if let AstExpression::Function(name, args) = expr {
-                    let func_name = name.to_uppercase();
+            if context.analyzed.aggregate_expressions.contains(&expr_id)
+                && let AstExpression::Function(name, args) = expr
+            {
+                let func_name = name.to_uppercase();
 
-                    let arg = if args.is_empty() {
-                        Expression::Constant(crate::types::value::Value::integer(1))
-                    } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
-                        if func_name.ends_with("_DISTINCT") {
-                            Expression::All
-                        } else {
-                            Expression::Constant(crate::types::value::Value::integer(1))
-                        }
+                let arg = if args.is_empty() {
+                    Expression::Constant(crate::types::value::Value::integer(1))
+                } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
+                    if func_name.ends_with("_DISTINCT") {
+                        Expression::All
                     } else {
-                        context.resolve_expression(&args[0])?
-                    };
+                        Expression::Constant(crate::types::value::Value::integer(1))
+                    }
+                } else {
+                    context.resolve_expression(&args[0])?
+                };
 
-                    let agg = match func_name.as_str() {
-                        "COUNT" => AggregateFunc::Count(arg),
-                        "COUNT_DISTINCT" => AggregateFunc::CountDistinct(arg),
-                        "SUM" => AggregateFunc::Sum(arg),
-                        "SUM_DISTINCT" => AggregateFunc::SumDistinct(arg),
-                        "AVG" => AggregateFunc::Avg(arg),
-                        "AVG_DISTINCT" => AggregateFunc::AvgDistinct(arg),
-                        "MIN" => AggregateFunc::Min(arg),
-                        "MIN_DISTINCT" => AggregateFunc::MinDistinct(arg),
-                        "MAX" => AggregateFunc::Max(arg),
-                        "MAX_DISTINCT" => AggregateFunc::MaxDistinct(arg),
-                        "STDEV" => AggregateFunc::StDev(arg),
-                        "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg),
-                        "VARIANCE" => AggregateFunc::Variance(arg),
-                        "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg),
-                        _ => continue,
-                    };
+                let agg = match func_name.as_str() {
+                    "COUNT" => AggregateFunc::Count(arg),
+                    "COUNT_DISTINCT" => AggregateFunc::CountDistinct(arg),
+                    "SUM" => AggregateFunc::Sum(arg),
+                    "SUM_DISTINCT" => AggregateFunc::SumDistinct(arg),
+                    "AVG" => AggregateFunc::Avg(arg),
+                    "AVG_DISTINCT" => AggregateFunc::AvgDistinct(arg),
+                    "MIN" => AggregateFunc::Min(arg),
+                    "MIN_DISTINCT" => AggregateFunc::MinDistinct(arg),
+                    "MAX" => AggregateFunc::Max(arg),
+                    "MAX_DISTINCT" => AggregateFunc::MaxDistinct(arg),
+                    "STDEV" => AggregateFunc::StDev(arg),
+                    "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg),
+                    "VARIANCE" => AggregateFunc::Variance(arg),
+                    "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg),
+                    _ => continue,
+                };
 
-                    aggregates.push(agg);
-                }
+                aggregates.push(agg);
             }
         }
 
