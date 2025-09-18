@@ -729,6 +729,22 @@ impl Planner {
                         }
                     }
                 }
+                AstExpression::QualifiedWildcard(table_alias) => {
+                    // Expand table.* to all columns from that specific table
+                    for table in &context.tables {
+                        // Check if this is the table we're looking for (by alias or name)
+                        if ((table.alias.as_deref() == Some(table_alias.as_str()))
+                            && table.name == *table_alias)
+                            && let Some(schema) = self.schemas.get(&table.name)
+                        {
+                            for (i, col) in schema.columns.iter().enumerate() {
+                                expressions.push(Expression::Column(table.start_column + i));
+                                aliases.push(Some(col.name.clone()));
+                            }
+                            break;
+                        }
+                    }
+                }
                 AstExpression::Column(_table_ref, col_name) if alias.is_none() => {
                     expressions.push(context.resolve_expression(expr)?);
                     aliases.push(Some(col_name.clone()));
@@ -967,6 +983,12 @@ impl<'a> AnalyzedPlanContext<'a> {
             AstExpression::Operator(op) => self.resolve_operator(op),
 
             AstExpression::All => Ok(Expression::All),
+            AstExpression::QualifiedWildcard(_) => {
+                // QualifiedWildcard is expanded during projection planning
+                Err(Error::ExecutionError(
+                    "Qualified wildcard not supported in this context".into(),
+                ))
+            }
 
             AstExpression::ArrayAccess { base, index } => {
                 let base_expr = self.resolve_expression_simple(base)?;
@@ -1470,6 +1492,7 @@ fn expr_to_string(expr: &AstExpression) -> String {
         AstExpression::Literal(Literal::Time(t)) => format!("'{}'", t),
         AstExpression::Literal(Literal::Timestamp(ts)) => format!("'{}'", ts),
         AstExpression::All => "*".to_string(),
+        AstExpression::QualifiedWildcard(table) => format!("{}.*", table),
         AstExpression::Function(name, args) => {
             let arg_str = args
                 .iter()

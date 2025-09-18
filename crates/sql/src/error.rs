@@ -17,6 +17,9 @@ pub enum Error {
     #[error("Column not found: {0}")]
     ColumnNotFound(String),
 
+    #[error("Ambiguous column reference: {0}")]
+    AmbiguousColumn(String),
+
     #[error("Column already exists: {0}")]
     DuplicateColumn(String),
 

@@ -151,6 +151,9 @@ pub trait DmlParser: TokenHelper {
                 if expr == Expression::All {
                     return Err(Error::ParseError("can't alias *".into()));
                 }
+                if matches!(expr, Expression::QualifiedWildcard(_)) {
+                    return Err(Error::ParseError("can't alias table.*".into()));
+                }
                 alias = Some(self.next_ident()?);
             }
             select.push((expr, alias));
@@ -166,30 +169,36 @@ pub trait DmlParser: TokenHelper {
         if !self.next_is(Keyword::From.into()) {
             return Ok(Vec::new());
         }
-        let mut from = Vec::new();
-        loop {
-            let mut from_item = self.parse_from_table()?;
-            while let Some(r#type) = self.parse_from_join()? {
-                let left = Box::new(from_item);
-                let right = Box::new(self.parse_from_table()?);
-                let mut predicate = None;
-                if r#type != JoinType::Cross {
-                    self.expect(Keyword::On.into())?;
-                    predicate = Some(self.parse_expression()?)
-                }
-                from_item = FromClause::Join {
-                    left,
-                    right,
-                    r#type,
-                    predicate,
-                };
+        let mut from_item = self.parse_from_table()?;
+        while let Some(r#type) = self.parse_from_join()? {
+            let left = Box::new(from_item);
+            let right = Box::new(self.parse_from_table()?);
+            let mut predicate = None;
+            // Check for ON or USING clause
+            if self.next_is(Keyword::On.into()) {
+                predicate = Some(self.parse_expression()?)
+            } else if self.next_is(Keyword::Using.into()) {
+                // USING clause not yet fully implemented
+                return Err(Error::ParseError(
+                    "USING clause not yet supported in JOIN".into(),
+                ));
             }
-            from.push(from_item);
-            if !self.next_is(Token::Comma) {
-                break;
-            }
+            from_item = FromClause::Join {
+                left,
+                right,
+                r#type,
+                predicate,
+            };
         }
-        Ok(from)
+
+        // Check for comma-separated tables (not supported)
+        if self.next_is(Token::Comma) {
+            return Err(Error::ParseError(
+                "Multiple tables in FROM clause not supported. Use JOIN syntax instead.".into(),
+            ));
+        }
+
+        Ok(vec![from_item])
     }
 
     // Parses a FROM table.

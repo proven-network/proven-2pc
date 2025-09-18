@@ -260,6 +260,10 @@ impl TypeChecker {
                     }
                     return Err(Error::ColumnNotFound(col.clone()));
                 } else {
+                    // Check if column is ambiguous (exists in multiple tables)
+                    if column_map.is_ambiguous(col) {
+                        return Err(Error::AmbiguousColumn(col.clone()));
+                    }
                     return Err(Error::ColumnNotFound(col.clone()));
                 }
             }
@@ -284,6 +288,13 @@ impl TypeChecker {
             )?,
 
             Expression::All => TypeInfo {
+                data_type: DataType::Bool,
+                nullable: false,
+                is_aggregate: false,
+            },
+
+            Expression::QualifiedWildcard(_) => TypeInfo {
+                // Qualified wildcards are expanded during planning
                 data_type: DataType::Bool,
                 nullable: false,
                 is_aggregate: false,

@@ -7,6 +7,8 @@ use std::hash::{Hash, Hasher};
 pub enum Expression {
     /// All columns, i.e. *.
     All,
+    /// Qualified wildcard, i.e. table.*
+    QualifiedWildcard(String),
     /// A column reference, optionally qualified with a table name.
     Column(Option<String>, String),
     /// A literal value.

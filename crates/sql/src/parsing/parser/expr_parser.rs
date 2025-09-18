@@ -343,9 +343,15 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
                 }
             }
 
-            // Column name, either qualified as table.column or unqualified.
+            // Column name, either qualified as table.column or table.* or unqualified.
             Token::Ident(table) if self.next_is(Token::Period) => {
-                Expression::Column(Some(table), self.next_ident()?)
+                // Check if next token is * for qualified wildcard
+                if matches!(self.peek()?, Some(Token::Asterisk)) {
+                    self.next()?; // consume the *
+                    Expression::QualifiedWildcard(table)
+                } else {
+                    Expression::Column(Some(table), self.next_ident()?)
+                }
             }
             Token::Ident(column) => Expression::Column(None, column),
 

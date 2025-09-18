@@ -45,7 +45,6 @@ fn setup_join_tables(ctx: &mut common::TestContext) {
 }
 
 #[test]
-#[ignore = "JOIN without ON clause not yet implemented"]
 fn test_cross_join_without_condition() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
@@ -441,7 +440,6 @@ fn test_join_project_without_table_qualifier() {
 }
 
 #[test]
-#[ignore = "Table.* wildcard projection not yet supported"]
 fn test_join_project_with_wildcard() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
@@ -449,11 +447,11 @@ fn test_join_project_with_wildcard() {
     // SELECT Item.* FROM Player p LEFT JOIN Item with wildcard projection
     let results = ctx.query("SELECT Item.* FROM Player p LEFT JOIN Item ON p.id = Item.player_id");
 
-    // Should have 15 results (items matched to players)
+    // Should have 16 results (15 items + 1 NULL row for Berry who has no items)
     assert_eq!(
         results.len(),
-        15,
-        "Expected 15 results from JOIN with wildcard projection"
+        16,
+        "Expected 16 results from JOIN with wildcard projection"
     );
 
     ctx.commit();
@@ -478,33 +476,27 @@ fn test_join_project_all_columns() {
 }
 
 #[test]
-#[ignore = "USING constraint not yet implemented"]
-fn test_join_unsupported_using_constraint() {
+fn test_join_using_constraint_error() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
 
-    // JOIN USING constraint should error with UnsupportedJoinConstraint
+    // JOIN USING constraint should error with appropriate message
     assert_error!(
         ctx,
         "SELECT * FROM Player JOIN Item USING (id)",
-        "UnsupportedJoinConstraint"
+        "USING clause not yet supported"
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "CROSS JOIN not yet implemented"]
-fn test_join_unsupported_cross_join() {
+fn test_cross_join_explicit() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
 
-    // CROSS JOIN should error with UnsupportedJoinOperator
-    assert_error!(
-        ctx,
-        "SELECT * FROM Player CROSS JOIN Item",
-        "UnsupportedJoinOperator"
-    );
+    // CROSS JOIN should work and produce cartesian product (5 players × 15 items = 75 results)
+    assert_rows!(ctx, "SELECT * FROM Player CROSS JOIN Item", 75);
 
     ctx.commit();
 }
@@ -515,11 +507,10 @@ fn test_join_ambiguous_column_reference() {
     setup_join_tables(&mut ctx);
 
     // Ambiguous column reference error in SELECT id from joined tables
-    // Currently errors with ColumnNotFound instead of ambiguous
     assert_error!(
         ctx,
         "SELECT id FROM Player JOIN Item ON Player.id = Item.player_id",
-        "ColumnNotFound"
+        "Ambiguous"
     );
 
     ctx.commit();
@@ -531,11 +522,10 @@ fn test_join_ambiguous_column_self_join() {
     setup_join_tables(&mut ctx);
 
     // Ambiguous column in self-join scenario
-    // Currently errors with ColumnNotFound instead of ambiguous
     assert_error!(
         ctx,
         "SELECT id FROM Player p1 JOIN Player p2 ON p1.id = p2.id",
-        "ColumnNotFound"
+        "Ambiguous"
     );
 
     ctx.commit();
@@ -577,13 +567,12 @@ fn test_join_ambiguous_column_in_create_table() {
 }
 
 #[test]
-#[ignore = "Comma-separated table list not yet properly detected"]
 fn test_join_too_many_tables_error() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
 
-    // Comma-separated table list should error (TooManyTables)
-    assert_error!(ctx, "SELECT * FROM Player, Item", "TooManyTables");
+    // Comma-separated table list should error
+    assert_error!(ctx, "SELECT * FROM Player, Item", "Multiple tables");
 
     ctx.commit();
 }
