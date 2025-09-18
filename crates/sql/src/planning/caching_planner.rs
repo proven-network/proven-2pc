@@ -84,11 +84,6 @@ impl CachingPlanner {
         self.cache.clear();
     }
 
-    /// Extract predicates (delegates to underlying planner)
-    pub fn extract_predicates(&self, plan: &Plan) -> crate::planning::predicate::QueryPredicates {
-        self.planner.extract_predicates(plan)
-    }
-
     /// Clear the cache
     pub fn clear(&mut self) {
         self.cache.clear();

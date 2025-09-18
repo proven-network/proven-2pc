@@ -116,29 +116,25 @@ impl SqlTransactionEngine {
             }
         }
 
-        // Step 3: Plan the statement with caching
-        let plan = match self.planner.plan(analyzed.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                return OperationResult::Complete(SqlResponse::Error(format!(
-                    "Planning error: {:?}",
-                    e
-                )));
-            }
+        // Step 3: Extract predicates from analyzed statement BEFORE planning
+        // This avoids generating a physical plan just to check for conflicts
+        let query_predicates = if let Some(ref param_values) = params {
+            analyzed.extract_predicates(param_values)
+        } else {
+            // No parameters - use empty params for extraction
+            analyzed.extract_predicates(&[])
         };
 
-        // Phase 4: Extract predicates from the plan
-        let plan_predicates = self.planner.extract_predicates(&plan);
-
+        // Step 4: Check for conflicts with active transactions
         for (other_tx_id, other_tx) in &self.active_transactions {
             if other_tx_id == &txn_id {
                 continue; // Skip self
             }
 
             // Check if our predicates conflict with theirs
-            if let Some(conflict) = plan_predicates.conflicts_with(&other_tx.predicates) {
+            if let Some(conflict) = query_predicates.conflicts_with(&other_tx.predicates) {
                 // Determine when we can retry based on the conflict type
-                use crate::planning::predicate::ConflictInfo;
+                use crate::semantic::predicate::ConflictInfo;
                 let retry_on = match conflict {
                     // If they're reading and we want to write, we can retry after they prepare
                     ConflictInfo::WriteRead { .. } => RetryOn::Prepare,
@@ -155,11 +151,22 @@ impl SqlTransactionEngine {
             }
         }
 
-        // Phase 5: Add predicates to transaction context
+        // Step 5: Add predicates to transaction context
         let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
-        tx_ctx.add_predicates(plan_predicates);
+        tx_ctx.add_predicates(query_predicates);
 
-        // Phase 6: Execute with parameters
+        // Step 6: NOW plan the statement (only after conflict checking passes)
+        let plan = match self.planner.plan(analyzed.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Planning error: {:?}",
+                    e
+                )));
+            }
+        };
+
+        // Step 7: Execute with parameters
         match execution::execute_with_params(
             (*plan).clone(),
             &mut self.storage,

@@ -183,10 +183,21 @@ impl SemanticAnalyzer {
 
         analyzed.metadata.set_output_schema(output_schema);
 
-        // Process WHERE clause
-        if let Some(where_expr) = &select.r#where {
-            let expr_id = ExpressionId::from_path(vec![1]); // WHERE
-            self.analyze_expression(where_expr, expr_id, analyzed, context)?;
+        // Extract predicates for conflict detection
+        if let Some(table) = context.get_primary_table() {
+            if let Some(where_expr) = &select.r#where {
+                // Process WHERE clause
+                let expr_id = ExpressionId::from_path(vec![1]); // WHERE
+                self.analyze_expression(where_expr, expr_id, analyzed, context)?;
+
+                // Extract predicate templates from WHERE clause
+                self.extract_predicate_templates(where_expr, &table, analyzed, context);
+            } else {
+                // No WHERE clause - reading entire table
+                analyzed.add_predicate_template(super::statement::PredicateTemplate::FullTable {
+                    table: table.clone(),
+                });
+            }
         }
 
         // Process GROUP BY
@@ -484,6 +495,9 @@ impl SemanticAnalyzer {
                         self.analyze_expression(expr, expr_id, analyzed, context)?;
                     }
                 }
+
+                // Extract predicate template for INSERT (primary key if available)
+                self.extract_insert_predicate_template(table, columns, rows, analyzed, context);
             }
             crate::parsing::ast::InsertSource::Select(select) => {
                 // For INSERT ... SELECT, analyze SELECT first without target table in context
@@ -529,10 +543,18 @@ impl SemanticAnalyzer {
             }
         }
 
-        // Analyze WHERE clause
+        // Analyze WHERE clause and extract predicates
         if let Some(where_expr) = where_clause {
             let expr_id = ExpressionId::from_path(vec![7]); // UPDATE WHERE
             self.analyze_expression(where_expr, expr_id, analyzed, context)?;
+
+            // Extract predicate templates from WHERE clause
+            self.extract_predicate_templates(where_expr, table, analyzed, context);
+        } else {
+            // No WHERE clause - full table update
+            analyzed.add_predicate_template(super::statement::PredicateTemplate::FullTable {
+                table: table.to_string(),
+            });
         }
 
         Ok(())
@@ -551,10 +573,18 @@ impl SemanticAnalyzer {
 
         // Table access tracking removed - not used downstream
 
-        // Analyze WHERE clause
+        // Analyze WHERE clause and extract predicates
         if let Some(where_expr) = where_clause {
             let expr_id = ExpressionId::from_path(vec![8]); // DELETE WHERE
             self.analyze_expression(where_expr, expr_id, analyzed, context)?;
+
+            // Extract predicate templates from WHERE clause
+            self.extract_predicate_templates(where_expr, table, analyzed, context);
+        } else {
+            // No WHERE clause - full table delete
+            analyzed.add_predicate_template(super::statement::PredicateTemplate::FullTable {
+                table: table.to_string(),
+            });
         }
 
         Ok(())
@@ -740,5 +770,310 @@ impl SemanticAnalyzer {
         }
 
         Ok(())
+    }
+
+    /// Extract predicate templates from a WHERE clause expression
+    fn extract_predicate_templates(
+        &self,
+        expr: &Expression,
+        table: &str,
+        analyzed: &mut AnalyzedStatement,
+        context: &AnalysisContext,
+    ) {
+        use super::statement::PredicateTemplate;
+        use crate::parsing::ast::Operator;
+
+        match expr {
+            Expression::Operator(op) => match op {
+                // Equality: column = value
+                Operator::Equal(left, right) => {
+                    if let Expression::Column(_, col_name) = &**left {
+                        // Try to find column index in schema
+                        let col_index = context.schemas().get(table).and_then(|schema| {
+                            schema.columns.iter().position(|c| &c.name == col_name)
+                        });
+
+                        if let Some(col_idx) = col_index {
+                            let value_expr = self.expression_to_predicate_value(right);
+                            analyzed.add_predicate_template(PredicateTemplate::Equality {
+                                table: table.to_string(),
+                                column_name: col_name.clone(),
+                                column_index: col_idx,
+                                value_expr,
+                            });
+                        } else {
+                            // Column not found, use complex predicate
+                            analyzed.add_predicate_template(PredicateTemplate::Complex {
+                                table: table.to_string(),
+                                expression_id: ExpressionId::from_path(vec![]),
+                            });
+                        }
+                    } else if let Expression::Column(_, col_name) = &**right {
+                        // Handle value = column (reversed)
+                        let col_index = context.schemas().get(table).and_then(|schema| {
+                            schema.columns.iter().position(|c| &c.name == col_name)
+                        });
+
+                        if let Some(col_idx) = col_index {
+                            let value_expr = self.expression_to_predicate_value(left);
+                            analyzed.add_predicate_template(PredicateTemplate::Equality {
+                                table: table.to_string(),
+                                column_name: col_name.clone(),
+                                column_index: col_idx,
+                                value_expr,
+                            });
+                        } else {
+                            analyzed.add_predicate_template(PredicateTemplate::Complex {
+                                table: table.to_string(),
+                                expression_id: ExpressionId::from_path(vec![]),
+                            });
+                        }
+                    } else {
+                        // Complex comparison
+                        analyzed.add_predicate_template(PredicateTemplate::Complex {
+                            table: table.to_string(),
+                            expression_id: ExpressionId::from_path(vec![]),
+                        });
+                    }
+                }
+
+                // AND: recurse on both sides
+                Operator::And(left, right) => {
+                    self.extract_predicate_templates(left, table, analyzed, context);
+                    self.extract_predicate_templates(right, table, analyzed, context);
+                }
+
+                // OR: complex predicate for now
+                Operator::Or(_, _) => {
+                    analyzed.add_predicate_template(PredicateTemplate::Complex {
+                        table: table.to_string(),
+                        expression_id: ExpressionId::from_path(vec![]),
+                    });
+                }
+
+                // Range predicates: column > value, column >= value, etc.
+                Operator::GreaterThan(left, right) | Operator::GreaterThanOrEqual(left, right) => {
+                    if let Expression::Column(_, col_name) = &**left {
+                        let col_index = context.schemas().get(table).and_then(|schema| {
+                            schema.columns.iter().position(|c| &c.name == col_name)
+                        });
+
+                        if let Some(col_idx) = col_index {
+                            let inclusive = matches!(op, Operator::GreaterThanOrEqual(_, _));
+                            let value_expr = self.expression_to_predicate_value(right);
+                            analyzed.add_predicate_template(PredicateTemplate::Range {
+                                table: table.to_string(),
+                                column_name: col_name.clone(),
+                                column_index: col_idx,
+                                lower: Some((value_expr, inclusive)),
+                                upper: None,
+                            });
+                        } else {
+                            analyzed.add_predicate_template(PredicateTemplate::Complex {
+                                table: table.to_string(),
+                                expression_id: ExpressionId::from_path(vec![]),
+                            });
+                        }
+                    } else {
+                        analyzed.add_predicate_template(PredicateTemplate::Complex {
+                            table: table.to_string(),
+                            expression_id: ExpressionId::from_path(vec![]),
+                        });
+                    }
+                }
+
+                Operator::LessThan(left, right) | Operator::LessThanOrEqual(left, right) => {
+                    if let Expression::Column(_, col_name) = &**left {
+                        let col_index = context.schemas().get(table).and_then(|schema| {
+                            schema.columns.iter().position(|c| &c.name == col_name)
+                        });
+
+                        if let Some(col_idx) = col_index {
+                            let inclusive = matches!(op, Operator::LessThanOrEqual(_, _));
+                            let value_expr = self.expression_to_predicate_value(right);
+                            analyzed.add_predicate_template(PredicateTemplate::Range {
+                                table: table.to_string(),
+                                column_name: col_name.clone(),
+                                column_index: col_idx,
+                                lower: None,
+                                upper: Some((value_expr, inclusive)),
+                            });
+                        } else {
+                            analyzed.add_predicate_template(PredicateTemplate::Complex {
+                                table: table.to_string(),
+                                expression_id: ExpressionId::from_path(vec![]),
+                            });
+                        }
+                    } else {
+                        analyzed.add_predicate_template(PredicateTemplate::Complex {
+                            table: table.to_string(),
+                            expression_id: ExpressionId::from_path(vec![]),
+                        });
+                    }
+                }
+
+                // BETWEEN
+                Operator::Between {
+                    expr, low, high, ..
+                } => {
+                    if let Expression::Column(_, col_name) = &**expr {
+                        let col_index = context.schemas().get(table).and_then(|schema| {
+                            schema.columns.iter().position(|c| &c.name == col_name)
+                        });
+
+                        if let Some(col_idx) = col_index {
+                            let lower_value = self.expression_to_predicate_value(low);
+                            let upper_value = self.expression_to_predicate_value(high);
+                            analyzed.add_predicate_template(PredicateTemplate::Range {
+                                table: table.to_string(),
+                                column_name: col_name.clone(),
+                                column_index: col_idx,
+                                lower: Some((lower_value, true)),
+                                upper: Some((upper_value, true)),
+                            });
+                        } else {
+                            analyzed.add_predicate_template(PredicateTemplate::Complex {
+                                table: table.to_string(),
+                                expression_id: ExpressionId::from_path(vec![]),
+                            });
+                        }
+                    } else {
+                        analyzed.add_predicate_template(PredicateTemplate::Complex {
+                            table: table.to_string(),
+                            expression_id: ExpressionId::from_path(vec![]),
+                        });
+                    }
+                }
+
+                // IN list
+                Operator::InList { expr, list, .. } => {
+                    if let Expression::Column(_, col_name) = &**expr {
+                        let col_index = context.schemas().get(table).and_then(|schema| {
+                            schema.columns.iter().position(|c| &c.name == col_name)
+                        });
+
+                        if let Some(col_idx) = col_index {
+                            let values: Vec<super::statement::PredicateValue> = list
+                                .iter()
+                                .map(|e| self.expression_to_predicate_value(e))
+                                .collect();
+                            analyzed.add_predicate_template(PredicateTemplate::InList {
+                                table: table.to_string(),
+                                column_name: col_name.clone(),
+                                column_index: col_idx,
+                                values,
+                            });
+                        } else {
+                            analyzed.add_predicate_template(PredicateTemplate::Complex {
+                                table: table.to_string(),
+                                expression_id: ExpressionId::from_path(vec![]),
+                            });
+                        }
+                    } else {
+                        analyzed.add_predicate_template(PredicateTemplate::Complex {
+                            table: table.to_string(),
+                            expression_id: ExpressionId::from_path(vec![]),
+                        });
+                    }
+                }
+
+                // Other operators are complex predicates
+                _ => {
+                    analyzed.add_predicate_template(PredicateTemplate::Complex {
+                        table: table.to_string(),
+                        expression_id: ExpressionId::from_path(vec![]),
+                    });
+                }
+            },
+
+            // Non-operator expressions are complex predicates
+            _ => {
+                analyzed.add_predicate_template(PredicateTemplate::Complex {
+                    table: table.to_string(),
+                    expression_id: ExpressionId::from_path(vec![]),
+                });
+            }
+        }
+    }
+
+    /// Extract predicate template for INSERT statement
+    fn extract_insert_predicate_template(
+        &self,
+        table: &str,
+        columns: Option<&Vec<String>>,
+        rows: &[Vec<Expression>],
+        analyzed: &mut AnalyzedStatement,
+        context: &AnalysisContext,
+    ) {
+        use super::statement::PredicateTemplate;
+
+        // Try to extract primary key values if available
+        if let Some(schema) = context.schemas().get(table) {
+            if let Some(pk_idx) = schema.primary_key {
+                let pk_column = &schema.columns[pk_idx];
+
+                // Determine the index of the primary key in the INSERT
+                let pk_insert_idx = if let Some(cols) = columns {
+                    // Explicit columns - find the primary key position
+                    cols.iter().position(|c| c == &pk_column.name)
+                } else {
+                    // Implicit columns - use schema order
+                    Some(pk_idx)
+                };
+
+                if let Some(insert_idx) = pk_insert_idx {
+                    // Extract primary key values from all rows
+                    for row in rows {
+                        if let Some(pk_expr) = row.get(insert_idx) {
+                            let pk_value = self.expression_to_predicate_value(pk_expr);
+                            analyzed.add_predicate_template(PredicateTemplate::PrimaryKey {
+                                table: table.to_string(),
+                                value: pk_value,
+                            });
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // No primary key or couldn't extract - use full table
+        analyzed.add_predicate_template(PredicateTemplate::FullTable {
+            table: table.to_string(),
+        });
+    }
+
+    /// Convert an expression to a PredicateValue
+    fn expression_to_predicate_value(&self, expr: &Expression) -> super::statement::PredicateValue {
+        use super::statement::PredicateValue;
+        use crate::parsing::ast::Literal;
+        use crate::types::value::Value;
+
+        match expr {
+            Expression::Literal(lit) => {
+                let value = match lit {
+                    Literal::String(s) => Value::Str(s.clone()),
+                    Literal::Integer(i) => {
+                        // Try to fit in i64, otherwise use i128
+                        if let Ok(i64_val) = i64::try_from(*i) {
+                            Value::I64(i64_val)
+                        } else {
+                            Value::I128(*i)
+                        }
+                    }
+                    Literal::Float(f) => Value::F64(*f),
+                    Literal::Boolean(b) => Value::Bool(*b),
+                    Literal::Null => Value::Null,
+                    _ => Value::Null, // For other literals we don't handle yet
+                };
+                PredicateValue::Constant(value)
+            }
+            Expression::Parameter(idx) => PredicateValue::Parameter(*idx),
+            _ => {
+                // For complex expressions, we'd need an expression ID
+                // For now, treat as expression
+                PredicateValue::Expression(ExpressionId::from_path(vec![]))
+            }
+        }
     }
 }

@@ -50,6 +50,7 @@ impl TypeValidator {
                         data_type: param_type,
                         nullable: true,
                         is_aggregate: false,
+                        resolution: None,
                     }
                 } else {
                     return Err(Error::ExecutionError(format!(
@@ -65,6 +66,7 @@ impl TypeValidator {
                     data_type: DataType::Struct(vec![]), // Placeholder
                     nullable: true,
                     is_aggregate: false,
+                    resolution: None,
                 }
             }
 
@@ -74,6 +76,7 @@ impl TypeValidator {
                     data_type: DataType::I64, // Placeholder
                     nullable: true,
                     is_aggregate: false,
+                    resolution: None,
                 }
             }
 
@@ -109,6 +112,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: true, // Array/Map access can return null if index/key not found
                     is_aggregate: base_type.is_aggregate,
+                    resolution: None,
                 }
             }
 
@@ -123,6 +127,7 @@ impl TypeValidator {
                     data_type: DataType::I64,
                     nullable: true,
                     is_aggregate: base_type.is_aggregate,
+                    resolution: None,
                 }
             }
 
@@ -153,6 +158,7 @@ impl TypeValidator {
                     data_type: DataType::Array(Box::new(element_type), None),
                     nullable: any_nullable,
                     is_aggregate: any_aggregate,
+                    resolution: None,
                 }
             }
 
@@ -194,6 +200,7 @@ impl TypeValidator {
                     data_type: DataType::Map(Box::new(key_type), Box::new(value_type)),
                     nullable: any_nullable,
                     is_aggregate: any_aggregate,
+                    resolution: None,
                 }
             }
         };
@@ -232,6 +239,7 @@ impl TypeValidator {
             data_type,
             nullable: matches!(lit, Literal::Null),
             is_aggregate: false,
+            resolution: None,
         })
     }
 
@@ -242,20 +250,101 @@ impl TypeValidator {
         col: &str,
         context: &AnalysisContext,
     ) -> Result<TypeInfo> {
-        // Look up column type from context
-        if let Some((data_type, nullable)) = context.get_column_type(table, col) {
+        // Look up full column info from context
+        if let Some((data_type, nullable, table_name, column_index)) =
+            context.get_column_info(table, col)
+        {
             // Wrap in Nullable if the column is nullable
             let final_type = if nullable {
-                DataType::Nullable(Box::new(data_type))
+                DataType::Nullable(Box::new(data_type.clone()))
             } else {
-                data_type
+                data_type.clone()
             };
+
+            // Create resolution information
+            let resolution = Some(super::super::statement::ResolvedColumn {
+                table_name,
+                column_name: col.to_string(),
+                column_index,
+            });
 
             Ok(TypeInfo {
                 data_type: final_type,
                 nullable,
                 is_aggregate: false,
+                resolution,
             })
+        } else if let Some(table_ref) = table {
+            // If we couldn't find a table with this name, check if it's actually a struct column
+            // This handles cases like "details.name" where "details" is a struct column, not a table
+            if let Some((struct_type, struct_nullable, _actual_table, _struct_col_idx)) =
+                context.get_column_info(None, table_ref)
+            {
+                // Check if this is a struct type
+                match &struct_type {
+                    DataType::Struct(fields) => {
+                        // Find the field in the struct
+                        if let Some(field) = fields.iter().find(|(name, _)| name == col) {
+                            let field_type = field.1.clone();
+
+                            // The field is nullable if either the struct is nullable or field allows null
+                            let field_nullable = struct_nullable;
+
+                            let final_type = if field_nullable {
+                                DataType::Nullable(Box::new(field_type.clone()))
+                            } else {
+                                field_type.clone()
+                            };
+
+                            // Note: For struct field access, we don't have a direct resolution
+                            // This would need special handling in the planner
+                            Ok(TypeInfo {
+                                data_type: final_type,
+                                nullable: field_nullable,
+                                is_aggregate: false,
+                                resolution: None, // Struct field access doesn't map to a direct column
+                            })
+                        } else {
+                            Err(Error::ExecutionError(format!(
+                                "Field '{}' not found in struct '{}'",
+                                col, table_ref
+                            )))
+                        }
+                    }
+                    DataType::Nullable(inner) => {
+                        // Unwrap nullable and check if it's a struct
+                        if let DataType::Struct(fields) = &**inner {
+                            if let Some(field) = fields.iter().find(|(name, _)| name == col) {
+                                let field_type = field.1.clone();
+
+                                // Nullable struct means all fields are nullable
+                                let final_type = DataType::Nullable(Box::new(field_type));
+
+                                Ok(TypeInfo {
+                                    data_type: final_type,
+                                    nullable: true,
+                                    is_aggregate: false,
+                                    resolution: None,
+                                })
+                            } else {
+                                Err(Error::ExecutionError(format!(
+                                    "Field '{}' not found in struct '{}'",
+                                    col, table_ref
+                                )))
+                            }
+                        } else {
+                            Err(Error::ColumnNotFound(col.to_string()))
+                        }
+                    }
+                    _ => {
+                        // Not a struct type, so this is genuinely a missing column
+                        Err(Error::ColumnNotFound(col.to_string()))
+                    }
+                }
+            } else {
+                // Neither a table nor a column was found
+                Err(Error::ColumnNotFound(col.to_string()))
+            }
         } else {
             // Column not found - return error
             Err(Error::ColumnNotFound(col.to_string()))
@@ -287,6 +376,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -305,6 +395,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -323,6 +414,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -340,6 +432,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -357,6 +450,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -376,6 +470,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -393,6 +488,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -412,6 +508,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -431,6 +528,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -449,6 +547,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -466,6 +565,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -483,6 +583,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -500,6 +601,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -517,6 +619,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -531,6 +634,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -544,6 +648,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -557,6 +662,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -570,6 +676,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: expr_type.nullable,
                     is_aggregate: expr_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -582,6 +689,7 @@ impl TypeValidator {
                     data_type: DataType::Bool,
                     nullable: false, // IS NULL/IS NOT NULL always returns non-null boolean
                     is_aggregate: expr_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -600,6 +708,7 @@ impl TypeValidator {
                     data_type: result_type,
                     nullable: left_type.nullable || right_type.nullable,
                     is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -622,6 +731,7 @@ impl TypeValidator {
                     data_type: DataType::Bool,
                     nullable: any_nullable,
                     is_aggregate: any_aggregate,
+                    resolution: None,
                 })
             }
 
@@ -644,6 +754,7 @@ impl TypeValidator {
                     is_aggregate: expr_type.is_aggregate
                         || low_type.is_aggregate
                         || high_type.is_aggregate,
+                    resolution: None,
                 })
             }
         }
@@ -711,6 +822,7 @@ impl TypeValidator {
             data_type: return_type,
             nullable: any_nullable,
             is_aggregate: is_aggregate || any_aggregate,
+            resolution: None,
         })
     }
 }

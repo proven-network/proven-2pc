@@ -3,7 +3,7 @@
 //! This module contains transaction state management and context
 //! for executing SQL operations within the stream processor.
 
-use crate::planning::predicate::QueryPredicates;
+use crate::semantic::predicate::QueryPredicates;
 use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 

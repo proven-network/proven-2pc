@@ -251,4 +251,67 @@ impl AnalysisContext {
     pub fn has_parameter_types(&self) -> bool {
         !self.parameter_types.is_empty()
     }
+
+    /// Get the primary table name (first table in FROM clause)
+    pub fn get_primary_table(&self) -> Option<String> {
+        self.tables.first().map(|t| t.name.clone())
+    }
+
+    /// Get full column information including resolution data
+    pub fn get_column_info(
+        &self,
+        table_ref: Option<&str>,
+        column_name: &str,
+    ) -> Option<(DataType, bool, String, usize)> {
+        // If table reference is provided, look for that specific table
+        if let Some(table_ref) = table_ref {
+            // First try to find a matching table or alias
+            if let Some(table) = self
+                .tables
+                .iter()
+                .find(|t| t.name == table_ref || t.alias.as_deref() == Some(table_ref))
+            {
+                // Found a table - look for the column in it
+                if let Some((idx, column)) = table
+                    .schema
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| c.name == column_name)
+                {
+                    return Some((
+                        column.datatype.clone(),
+                        column.nullable,
+                        table.name.clone(),
+                        idx,
+                    ));
+                }
+            }
+            return None;
+        }
+
+        // No table reference - search all tables
+        let mut found = None;
+        for table in &self.tables {
+            if let Some((idx, column)) = table
+                .schema
+                .columns
+                .iter()
+                .enumerate()
+                .find(|(_, c)| c.name == column_name)
+            {
+                if found.is_some() {
+                    // Ambiguous column reference - return None
+                    return None;
+                }
+                found = Some((
+                    column.datatype.clone(),
+                    column.nullable,
+                    table.name.clone(),
+                    idx,
+                ));
+            }
+        }
+        found
+    }
 }

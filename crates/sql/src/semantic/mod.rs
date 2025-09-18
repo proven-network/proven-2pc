@@ -14,6 +14,7 @@
 pub mod analyzer;
 pub mod caching_analyzer;
 pub mod context;
+pub mod predicate;
 pub mod statement;
 pub mod types;
 pub mod validators;

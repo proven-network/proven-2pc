@@ -4,9 +4,12 @@
 //! structure that references the original AST via Arc and maintains
 //! all type annotations and metadata separately.
 
+use super::predicate::{Predicate, PredicateCondition, QueryPredicates};
 use crate::parsing::ast::Statement;
 use crate::types::data_type::DataType;
+use crate::types::value::Value;
 use std::collections::{HashMap, HashSet};
+use std::ops::Bound;
 use std::sync::Arc;
 
 /// Complete output of semantic analysis
@@ -23,6 +26,61 @@ pub struct AnalyzedStatement {
 
     /// Parameter slots with full context
     pub parameter_slots: Vec<ParameterSlot>,
+
+    /// Pre-extracted predicate templates for conflict detection
+    pub predicate_templates: Vec<PredicateTemplate>,
+}
+
+/// Template for a predicate that can be evaluated with parameters
+#[derive(Debug, Clone)]
+pub enum PredicateTemplate {
+    /// Full table access (no specific predicate)
+    FullTable { table: String },
+
+    /// Equality predicate (column = value)
+    Equality {
+        table: String,
+        column_name: String,
+        column_index: usize,
+        value_expr: PredicateValue,
+    },
+
+    /// Range predicate (column BETWEEN x AND y)
+    Range {
+        table: String,
+        column_name: String,
+        column_index: usize,
+        lower: Option<(PredicateValue, bool)>, // (value, inclusive)
+        upper: Option<(PredicateValue, bool)>, // (value, inclusive)
+    },
+
+    /// IN list predicate (column IN (...))
+    InList {
+        table: String,
+        column_name: String,
+        column_index: usize,
+        values: Vec<PredicateValue>,
+    },
+
+    /// Primary key access
+    PrimaryKey {
+        table: String,
+        value: PredicateValue,
+    },
+
+    /// Complex predicate that needs runtime evaluation
+    Complex {
+        table: String,
+        expression_id: ExpressionId,
+    },
+}
+
+/// Value in a predicate - either constant, parameter, or expression
+#[derive(Debug, Clone)]
+pub enum PredicateValue {
+    Constant(Value),
+    Parameter(usize),
+    Expression(ExpressionId), // For complex expressions we evaluate at runtime
 }
 
 /// Type annotations for expressions in the AST
@@ -48,6 +106,22 @@ pub struct TypeInfo {
 
     /// If this is an aggregate expression
     pub is_aggregate: bool,
+
+    /// Resolution information for columns (NEW)
+    pub resolution: Option<ResolvedColumn>,
+}
+
+/// Information about a resolved column reference
+#[derive(Debug, Clone)]
+pub struct ResolvedColumn {
+    /// The actual table name (not alias)
+    pub table_name: String,
+
+    /// The column name
+    pub column_name: String,
+
+    /// Index of the column within the table
+    pub column_index: usize,
 }
 
 /// Enhanced parameter slot with full context
@@ -140,6 +214,7 @@ impl AnalyzedStatement {
             type_annotations: TypeAnnotations::default(),
             metadata: StatementMetadata::default(),
             parameter_slots: Vec::new(),
+            predicate_templates: Vec::new(),
         }
     }
 
@@ -166,6 +241,179 @@ impl AnalyzedStatement {
     /// Sort parameter slots by index
     pub fn sort_parameters(&mut self) {
         self.parameter_slots.sort_by_key(|s| s.index);
+    }
+
+    /// Add a predicate template
+    pub fn add_predicate_template(&mut self, template: PredicateTemplate) {
+        self.predicate_templates.push(template);
+    }
+
+    /// Extract predicates using actual parameter values
+    /// This doesn't walk the tree - just evaluates pre-extracted templates
+    pub fn extract_predicates(&self, params: &[Value]) -> QueryPredicates {
+        use crate::parsing::ast::{DmlStatement, Statement};
+
+        // Determine the operation type
+        let (is_read, is_write, is_insert) = match &*self.ast {
+            Statement::Dml(dml) => match dml {
+                DmlStatement::Select(_) => (true, false, false),
+                DmlStatement::Insert { .. } => (false, true, true), // Write and insert
+                DmlStatement::Update { .. } => (true, true, false), // Read then write
+                DmlStatement::Delete { .. } => (true, true, false), // Read then write
+            },
+            _ => (false, false, false), // DDL operations
+        };
+
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        let mut inserts = Vec::new();
+
+        // Evaluate each template with parameters
+        for template in &self.predicate_templates {
+            if let Some(predicate) = self.evaluate_template(template, params) {
+                if is_read {
+                    reads.push(predicate.clone());
+                }
+                if is_write {
+                    writes.push(predicate.clone());
+                }
+                if is_insert {
+                    inserts.push(predicate);
+                }
+            }
+        }
+
+        QueryPredicates {
+            reads,
+            writes,
+            inserts,
+        }
+    }
+
+    /// Evaluate a predicate template with parameter values
+    fn evaluate_template(
+        &self,
+        template: &PredicateTemplate,
+        params: &[Value],
+    ) -> Option<Predicate> {
+        match template {
+            PredicateTemplate::FullTable { table } => Some(Predicate::full_table(table.clone())),
+
+            PredicateTemplate::Equality {
+                table,
+                column_name,
+                value_expr,
+                ..
+            } => {
+                let value = self.evaluate_predicate_value(value_expr, params)?;
+                Some(Predicate {
+                    table: table.clone(),
+                    condition: PredicateCondition::Equals {
+                        column: column_name.clone(),
+                        value,
+                    },
+                })
+            }
+
+            PredicateTemplate::PrimaryKey { table, value } => {
+                let pk_value = self.evaluate_predicate_value(value, params)?;
+                Some(Predicate::primary_key(table.clone(), pk_value))
+            }
+
+            PredicateTemplate::Range {
+                table,
+                column_name,
+                lower,
+                upper,
+                ..
+            } => {
+                let start = lower
+                    .as_ref()
+                    .and_then(|(val, inclusive)| {
+                        self.evaluate_predicate_value(val, params).map(|v| {
+                            if *inclusive {
+                                Bound::Included(v)
+                            } else {
+                                Bound::Excluded(v)
+                            }
+                        })
+                    })
+                    .unwrap_or(Bound::Unbounded);
+
+                let end = upper
+                    .as_ref()
+                    .and_then(|(val, inclusive)| {
+                        self.evaluate_predicate_value(val, params).map(|v| {
+                            if *inclusive {
+                                Bound::Included(v)
+                            } else {
+                                Bound::Excluded(v)
+                            }
+                        })
+                    })
+                    .unwrap_or(Bound::Unbounded);
+
+                Some(Predicate {
+                    table: table.clone(),
+                    condition: PredicateCondition::Range {
+                        column: column_name.clone(),
+                        start,
+                        end,
+                    },
+                })
+            }
+
+            PredicateTemplate::InList {
+                table,
+                column_name,
+                values,
+                ..
+            } => {
+                let mut evaluated_values = Vec::new();
+                for val in values {
+                    if let Some(v) = self.evaluate_predicate_value(val, params) {
+                        evaluated_values.push(v);
+                    }
+                }
+
+                if evaluated_values.is_empty() {
+                    return None;
+                }
+
+                // Convert IN list to OR of equalities
+                Some(Predicate {
+                    table: table.clone(),
+                    condition: PredicateCondition::Or(
+                        evaluated_values
+                            .into_iter()
+                            .map(|v| PredicateCondition::Equals {
+                                column: column_name.clone(),
+                                value: v,
+                            })
+                            .collect(),
+                    ),
+                })
+            }
+
+            PredicateTemplate::Complex { table, .. } => {
+                // For complex predicates, fall back to full table scan
+                // Could be improved by evaluating the expression
+                Some(Predicate::full_table(table.clone()))
+            }
+        }
+    }
+
+    /// Evaluate a predicate value with parameters
+    fn evaluate_predicate_value(&self, value: &PredicateValue, params: &[Value]) -> Option<Value> {
+        match value {
+            PredicateValue::Constant(v) => Some(v.clone()),
+            PredicateValue::Parameter(idx) => params.get(*idx).cloned(),
+            PredicateValue::Expression(_expr_id) => {
+                // For now, we don't evaluate complex expressions
+                // This could be enhanced to evaluate simple arithmetic
+                None
+            }
+        }
     }
 
     /// Convert to a statement by cloning the Arc contents
