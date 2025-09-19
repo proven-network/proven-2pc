@@ -62,7 +62,6 @@ fn test_primary_key_where_comparison() {
 }
 
 #[test]
-#[ignore = "Self-join not yet fully implemented"]
 fn test_primary_key_self_join() {
     let mut ctx = setup_test();
 
@@ -85,7 +84,6 @@ fn test_primary_key_self_join() {
 }
 
 #[test]
-#[ignore = "IN subquery not yet fully implemented"]
 fn test_primary_key_in_subquery() {
     let mut ctx = setup_test();
 
@@ -132,7 +130,6 @@ fn test_primary_key_ordering() {
 }
 
 #[test]
-#[ignore = "Modulo operator not yet implemented"]
 fn test_primary_key_modulo_operator() {
     let mut ctx = setup_test();
 
@@ -177,7 +174,6 @@ fn test_primary_key_delete_operations() {
 }
 
 #[test]
-#[ignore = "SUBSTR function not yet implemented"]
 fn test_primary_key_with_function_result() {
     let mut ctx = setup_test();
 
@@ -215,7 +211,6 @@ fn test_primary_key_unique_constraint() {
 }
 
 #[test]
-#[ignore = "NOT NULL constraint on PRIMARY KEY not yet enforced"]
 fn test_primary_key_not_null_constraint() {
     let mut ctx = setup_test();
 
@@ -231,24 +226,99 @@ fn test_primary_key_not_null_constraint() {
 }
 
 #[test]
-#[ignore = "UPDATE restriction on PRIMARY KEY not yet implemented"]
-fn test_primary_key_update_not_allowed() {
+fn test_primary_key_update_valid() {
+    // Test that PRIMARY KEY can be updated to a unique, non-NULL value (SQL standard behavior)
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
-    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+    ctx.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
 
-    // Try to UPDATE PRIMARY KEY column - should fail
+    // Update PRIMARY KEY to a new unique value - should succeed
+    ctx.exec("UPDATE users SET id = 100 WHERE id = 1");
+
+    // Verify the update worked
+    let results = ctx.query("SELECT id, name FROM users ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert!(results[0].get("id").unwrap().contains("2"));
+    assert!(results[0].get("name").unwrap().contains("Bob"));
+    assert!(results[1].get("id").unwrap().contains("100"));
+    assert!(results[1].get("name").unwrap().contains("Alice"));
+
+    // Verify old id no longer exists
+    assert_rows!(ctx, "SELECT * FROM users WHERE id = 1", 0);
+
+    ctx.commit();
+}
+
+#[test]
+fn test_primary_key_update_duplicate_fails() {
+    // Test that updating PRIMARY KEY to duplicate value fails (violates UNIQUE constraint)
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
+
+    // Try to update PRIMARY KEY to existing value - should fail
     assert_error!(
         ctx,
-        "UPDATE Allegro SET id = 100 WHERE id = 1",
-        "PRIMARY KEY"
+        "UPDATE users SET id = 2 WHERE id = 1",
+        "Unique constraint violation"
     );
 
     // Verify data is unchanged
-    let results = ctx.query("SELECT id FROM Allegro WHERE id = 1");
+    assert_rows!(ctx, "SELECT * FROM users WHERE id = 1", 1);
+    assert_rows!(ctx, "SELECT * FROM users WHERE id = 2", 1);
+
+    ctx.commit();
+}
+
+#[test]
+fn test_primary_key_index_update_integrity() {
+    // Test that indexes are properly maintained when PRIMARY KEY is updated
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE products (sku INTEGER PRIMARY KEY, name TEXT, price INTEGER)");
+    ctx.exec(
+        "INSERT INTO products VALUES (100, 'Widget', 10), (200, 'Gadget', 20), (300, 'Doodad', 30)",
+    );
+
+    // Update PRIMARY KEY value
+    ctx.exec("UPDATE products SET sku = 150 WHERE sku = 100");
+
+    // Verify we can find the row with new PRIMARY KEY
+    let results = ctx.query("SELECT * FROM products WHERE sku = 150");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("id").unwrap().contains("1"));
+    assert!(results[0].get("name").unwrap().contains("Widget"));
+    assert!(results[0].get("price").unwrap().contains("10"));
+
+    // Verify we cannot find it with old PRIMARY KEY
+    assert_rows!(ctx, "SELECT * FROM products WHERE sku = 100", 0);
+
+    // Verify index still enforces uniqueness with the new value
+    assert_error!(
+        ctx,
+        "INSERT INTO products VALUES (150, 'Duplicate', 50)",
+        "Unique constraint violation"
+    );
+
+    // Update multiple PRIMARY KEYs in sequence
+    ctx.exec("UPDATE products SET sku = 250 WHERE sku = 200");
+    ctx.exec("UPDATE products SET sku = 350 WHERE sku = 300");
+
+    // Verify all rows are findable with their new keys
+    assert_rows!(ctx, "SELECT * FROM products WHERE sku = 150", 1);
+    assert_rows!(ctx, "SELECT * FROM products WHERE sku = 250", 1);
+    assert_rows!(ctx, "SELECT * FROM products WHERE sku = 350", 1);
+
+    // Verify old keys don't exist
+    assert_rows!(
+        ctx,
+        "SELECT * FROM products WHERE sku IN (100, 200, 300)",
+        0
+    );
+
+    // Verify total row count is unchanged
+    assert_rows!(ctx, "SELECT * FROM products", 3);
 
     ctx.commit();
 }
