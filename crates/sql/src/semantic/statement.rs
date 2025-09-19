@@ -232,6 +232,7 @@ impl AnalyzedStatement {
                 DmlStatement::Insert { .. } => (false, false, true), // Only insert, not write
                 DmlStatement::Update { .. } => (true, true, false),  // Read then write
                 DmlStatement::Delete { .. } => (true, true, false),  // Read then write
+                DmlStatement::Values(_) => (false, false, false),    // No table access
             },
             _ => (false, false, false), // DDL operations
         };

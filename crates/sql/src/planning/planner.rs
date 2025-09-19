@@ -132,6 +132,8 @@ impl Planner {
             DmlStatement::Delete { table, r#where } => {
                 self.plan_delete(table.clone(), r#where.clone(), analyzed)
             }
+
+            DmlStatement::Values(values_stmt) => self.plan_values(values_stmt, analyzed),
         }
     }
 
@@ -510,6 +512,117 @@ impl Planner {
             table,
             source: Box::new(node),
         })
+    }
+
+    /// Plan a VALUES statement
+    fn plan_values(
+        &self,
+        values_stmt: &crate::parsing::ast::dml::ValuesStatement,
+        analyzed: &AnalyzedStatement,
+    ) -> Result<Plan> {
+        let context = AnalyzedPlanContext::new(&self.schemas, analyzed);
+
+        // Convert expression rows to planned expressions
+        let rows = values_stmt
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|expr| context.resolve_expression(expr))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Determine number of columns for VALUES
+        let num_columns = rows.first().map(|r| r.len()).unwrap_or(0);
+
+        let mut node = Node::Values { rows: rows.clone() };
+
+        // Apply ORDER BY if present
+        if !values_stmt.order_by.is_empty() {
+            let order_by = values_stmt
+                .order_by
+                .iter()
+                .map(|(expr, dir)| {
+                    // For VALUES, handle columnN references specially
+                    let resolved_expr = match expr {
+                        AstExpression::Column(None, name) if name.starts_with("column") => {
+                            // Try to parse columnN as a column index
+                            if let Ok(col_num) = name[6..].parse::<usize>() {
+                                if col_num > 0 && col_num <= num_columns {
+                                    // Convert to 0-based column index
+                                    Expression::Column(col_num - 1)
+                                } else {
+                                    return Err(Error::ExecutionError(format!(
+                                        "Column {} out of range for VALUES with {} columns",
+                                        name, num_columns
+                                    )));
+                                }
+                            } else {
+                                // Not a valid columnN reference
+                                context.resolve_expression(expr)?
+                            }
+                        }
+                        _ => context.resolve_expression(expr)?,
+                    };
+
+                    Ok((
+                        resolved_expr,
+                        match dir {
+                            AstDirection::Asc => Direction::Ascending,
+                            AstDirection::Desc => Direction::Descending,
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            node = Node::Order {
+                source: Box::new(node),
+                order_by,
+            };
+        }
+
+        // Apply LIMIT if present
+        if let Some(limit_expr) = &values_stmt.limit {
+            // For now, evaluate limit as a constant
+            // TODO: Support dynamic limits
+            let limit = match context.resolve_expression(limit_expr)? {
+                Expression::Constant(crate::types::value::Value::I32(n)) if n > 0 => n as usize,
+                Expression::Constant(crate::types::value::Value::I64(n)) if n > 0 => n as usize,
+                _ => {
+                    return Err(Error::ExecutionError(
+                        "LIMIT must be a positive integer".into(),
+                    ));
+                }
+            };
+
+            node = Node::Limit {
+                source: Box::new(node),
+                limit,
+            };
+        }
+
+        // Apply OFFSET if present
+        if let Some(offset_expr) = &values_stmt.offset {
+            // For now, evaluate offset as a constant
+            // TODO: Support dynamic offsets
+            let offset = match context.resolve_expression(offset_expr)? {
+                Expression::Constant(crate::types::value::Value::I32(n)) if n >= 0 => n as usize,
+                Expression::Constant(crate::types::value::Value::I64(n)) if n >= 0 => n as usize,
+                _ => {
+                    return Err(Error::ExecutionError(
+                        "OFFSET must be a non-negative integer".into(),
+                    ));
+                }
+            };
+
+            node = Node::Offset {
+                source: Box::new(node),
+                offset,
+            };
+        }
+
+        Ok(Plan::Select(Box::new(node)))
     }
 
     // Helper methods...

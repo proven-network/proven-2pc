@@ -169,6 +169,102 @@ impl TypeChecker {
                         InsertSource::DefaultValues => {}
                     }
                 }
+                DmlStatement::Values(values) => {
+                    // First, determine column types from VALUES rows
+                    let mut column_types = Vec::new();
+                    if !values.rows.is_empty() {
+                        let num_cols = values.rows[0].len();
+
+                        // Check all rows have same number of columns (validation already done)
+                        // Infer type for each column across all rows
+                        for col_idx in 0..num_cols {
+                            let mut col_type = None;
+
+                            for (row_idx, row) in values.rows.iter().enumerate() {
+                                // Skip if this row doesn't have enough columns (caught by validation)
+                                if col_idx >= row.len() {
+                                    continue;
+                                }
+
+                                let expr_id =
+                                    ExpressionId::from_path(vec![9000 + row_idx, col_idx]);
+                                let type_info = self.infer_expr_type_new(
+                                    &row[col_idx],
+                                    &expr_id,
+                                    resolution_view.column_map,
+                                    param_types,
+                                    &mut type_map,
+                                )?;
+                                type_map.insert(expr_id.clone(), type_info.clone());
+
+                                // Unify column type across rows
+                                col_type = match col_type {
+                                    None => Some(type_info.data_type.clone()),
+                                    Some(existing_type) => {
+                                        // Check type compatibility
+                                        match self.unify_values_types(
+                                            &existing_type,
+                                            &type_info.data_type,
+                                        ) {
+                                            Ok(unified) => Some(unified),
+                                            Err(_) => {
+                                                return Err(Error::ExecutionError(format!(
+                                                    "Incompatible types in VALUES column {}: {} vs {}",
+                                                    col_idx + 1,
+                                                    existing_type,
+                                                    type_info.data_type
+                                                )));
+                                            }
+                                        }
+                                    }
+                                };
+                            }
+
+                            column_types.push(col_type.unwrap_or(DataType::Null));
+                        }
+                    }
+
+                    // Type check ORDER BY with VALUES column context
+                    for (idx, (expr, _)) in values.order_by.iter().enumerate() {
+                        let expr_id = ExpressionId::from_path(vec![9500 + idx]);
+
+                        // Special handling for columnN references in VALUES ORDER BY
+                        let type_info = match expr {
+                            Expression::Column(None, name) if name.starts_with("column") => {
+                                // Try to parse columnN as a column index
+                                if let Ok(col_num) = name[6..].parse::<usize>() {
+                                    if col_num > 0 && col_num <= column_types.len() {
+                                        TypeInfo {
+                                            data_type: column_types[col_num - 1].clone(),
+                                            nullable: true, // VALUES columns are nullable
+                                            is_aggregate: false,
+                                        }
+                                    } else {
+                                        return Err(Error::ColumnNotFound(name.clone()));
+                                    }
+                                } else {
+                                    // Not a valid columnN reference - try normal resolution
+                                    self.infer_expr_type_new(
+                                        expr,
+                                        &expr_id,
+                                        resolution_view.column_map,
+                                        param_types,
+                                        &mut type_map,
+                                    )?
+                                }
+                            }
+                            _ => self.infer_expr_type_new(
+                                expr,
+                                &expr_id,
+                                resolution_view.column_map,
+                                param_types,
+                                &mut type_map,
+                            )?,
+                        };
+
+                        type_map.insert(expr_id, type_info);
+                    }
+                }
                 DmlStatement::Update { set, r#where, .. } => {
                     for (idx, (_, expr_opt)) in set.iter().enumerate() {
                         if let Some(expr) = expr_opt {
@@ -735,5 +831,34 @@ impl TypeChecker {
             nullable: any_nullable,
             is_aggregate: is_aggregate || any_aggregate,
         })
+    }
+
+    /// Unify types for VALUES columns - ensures type compatibility
+    /// and returns the unified type
+    fn unify_values_types(&self, type1: &DataType, type2: &DataType) -> Result<DataType> {
+        match (type1, type2) {
+            // NULL is compatible with any type
+            (DataType::Null, other) | (other, DataType::Null) => Ok(other.clone()),
+
+            // Same type is always compatible
+            (t1, t2) if t1 == t2 => Ok(t1.clone()),
+
+            // Numeric type promotion
+            (DataType::I32, DataType::I64) | (DataType::I64, DataType::I32) => Ok(DataType::I64),
+            (DataType::I32, DataType::I128) | (DataType::I128, DataType::I32) => Ok(DataType::I128),
+            (DataType::I64, DataType::I128) | (DataType::I128, DataType::I64) => Ok(DataType::I128),
+
+            // Integer to float promotion
+            (DataType::I32, DataType::F32) | (DataType::F32, DataType::I32) => Ok(DataType::F32),
+            (DataType::I32, DataType::F64) | (DataType::F64, DataType::I32) => Ok(DataType::F64),
+            (DataType::I64, DataType::F64) | (DataType::F64, DataType::I64) => Ok(DataType::F64),
+            (DataType::F32, DataType::F64) | (DataType::F64, DataType::F32) => Ok(DataType::F64),
+
+            // All other combinations are incompatible
+            _ => Err(Error::ExecutionError(format!(
+                "Incompatible types in VALUES: {} and {}",
+                type1, type2
+            ))),
+        }
     }
 }

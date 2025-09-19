@@ -276,6 +276,7 @@ impl SemanticAnalyzer {
                 crate::parsing::ast::DmlStatement::Insert { .. } => StatementType::Insert,
                 crate::parsing::ast::DmlStatement::Update { .. } => StatementType::Update,
                 crate::parsing::ast::DmlStatement::Delete { .. } => StatementType::Delete,
+                crate::parsing::ast::DmlStatement::Values(_) => StatementType::Select, // VALUES behaves like SELECT
             },
             Statement::Ddl(ddl) => match ddl {
                 crate::parsing::ast::DdlStatement::CreateTable { .. } => StatementType::CreateTable,
@@ -438,6 +439,21 @@ impl SemanticAnalyzer {
                             param_types,
                             slots,
                         );
+                    }
+                }
+                DmlStatement::Values(values) => {
+                    // Collect parameters from VALUES rows
+                    for (row_idx, row) in values.rows.iter().enumerate() {
+                        for (col_idx, expr) in row.iter().enumerate() {
+                            let expr_id = ExpressionId::from_path(vec![9000 + row_idx, col_idx]);
+                            Self::collect_params_from_expr(
+                                expr,
+                                &expr_id,
+                                expression_types,
+                                param_types,
+                                slots,
+                            );
+                        }
                     }
                 }
             }

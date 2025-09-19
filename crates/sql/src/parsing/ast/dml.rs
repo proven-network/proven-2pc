@@ -15,6 +15,19 @@ pub enum InsertSource {
     DefaultValues,
 }
 
+/// VALUES statement for standalone VALUES expressions
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValuesStatement {
+    /// Rows of values
+    pub rows: Vec<Vec<Expression>>,
+    /// ORDER BY: expressions to sort by, with direction.
+    pub order_by: Vec<(Expression, Direction)>,
+    /// LIMIT: maximum number of rows to return.
+    pub limit: Option<Expression>,
+    /// OFFSET: row offset to start from.
+    pub offset: Option<Expression>,
+}
+
 /// SELECT statement structure
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SelectStatement {
@@ -63,4 +76,6 @@ pub enum DmlStatement {
     },
     /// SELECT: selects rows, possibly from a table.
     Select(Box<SelectStatement>),
+    /// VALUES: standalone VALUES statement.
+    Values(ValuesStatement),
 }

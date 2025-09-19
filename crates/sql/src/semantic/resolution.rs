@@ -47,6 +47,9 @@ impl NameResolver {
                     self.validate_table_exists(table)?;
                     tables.push((None, table.clone()));
                 }
+                DmlStatement::Values(_) => {
+                    // VALUES statements don't reference tables
+                }
             }
         }
 

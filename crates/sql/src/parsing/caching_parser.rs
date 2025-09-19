@@ -218,6 +218,32 @@ fn count_parameters(stmt: &Statement) -> usize {
             }
 
             DmlStatement::Delete { r#where, .. } => r#where.as_ref().map_or(0, count_expr_params),
+
+            DmlStatement::Values(values) => {
+                let mut count = 0;
+
+                // VALUES rows
+                for row in &values.rows {
+                    for expr in row {
+                        count += count_expr_params(expr);
+                    }
+                }
+
+                // ORDER BY
+                for (expr, _) in &values.order_by {
+                    count += count_expr_params(expr);
+                }
+
+                // LIMIT and OFFSET
+                if let Some(limit) = &values.limit {
+                    count += count_expr_params(limit);
+                }
+                if let Some(offset) = &values.offset {
+                    count += count_expr_params(offset);
+                }
+
+                count
+            }
         },
 
         Statement::Ddl(_) => 0,     // DDL statements don't have parameters

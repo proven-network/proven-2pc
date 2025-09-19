@@ -299,7 +299,7 @@ impl Node {
             // Values and Nothing nodes
             Node::Values { rows } => {
                 let count = rows.first().map(|r| r.len()).unwrap_or(0);
-                (0..count).map(|i| format!("column_{}", i)).collect()
+                (1..=count).map(|i| format!("column{}", i)).collect()
             }
 
             Node::Nothing => vec![],

@@ -8,6 +8,7 @@
 //! - DISTINCT usage
 //! - DEFAULT value validation
 
+use super::analyzer::ValidationInput;
 use super::statement::ExpressionId;
 use crate::error::{Error, Result};
 use crate::parsing::ast::{DmlStatement, Expression, Literal, SelectStatement, Statement};
@@ -495,6 +496,7 @@ impl SemanticValidator {
             } => self.validate_insert_new(table, columns.as_ref(), source, input),
             DmlStatement::Update { table, set, .. } => self.validate_update_new(table, set, input),
             DmlStatement::Delete { .. } => Ok(()),
+            DmlStatement::Values(values) => self.validate_values_new(values, input),
         }
     }
 
@@ -760,6 +762,34 @@ impl SemanticValidator {
             }
         }
 
+        Ok(())
+    }
+
+    /// Validate VALUES statement for new architecture
+    fn validate_values_new(
+        &self,
+        values: &crate::parsing::ast::dml::ValuesStatement,
+        _input: &ValidationInput,
+    ) -> Result<()> {
+        if values.rows.is_empty() {
+            return Err(Error::ExecutionError(
+                "VALUES must have at least one row".into(),
+            ));
+        }
+
+        // Check that all rows have the same number of columns
+        let num_columns = values.rows[0].len();
+        for row in values.rows.iter() {
+            if row.len() != num_columns {
+                return Err(Error::ExecutionError(format!(
+                    "{} values but {} columns",
+                    row.len(),
+                    num_columns
+                )));
+            }
+        }
+
+        // Type inference will handle type compatibility across rows
         Ok(())
     }
 }

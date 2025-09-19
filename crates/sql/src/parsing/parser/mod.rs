@@ -165,6 +165,7 @@ impl Parser<'_> {
             Some(Token::Keyword(Keyword::Delete)) => self.parse_delete(),
             Some(Token::Keyword(Keyword::Update)) => self.parse_update(),
             Some(Token::Keyword(Keyword::Select)) => self.parse_select(),
+            Some(Token::Keyword(Keyword::Values)) => self.parse_values(),
             Some(Token::Keyword(Keyword::Explain)) => self.parse_explain(),
             _ => {
                 let token = self.next()?;

@@ -149,6 +149,9 @@ impl MetadataBuilder {
                         });
                     }
                 }
+                DmlStatement::Values(_) => {
+                    // VALUES statements don't have predicates
+                }
             }
         }
 

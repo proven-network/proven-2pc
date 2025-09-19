@@ -6,7 +6,7 @@ use super::super::{Keyword, Token};
 use super::token_helper::TokenHelper;
 use crate::error::{Error, Result};
 use crate::parsing::ast::common::{Direction, FromClause, JoinType};
-use crate::parsing::ast::dml::DmlStatement;
+use crate::parsing::ast::dml::{DmlStatement, ValuesStatement};
 use crate::parsing::ast::{Expression, InsertSource, SelectStatement, Statement};
 use std::collections::BTreeMap;
 
@@ -49,23 +49,7 @@ pub trait DmlParser: TokenHelper {
             self.expect(Keyword::Values.into())?;
             InsertSource::DefaultValues
         } else if self.next_is(Keyword::Values.into()) {
-            let mut values = Vec::new();
-            loop {
-                let mut row = Vec::new();
-                self.expect(Token::OpenParen)?;
-                loop {
-                    row.push(self.parse_expression()?);
-                    if !self.next_is(Token::Comma) {
-                        break;
-                    }
-                }
-                self.expect(Token::CloseParen)?;
-                values.push(row);
-                if !self.next_is(Token::Comma) {
-                    break;
-                }
-            }
-            InsertSource::Values(values)
+            InsertSource::Values(self.parse_values_rows()?)
         } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
             // Parse the SELECT statement - parse_select_clause will consume SELECT
             let select = Box::new(SelectStatement {
@@ -320,5 +304,42 @@ pub trait DmlParser: TokenHelper {
             return Ok(None);
         }
         Ok(Some(self.parse_expression()?))
+    }
+
+    /// Parses a VALUES statement.
+    fn parse_values(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Values.into())?;
+        let rows = self.parse_values_rows()?;
+        let order_by = self.parse_order_by_clause()?;
+        let limit = self.parse_limit_clause()?;
+        let offset = self.parse_offset_clause()?;
+
+        Ok(Statement::Dml(DmlStatement::Values(ValuesStatement {
+            rows,
+            order_by,
+            limit,
+            offset,
+        })))
+    }
+
+    /// Parses VALUES rows (used by both VALUES statement and INSERT)
+    fn parse_values_rows(&mut self) -> Result<Vec<Vec<Expression>>> {
+        let mut rows = Vec::new();
+        loop {
+            let mut row = Vec::new();
+            self.expect(Token::OpenParen)?;
+            loop {
+                row.push(self.parse_expression()?);
+                if !self.next_is(Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(Token::CloseParen)?;
+            rows.push(row);
+            if !self.next_is(Token::Comma) {
+                break;
+            }
+        }
+        Ok(rows)
     }
 }
