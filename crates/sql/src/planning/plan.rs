@@ -8,7 +8,7 @@ pub use crate::types::query::{Direction, JoinType};
 
 /// An index column in the execution plan
 /// Uses AST expression for now - will be converted to types::expression later
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndexColumn {
     /// The expression to index (using AST expression for now)
     pub expression: crate::parsing::ast::Expression,
@@ -17,7 +17,7 @@ pub struct IndexColumn {
 }
 
 /// Execution plan - the root of the plan tree
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Plan {
     /// SELECT query
     Select(Box<Node>),
@@ -89,7 +89,7 @@ impl Plan {
 }
 
 /// Execution node in the plan tree
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     /// Table scan
     Scan {
@@ -308,7 +308,7 @@ impl Node {
 }
 
 /// Aggregate function
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AggregateFunc {
     Count(Expression),
     CountDistinct(Expression),

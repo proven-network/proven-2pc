@@ -6,13 +6,12 @@
 //! - Integrated with our Value types (including UUID, Timestamp, Blob)
 
 use super::value::Value;
-use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
 /// An expression, made up of nested operations and values. Values are either
 /// constants, or numeric column references which are looked up in rows.
 /// Evaluated to a final value during query execution.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Expression {
     /// A constant value.
     Constant(Value),
@@ -87,6 +86,20 @@ pub enum Expression {
 
     /// Map literal: {key1: value1, key2: value2}
     MapLiteral(Vec<(Expression, Expression)>),
+
+    /// IN subquery: expr IN (SELECT ...)
+    /// Store the subquery plan for execution
+    InSubquery(
+        Box<Expression>,
+        Box<super::super::planning::plan::Plan>,
+        bool,
+    ), // expr, subquery plan, negated
+
+    /// EXISTS subquery: EXISTS (SELECT ...)
+    Exists(Box<super::super::planning::plan::Plan>, bool), // subquery plan, negated
+
+    /// Scalar subquery: (SELECT ...)
+    Subquery(Box<super::super::planning::plan::Plan>),
 }
 
 impl Expression {
@@ -138,6 +151,12 @@ impl Expression {
             Between(expr, low, high, _) => {
                 expr.walk(visitor) && low.walk(visitor) && high.walk(visitor)
             }
+
+            InSubquery(expr, _, _) => expr.walk(visitor),
+
+            Exists(_, _) => true,
+
+            Subquery(_) => true,
         }
     }
 
@@ -258,6 +277,14 @@ impl Expression {
                 negated,
             ),
 
+            InSubquery(expr, plan, negated) => {
+                InSubquery(Box::new(expr.remap_columns(map)), plan, negated)
+            }
+
+            Exists(plan, negated) => Exists(plan, negated),
+
+            Subquery(plan) => Subquery(plan),
+
             Constant(value) => Constant(value),
         }
     }
@@ -355,6 +382,24 @@ impl Display for Expression {
                 }
                 write!(f, "}}")
             }
+
+            InSubquery(expr, _, negated) => {
+                write!(f, "{}", expr)?;
+                if *negated {
+                    write!(f, " NOT")?;
+                }
+                write!(f, " IN (subquery)")
+            }
+
+            Exists(_, negated) => {
+                if *negated {
+                    write!(f, "NOT EXISTS (subquery)")
+                } else {
+                    write!(f, "EXISTS (subquery)")
+                }
+            }
+
+            Subquery(_) => write!(f, "(subquery)"),
         }
     }
 }

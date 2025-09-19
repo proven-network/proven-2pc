@@ -98,6 +98,10 @@ fn count_parameters(stmt: &Statement) -> usize {
                 count_expr_params(base) + count_expr_params(index)
             }
             Expression::FieldAccess { base, .. } => count_expr_params(base),
+            Expression::Subquery(_) => {
+                // For now, don't count params in subqueries
+                0
+            }
             _ => 0,
         }
     }
@@ -134,6 +138,16 @@ fn count_parameters(stmt: &Statement) -> usize {
             Operator::Between {
                 expr, low, high, ..
             } => count_expr_params(expr) + count_expr_params(low) + count_expr_params(high),
+
+            Operator::InSubquery { expr, subquery, .. } => {
+                // For now, don't count params in subqueries
+                count_expr_params(expr) + count_expr_params(subquery)
+            }
+
+            Operator::Exists { subquery, .. } => {
+                // For now, don't count params in subqueries
+                count_expr_params(subquery)
+            }
         }
     }
 

@@ -572,6 +572,32 @@ impl SemanticAnalyzer {
                             slots,
                         );
                     }
+                    Operator::InSubquery { expr, subquery, .. } => {
+                        Self::collect_params_from_expr(
+                            expr,
+                            &expr_id.child(0),
+                            expression_types,
+                            param_types,
+                            slots,
+                        );
+                        // Also process the subquery expression
+                        Self::collect_params_from_expr(
+                            subquery,
+                            &expr_id.child(1),
+                            expression_types,
+                            param_types,
+                            slots,
+                        );
+                    }
+                    Operator::Exists { subquery, .. } => {
+                        Self::collect_params_from_expr(
+                            subquery,
+                            &expr_id.child(0),
+                            expression_types,
+                            param_types,
+                            slots,
+                        );
+                    }
                 }
             }
             Expression::Function(_, args) => {
@@ -638,6 +664,10 @@ impl SemanticAnalyzer {
                         slots,
                     );
                 }
+            }
+            Expression::Subquery(_) => {
+                // For now, don't collect params from subqueries
+                // This would need more sophisticated handling
             }
             _ => {} // Literals, columns, etc. don't contain parameters
         }

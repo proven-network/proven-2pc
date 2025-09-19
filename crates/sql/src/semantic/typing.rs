@@ -408,6 +408,16 @@ impl TypeChecker {
                     }
                 }
             }
+
+            Expression::Subquery(_) => {
+                // For now, assume subqueries return a nullable value
+                // The actual type would need to be inferred from the SELECT statement
+                TypeInfo {
+                    data_type: DataType::Null,
+                    nullable: true,
+                    is_aggregate: false,
+                }
+            }
         };
 
         Ok(type_info)
@@ -643,6 +653,28 @@ impl TypeChecker {
                     data_type: DataType::Bool,
                     nullable: any_nullable,
                     is_aggregate,
+                })
+            }
+
+            InSubquery { expr, .. } => {
+                let expr_id_0 = expr_id.child(0);
+                let expr_type =
+                    self.infer_expr_type_new(expr, &expr_id_0, column_map, param_types, type_map)?;
+
+                // For now, assume subqueries can have NULL results
+                Ok(TypeInfo {
+                    data_type: DataType::Bool,
+                    nullable: true,
+                    is_aggregate: expr_type.is_aggregate,
+                })
+            }
+
+            Exists { .. } => {
+                // EXISTS always returns a boolean
+                Ok(TypeInfo {
+                    data_type: DataType::Bool,
+                    nullable: false,
+                    is_aggregate: false,
                 })
             }
         }

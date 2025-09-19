@@ -304,14 +304,20 @@ pub fn execute_node_read<'a>(
             // Clone transaction context and params for use in closure
             let tx_ctx_clone = tx_ctx.clone();
             let params_clone = params.cloned();
+            // We need storage for subquery evaluation - capture a raw pointer
+            // SAFETY: We know storage lives for the entire query execution
+            let storage_ptr = storage as *const MvccStorage;
 
             let filtered = source_rows.filter_map(move |row| match row {
                 Ok(row) => {
-                    match expression::evaluate_with_arc(
+                    // SAFETY: storage outlives the iterator since it's borrowed for 'a
+                    let storage_ref = unsafe { &*storage_ptr };
+                    match expression::evaluate_with_arc_and_storage(
                         &predicate,
                         Some(&row),
                         &tx_ctx_clone,
                         params_clone.as_ref(),
+                        Some(storage_ref),
                     ) {
                         Ok(v) if v.to_bool().unwrap_or(false) => Some(Ok(row)),
                         Ok(_) => None,

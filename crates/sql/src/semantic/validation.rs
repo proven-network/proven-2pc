@@ -121,6 +121,13 @@ impl SemanticValidator {
                     Operator::Is(e, _) => {
                         self.validate_group_by_expr(e, group_by_exprs)?;
                     }
+                    Operator::InSubquery { expr, subquery, .. } => {
+                        self.validate_group_by_expr(expr, group_by_exprs)?;
+                        self.validate_group_by_expr(subquery, group_by_exprs)?;
+                    }
+                    Operator::Exists { subquery, .. } => {
+                        self.validate_group_by_expr(subquery, group_by_exprs)?;
+                    }
                 }
                 Ok(())
             }
@@ -206,6 +213,11 @@ impl SemanticValidator {
                             || list.iter().any(Self::is_aggregate_expression)
                     }
                     Operator::Is(e, _) => Self::is_aggregate_expression(e),
+                    Operator::InSubquery { expr, subquery, .. } => {
+                        Self::is_aggregate_expression(expr)
+                            || Self::is_aggregate_expression(subquery)
+                    }
+                    Operator::Exists { subquery, .. } => Self::is_aggregate_expression(subquery),
                 }
             }
             _ => false,
@@ -306,6 +318,13 @@ impl SemanticValidator {
                     Operator::Is(e, _) => {
                         self.validate_aggregate_context(e)?;
                     }
+                    Operator::InSubquery { expr, subquery, .. } => {
+                        self.validate_aggregate_context(expr)?;
+                        self.validate_aggregate_context(subquery)?;
+                    }
+                    Operator::Exists { subquery, .. } => {
+                        self.validate_aggregate_context(subquery)?;
+                    }
                 }
                 Ok(())
             }
@@ -399,6 +418,13 @@ impl SemanticValidator {
                     }
                     Operator::Is(e, _) => {
                         Self::validate_no_nested_aggregates(e)?;
+                    }
+                    Operator::InSubquery { expr, subquery, .. } => {
+                        Self::validate_no_nested_aggregates(expr)?;
+                        Self::validate_no_nested_aggregates(subquery)?;
+                    }
+                    Operator::Exists { subquery, .. } => {
+                        Self::validate_no_nested_aggregates(subquery)?;
                     }
                 }
                 Ok(())

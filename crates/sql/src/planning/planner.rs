@@ -14,6 +14,7 @@ use crate::parsing::ast::{
     Statement,
 };
 use crate::semantic::AnalyzedStatement;
+use crate::semantic::analyzer::SemanticAnalyzer;
 use crate::storage::mvcc::IndexMetadata;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
@@ -78,6 +79,11 @@ impl Planner {
                 unique,
                 included_columns,
             } => {
+                // Validate that index expressions don't contain subqueries
+                for col in columns {
+                    Self::validate_no_subqueries_in_expression(&col.expression)?;
+                }
+
                 // Convert AST IndexColumns to Plan IndexColumns
                 let plan_columns = columns
                     .iter()
@@ -130,7 +136,11 @@ impl Planner {
     }
 
     /// Plan a SELECT query
-    fn plan_select(&self, select: &SelectStatement, analyzed: &AnalyzedStatement) -> Result<Plan> {
+    pub fn plan_select(
+        &self,
+        select: &SelectStatement,
+        analyzed: &AnalyzedStatement,
+    ) -> Result<Plan> {
         // Create context that uses the analyzed statement
         let mut context = AnalyzedPlanContext::new(&self.schemas, analyzed);
 
@@ -849,6 +859,105 @@ impl Planner {
         };
         (left_table, right_table)
     }
+
+    /// Validate that an expression doesn't contain subqueries (for index expressions)
+    fn validate_no_subqueries_in_expression(expr: &AstExpression) -> Result<()> {
+        use crate::parsing::ast::{Expression as AstExpression, Operator};
+
+        match expr {
+            AstExpression::Subquery(_) => {
+                return Err(Error::ParseError(
+                    "Subqueries are not allowed in index expressions".to_string(),
+                ));
+            }
+            AstExpression::Operator(op) => {
+                match op {
+                    Operator::InSubquery { .. } | Operator::Exists { .. } => {
+                        return Err(Error::ParseError(
+                            "Subqueries are not allowed in index expressions".to_string(),
+                        ));
+                    }
+                    // Check other operators recursively
+                    Operator::And(l, r)
+                    | Operator::Or(l, r)
+                    | Operator::Equal(l, r)
+                    | Operator::NotEqual(l, r)
+                    | Operator::GreaterThan(l, r)
+                    | Operator::GreaterThanOrEqual(l, r)
+                    | Operator::LessThan(l, r)
+                    | Operator::LessThanOrEqual(l, r)
+                    | Operator::Add(l, r)
+                    | Operator::Subtract(l, r)
+                    | Operator::Multiply(l, r)
+                    | Operator::Divide(l, r)
+                    | Operator::Remainder(l, r)
+                    | Operator::Exponentiate(l, r)
+                    | Operator::Like(l, r) => {
+                        Self::validate_no_subqueries_in_expression(l)?;
+                        Self::validate_no_subqueries_in_expression(r)?;
+                    }
+                    Operator::Not(e)
+                    | Operator::Negate(e)
+                    | Operator::Identity(e)
+                    | Operator::Factorial(e)
+                    | Operator::Is(e, _) => {
+                        Self::validate_no_subqueries_in_expression(e)?;
+                    }
+                    Operator::Between {
+                        expr, low, high, ..
+                    } => {
+                        Self::validate_no_subqueries_in_expression(expr)?;
+                        Self::validate_no_subqueries_in_expression(low)?;
+                        Self::validate_no_subqueries_in_expression(high)?;
+                    }
+                    Operator::InList { expr, list, .. } => {
+                        Self::validate_no_subqueries_in_expression(expr)?;
+                        for item in list {
+                            Self::validate_no_subqueries_in_expression(item)?;
+                        }
+                    }
+                }
+            }
+            AstExpression::Function(_, args) => {
+                for arg in args {
+                    Self::validate_no_subqueries_in_expression(arg)?;
+                }
+            }
+            AstExpression::ArrayAccess { base, index } => {
+                Self::validate_no_subqueries_in_expression(base)?;
+                Self::validate_no_subqueries_in_expression(index)?;
+            }
+            AstExpression::FieldAccess { base, field: _ } => {
+                Self::validate_no_subqueries_in_expression(base)?;
+            }
+            AstExpression::ArrayLiteral(elements) => {
+                for elem in elements {
+                    Self::validate_no_subqueries_in_expression(elem)?;
+                }
+            }
+            AstExpression::MapLiteral(pairs) => {
+                for (k, v) in pairs {
+                    Self::validate_no_subqueries_in_expression(k)?;
+                    Self::validate_no_subqueries_in_expression(v)?;
+                }
+            }
+            // Simple expressions are fine
+            AstExpression::Literal(_)
+            | AstExpression::Column(_, _)
+            | AstExpression::Parameter(_)
+            | AstExpression::All
+            | AstExpression::QualifiedWildcard(_) => {}
+
+            AstExpression::Case { .. } => {
+                // CASE expressions are complex but shouldn't contain subqueries in index expressions
+                // For now, reject them entirely in index expressions
+                return Err(Error::ParseError(
+                    "CASE expressions are not allowed in index expressions".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Context that uses AnalyzedStatement for resolution
@@ -1023,6 +1132,21 @@ impl<'a> AnalyzedPlanContext<'a> {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Ok(Expression::MapLiteral(resolved_entries))
+            }
+
+            AstExpression::Subquery(select) => {
+                // Plan the subquery and store it in the expression
+                let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
+
+                // Create a minimal analyzed statement for the subquery
+                let analyzer = SemanticAnalyzer::new(self.schemas.clone());
+                let subquery_stmt =
+                    Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
+                let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;
+
+                let subquery_plan = subquery_planner.plan_select(select, &subquery_analyzed)?;
+
+                Ok(Expression::Subquery(Box::new(subquery_plan)))
             }
 
             _ => Err(Error::ExecutionError(
@@ -1208,6 +1332,56 @@ impl<'a> AnalyzedPlanContext<'a> {
                     resolved_list,
                     *negated,
                 )
+            }
+            // IN subquery operator
+            InSubquery {
+                expr,
+                subquery,
+                negated,
+            } => {
+                if let AstExpression::Subquery(select) = subquery.as_ref() {
+                    // Plan the subquery
+                    let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
+
+                    // Create a minimal analyzed statement for the subquery
+                    let analyzer = SemanticAnalyzer::new(self.schemas.clone());
+                    let subquery_stmt =
+                        Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
+                    let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;
+
+                    let subquery_plan = subquery_planner.plan_select(select, &subquery_analyzed)?;
+
+                    Expression::InSubquery(
+                        Box::new(self.resolve_expression_simple(expr)?),
+                        Box::new(subquery_plan),
+                        *negated,
+                    )
+                } else {
+                    return Err(Error::ExecutionError(
+                        "Invalid subquery in IN clause".to_string(),
+                    ));
+                }
+            }
+            // EXISTS operator
+            Exists { subquery, negated } => {
+                if let AstExpression::Subquery(select) = subquery.as_ref() {
+                    // Plan the subquery
+                    let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
+
+                    // Create a minimal analyzed statement for the subquery
+                    let analyzer = SemanticAnalyzer::new(self.schemas.clone());
+                    let subquery_stmt =
+                        Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
+                    let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;
+
+                    let subquery_plan = subquery_planner.plan_select(select, &subquery_analyzed)?;
+
+                    Expression::Exists(Box::new(subquery_plan), *negated)
+                } else {
+                    return Err(Error::ExecutionError(
+                        "Invalid subquery in EXISTS clause".to_string(),
+                    ));
+                }
             }
         })
     }

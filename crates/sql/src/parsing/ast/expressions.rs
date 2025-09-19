@@ -42,6 +42,8 @@ pub enum Expression {
     ArrayLiteral(Vec<Expression>),
     /// Map literal: {key1: value1, key2: value2}
     MapLiteral(Vec<(Expression, Expression)>),
+    /// Subquery
+    Subquery(Box<super::SelectStatement>),
 }
 
 /// Expression literal values.
@@ -95,12 +97,23 @@ pub enum Operator {
         list: Vec<Expression>,
         negated: bool,
     }, // a IN (b, c, d) or a NOT IN (b, c, d)
+    InSubquery {
+        expr: Box<Expression>,
+        subquery: Box<Expression>, // Should be Expression::Subquery
+        negated: bool,
+    }, // a IN (SELECT ...) or a NOT IN (SELECT ...)
     Between {
         expr: Box<Expression>,
         low: Box<Expression>,
         high: Box<Expression>,
         negated: bool,
     }, // a BETWEEN b AND c or a NOT BETWEEN b AND c
+
+    // EXISTS operator
+    Exists {
+        subquery: Box<Expression>, // Should be Expression::Subquery
+        negated: bool,
+    }, // EXISTS (SELECT ...) or NOT EXISTS (SELECT ...)
 }
 
 /// To allow using expressions and literals in e.g. hashmaps, implement simple
@@ -193,9 +206,13 @@ impl Expression {
                     expr.walk(visitor) && list.iter().all(|e| e.walk(visitor))
                 }
 
+                InSubquery { expr, subquery, .. } => expr.walk(visitor) && subquery.walk(visitor),
+
                 Between {
                     expr, low, high, ..
                 } => expr.walk(visitor) && low.walk(visitor) && high.walk(visitor),
+
+                Exists { subquery, .. } => subquery.walk(visitor),
             },
 
             Self::Function(_, exprs) => exprs.iter().all(|expr| expr.walk(visitor)),
@@ -235,6 +252,12 @@ impl Expression {
             Self::MapLiteral(pairs) => pairs
                 .iter()
                 .all(|(k, v)| k.walk(visitor) && v.walk(visitor)),
+
+            Self::Subquery(_) => {
+                // For now, we don't walk into subqueries
+                // This could be expanded if needed
+                true
+            }
 
             _ => true,
         }
@@ -281,12 +304,21 @@ impl Expression {
                     }
                 }
 
+                InSubquery { expr, subquery, .. } => {
+                    expr.transform(transformer)?;
+                    subquery.transform(transformer)?;
+                }
+
                 Between {
                     expr, low, high, ..
                 } => {
                     expr.transform(transformer)?;
                     low.transform(transformer)?;
                     high.transform(transformer)?;
+                }
+
+                Exists { subquery, .. } => {
+                    subquery.transform(transformer)?;
                 }
             },
 
@@ -333,6 +365,11 @@ impl Expression {
                 }
             }
 
+            Self::Subquery(_) => {
+                // For now, we don't transform subqueries
+                // This could be expanded if needed
+            }
+
             _ => {}
         }
 
@@ -342,6 +379,6 @@ impl Expression {
 
     /// Returns whether the expression is a constant, without any column references.
     pub fn is_constant(&self) -> bool {
-        !self.walk(&mut |expr| !matches!(expr, Self::Column(_, _)))
+        !self.walk(&mut |expr| !matches!(expr, Self::Column(_, _) | Self::Subquery(_)))
     }
 }

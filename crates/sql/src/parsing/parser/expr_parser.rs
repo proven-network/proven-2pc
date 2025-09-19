@@ -4,9 +4,9 @@
 //! and complex expressions like CASE/WHEN.
 
 use super::super::{Keyword, Token};
-use super::{literal_parser::LiteralParser, token_helper::TokenHelper};
+use super::{dml_parser::DmlParser, literal_parser::LiteralParser, token_helper::TokenHelper};
 use crate::error::{Error, Result};
-use crate::parsing::ast::{Expression, Literal, Operator};
+use crate::parsing::ast::{Expression, Literal, Operator, SelectStatement};
 use crate::types::data_type::DataType;
 use std::ops::Add;
 
@@ -138,20 +138,25 @@ impl InfixOperator {
 
 /// Postfix operators.
 pub enum PostfixOperator {
-    Factorial,                             // a!
-    Is(Literal),                           // a IS NULL | NAN
-    IsNot(Literal),                        // a IS NOT NULL | NAN
-    InList(Vec<Expression>, bool),         // a IN (list) or a NOT IN (list)
-    Between(Expression, Expression, bool), // a BETWEEN low AND high or a NOT BETWEEN low AND high
-    ArrayAccess(Expression),               // a[index]
-    FieldAccess(String),                   // a.field
+    Factorial,                              // a!
+    Is(Literal),                            // a IS NULL | NAN
+    IsNot(Literal),                         // a IS NOT NULL | NAN
+    InList(Vec<Expression>, bool),          // a IN (list) or a NOT IN (list)
+    InSubquery(Box<SelectStatement>, bool), // a IN (SELECT...) or a NOT IN (SELECT...)
+    Between(Expression, Expression, bool),  // a BETWEEN low AND high or a NOT BETWEEN low AND high
+    ArrayAccess(Expression),                // a[index]
+    FieldAccess(String),                    // a.field
 }
 
 impl PostfixOperator {
     // The operator precedence.
     pub fn precedence(&self) -> Precedence {
         match self {
-            Self::Is(_) | Self::IsNot(_) | Self::InList(_, _) | Self::Between(_, _, _) => 4,
+            Self::Is(_)
+            | Self::IsNot(_)
+            | Self::InList(_, _)
+            | Self::InSubquery(_, _)
+            | Self::Between(_, _, _) => 4,
             Self::Factorial => 9,
             Self::ArrayAccess(_) | Self::FieldAccess(_) => 10, // Highest precedence
         }
@@ -167,6 +172,12 @@ impl PostfixOperator {
             Self::InList(list, negated) => Operator::InList {
                 expr: lhs,
                 list,
+                negated,
+            }
+            .into(),
+            Self::InSubquery(select, negated) => Operator::InSubquery {
+                expr: lhs,
+                subquery: Box::new(Expression::Subquery(select)),
                 negated,
             }
             .into(),
@@ -187,7 +198,7 @@ impl PostfixOperator {
 }
 
 /// Parser trait for SQL expressions
-pub trait ExpressionParser: TokenHelper + LiteralParser {
+pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
     /// Increment and return the new parameter count
     fn increment_param_count(&mut self) -> u32;
 
@@ -251,6 +262,35 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
             // All columns.
             Token::Asterisk => Expression::All,
 
+            // NOT EXISTS (SELECT ...)
+            Token::Keyword(Keyword::Not)
+                if matches!(self.peek()?, Some(Token::Keyword(Keyword::Exists))) =>
+            {
+                self.expect(Keyword::Exists.into())?;
+                self.expect(Token::OpenParen)?;
+                if self.peek()? != Some(&Token::Keyword(Keyword::Select)) {
+                    return Err(Error::ParseError(
+                        "NOT EXISTS must be followed by a subquery (SELECT)".into(),
+                    ));
+                }
+                let select = Box::new(SelectStatement {
+                    select: self.parse_select_clause()?,
+                    from: self.parse_from_clause()?,
+                    r#where: self.parse_where_clause()?,
+                    group_by: self.parse_group_by_clause()?,
+                    having: self.parse_having_clause()?,
+                    order_by: self.parse_order_by_clause()?,
+                    limit: self.parse_limit_clause()?,
+                    offset: self.parse_offset_clause()?,
+                });
+                self.expect(Token::CloseParen)?;
+                Operator::Exists {
+                    subquery: Box::new(Expression::Subquery(select)),
+                    negated: true,
+                }
+                .into()
+            }
+
             // DATE literal: DATE 'YYYY-MM-DD' or column name "date"
             Token::Keyword(Keyword::Date) => {
                 // Check if this is a DATE literal (followed by a string) or a column reference
@@ -287,10 +327,36 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
                 }
             }
 
+            // EXISTS (SELECT ...)
+            Token::Keyword(Keyword::Exists) => {
+                self.expect(Token::OpenParen)?;
+                if self.peek()? != Some(&Token::Keyword(Keyword::Select)) {
+                    return Err(Error::ParseError(
+                        "EXISTS must be followed by a subquery (SELECT)".into(),
+                    ));
+                }
+                let select = Box::new(SelectStatement {
+                    select: self.parse_select_clause()?,
+                    from: self.parse_from_clause()?,
+                    r#where: self.parse_where_clause()?,
+                    group_by: self.parse_group_by_clause()?,
+                    having: self.parse_having_clause()?,
+                    order_by: self.parse_order_by_clause()?,
+                    limit: self.parse_limit_clause()?,
+                    offset: self.parse_offset_clause()?,
+                });
+                self.expect(Token::CloseParen)?;
+                Operator::Exists {
+                    subquery: Box::new(Expression::Subquery(select)),
+                    negated: false,
+                }
+                .into()
+            }
+
             // CAST expression: CAST(expr AS type)
             Token::Keyword(Keyword::Cast) => {
                 self.expect(Token::OpenParen)?;
-                let expr = self.parse_expression()?;
+                let expr = <Self as ExpressionParser>::parse_expression(self)?;
                 self.expect(Token::Keyword(Keyword::As))?;
 
                 // Parse the target type using parse_type() to support complex types
@@ -332,7 +398,7 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
                     if !args.is_empty() {
                         self.expect(Token::Comma)?;
                     }
-                    args.push(self.parse_expression()?);
+                    args.push(<Self as ExpressionParser>::parse_expression(self)?);
                 }
 
                 // If DISTINCT was used, create a special function name
@@ -362,19 +428,38 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
             }
 
             // Parenthesized expression.
+            // Nested expression or subquery
             Token::OpenParen => {
-                let expr = self.parse_expression()?;
-                self.expect(Token::CloseParen)?;
-                expr
+                // Check if this is a subquery (starts with SELECT)
+                if self.peek()? == Some(&Token::Keyword(Keyword::Select)) {
+                    // Parse subquery
+                    let select = Box::new(SelectStatement {
+                        select: self.parse_select_clause()?,
+                        from: self.parse_from_clause()?,
+                        r#where: self.parse_where_clause()?,
+                        group_by: self.parse_group_by_clause()?,
+                        having: self.parse_having_clause()?,
+                        order_by: self.parse_order_by_clause()?,
+                        limit: self.parse_limit_clause()?,
+                        offset: self.parse_offset_clause()?,
+                    });
+                    self.expect(Token::CloseParen)?;
+                    Expression::Subquery(select)
+                } else {
+                    // Regular nested expression
+                    let expr = <Self as ExpressionParser>::parse_expression(self)?;
+                    self.expect(Token::CloseParen)?;
+                    expr
+                }
             }
 
             // Array literal: [1, 2, 3]
             Token::OpenBracket => {
                 let mut elements = Vec::new();
                 if self.peek()? != Some(&Token::CloseBracket) {
-                    elements.push(self.parse_expression()?);
+                    elements.push(<Self as ExpressionParser>::parse_expression(self)?);
                     while self.next_is(Token::Comma) {
-                        elements.push(self.parse_expression()?);
+                        elements.push(<Self as ExpressionParser>::parse_expression(self)?);
                     }
                 }
                 self.expect(Token::CloseBracket)?;
@@ -386,16 +471,16 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
                 let mut pairs = Vec::new();
                 if self.peek()? != Some(&Token::CloseBrace) {
                     // Parse first key-value pair
-                    let key = self.parse_expression()?;
+                    let key = <Self as ExpressionParser>::parse_expression(self)?;
                     self.expect(Token::Colon)?;
-                    let value = self.parse_expression()?;
+                    let value = <Self as ExpressionParser>::parse_expression(self)?;
                     pairs.push((key, value));
 
                     // Parse remaining pairs
                     while self.next_is(Token::Comma) {
-                        let key = self.parse_expression()?;
+                        let key = <Self as ExpressionParser>::parse_expression(self)?;
                         self.expect(Token::Colon)?;
-                        let value = self.parse_expression()?;
+                        let value = <Self as ExpressionParser>::parse_expression(self)?;
                         pairs.push((key, value));
                     }
                 }
@@ -511,14 +596,31 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
             self.expect(Keyword::In.into())?;
             self.expect(Token::OpenParen)?;
 
-            // Handle empty list
+            // Check if this is a subquery (starts with SELECT) or a list
+            if self.peek()? == Some(&Token::Keyword(Keyword::Select)) {
+                // Parse subquery
+                let select = Box::new(SelectStatement {
+                    select: self.parse_select_clause()?,
+                    from: self.parse_from_clause()?,
+                    r#where: self.parse_where_clause()?,
+                    group_by: self.parse_group_by_clause()?,
+                    having: self.parse_having_clause()?,
+                    order_by: self.parse_order_by_clause()?,
+                    limit: self.parse_limit_clause()?,
+                    offset: self.parse_offset_clause()?,
+                });
+                self.expect(Token::CloseParen)?;
+                return Ok(Some(PostfixOperator::InSubquery(select, negated)));
+            }
+
+            // Handle empty list or expression list
             let mut list = Vec::new();
             if self.peek()? != Some(&Token::CloseParen) {
                 // Parse first expression
-                list.push(self.parse_expression()?);
+                list.push(<Self as ExpressionParser>::parse_expression(self)?);
                 // Parse remaining expressions
                 while self.next_is(Token::Comma) {
-                    list.push(self.parse_expression()?);
+                    list.push(<Self as ExpressionParser>::parse_expression(self)?);
                 }
             }
             self.expect(Token::CloseParen)?;
@@ -559,7 +661,7 @@ pub trait ExpressionParser: TokenHelper + LiteralParser {
                 return Ok(None);
             }
             self.expect(Token::OpenBracket)?;
-            let index = self.parse_expression()?;
+            let index = <Self as ExpressionParser>::parse_expression(self)?;
             self.expect(Token::CloseBracket)?;
             return Ok(Some(PostfixOperator::ArrayAccess(index)));
         }

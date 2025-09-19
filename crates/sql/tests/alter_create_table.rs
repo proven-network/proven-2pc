@@ -126,7 +126,7 @@ fn test_unique_constraint_on_unsupported_type_error() {
 }
 
 #[test]
-#[should_panic(expected = "Parse error")]
+#[should_panic(expected = "Expression type not supported in DEFAULT expressions")]
 fn test_default_value_with_subquery_error() {
     let mut ctx = setup_test();
 

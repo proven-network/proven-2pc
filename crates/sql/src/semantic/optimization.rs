@@ -10,7 +10,10 @@
 use super::analyzer::{IndexHint, JoinHint};
 use super::statement::{ExpressionId, PredicateTemplate, PredicateValue};
 use crate::error::Result;
-use crate::parsing::ast::{DmlStatement, Expression, InsertSource, Literal, Operator, Statement};
+use crate::parsing::ast::{
+    DmlStatement, Expression, FromClause, InsertSource, Literal, Operator, SelectStatement,
+    Statement,
+};
 use crate::types::schema::Table;
 use crate::types::value::Value;
 use std::collections::HashMap;
@@ -77,18 +80,36 @@ impl MetadataBuilder {
         if let Statement::Dml(dml) = statement.as_ref() {
             match dml {
                 DmlStatement::Select(select) => {
+                    // Count predicates before extracting from WHERE
+                    let initial_count = templates.len();
+
+                    // Extract predicates from WHERE clause (including subqueries)
                     if let Some(where_expr) = &select.r#where {
                         self.extract_templates_new(where_expr, &mut templates, input);
                     }
 
-                    // If no predicates were extracted (unsupported WHERE conditions),
-                    // fall back to FullTable
-                    if templates.is_empty()
-                        && let Some((_, table)) = input.tables.first()
-                    {
-                        templates.push(PredicateTemplate::FullTable {
-                            table: table.clone(),
-                        });
+                    // Check if any predicates were added for the main query tables
+                    // (not counting subquery predicates)
+                    let mut has_main_table_predicates = false;
+                    for (_, table) in input.tables {
+                        for template in &templates[initial_count..] {
+                            if self.template_covers_table(template, table) {
+                                has_main_table_predicates = true;
+                                break;
+                            }
+                        }
+                        if has_main_table_predicates {
+                            break;
+                        }
+                    }
+
+                    // If no predicates cover the main tables, add FullTable predicates
+                    if !has_main_table_predicates {
+                        for (_, table) in input.tables {
+                            templates.push(PredicateTemplate::FullTable {
+                                table: table.clone(),
+                            });
+                        }
                     }
                 }
                 DmlStatement::Insert {
@@ -369,6 +390,14 @@ impl MetadataBuilder {
 
                 // Range predicates
                 GreaterThan(left, right) => {
+                    // Check for subqueries in the comparison
+                    if let Expression::Subquery(select) = right.as_ref() {
+                        self.extract_subquery_predicates(select, templates);
+                    }
+                    if let Expression::Subquery(select) = left.as_ref() {
+                        self.extract_subquery_predicates(select, templates);
+                    }
+
                     if let Expression::Column(table, col) = left.as_ref() {
                         let table_name = self.resolve_table_name(table.as_deref(), col, input);
                         let value = self.expression_to_predicate_value(right);
@@ -509,8 +538,118 @@ impl MetadataBuilder {
                     }
                 }
 
+                // Handle subqueries - extract predicates from nested SELECT
+                InSubquery { subquery, .. } => {
+                    // InSubquery contains an Expression that should be Expression::Subquery
+                    if let Expression::Subquery(select_stmt) = subquery.as_ref() {
+                        self.extract_subquery_predicates(select_stmt, templates);
+                    }
+                }
+
+                Exists { subquery, .. } => {
+                    // Exists contains an Expression that should be Expression::Subquery
+                    if let Expression::Subquery(select_stmt) = subquery.as_ref() {
+                        self.extract_subquery_predicates(select_stmt, templates);
+                    }
+                }
+
                 _ => {}
             }
+        }
+
+        // Also handle standalone subquery expressions
+        if let Expression::Subquery(select_stmt) = expr {
+            self.extract_subquery_predicates(select_stmt, templates);
+        }
+    }
+
+    /// Extract predicates from a subquery
+    fn extract_subquery_predicates(
+        &self,
+        subquery: &SelectStatement,
+        templates: &mut Vec<PredicateTemplate>,
+    ) {
+        // Extract tables from FROM clause
+        for from_clause in &subquery.from {
+            Self::extract_tables_from_clause(from_clause, templates);
+        }
+
+        // Also check the WHERE clause for nested subqueries
+        if let Some(where_expr) = &subquery.r#where {
+            self.extract_subquery_predicates_from_expr(where_expr, templates);
+        }
+    }
+
+    /// Extract subquery predicates from an expression (for nested subqueries)
+    fn extract_subquery_predicates_from_expr(
+        &self,
+        expr: &Expression,
+        templates: &mut Vec<PredicateTemplate>,
+    ) {
+        match expr {
+            Expression::Operator(op) => {
+                use Operator::*;
+                match op {
+                    InSubquery { subquery, .. } => {
+                        if let Expression::Subquery(select_stmt) = subquery.as_ref() {
+                            self.extract_subquery_predicates(select_stmt, templates);
+                        }
+                    }
+                    Exists { subquery, .. } => {
+                        if let Expression::Subquery(select_stmt) = subquery.as_ref() {
+                            self.extract_subquery_predicates(select_stmt, templates);
+                        }
+                    }
+                    And(left, right) | Or(left, right) => {
+                        self.extract_subquery_predicates_from_expr(left, templates);
+                        self.extract_subquery_predicates_from_expr(right, templates);
+                    }
+                    Not(expr) => {
+                        self.extract_subquery_predicates_from_expr(expr, templates);
+                    }
+                    _ => {}
+                }
+            }
+            Expression::Subquery(select_stmt) => {
+                self.extract_subquery_predicates(select_stmt, templates);
+            }
+            _ => {}
+        }
+    }
+
+    /// Helper to extract tables from a FROM clause
+    fn extract_tables_from_clause(
+        from_clause: &FromClause,
+        templates: &mut Vec<PredicateTemplate>,
+    ) {
+        match from_clause {
+            FromClause::Table { name, .. } => {
+                // Add a full table read predicate for each table in the subquery
+                // This is conservative but ensures proper locking
+                templates.push(PredicateTemplate::FullTable {
+                    table: name.clone(),
+                });
+            }
+            FromClause::Join { left, right, .. } => {
+                // Recursively extract tables from joins
+                Self::extract_tables_from_clause(left, templates);
+                Self::extract_tables_from_clause(right, templates);
+            }
+        }
+    }
+
+    /// Check if a predicate template covers a given table
+    fn template_covers_table(&self, template: &PredicateTemplate, table: &str) -> bool {
+        match template {
+            PredicateTemplate::FullTable { table: t } => t == table,
+            PredicateTemplate::PrimaryKey { table: t, .. } => t == table,
+            PredicateTemplate::IndexedColumn { table: t, .. } => t == table,
+            PredicateTemplate::Equality { table: t, .. } => t == table,
+            PredicateTemplate::Range { table: t, .. } => t == table,
+            PredicateTemplate::InList { table: t, .. } => t == table,
+            PredicateTemplate::Like { table: t, .. } => t == table,
+            PredicateTemplate::IsNull { table: t, .. } => t == table,
+            PredicateTemplate::IsNotNull { table: t, .. } => t == table,
         }
     }
 

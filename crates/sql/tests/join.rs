@@ -284,7 +284,6 @@ fn test_inner_join_with_impossible_condition() {
 }
 
 #[test]
-#[ignore = "Subqueries in WHERE clause not yet supported"]
 fn test_left_join_with_subquery_limit_offset() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
@@ -338,7 +337,7 @@ fn test_left_join_with_complex_correlated_subquery() {
 }
 
 #[test]
-#[ignore = "Subqueries in IN clause not yet supported"]
+#[ignore = "Correlated subqueries not yet supported"]
 fn test_left_join_with_in_subquery() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);

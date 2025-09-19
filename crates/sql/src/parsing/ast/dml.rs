@@ -16,7 +16,7 @@ pub enum InsertSource {
 }
 
 /// SELECT statement structure
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SelectStatement {
     /// Expressions to select, with an optional column alias.
     pub select: Vec<(Expression, Option<String>)>,

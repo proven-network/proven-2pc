@@ -20,7 +20,7 @@ pub enum JoinType {
 }
 
 /// A FROM item.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FromClause {
     /// A table.
     Table {

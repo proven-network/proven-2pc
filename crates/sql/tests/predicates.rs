@@ -1466,3 +1466,367 @@ fn test_like_vs_equals_no_conflict() {
     engine.commit(tx3).unwrap();
     engine.abort(tx4).unwrap();
 }
+
+// ==================== SUBQUERY PREDICATE TESTS ====================
+
+#[test]
+fn test_subquery_read_predicates() {
+    let mut engine = create_engine();
+
+    // Create tables
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE users (id INT PRIMARY KEY, name TEXT, dept_id INT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE departments (id INT PRIMARY KEY, name TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales')".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 2), (3, 'Charlie', 1)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Query with subquery - should lock both tables
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM users WHERE dept_id IN (SELECT id FROM departments WHERE name = 'Engineering')".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Try to modify departments - should block
+    // because tx2's subquery is reading from departments
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE departments SET name = 'Dev' WHERE id = 1".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Subquery should lock departments table for reading"
+    );
+
+    // Transaction 4: Try to modify users - should also block
+    // because tx2's outer query is reading from users
+    let tx4 = timestamp(4);
+    engine.begin_transaction(tx4);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE users SET name = 'ALICE' WHERE id = 1".to_string(),
+        },
+        tx4,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Outer query should lock users table for reading"
+    );
+
+    // Commit tx2 to release locks
+    engine.commit(tx2).unwrap();
+
+    // Now tx3 and tx4 should succeed
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE departments SET name = 'Dev' WHERE id = 1".to_string(),
+        },
+        tx3,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE users SET name = 'ALICE' WHERE id = 1".to_string(),
+        },
+        tx4,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    engine.commit(tx3).unwrap();
+    engine.commit(tx4).unwrap();
+}
+
+#[test]
+fn test_exists_subquery_predicates() {
+    let mut engine = create_engine();
+
+    // Create tables
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE orders (id INT PRIMARY KEY, customer_id INT, amount INT)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE customers (id INT PRIMARY KEY, name TEXT, vip BOOLEAN)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO customers VALUES (1, 'Alice', true), (2, 'Bob', false)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO orders VALUES (1, 1, 100), (2, 1, 200)".to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: EXISTS subquery
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM customers c WHERE EXISTS (SELECT 1 FROM orders WHERE customer_id = 1)".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Try to insert into orders - should block
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO orders VALUES (3, 2, 300)".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "EXISTS subquery should lock orders table"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_scalar_subquery_predicates() {
+    let mut engine = create_engine();
+
+    // Create tables
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE products (id INT PRIMARY KEY, price INT, category_id INT)"
+                .to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE categories (id INT PRIMARY KEY, name TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Books')".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO products VALUES (1, 100, 1), (2, 200, 1), (3, 30, 2)".to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Scalar subquery
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM products WHERE price > (SELECT MIN(price) FROM products WHERE category_id = 2)".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Try to update products in category 2 - should block
+    // because the scalar subquery is reading products with category_id = 2
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE products SET price = 25 WHERE category_id = 2".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Scalar subquery should lock products table"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.commit(tx3).unwrap();
+}
+
+#[test]
+fn test_nested_subquery_predicates() {
+    let mut engine = create_engine();
+
+    // Create tables
+    let tx1 = timestamp(1);
+    engine.begin_transaction(tx1);
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE t1 (id INT PRIMARY KEY, val INT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE t2 (id INT PRIMARY KEY, ref_id INT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "CREATE TABLE t3 (id INT PRIMARY KEY, data TEXT)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO t1 VALUES (1, 10), (2, 20)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO t2 VALUES (1, 1), (2, 2)".to_string(),
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "INSERT INTO t3 VALUES (1, 'data1'), (2, 'data2')".to_string(),
+        },
+        tx1,
+    );
+    engine.commit(tx1).unwrap();
+
+    // Transaction 2: Nested subqueries
+    let tx2 = timestamp(2);
+    engine.begin_transaction(tx2);
+    let result = engine.apply_operation(
+        SqlOperation::Query {
+            params: None,
+            sql: "SELECT * FROM t1 WHERE id IN (SELECT ref_id FROM t2 WHERE id IN (SELECT id FROM t3))".to_string(),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Transaction 3: Try to modify t3 - should block
+    // because the innermost subquery reads from t3
+    let tx3 = timestamp(3);
+    engine.begin_transaction(tx3);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "DELETE FROM t3 WHERE id = 1".to_string(),
+        },
+        tx3,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Nested subquery should lock t3 table"
+    );
+
+    // Transaction 4: Try to modify t2 - should also block
+    let tx4 = timestamp(4);
+    engine.begin_transaction(tx4);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE t2 SET ref_id = 3 WHERE id = 1".to_string(),
+        },
+        tx4,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Nested subquery should lock t2 table"
+    );
+
+    // Transaction 5: Try to modify t1 - should also block
+    let tx5 = timestamp(5);
+    engine.begin_transaction(tx5);
+    let result = engine.apply_operation(
+        SqlOperation::Execute {
+            params: None,
+            sql: "UPDATE t1 SET val = 30 WHERE id = 1".to_string(),
+        },
+        tx5,
+    );
+    assert!(
+        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        "Outer query should lock t1 table"
+    );
+
+    engine.commit(tx2).unwrap();
+    engine.abort(tx3).unwrap();
+    engine.abort(tx4).unwrap();
+    engine.abort(tx5).unwrap();
+}

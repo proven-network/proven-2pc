@@ -274,5 +274,10 @@ fn test_invalid_expression_index() {
     // Try to create index with invalid expression (should fail)
     // Using SELECT in index expression is not allowed
     let error = ctx.exec_error("CREATE INDEX idx_invalid ON Test ((SELECT 1))");
-    assert!(error.contains("Parse error"));
+    // We should get an error about subqueries not being allowed
+    assert!(
+        error.contains("Subqueries are not allowed") || error.contains("Parse error"),
+        "Expected error about subqueries, got: {}",
+        error
+    );
 }
