@@ -86,6 +86,7 @@ pub fn execute_with_params(
             let create_plan = Plan::CreateTable {
                 name: name.clone(),
                 schema: schema.clone(),
+                foreign_keys: Vec::new(), // TODO: Handle foreign keys for CREATE TABLE AS VALUES
                 if_not_exists,
             };
             let create_msg = storage.execute_ddl(&create_plan, tx_ctx.id)?;

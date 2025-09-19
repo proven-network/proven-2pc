@@ -11,6 +11,7 @@ mod tests {
 
         let sales_table = Table {
             name: "sales".to_string(),
+            foreign_keys: Vec::new(),
             columns: vec![
                 Column {
                     name: "id".to_string(),

@@ -6,9 +6,89 @@
 use crate::error::{Error, Result};
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
-use crate::storage::{MvccStorage, write_ops};
+use crate::storage::{MvccStorage, read_ops, write_ops};
 use crate::stream::TransactionContext;
-use crate::types::value::Value;
+use crate::types::schema::Table;
+use crate::types::value::{Row, Value};
+
+/// Validate foreign key constraints for a row before insertion
+fn validate_foreign_keys(
+    row: &Row,
+    schema: &Table,
+    storage: &MvccStorage,
+    tx_ctx: &mut TransactionContext,
+) -> Result<()> {
+    // Check each foreign key constraint
+    let schemas = storage.get_schemas();
+    for fk in &schema.foreign_keys {
+        // Get the referenced table schema
+        let ref_schema = schemas.get(&fk.referenced_table).ok_or_else(|| {
+            Error::ForeignKeyViolation(format!(
+                "Referenced table '{}' does not exist",
+                fk.referenced_table
+            ))
+        })?;
+
+        // Build the foreign key values from the row
+        let mut fk_values = Vec::new();
+        for col_name in &fk.columns {
+            let (col_idx, _) = schema
+                .get_column(col_name)
+                .ok_or_else(|| Error::ColumnNotFound(col_name.clone()))?;
+            fk_values.push(&row[col_idx]);
+        }
+
+        // If all foreign key values are NULL, skip the check
+        if fk_values.iter().all(|v| v.is_null()) {
+            continue;
+        }
+
+        // Find the referenced column indices
+        let mut ref_indices = Vec::new();
+        for ref_col in &fk.referenced_columns {
+            let (idx, _) = ref_schema
+                .get_column(ref_col)
+                .ok_or_else(|| Error::ColumnNotFound(ref_col.clone()))?;
+            ref_indices.push(idx);
+        }
+
+        // Scan the referenced table to check if the value exists
+        let mut found = false;
+        let ref_iter = read_ops::scan_iter(storage, tx_ctx, &fk.referenced_table)?;
+
+        for ref_row in ref_iter {
+            let ref_row = ref_row.as_ref();
+
+            // Check if all referenced columns match
+            let mut all_match = true;
+            for (i, &ref_idx) in ref_indices.iter().enumerate() {
+                if &ref_row[ref_idx] != fk_values[i] {
+                    all_match = false;
+                    break;
+                }
+            }
+
+            if all_match {
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(Error::ForeignKeyViolation(format!(
+                "Foreign key constraint violation: referenced value {:?} not found in {}.{:?}",
+                fk_values
+                    .iter()
+                    .map(|v| format!("{}", v))
+                    .collect::<Vec<_>>(),
+                fk.referenced_table,
+                fk.referenced_columns
+            )));
+        }
+    }
+
+    Ok(())
+}
 
 /// Execute INSERT with phased read-then-write approach
 pub fn execute_insert(
@@ -93,6 +173,9 @@ pub fn execute_insert(
 
         // Apply type coercion to match schema
         let coerced_row = crate::coercion::coerce_row(final_row, schema)?;
+
+        // Validate foreign key constraints before insertion
+        validate_foreign_keys(&coerced_row, schema, storage, tx_ctx)?;
 
         write_ops::insert(storage, tx_ctx, &table, coerced_row)?;
         count += 1;

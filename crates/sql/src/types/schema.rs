@@ -6,6 +6,7 @@
 use super::data_type::DataType;
 use super::value::{Row, Value};
 use crate::error::{Error, Result};
+use crate::parsing::ast::ddl::ForeignKeyConstraint;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
@@ -22,11 +23,23 @@ pub struct Table {
     pub primary_key: Option<usize>,
     /// The table's columns. Must have at least one.
     pub columns: Vec<Column>,
+    /// Foreign key constraints defined on this table
+    #[serde(default)]
+    pub foreign_keys: Vec<ForeignKeyConstraint>,
 }
 
 impl Table {
     /// Creates a new table schema.
     pub fn new(name: String, columns: Vec<Column>) -> Result<Self> {
+        Self::new_with_foreign_keys(name, columns, Vec::new())
+    }
+
+    /// Creates a new table schema with foreign key constraints.
+    pub fn new_with_foreign_keys(
+        name: String,
+        columns: Vec<Column>,
+        foreign_keys: Vec<ForeignKeyConstraint>,
+    ) -> Result<Self> {
         if name.is_empty() {
             return Err(Error::InvalidValue("Table name cannot be empty".into()));
         }
@@ -66,6 +79,7 @@ impl Table {
             name,
             primary_key,
             columns,
+            foreign_keys,
         })
     }
 

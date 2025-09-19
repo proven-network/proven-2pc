@@ -11,7 +11,10 @@
 use super::analyzer::ValidationInput;
 use super::statement::ExpressionId;
 use crate::error::{Error, Result};
-use crate::parsing::ast::{DmlStatement, Expression, Literal, SelectStatement, Statement};
+use crate::parsing::ast::ddl::{ForeignKeyConstraint, ReferentialAction};
+use crate::parsing::ast::{
+    DdlStatement, DmlStatement, Expression, Literal, SelectStatement, Statement,
+};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -473,9 +476,16 @@ impl SemanticValidator {
     ) -> Result<Vec<String>> {
         let violations = Vec::new();
 
-        if let Statement::Dml(dml) = statement.as_ref() {
-            // Validate and return error immediately if validation fails
-            self.validate_dml_new(dml, input)?;
+        match statement.as_ref() {
+            Statement::Dml(dml) => {
+                // Validate and return error immediately if validation fails
+                self.validate_dml_new(dml, input)?;
+            }
+            Statement::Ddl(ddl) => {
+                // Validate DDL statements
+                self.validate_ddl(ddl, input)?;
+            }
+            _ => {} // Other statements don't need semantic validation
         }
 
         Ok(violations)
@@ -799,6 +809,297 @@ impl SemanticValidator {
         }
 
         // Type inference will handle type compatibility across rows
+        Ok(())
+    }
+
+    /// Validate DDL statements
+    fn validate_ddl(&self, statement: &DdlStatement, input: &ValidationInput) -> Result<()> {
+        match statement {
+            DdlStatement::CreateTable {
+                name,
+                columns,
+                foreign_keys,
+                if_not_exists,
+            } => {
+                self.validate_create_table(name, columns, foreign_keys, *if_not_exists, input)?;
+            }
+            DdlStatement::DropTable { names, cascade, .. } => {
+                self.validate_drop_table(names, *cascade, input)?;
+            }
+            _ => {} // Other DDL statements don't need special validation yet
+        }
+        Ok(())
+    }
+
+    /// Validate CREATE TABLE statement
+    fn validate_create_table(
+        &self,
+        table_name: &str,
+        columns: &[crate::parsing::ast::Column],
+        foreign_keys: &[ForeignKeyConstraint],
+        if_not_exists: bool,
+        input: &ValidationInput,
+    ) -> Result<()> {
+        // Check if table already exists
+        if input.schemas.contains_key(table_name) {
+            if if_not_exists {
+                // IF NOT EXISTS specified, silently ignore the duplicate
+                return Ok(());
+            }
+            return Err(Error::DuplicateTable(table_name.to_string()));
+        }
+
+        // Validate each foreign key constraint
+        for fk in foreign_keys {
+            self.validate_foreign_key_constraint(fk, columns, table_name, input)?;
+        }
+
+        // Also validate inline foreign key references in columns
+        for col in columns {
+            if let Some(ref referenced_table) = col.references {
+                // Check if referenced table exists (allow self-references)
+                let is_self_reference =
+                    referenced_table.to_lowercase() == table_name.to_lowercase();
+                if !is_self_reference && !input.schemas.contains_key(referenced_table) {
+                    return Err(Error::ExecutionError(format!(
+                        "Foreign key references non-existent table '{}'",
+                        referenced_table
+                    )));
+                }
+
+                // For self-references, we can't validate the schema yet
+                if !is_self_reference {
+                    // Check if referenced table has a primary key
+                    let ref_schema = &input.schemas[referenced_table];
+                    if ref_schema.primary_key.is_none() {
+                        return Err(Error::ExecutionError(format!(
+                            "Foreign key references table '{}' which has no primary key",
+                            referenced_table
+                        )));
+                    }
+
+                    // Check type compatibility with primary key
+                    if let Some(pk_idx) = ref_schema.primary_key {
+                        let pk_col = &ref_schema.columns[pk_idx];
+                        if col.datatype != pk_col.datatype {
+                            return Err(Error::ExecutionError(format!(
+                                "Foreign key column '{}' type {:?} doesn't match referenced primary key '{}' type {:?}",
+                                col.name, col.datatype, pk_col.name, pk_col.datatype
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate a foreign key constraint
+    fn validate_foreign_key_constraint(
+        &self,
+        fk: &ForeignKeyConstraint,
+        columns: &[crate::parsing::ast::Column],
+        table_name: &str,
+        input: &ValidationInput,
+    ) -> Result<()> {
+        // Check that all referencing columns exist in the table
+        for col_name in &fk.columns {
+            if !columns.iter().any(|c| &c.name == col_name) {
+                return Err(Error::ExecutionError(format!(
+                    "Foreign key column not found: '{}'",
+                    col_name
+                )));
+            }
+        }
+
+        // Check that referenced table exists (allow self-references)
+        let is_self_reference = fk.referenced_table.to_lowercase() == table_name.to_lowercase();
+        if !is_self_reference && !input.schemas.contains_key(&fk.referenced_table) {
+            return Err(Error::ExecutionError(format!(
+                "Foreign key references non-existent table '{}'",
+                fk.referenced_table
+            )));
+        }
+
+        // For self-references, we can't validate against the schema yet
+        // as the table is still being created
+        if is_self_reference {
+            // Just validate that the columns exist and have matching types
+            if fk.columns.len() == 1 && fk.referenced_columns.len() == 1 {
+                let col_name = &fk.columns[0];
+                let ref_col_name = &fk.referenced_columns[0];
+
+                let col = columns
+                    .iter()
+                    .find(|c| &c.name == col_name)
+                    .ok_or_else(|| {
+                        Error::ExecutionError(format!(
+                            "Foreign key column '{}' not found",
+                            col_name
+                        ))
+                    })?;
+
+                let ref_col = columns
+                    .iter()
+                    .find(|c| &c.name == ref_col_name)
+                    .ok_or_else(|| {
+                        Error::ExecutionError(format!(
+                            "Referenced column '{}' not found in self-referencing table",
+                            ref_col_name
+                        ))
+                    })?;
+
+                if col.datatype != ref_col.datatype {
+                    return Err(Error::ExecutionError(format!(
+                        "Self-referencing foreign key column '{}' type {:?} doesn't match referenced column '{}' type {:?}",
+                        col_name, col.datatype, ref_col_name, ref_col.datatype
+                    )));
+                }
+            }
+            // Skip further validation for self-references
+            return Ok(());
+        }
+
+        let ref_schema = &input.schemas[&fk.referenced_table];
+
+        // If referenced columns are specified, validate them
+        if !fk.referenced_columns.is_empty() {
+            // Check that all referenced columns exist
+            for col_name in &fk.referenced_columns {
+                if !ref_schema.columns.iter().any(|c| &c.name == col_name) {
+                    return Err(Error::ExecutionError(format!(
+                        "Referenced column not found: '{}' in table '{}'",
+                        col_name, fk.referenced_table
+                    )));
+                }
+            }
+
+            // For now, we require that referenced columns form the primary key
+            // (Later we could support UNIQUE constraints too)
+            if fk.referenced_columns.len() == 1 {
+                let ref_col_name = &fk.referenced_columns[0];
+                let pk_idx = ref_schema.primary_key.ok_or_else(|| {
+                    Error::ExecutionError(format!(
+                        "Foreign key references table '{}' which has no primary key",
+                        fk.referenced_table
+                    ))
+                })?;
+
+                let pk_col = &ref_schema.columns[pk_idx];
+                if &pk_col.name != ref_col_name {
+                    return Err(Error::ExecutionError(format!(
+                        "Foreign key must reference primary key column, but '{}' is not the primary key of '{}'",
+                        ref_col_name, fk.referenced_table
+                    )));
+                }
+            } else {
+                // Multi-column foreign keys not yet supported
+                return Err(Error::ExecutionError(
+                    "Multi-column foreign keys are not yet supported".into(),
+                ));
+            }
+        } else {
+            // No referenced columns specified - must reference primary key
+            if ref_schema.primary_key.is_none() {
+                return Err(Error::ExecutionError(format!(
+                    "Foreign key references table '{}' which has no primary key",
+                    fk.referenced_table
+                )));
+            }
+        }
+
+        // Check type compatibility
+        if fk.columns.len() == 1 && fk.referenced_columns.len() <= 1 {
+            let col_name = &fk.columns[0];
+            let col = columns
+                .iter()
+                .find(|c| &c.name == col_name)
+                .ok_or_else(|| {
+                    Error::ExecutionError(format!("Foreign key column '{}' not found", col_name))
+                })?;
+
+            let pk_idx = ref_schema.primary_key.ok_or_else(|| {
+                Error::ExecutionError(format!(
+                    "Referenced table '{}' has no primary key",
+                    fk.referenced_table
+                ))
+            })?;
+            let pk_col = &ref_schema.columns[pk_idx];
+
+            if col.datatype != pk_col.datatype {
+                return Err(Error::ExecutionError(format!(
+                    "Foreign key type mismatch: column '{}' type {:?} doesn't match referenced primary key type {:?}",
+                    col.name, col.datatype, pk_col.datatype
+                )));
+            }
+        }
+
+        // Validate referential actions
+        self.validate_referential_action(fk.on_delete, "ON DELETE")?;
+        self.validate_referential_action(fk.on_update, "ON UPDATE")?;
+
+        Ok(())
+    }
+
+    /// Validate referential action
+    fn validate_referential_action(&self, action: ReferentialAction, _context: &str) -> Result<()> {
+        // All referential actions are now supported
+        match action {
+            ReferentialAction::NoAction
+            | ReferentialAction::Restrict
+            | ReferentialAction::Cascade
+            | ReferentialAction::SetNull
+            | ReferentialAction::SetDefault => Ok(()),
+        }
+    }
+
+    /// Validate DROP TABLE statement
+    fn validate_drop_table(
+        &self,
+        table_names: &[String],
+        cascade: bool,
+        input: &ValidationInput,
+    ) -> Result<()> {
+        for table_name in table_names {
+            // Check if table exists
+            if !input.schemas.contains_key(table_name) {
+                // This might be OK with IF EXISTS, so we don't error here
+                continue;
+            }
+
+            // Check if any other tables reference this one via foreign keys
+            if !cascade {
+                for (other_table_name, other_schema) in input.schemas.iter() {
+                    if other_table_name == table_name {
+                        continue;
+                    }
+
+                    // Check inline foreign key references
+                    for col in &other_schema.columns {
+                        if let Some(ref ref_table) = col.references
+                            && ref_table == table_name
+                        {
+                            return Err(Error::ExecutionError(format!(
+                                "Cannot drop table '{}' because table '{}' references it. Use CASCADE to drop dependent objects.",
+                                table_name, other_table_name
+                            )));
+                        }
+                    }
+
+                    // Check table-level foreign key constraints
+                    for fk in &other_schema.foreign_keys {
+                        if fk.referenced_table.to_lowercase() == table_name.to_lowercase() {
+                            return Err(Error::ExecutionError(format!(
+                                "Cannot drop table '{}' because table '{}' references it. Use CASCADE to drop dependent objects.",
+                                table_name, other_table_name
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }

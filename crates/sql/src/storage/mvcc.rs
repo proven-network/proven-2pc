@@ -1604,17 +1604,27 @@ impl MvccStorage {
             Plan::CreateTable {
                 name,
                 schema,
+                foreign_keys: _,
                 if_not_exists,
-            } => match self.create_table(name.clone(), schema.clone()) {
-                Ok(_) => Ok(format!("Table '{}' created", name)),
-                Err(Error::DuplicateTable(_)) if *if_not_exists => Ok(format!(
-                    "Table '{}' already exists (IF NOT EXISTS specified)",
-                    name
-                )),
-                Err(e) => Err(e),
-            },
+            } => {
+                // TODO: Store and validate foreign key constraints
+                // For now, just create the table without FK validation
+                match self.create_table(name.clone(), schema.clone()) {
+                    Ok(_) => Ok(format!("Table '{}' created", name)),
+                    Err(Error::DuplicateTable(_)) if *if_not_exists => Ok(format!(
+                        "Table '{}' already exists (IF NOT EXISTS specified)",
+                        name
+                    )),
+                    Err(e) => Err(e),
+                }
+            }
 
-            Plan::DropTable { names, if_exists } => {
+            Plan::DropTable {
+                names,
+                if_exists,
+                cascade: _,
+            } => {
+                // TODO: Handle CASCADE option for foreign keys
                 let mut dropped_count = 0;
                 let mut errors = Vec::new();
 

@@ -65,8 +65,14 @@ impl Planner {
             DdlStatement::CreateTable {
                 name,
                 columns,
+                foreign_keys,
                 if_not_exists,
-            } => self.plan_create_table(name.clone(), columns.clone(), *if_not_exists),
+            } => self.plan_create_table(
+                name.clone(),
+                columns.clone(),
+                foreign_keys.clone(),
+                *if_not_exists,
+            ),
 
             DdlStatement::CreateTableAsValues {
                 name,
@@ -74,9 +80,14 @@ impl Planner {
                 if_not_exists,
             } => self.plan_create_table_as_values(name.clone(), values, *if_not_exists, analyzed),
 
-            DdlStatement::DropTable { names, if_exists } => Ok(Plan::DropTable {
+            DdlStatement::DropTable {
+                names,
+                if_exists,
+                cascade,
+            } => Ok(Plan::DropTable {
                 names: names.clone(),
                 if_exists: *if_exists,
+                cascade: *cascade,
             }),
 
             DdlStatement::CreateIndex {
@@ -698,6 +709,7 @@ impl Planner {
         &self,
         name: String,
         columns: Vec<Column>,
+        foreign_keys: Vec<crate::parsing::ast::ddl::ForeignKeyConstraint>,
         if_not_exists: bool,
     ) -> Result<Plan> {
         // Similar to original planner for now
@@ -744,11 +756,13 @@ impl Planner {
             schema_columns.push(schema_col);
         }
 
-        let table = Table::new(name.clone(), schema_columns)?;
+        let table =
+            Table::new_with_foreign_keys(name.clone(), schema_columns, foreign_keys.clone())?;
 
         Ok(Plan::CreateTable {
             name,
             schema: table,
+            foreign_keys,
             if_not_exists,
         })
     }

@@ -17,3 +17,6 @@ pub use parser::Parser;
 
 // Re-export commonly used AST types from the new structure
 pub use ast::{Operator, Statement};
+
+#[cfg(test)]
+mod test_foreign_key_parser;

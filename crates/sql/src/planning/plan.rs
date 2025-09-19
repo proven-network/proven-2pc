@@ -49,6 +49,7 @@ pub enum Plan {
     CreateTable {
         name: String,
         schema: crate::types::schema::Table,
+        foreign_keys: Vec<crate::parsing::ast::ddl::ForeignKeyConstraint>,
         if_not_exists: bool,
     },
 
@@ -61,7 +62,11 @@ pub enum Plan {
     },
 
     /// DROP TABLE
-    DropTable { names: Vec<String>, if_exists: bool },
+    DropTable {
+        names: Vec<String>,
+        if_exists: bool,
+        cascade: bool,
+    },
 
     /// CREATE INDEX
     CreateIndex {

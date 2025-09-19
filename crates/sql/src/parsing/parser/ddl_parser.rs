@@ -19,6 +19,14 @@ pub trait DdlParser: TypeParser {
     /// Parses VALUES rows - reused from DML parser
     fn parse_values_rows(&mut self) -> Result<Vec<Vec<Expression>>>;
 
+    /// Parses a table-level constraint
+    fn parse_table_constraint(
+        &mut self,
+    ) -> Result<Option<crate::parsing::ast::ddl::ForeignKeyConstraint>>;
+
+    /// Parses a referential action
+    fn parse_referential_action(&mut self) -> Result<crate::parsing::ast::ddl::ReferentialAction>;
+
     /// Parses a CREATE statement (TABLE or INDEX).
     fn parse_create(&mut self) -> Result<Statement> {
         self.expect(Keyword::Create.into())?;
@@ -95,12 +103,26 @@ pub trait DdlParser: TypeParser {
                 if_not_exists,
             }))
         } else if self.next_is(Token::OpenParen) {
-            // Parse column list
+            // Parse column list and constraints
             let mut columns = Vec::new();
+            let mut foreign_keys = Vec::new();
+
             // Check for empty column list
             if !self.next_is(Token::CloseParen) {
                 loop {
-                    columns.push(self.parse_create_table_column()?);
+                    // Check for table-level constraints
+                    if self.peek()? == Some(&Token::Keyword(Keyword::Constraint))
+                        || self.peek()? == Some(&Token::Keyword(Keyword::Foreign))
+                    {
+                        // Parse table-level constraint
+                        if let Some(fk) = self.parse_table_constraint()? {
+                            foreign_keys.push(fk);
+                        }
+                    } else {
+                        // Parse column definition
+                        columns.push(self.parse_create_table_column()?);
+                    }
+
                     if !self.next_is(Token::Comma) {
                         break;
                     }
@@ -110,6 +132,7 @@ pub trait DdlParser: TypeParser {
             Ok(Statement::Ddl(DdlStatement::CreateTable {
                 name,
                 columns,
+                foreign_keys,
                 if_not_exists,
             }))
         } else {
@@ -117,6 +140,7 @@ pub trait DdlParser: TypeParser {
             Ok(Statement::Ddl(DdlStatement::CreateTable {
                 name,
                 columns: Vec::new(),
+                foreign_keys: Vec::new(),
                 if_not_exists,
             }))
         }
@@ -169,7 +193,20 @@ pub trait DdlParser: TypeParser {
                 Keyword::Default => column.default = Some(self.parse_expression()?),
                 Keyword::Unique => column.unique = true,
                 Keyword::Index => column.index = true,
-                Keyword::References => column.references = Some(self.next_ident()?),
+                Keyword::References => {
+                    // Parse REFERENCES table_name [(column_name)]
+                    let table = self.next_ident()?;
+                    // For inline references, we only store the table name
+                    // Column-level FK doesn't support ON DELETE/UPDATE actions
+                    column.references = Some(table);
+
+                    // Skip optional column specification for now
+                    if self.peek()? == Some(&Token::OpenParen) {
+                        self.next()?; // consume (
+                        self.next_ident()?; // consume column name
+                        self.expect(Token::CloseParen)?;
+                    }
+                }
                 keyword => {
                     return Err(Error::ParseError(format!("unexpected keyword {}", keyword)));
                 }
@@ -265,6 +302,13 @@ pub trait DdlParser: TypeParser {
             names.push(self.next_ident()?);
         }
 
-        Ok(Statement::Ddl(DdlStatement::DropTable { names, if_exists }))
+        // Check for CASCADE keyword
+        let cascade = self.next_is(Keyword::Cascade.into());
+
+        Ok(Statement::Ddl(DdlStatement::DropTable {
+            names,
+            if_exists,
+            cascade,
+        }))
     }
 }

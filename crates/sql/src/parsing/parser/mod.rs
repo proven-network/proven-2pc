@@ -259,6 +259,126 @@ impl DdlParser for Parser<'_> {
     fn parse_values_rows(&mut self) -> Result<Vec<Vec<Expression>>> {
         DmlParser::parse_values_rows(self)
     }
+
+    fn parse_table_constraint(
+        &mut self,
+    ) -> Result<Option<crate::parsing::ast::ddl::ForeignKeyConstraint>> {
+        use crate::parsing::ast::ddl::{ForeignKeyConstraint, ReferentialAction};
+
+        // Optional CONSTRAINT name
+        let constraint_name = if self.next_is(Keyword::Constraint.into()) {
+            Some(self.next_ident()?)
+        } else {
+            None
+        };
+
+        // Check constraint type
+        match self.peek()? {
+            Some(Token::Keyword(Keyword::Foreign)) => {
+                self.next()?; // consume FOREIGN
+                self.expect(Keyword::Key.into())?;
+
+                // Parse column list
+                self.expect(Token::OpenParen)?;
+                let mut columns = vec![self.next_ident()?];
+                while self.next_is(Token::Comma) {
+                    columns.push(self.next_ident()?);
+                }
+                self.expect(Token::CloseParen)?;
+
+                // Parse REFERENCES
+                self.expect(Keyword::References.into())?;
+                let referenced_table = self.next_ident()?;
+
+                // Parse optional referenced column list
+                let referenced_columns = if self.peek()? == Some(&Token::OpenParen) {
+                    self.next()?; // consume (
+                    let mut cols = vec![self.next_ident()?];
+                    while self.next_is(Token::Comma) {
+                        cols.push(self.next_ident()?);
+                    }
+                    self.expect(Token::CloseParen)?;
+                    cols
+                } else {
+                    // If not specified, will use primary key
+                    Vec::new()
+                };
+
+                // Parse optional ON DELETE/UPDATE actions
+                let mut on_delete = ReferentialAction::NoAction;
+                let mut on_update = ReferentialAction::NoAction;
+
+                while self.peek()? == Some(&Token::Keyword(Keyword::On)) {
+                    self.next()?; // consume ON
+                    match self.next()? {
+                        Token::Keyword(Keyword::Delete) => {
+                            on_delete = self.parse_referential_action()?;
+                        }
+                        Token::Keyword(Keyword::Update) => {
+                            on_update = self.parse_referential_action()?;
+                        }
+                        _ => {
+                            return Err(Error::ParseError(
+                                "Expected DELETE or UPDATE after ON".into(),
+                            ));
+                        }
+                    }
+                }
+
+                Ok(Some(ForeignKeyConstraint {
+                    name: constraint_name,
+                    columns,
+                    referenced_table,
+                    referenced_columns,
+                    on_delete,
+                    on_update,
+                }))
+            }
+            Some(Token::Keyword(Keyword::Primary)) => {
+                // Skip PRIMARY KEY constraints for now
+                self.next()?; // consume PRIMARY
+                self.expect(Keyword::Key.into())?;
+                self.expect(Token::OpenParen)?;
+                // Skip column list
+                while !matches!(self.next()?, Token::CloseParen) {
+                    // Continue
+                }
+                Ok(None)
+            }
+            Some(Token::Keyword(Keyword::Unique)) => {
+                // Skip UNIQUE constraints for now
+                self.next()?; // consume UNIQUE
+                self.expect(Token::OpenParen)?;
+                // Skip column list
+                while !matches!(self.next()?, Token::CloseParen) {
+                    // Continue
+                }
+                Ok(None)
+            }
+            _ => Err(Error::ParseError("Expected constraint type".into())),
+        }
+    }
+
+    fn parse_referential_action(&mut self) -> Result<crate::parsing::ast::ddl::ReferentialAction> {
+        use crate::parsing::ast::ddl::ReferentialAction;
+
+        match self.next()? {
+            Token::Keyword(Keyword::Cascade) => Ok(ReferentialAction::Cascade),
+            Token::Keyword(Keyword::Restrict) => Ok(ReferentialAction::Restrict),
+            Token::Keyword(Keyword::No) => {
+                self.expect(Keyword::Action.into())?;
+                Ok(ReferentialAction::NoAction)
+            }
+            Token::Keyword(Keyword::Set) => match self.next()? {
+                Token::Keyword(Keyword::Null) => Ok(ReferentialAction::SetNull),
+                Token::Keyword(Keyword::Default) => Ok(ReferentialAction::SetDefault),
+                _ => Err(Error::ParseError(
+                    "Expected NULL or DEFAULT after SET".into(),
+                )),
+            },
+            _ => Err(Error::ParseError("Expected referential action".into())),
+        }
+    }
 }
 
 // Implement TypeParser trait for Parser
