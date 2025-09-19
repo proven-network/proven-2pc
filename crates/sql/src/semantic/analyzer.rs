@@ -493,6 +493,7 @@ impl SemanticAnalyzer {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
+                    | Operator::ILike(l, r)
                     | Operator::Like(l, r) => {
                         Self::collect_params_from_expr(
                             l,

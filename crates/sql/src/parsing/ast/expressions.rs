@@ -90,7 +90,8 @@ pub enum Operator {
     Remainder(Box<Expression>, Box<Expression>),    // a % b
     Subtract(Box<Expression>, Box<Expression>),     // a - b
 
-    Like(Box<Expression>, Box<Expression>), // a LIKE b
+    ILike(Box<Expression>, Box<Expression>), // a ILIKE b
+    Like(Box<Expression>, Box<Expression>),  // a LIKE b
 
     // IN and BETWEEN operators
     InList {
@@ -193,6 +194,7 @@ impl Expression {
                 | GreaterThanOrEqual(lhs, rhs)
                 | LessThan(lhs, rhs)
                 | LessThanOrEqual(lhs, rhs)
+                | ILike(lhs, rhs)
                 | Like(lhs, rhs)
                 | Multiply(lhs, rhs)
                 | NotEqual(lhs, rhs)
@@ -286,6 +288,7 @@ impl Expression {
                 | GreaterThanOrEqual(lhs, rhs)
                 | LessThan(lhs, rhs)
                 | LessThanOrEqual(lhs, rhs)
+                | ILike(lhs, rhs)
                 | Like(lhs, rhs)
                 | Multiply(lhs, rhs)
                 | NotEqual(lhs, rhs)

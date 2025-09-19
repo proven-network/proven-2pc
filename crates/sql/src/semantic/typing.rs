@@ -552,6 +552,24 @@ impl TypeChecker {
                 })
             }
 
+            ILike(l, r) => {
+                let left_id = expr_id.child(0);
+                let right_id = expr_id.child(1);
+                let left_type =
+                    self.infer_expr_type_new(l, &left_id, column_map, param_types, type_map)?;
+                let right_type =
+                    self.infer_expr_type_new(r, &right_id, column_map, param_types, type_map)?;
+
+                let result_type =
+                    operators::validate_ilike(&left_type.data_type, &right_type.data_type)?;
+
+                Ok(TypeInfo {
+                    data_type: result_type,
+                    nullable: left_type.nullable || right_type.nullable,
+                    is_aggregate: left_type.is_aggregate || right_type.is_aggregate,
+                })
+            }
+
             Like(l, r) => {
                 let left_id = expr_id.child(0);
                 let right_id = expr_id.child(1);

@@ -65,6 +65,8 @@ pub enum Expression {
     /// -a: negates a number.
     Negate(Box<Expression>),
 
+    /// a ILIKE pattern: SQL pattern matching (case-insensitive).
+    ILike(Box<Expression>, Box<Expression>),
     /// a LIKE pattern: SQL pattern matching.
     Like(Box<Expression>, Box<Expression>),
 
@@ -131,6 +133,7 @@ impl Expression {
             | Divide(lhs, rhs)
             | Remainder(lhs, rhs)
             | Exponentiate(lhs, rhs)
+            | ILike(lhs, rhs)
             | Like(lhs, rhs) => lhs.walk(visitor) && rhs.walk(visitor),
 
             Not(expr) | Factorial(expr) | Identity(expr) | Negate(expr) | Is(expr, _) => {
@@ -243,6 +246,10 @@ impl Expression {
             Identity(expr) => Identity(Box::new(expr.remap_columns(map))),
             Negate(expr) => Negate(Box::new(expr.remap_columns(map))),
 
+            ILike(lhs, rhs) => ILike(
+                Box::new(lhs.remap_columns(map)),
+                Box::new(rhs.remap_columns(map)),
+            ),
             Like(lhs, rhs) => Like(
                 Box::new(lhs.remap_columns(map)),
                 Box::new(rhs.remap_columns(map)),
@@ -329,6 +336,7 @@ impl Display for Expression {
             Identity(expr) => write!(f, "(+{})", expr),
             Negate(expr) => write!(f, "(-{})", expr),
 
+            ILike(lhs, rhs) => write!(f, "({} ILIKE {})", lhs, rhs),
             Like(lhs, rhs) => write!(f, "({} LIKE {})", lhs, rhs),
 
             Function(name, args) => {

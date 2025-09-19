@@ -34,6 +34,7 @@ mod identity;
 mod negate;
 
 // Pattern matching operators
+mod ilike;
 mod like;
 
 // String operations
@@ -207,6 +208,18 @@ pub fn execute_like(value: &Value, pattern: &Value) -> Result<Value> {
 /// Validate LIKE operation types
 pub fn validate_like(value: &DataType, pattern: &DataType) -> Result<DataType> {
     static OP: like::LikeOperator = like::LikeOperator;
+    OP.validate(value, pattern)
+}
+
+/// Execute ILIKE operation
+pub fn execute_ilike(value: &Value, pattern: &Value) -> Result<Value> {
+    static OP: ilike::ILikeOperator = ilike::ILikeOperator;
+    OP.execute(value, pattern)
+}
+
+/// Validate ILIKE operation types
+pub fn validate_ilike(value: &DataType, pattern: &DataType) -> Result<DataType> {
+    static OP: ilike::ILikeOperator = ilike::ILikeOperator;
     OP.validate(value, pattern)
 }
 

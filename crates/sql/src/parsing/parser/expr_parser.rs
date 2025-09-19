@@ -77,6 +77,7 @@ pub enum InfixOperator {
     GreaterThanOrEqual, // a >= b
     LessThan,           // a < b
     LessThanOrEqual,    // a <= b
+    ILike,              // a ILIKE b
     Like,               // a LIKE b
     Multiply,           // a * b
     NotEqual,           // a != b
@@ -95,7 +96,7 @@ impl InfixOperator {
             Self::Or => 1,
             Self::And => 2,
             // Self::Not => 3
-            Self::Equal | Self::NotEqual | Self::Like => 4, // also Self::Is
+            Self::Equal | Self::NotEqual | Self::ILike | Self::Like => 4, // also Self::Is
             Self::GreaterThan
             | Self::GreaterThanOrEqual
             | Self::LessThan
@@ -128,6 +129,7 @@ impl InfixOperator {
             Self::GreaterThanOrEqual => Operator::GreaterThanOrEqual(lhs, rhs).into(),
             Self::LessThan => Operator::LessThan(lhs, rhs).into(),
             Self::LessThanOrEqual => Operator::LessThanOrEqual(lhs, rhs).into(),
+            Self::ILike => Operator::ILike(lhs, rhs).into(),
             Self::Like => Operator::Like(lhs, rhs).into(),
             Self::Multiply => Operator::Multiply(lhs, rhs).into(),
             Self::NotEqual => Operator::NotEqual(lhs, rhs).into(),
@@ -526,6 +528,7 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 Token::GreaterThan => InfixOperator::GreaterThan,
                 Token::GreaterThanOrEqual => InfixOperator::GreaterThanOrEqual,
                 Token::Keyword(Keyword::And) => InfixOperator::And,
+                Token::Keyword(Keyword::ILike) => InfixOperator::ILike,
                 Token::Keyword(Keyword::Like) => InfixOperator::Like,
                 Token::Keyword(Keyword::Or) => InfixOperator::Or,
                 Token::LessOrGreaterThan => InfixOperator::NotEqual,

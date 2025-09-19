@@ -449,6 +449,30 @@ impl MetadataBuilder {
                     }
                 }
 
+                // ILIKE predicates (case-insensitive)
+                ILike(left, right) => {
+                    if let Expression::Column(table, col) = left.as_ref() {
+                        let table_name = self.resolve_table_name(table.as_deref(), col, input);
+
+                        // Extract pattern as string value
+                        if let Expression::Literal(Literal::String(pattern)) = right.as_ref() {
+                            // For now, treat ILIKE same as LIKE in templates
+                            // In a real index implementation, we'd handle case-insensitive matching
+                            templates.push(PredicateTemplate::Like {
+                                table: table_name,
+                                column_name: col.clone(),
+                                pattern: pattern.clone(),
+                            });
+                        } else {
+                            templates.push(PredicateTemplate::Like {
+                                table: table_name,
+                                column_name: col.clone(),
+                                pattern: String::new(),
+                            });
+                        }
+                    }
+                }
+
                 // LIKE predicates
                 Like(left, right) => {
                     if let Expression::Column(table, col) = left.as_ref() {
@@ -786,6 +810,20 @@ impl MetadataBuilder {
                 | LessThanOrEqual(left, _) => {
                     if let Expression::Column(table, col) = left.as_ref()
                         && self.is_indexed_new(table.as_deref(), col, input)
+                    {
+                        hints.push(IndexHint {
+                            table: self.resolve_table_name(table.as_deref(), col, input),
+                        });
+                    }
+                }
+                ILike(left, right) => {
+                    if let (
+                        Expression::Column(table, col),
+                        Expression::Literal(Literal::String(pattern)),
+                    ) = (left.as_ref(), right.as_ref())
+                        && !pattern.starts_with('%')
+                        && !pattern.contains("%")
+                    // ILIKE can still use index for prefix patterns
                     {
                         hints.push(IndexHint {
                             table: self.resolve_table_name(table.as_deref(), col, input),

@@ -156,6 +156,12 @@ pub fn evaluate_with_storage(
             operators::execute_exponentiate(&l, &r)?
         }
 
+        ILike(expr, pattern) => {
+            let value = evaluate_with_storage(expr, row, context, params, storage)?;
+            let pattern_value = evaluate_with_storage(pattern, row, context, params, storage)?;
+            operators::execute_ilike(&value, &pattern_value)?
+        }
+
         Like(expr, pattern) => {
             let value = evaluate_with_storage(expr, row, context, params, storage)?;
             let pattern_value = evaluate_with_storage(pattern, row, context, params, storage)?;

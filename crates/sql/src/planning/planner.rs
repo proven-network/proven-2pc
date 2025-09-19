@@ -893,6 +893,7 @@ impl Planner {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
+                    | Operator::ILike(l, r)
                     | Operator::Like(l, r) => {
                         Self::validate_no_subqueries_in_expression(l)?;
                         Self::validate_no_subqueries_in_expression(r)?;
@@ -1306,6 +1307,10 @@ impl<'a> AnalyzedPlanContext<'a> {
             Identity(e) => Expression::Identity(Box::new(self.resolve_expression_simple(e)?)),
             Factorial(e) => Expression::Factorial(Box::new(self.resolve_expression_simple(e)?)),
             // String matching
+            ILike(l, r) => Expression::ILike(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
             Like(l, r) => Expression::Like(
                 Box::new(self.resolve_expression_simple(l)?),
                 Box::new(self.resolve_expression_simple(r)?),

@@ -89,6 +89,7 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
+                    | Operator::ILike(l, r)
                     | Operator::Like(l, r) => {
                         self.validate_group_by_expr(l, group_by_exprs)?;
                         self.validate_group_by_expr(r, group_by_exprs)?;
@@ -189,6 +190,7 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
+                    | Operator::ILike(l, r)
                     | Operator::Like(l, r) => {
                         Self::is_aggregate_expression(l) || Self::is_aggregate_expression(r)
                     }
@@ -288,6 +290,7 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
+                    | Operator::ILike(l, r)
                     | Operator::Like(l, r) => {
                         self.validate_aggregate_context(l)?;
                         self.validate_aggregate_context(r)?;
@@ -390,6 +393,7 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
+                    | Operator::ILike(l, r)
                     | Operator::Like(l, r) => {
                         Self::validate_no_nested_aggregates(l)?;
                         Self::validate_no_nested_aggregates(r)?;

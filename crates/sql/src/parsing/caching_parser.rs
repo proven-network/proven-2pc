@@ -123,6 +123,7 @@ fn count_parameters(stmt: &Statement) -> usize {
             | Operator::Divide(l, r)
             | Operator::Remainder(l, r)
             | Operator::Exponentiate(l, r)
+            | Operator::ILike(l, r)
             | Operator::Like(l, r) => count_expr_params(l) + count_expr_params(r),
 
             Operator::Not(e)
