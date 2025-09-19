@@ -13,6 +13,9 @@ use std::collections::HashMap;
 mod concat;
 mod length;
 mod lower;
+mod replace;
+mod substr;
+mod trim;
 mod upper;
 
 // Aggregate functions
@@ -38,7 +41,9 @@ mod ifnull;
 
 // Math functions
 mod abs;
+mod ceil;
 mod round;
+mod sqrt;
 
 // System functions
 mod generate_uuid;
@@ -111,6 +116,9 @@ impl FunctionRegistry {
         lower::register(&mut registry);
         length::register(&mut registry);
         concat::register(&mut registry);
+        substr::register(&mut registry);
+        trim::register(&mut registry);
+        replace::register(&mut registry);
 
         // Register aggregate functions
         count::register(&mut registry);
@@ -136,6 +144,8 @@ impl FunctionRegistry {
         // Register math functions
         abs::register(&mut registry);
         round::register(&mut registry);
+        ceil::register(&mut registry);
+        sqrt::register(&mut registry);
 
         // Register system functions
         now::register(&mut registry);
