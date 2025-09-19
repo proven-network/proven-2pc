@@ -1,0 +1,218 @@
+//! LIST type functionality tests
+//! Tests for unbounded list types, as distinct from fixed-size arrays
+
+mod common;
+
+use common::setup_test;
+
+#[test]
+fn test_create_table_with_list_syntax_variations() {
+    let mut ctx = setup_test();
+
+    // Test various LIST declaration syntaxes
+    ctx.exec("CREATE TABLE ListTest1 (id INTEGER, items TEXT[])");
+    ctx.exec("CREATE TABLE ListTest2 (id INTEGER, items INTEGER[])");
+    ctx.exec("CREATE TABLE ListTest3 (id INTEGER, items LIST)"); // defaults to LIST<I64>
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_vs_array_coercion() {
+    let mut ctx = setup_test();
+
+    // Create table with LIST column
+    ctx.exec("CREATE TABLE ListTable (id INTEGER, items TEXT[])");
+
+    // Array literals should coerce to LIST when inserting
+    ctx.exec("INSERT INTO ListTable VALUES (1, ['a', 'b', 'c'])");
+    ctx.exec("INSERT INTO ListTable VALUES (2, ['x', 'y'])");
+    ctx.exec("INSERT INTO ListTable VALUES (3, ['single'])");
+
+    // Lists can have different sizes unlike fixed arrays
+    assert_rows!(ctx, "SELECT * FROM ListTable", 3);
+
+    ctx.commit();
+}
+
+#[test]
+fn test_empty_list() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE EmptyListTest (id INTEGER, items TEXT[])");
+
+    // Test inserting empty array/list
+    ctx.exec("INSERT INTO EmptyListTest VALUES (1, [])");
+
+    assert_rows!(ctx, "SELECT * FROM EmptyListTest", 1);
+
+    let results = ctx.query("SELECT * FROM EmptyListTest");
+    assert!(
+        results[0].get("items").unwrap().contains("[]")
+            || results[0].get("items").unwrap().contains("Array[]")
+    );
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_with_nulls() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListWithNulls (id INTEGER, items INTEGER[])");
+
+    // Lists can contain NULL values
+    ctx.exec("INSERT INTO ListWithNulls VALUES (1, [1, NULL, 3])");
+
+    assert_rows!(ctx, "SELECT * FROM ListWithNulls", 1);
+
+    let results = ctx.query("SELECT * FROM ListWithNulls");
+    assert!(results[0].get("items").unwrap().contains("Null"));
+
+    ctx.commit();
+}
+
+#[test]
+fn test_nested_lists() {
+    let mut ctx = setup_test();
+
+    // Nested list type declaration is supported!
+    ctx.exec("CREATE TABLE NestedListTest (id INTEGER, matrix INTEGER[][])");
+
+    // And nested array literals work too!
+    ctx.exec("INSERT INTO NestedListTest VALUES (1, [[1, 2], [3, 4]])");
+    ctx.exec("INSERT INTO NestedListTest VALUES (2, [[5], [6, 7, 8]])");
+
+    assert_rows!(ctx, "SELECT * FROM NestedListTest", 2);
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_operations_in_select() {
+    let mut ctx = setup_test();
+
+    // Note: || operator for arrays currently creates a string representation,
+    // not actual array concatenation
+    let results = ctx.query("SELECT [1, 2, 3] || [4, 5] as concatenated");
+    assert_eq!(results.len(), 1);
+    // Result is a string like "[1, 2, 3][4, 5]", not a concatenated array
+
+    // LENGTH function has type restrictions
+    // It currently doesn't support array types directly
+    // Would need to be extended to support counting array elements
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_type_flexibility() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE FlexList (id INTEGER, data TEXT[])");
+
+    // Since TEXT is flexible, we can coerce numbers to strings
+    ctx.exec("INSERT INTO FlexList VALUES (1, ['text'])");
+
+    // But can we coerce numbers to text? This depends on coercion rules
+    let result = ctx.exec_response("INSERT INTO FlexList VALUES (2, [42])");
+    println!("Number to text list coercion: {:?}", result);
+
+    ctx.commit();
+}
+
+#[test]
+#[ignore = "ARRAY_AGG function not yet implemented"]
+fn test_list_aggregation() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Items (category TEXT, value INTEGER)");
+    ctx.exec("INSERT INTO Items VALUES ('A', 1), ('A', 2), ('B', 3), ('B', 4)");
+
+    // ARRAY_AGG would aggregate values into lists - not yet implemented
+    ctx.exec("SELECT category, ARRAY_AGG(value) as values FROM Items GROUP BY category");
+
+    ctx.commit();
+}
+
+#[test]
+#[ignore = "UNNEST function not yet implemented"]
+fn test_list_unnest() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE ListData (id INTEGER, items TEXT[])");
+    ctx.exec("INSERT INTO ListData VALUES (1, ['a', 'b', 'c'])");
+
+    // UNNEST would expand lists into rows - not yet implemented
+    ctx.exec("SELECT id, UNNEST(items) as item FROM ListData");
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_comparison() {
+    let mut ctx = setup_test();
+
+    // Test list equality and comparison
+    let eq_result = ctx.query("SELECT [1, 2, 3] = [1, 2, 3] as equal");
+    println!("List equality: {:?}", eq_result);
+
+    let neq_result = ctx.query("SELECT [1, 2] = [1, 2, 3] as equal");
+    println!("List inequality: {:?}", neq_result);
+
+    // Test if lists can be compared with <, > etc
+    let cmp_result = ctx.exec_response("SELECT [1, 2] < [1, 3] as less_than");
+    println!("List comparison: {:?}", cmp_result);
+
+    ctx.commit();
+}
+
+#[test]
+#[ignore = "Array containment operators not yet implemented"]
+fn test_list_in_where_clause() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Products (id INTEGER, tags TEXT[])");
+    ctx.exec("INSERT INTO Products VALUES (1, ['electronics', 'phone'])");
+    ctx.exec("INSERT INTO Products VALUES (2, ['electronics', 'laptop'])");
+    ctx.exec("INSERT INTO Products VALUES (3, ['books', 'fiction'])");
+
+    // Array containment operators like @> (contains) or <@ (is contained by)
+    // would be needed to query based on list contents - not yet implemented
+    // PostgreSQL syntax: WHERE tags @> ARRAY['electronics']
+    // or: WHERE 'electronics' = ANY(tags)
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_default_type() {
+    let mut ctx = setup_test();
+
+    // When using bare LIST, it defaults to LIST<I64>
+    ctx.exec("CREATE TABLE DefaultList (id INTEGER, nums LIST)");
+
+    // Should accept integer arrays
+    ctx.exec("INSERT INTO DefaultList VALUES (1, [1, 2, 3])");
+
+    // Should reject non-integer arrays
+    let result = ctx.exec_response("INSERT INTO DefaultList VALUES (2, ['a', 'b'])");
+    assert!(matches!(result, proven_sql::SqlResponse::Error(_)));
+
+    ctx.commit();
+}
+
+#[test]
+fn test_array_literal_to_list_column() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE MixedSyntax (id INTEGER, list_col TEXT[], array_col TEXT[5])");
+
+    // Both array literal syntaxes should work for LIST columns
+    ctx.exec("INSERT INTO MixedSyntax VALUES (1, ['a', 'b'], ARRAY['x', 'y', 'z', 'w', 'v'])");
+    ctx.exec("INSERT INTO MixedSyntax VALUES (2, ARRAY['c', 'd'], ['1', '2', '3', '4', '5'])");
+
+    assert_rows!(ctx, "SELECT * FROM MixedSyntax", 2);
+
+    ctx.commit();
+}
