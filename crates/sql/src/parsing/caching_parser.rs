@@ -117,6 +117,7 @@ fn count_parameters(stmt: &Statement) -> usize {
             | Operator::GreaterThan(l, r)
             | Operator::GreaterThanOrEqual(l, r)
             | Operator::Add(l, r)
+            | Operator::Concat(l, r)
             | Operator::Subtract(l, r)
             | Operator::Multiply(l, r)
             | Operator::Divide(l, r)

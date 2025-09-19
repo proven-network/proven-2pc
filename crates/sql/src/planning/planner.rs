@@ -887,6 +887,7 @@ impl Planner {
                     | Operator::LessThan(l, r)
                     | Operator::LessThanOrEqual(l, r)
                     | Operator::Add(l, r)
+                    | Operator::Concat(l, r)
                     | Operator::Subtract(l, r)
                     | Operator::Multiply(l, r)
                     | Operator::Divide(l, r)
@@ -1276,6 +1277,10 @@ impl<'a> AnalyzedPlanContext<'a> {
                 Box::new(self.resolve_expression_simple(l)?),
                 Box::new(self.resolve_expression_simple(r)?),
             ),
+            Concat(l, r) => Expression::Concat(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
             Subtract(l, r) => Expression::Subtract(
                 Box::new(self.resolve_expression_simple(l)?),
                 Box::new(self.resolve_expression_simple(r)?),
@@ -1432,6 +1437,10 @@ fn resolve_default_expression(expr: &AstExpression) -> Result<Expression> {
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
+                Concat(l, r) => Expression::Concat(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
                 Subtract(l, r) => Expression::Subtract(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
@@ -1499,6 +1508,11 @@ fn evaluate_default_expression(expr: Expression) -> Result<crate::types::value::
             let l = evaluate_default_expression(*left)?;
             let r = evaluate_default_expression(*right)?;
             operators::execute_add(&l, &r)
+        }
+        Expression::Concat(left, right) => {
+            let l = evaluate_default_expression(*left)?;
+            let r = evaluate_default_expression(*right)?;
+            operators::execute_concat(&l, &r)
         }
         Expression::Subtract(left, right) => {
             let l = evaluate_default_expression(*left)?;

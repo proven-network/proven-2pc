@@ -80,6 +80,7 @@ pub enum Operator {
     NotEqual(Box<Expression>, Box<Expression>),    // a != b
 
     Add(Box<Expression>, Box<Expression>),          // a + b
+    Concat(Box<Expression>, Box<Expression>),       // a || b
     Divide(Box<Expression>, Box<Expression>),       // a / b
     Exponentiate(Box<Expression>, Box<Expression>), // a ^ b
     Factorial(Box<Expression>),                     // a!
@@ -184,6 +185,7 @@ impl Expression {
             Self::Operator(op) => match op {
                 Add(lhs, rhs)
                 | And(lhs, rhs)
+                | Concat(lhs, rhs)
                 | Divide(lhs, rhs)
                 | Equal(lhs, rhs)
                 | Exponentiate(lhs, rhs)
@@ -276,6 +278,7 @@ impl Expression {
             Self::Operator(op) => match op {
                 Add(lhs, rhs)
                 | And(lhs, rhs)
+                | Concat(lhs, rhs)
                 | Divide(lhs, rhs)
                 | Equal(lhs, rhs)
                 | Exponentiate(lhs, rhs)

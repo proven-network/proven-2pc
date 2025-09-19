@@ -487,6 +487,7 @@ impl SemanticAnalyzer {
                     | Operator::LessThan(l, r)
                     | Operator::LessThanOrEqual(l, r)
                     | Operator::Add(l, r)
+                    | Operator::Concat(l, r)
                     | Operator::Subtract(l, r)
                     | Operator::Multiply(l, r)
                     | Operator::Divide(l, r)

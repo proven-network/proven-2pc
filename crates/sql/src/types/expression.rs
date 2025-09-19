@@ -46,6 +46,8 @@ pub enum Expression {
 
     /// a + b: adds two numbers or concatenates strings.
     Add(Box<Expression>, Box<Expression>),
+    /// a || b: concatenates strings (SQL standard).
+    Concat(Box<Expression>, Box<Expression>),
     /// a - b: subtracts two numbers.
     Subtract(Box<Expression>, Box<Expression>),
     /// a * b: multiplies two numbers.
@@ -123,6 +125,7 @@ impl Expression {
             | LessThan(lhs, rhs)
             | LessThanOrEqual(lhs, rhs)
             | Add(lhs, rhs)
+            | Concat(lhs, rhs)
             | Subtract(lhs, rhs)
             | Multiply(lhs, rhs)
             | Divide(lhs, rhs)
@@ -208,6 +211,10 @@ impl Expression {
             Is(expr, value) => Is(Box::new(expr.remap_columns(map)), value),
 
             Add(lhs, rhs) => Add(
+                Box::new(lhs.remap_columns(map)),
+                Box::new(rhs.remap_columns(map)),
+            ),
+            Concat(lhs, rhs) => Concat(
                 Box::new(lhs.remap_columns(map)),
                 Box::new(rhs.remap_columns(map)),
             ),
@@ -312,6 +319,7 @@ impl Display for Expression {
             Is(expr, value) => write!(f, "({} IS {})", expr, value),
 
             Add(lhs, rhs) => write!(f, "({} + {})", lhs, rhs),
+            Concat(lhs, rhs) => write!(f, "({} || {})", lhs, rhs),
             Subtract(lhs, rhs) => write!(f, "({} - {})", lhs, rhs),
             Multiply(lhs, rhs) => write!(f, "({} * {})", lhs, rhs),
             Divide(lhs, rhs) => write!(f, "({} / {})", lhs, rhs),

@@ -50,6 +50,7 @@ pub enum Token {
     OpenBrace,          // {
     CloseBrace,         // }
     Colon,              // :
+    Concat,             // ||
 }
 
 impl Display for Token {
@@ -85,6 +86,7 @@ impl Display for Token {
             Self::OpenBrace => "{",
             Self::CloseBrace => "}",
             Self::Colon => ":",
+            Self::Concat => "||",
         })
     }
 }
@@ -596,6 +598,18 @@ impl<'a> Lexer<'a> {
 
     /// Scans the next symbol token, if any.
     fn scan_symbol(&mut self) -> Option<Token> {
+        // Handle || first as a special case since it's two characters
+        if self.chars.peek() == Some(&'|') {
+            self.chars.next(); // consume first '|'
+            if self.chars.peek() == Some(&'|') {
+                self.chars.next(); // consume second '|'
+                return Some(Token::Concat);
+            }
+            // If not ||, we consumed a single | which is not a valid token
+            // For now, we'll just ignore single |
+            return None;
+        }
+
         let mut token = self.next_if_map(|c| {
             Some(match c {
                 '.' => Token::Period,

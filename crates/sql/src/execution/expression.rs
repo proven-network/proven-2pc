@@ -109,6 +109,11 @@ pub fn evaluate_with_storage(
             let r = evaluate_with_storage(rhs, row, context, params, storage)?;
             operators::execute_add(&l, &r)?
         }
+        Concat(lhs, rhs) => {
+            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
+            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            operators::execute_concat(&l, &r)?
+        }
         Subtract(lhs, rhs) => {
             let l = evaluate_with_storage(lhs, row, context, params, storage)?;
             let r = evaluate_with_storage(rhs, row, context, params, storage)?;

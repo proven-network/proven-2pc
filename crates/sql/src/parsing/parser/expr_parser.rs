@@ -69,6 +69,7 @@ impl PrefixOperator {
 pub enum InfixOperator {
     Add,                // a + b
     And,                // a AND b
+    Concat,             // a || b
     Divide,             // a / b
     Equal,              // a = b
     Exponentiate,       // a ^ b
@@ -99,7 +100,7 @@ impl InfixOperator {
             | Self::GreaterThanOrEqual
             | Self::LessThan
             | Self::LessThanOrEqual => 5,
-            Self::Add | Self::Subtract => 6,
+            Self::Add | Self::Concat | Self::Subtract => 6,
             Self::Multiply | Self::Divide | Self::Remainder => 7,
             Self::Exponentiate => 8,
         }
@@ -119,6 +120,7 @@ impl InfixOperator {
         match self {
             Self::Add => Operator::Add(lhs, rhs).into(),
             Self::And => Operator::And(lhs, rhs).into(),
+            Self::Concat => Operator::Concat(lhs, rhs).into(),
             Self::Divide => Operator::Divide(lhs, rhs).into(),
             Self::Equal => Operator::Equal(lhs, rhs).into(),
             Self::Exponentiate => Operator::Exponentiate(lhs, rhs).into(),
@@ -519,6 +521,7 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
             let operator = match token {
                 Token::Asterisk => InfixOperator::Multiply,
                 Token::Caret => InfixOperator::Exponentiate,
+                Token::Concat => InfixOperator::Concat,
                 Token::Equal => InfixOperator::Equal,
                 Token::GreaterThan => InfixOperator::GreaterThan,
                 Token::GreaterThanOrEqual => InfixOperator::GreaterThanOrEqual,

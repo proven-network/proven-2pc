@@ -506,6 +506,7 @@ impl TypeChecker {
             }
 
             Add(l, r)
+            | Concat(l, r)
             | Subtract(l, r)
             | Multiply(l, r)
             | Divide(l, r)
@@ -521,6 +522,9 @@ impl TypeChecker {
                 let result_type = match op {
                     Add(_, _) => {
                         operators::validate_add(&left_type.data_type, &right_type.data_type)?
+                    }
+                    Concat(_, _) => {
+                        operators::validate_concat(&left_type.data_type, &right_type.data_type)?
                     }
                     Subtract(_, _) => {
                         operators::validate_subtract(&left_type.data_type, &right_type.data_type)?

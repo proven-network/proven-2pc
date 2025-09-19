@@ -36,6 +36,9 @@ mod negate;
 // Pattern matching operators
 mod like;
 
+// String operations
+mod concat;
+
 // Re-export commonly used items
 pub use traits::{BinaryOperator, UnaryOperator};
 
@@ -205,6 +208,20 @@ pub fn execute_like(value: &Value, pattern: &Value) -> Result<Value> {
 pub fn validate_like(value: &DataType, pattern: &DataType) -> Result<DataType> {
     static OP: like::LikeOperator = like::LikeOperator;
     OP.validate(value, pattern)
+}
+
+// String operations
+
+/// Execute string concatenation operation
+pub fn execute_concat(left: &Value, right: &Value) -> Result<Value> {
+    static OP: concat::ConcatOperator = concat::ConcatOperator;
+    OP.execute(left, right)
+}
+
+/// Validate string concatenation operation types
+pub fn validate_concat(left: &DataType, right: &DataType) -> Result<DataType> {
+    static OP: concat::ConcatOperator = concat::ConcatOperator;
+    OP.validate(left, right)
 }
 
 // Comparison operators
