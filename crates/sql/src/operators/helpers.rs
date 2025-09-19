@@ -1,7 +1,9 @@
 //! Helper functions for operator implementations
 
 use crate::error::{Error, Result};
-use crate::types::DataType;
+use crate::types::{DataType, Value};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 
 /// Unwrap nullable type to get inner type and nullability flag
 pub fn unwrap_nullable(dt: &DataType) -> (&DataType, bool) {
@@ -222,4 +224,70 @@ pub fn promote_integer_types(left: &DataType, right: &DataType) -> Result<DataTy
             });
         }
     })
+}
+
+/// Helper to convert any numeric value to f32
+pub fn to_f32(value: &Value) -> Result<f32> {
+    use Value::*;
+    Ok(match value {
+        I8(n) => *n as f32,
+        I16(n) => *n as f32,
+        I32(n) => *n as f32,
+        I64(n) => *n as f32,
+        I128(n) => *n as f32,
+        U8(n) => *n as f32,
+        U16(n) => *n as f32,
+        U32(n) => *n as f32,
+        U64(n) => *n as f32,
+        U128(n) => *n as f32,
+        F32(n) => *n,
+        F64(n) => *n as f32,
+        Decimal(d) => d
+            .to_f32()
+            .ok_or_else(|| Error::InvalidValue("Decimal to f32 conversion failed".into()))?,
+        _ => return Err(Error::InvalidValue("Cannot convert to f32".into())),
+    })
+}
+
+/// Helper to convert any numeric value to f64
+pub fn to_f64(value: &Value) -> Result<f64> {
+    use Value::*;
+    Ok(match value {
+        I8(n) => *n as f64,
+        I16(n) => *n as f64,
+        I32(n) => *n as f64,
+        I64(n) => *n as f64,
+        I128(n) => *n as f64,
+        U8(n) => *n as f64,
+        U16(n) => *n as f64,
+        U32(n) => *n as f64,
+        U64(n) => *n as f64,
+        U128(n) => *n as f64,
+        F32(n) => *n as f64,
+        F64(n) => *n,
+        Decimal(d) => d
+            .to_f64()
+            .ok_or_else(|| Error::InvalidValue("Decimal to f64 conversion failed".into()))?,
+        _ => return Err(Error::InvalidValue("Cannot convert to f64".into())),
+    })
+}
+
+/// Helper to convert any numeric value to Decimal
+pub fn to_decimal(value: &Value) -> Option<Decimal> {
+    match value {
+        Value::I8(n) => Some(Decimal::from(*n)),
+        Value::I16(n) => Some(Decimal::from(*n)),
+        Value::I32(n) => Some(Decimal::from(*n)),
+        Value::I64(n) => Some(Decimal::from(*n)),
+        Value::I128(n) => Some(Decimal::from(*n)),
+        Value::U8(n) => Some(Decimal::from(*n)),
+        Value::U16(n) => Some(Decimal::from(*n)),
+        Value::U32(n) => Some(Decimal::from(*n)),
+        Value::U64(n) => Some(Decimal::from(*n)),
+        Value::U128(n) => Some(Decimal::from(*n)),
+        Value::F32(n) => Decimal::from_f32_retain(*n),
+        Value::F64(n) => Decimal::from_f64_retain(*n),
+        Value::Decimal(d) => Some(*d),
+        _ => None,
+    }
 }
