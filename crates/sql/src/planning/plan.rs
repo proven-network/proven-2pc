@@ -19,7 +19,13 @@ pub struct IndexColumn {
 /// Execution plan - the root of the plan tree
 #[derive(Debug, Clone, PartialEq)]
 pub enum Plan {
-    /// SELECT query
+    /// Query plan (SELECT or VALUES)
+    Query {
+        root: Box<Node>,
+        params: Vec<Expression>,
+    },
+
+    /// SELECT query (legacy - to be removed)
     Select(Box<Node>),
 
     /// INSERT statement
@@ -46,6 +52,14 @@ pub enum Plan {
         if_not_exists: bool,
     },
 
+    /// CREATE TABLE AS VALUES
+    CreateTableAsValues {
+        name: String,
+        schema: crate::types::schema::Table,
+        values_plan: Box<Plan>,
+        if_not_exists: bool,
+    },
+
     /// DROP TABLE
     DropTable { names: Vec<String>, if_exists: bool },
 
@@ -68,6 +82,7 @@ impl Plan {
         matches!(
             self,
             Plan::CreateTable { .. }
+                | Plan::CreateTableAsValues { .. }
                 | Plan::DropTable { .. }
                 | Plan::CreateIndex { .. }
                 | Plan::DropIndex { .. }

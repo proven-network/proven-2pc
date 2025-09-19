@@ -255,6 +255,10 @@ impl DdlParser for Parser<'_> {
     fn parse_expression(&mut self) -> Result<Expression> {
         ExpressionParser::parse_expression(self)
     }
+
+    fn parse_values_rows(&mut self) -> Result<Vec<Vec<Expression>>> {
+        DmlParser::parse_values_rows(self)
+    }
 }
 
 // Implement TypeParser trait for Parser

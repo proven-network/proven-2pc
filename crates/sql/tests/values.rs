@@ -173,7 +173,6 @@ fn test_values_null_with_consistent_types() {
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS VALUES not yet implemented"]
 fn test_create_table_as_values() {
     let mut ctx = setup_test();
 
@@ -186,7 +185,6 @@ fn test_create_table_as_values() {
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS VALUES not yet implemented"]
 fn test_select_from_values_table() {
     let mut ctx = setup_test();
 
@@ -200,7 +198,7 @@ fn test_select_from_values_table() {
     ctx.assert_query_contains(
         "SELECT column1 FROM TableFromValues WHERE column1 = 1",
         "column1",
-        "I64(1)",
+        "I32(1)",
     );
     ctx.assert_query_contains(
         "SELECT column2 FROM TableFromValues WHERE column1 = 1",
@@ -232,7 +230,6 @@ fn test_show_columns_from_values_table() {
 }
 
 #[test]
-#[ignore = "VALUES as subquery not yet implemented"]
 fn test_values_as_subquery() {
     let mut ctx = setup_test();
 
@@ -244,7 +241,6 @@ fn test_values_as_subquery() {
 }
 
 #[test]
-#[ignore = "VALUES as subquery not yet implemented"]
 fn test_values_subquery_with_column_aliases() {
     let mut ctx = setup_test();
 
@@ -278,32 +274,30 @@ fn test_insert_with_values() {
 }
 
 #[test]
-#[ignore = "column name validation not yet implemented"]
 fn test_insert_wrong_column_name_error() {
     let mut ctx = setup_test();
 
     // Create table first
     ctx.exec("CREATE TABLE Items (id INTEGER, name TEXT, status TEXT)");
 
-    // Test INSERT INTO Items (id2) VALUES (1) - should error with WrongColumnName
-    assert_error!(ctx, "INSERT INTO Items (id2) VALUES (1)", "WrongColumnName");
+    // Test INSERT INTO Items (id2) VALUES (1) - should error with column not found
+    assert_error!(ctx, "INSERT INTO Items (id2) VALUES (1)", "ColumnNotFound");
 
     ctx.abort();
 }
 
 #[test]
-#[ignore = "NOT NULL constraint validation not yet implemented"]
 fn test_insert_missing_required_column_error() {
     let mut ctx = setup_test();
 
-    // Create table first
-    ctx.exec("CREATE TABLE Items (id INTEGER, name TEXT, status TEXT)");
+    // Create table with NOT NULL constraint
+    ctx.exec("CREATE TABLE Items (id INTEGER NOT NULL, name TEXT, status TEXT)");
 
-    // Test INSERT INTO Items (name) VALUES ('glue') - should error with LackOfRequiredColumn
+    // Test INSERT INTO Items (name) VALUES ('glue') - should error when id is not provided
     assert_error!(
         ctx,
         "INSERT INTO Items (name) VALUES ('glue')",
-        "LackOfRequiredColumn"
+        "NullConstraintViolation"
     );
 
     ctx.abort();

@@ -585,10 +585,9 @@ impl SemanticValidator {
                         if !schema_col.nullable && schema_col.default.is_none() {
                             // Check if this required column is in the provided columns list
                             if !cols.contains(&schema_col.name) {
-                                return Err(Error::ExecutionError(format!(
-                                    "Column '{}' is required but not provided (not nullable and has no default)",
-                                    schema_col.name
-                                )));
+                                return Err(Error::NullConstraintViolation(
+                                    schema_col.name.clone(),
+                                ));
                             }
                         }
                     }
@@ -613,10 +612,16 @@ impl SemanticValidator {
                 // Type checking for literals
                 let target_columns = if let Some(cols) = columns {
                     // Map column names to their schema definitions
-                    cols.iter()
-                        .map(|name| schema.columns.iter().find(|c| &c.name == name))
-                        .collect::<Option<Vec<_>>>()
-                        .ok_or_else(|| Error::ExecutionError("Invalid column name".to_string()))?
+                    let mut mapped_columns = Vec::new();
+                    for name in cols {
+                        let col = schema
+                            .columns
+                            .iter()
+                            .find(|c| &c.name == name)
+                            .ok_or_else(|| Error::ColumnNotFound(name.clone()))?;
+                        mapped_columns.push(col);
+                    }
+                    mapped_columns
                 } else {
                     // Use all columns in order
                     schema.columns.iter().collect()
@@ -674,6 +679,10 @@ impl SemanticValidator {
                             use crate::parsing::ast::FromClause;
                             let table_name = match &select.from[0] {
                                 FromClause::Table { name, .. } => name,
+                                FromClause::Subquery { .. } => {
+                                    // Skip validation for subqueries for now
+                                    return Ok(());
+                                }
                                 FromClause::Join { left, .. } => {
                                     if let FromClause::Table { name, .. } = left.as_ref() {
                                         name

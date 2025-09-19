@@ -5,7 +5,7 @@
 use super::super::{Keyword, Token};
 use super::token_helper::TokenHelper;
 use crate::error::{Error, Result};
-use crate::parsing::ast::common::{Direction, FromClause, JoinType};
+use crate::parsing::ast::common::{Direction, FromClause, JoinType, SubquerySource};
 use crate::parsing::ast::dml::{DmlStatement, ValuesStatement};
 use crate::parsing::ast::{Expression, InsertSource, SelectStatement, Statement};
 use std::collections::BTreeMap;
@@ -185,22 +185,75 @@ pub trait DmlParser: TokenHelper {
         Ok(vec![from_item])
     }
 
-    // Parses a FROM table.
+    // Parses a FROM table or subquery.
     fn parse_from_table(&mut self) -> Result<FromClause> {
-        let name = self.next_ident()?;
+        // Check if this is a subquery
+        if matches!(self.peek()?, Some(Token::OpenParen)) {
+            self.next()?; // consume opening paren
 
-        // Check for compound object notation (schema.table)
-        if matches!(self.peek()?, Some(Token::Period)) {
-            self.next()?; // consume the period
-            let _object = self.next_ident()?; // consume the object name
-            return Err(Error::CompoundObjectNotSupported);
+            // Check what type of subquery this is
+            let source = match self.peek()? {
+                Some(Token::Keyword(Keyword::Select)) => {
+                    // Parse SELECT subquery
+                    self.next()?; // consume SELECT
+                    let select = Box::new(SelectStatement {
+                        select: self.parse_select_clause()?,
+                        from: self.parse_from_clause()?,
+                        r#where: self.parse_where_clause()?,
+                        group_by: self.parse_group_by_clause()?,
+                        having: self.parse_having_clause()?,
+                        order_by: self.parse_order_by_clause()?,
+                        limit: self.parse_limit_clause()?,
+                        offset: self.parse_offset_clause()?,
+                    });
+                    SubquerySource::Select(select)
+                }
+                Some(Token::Keyword(Keyword::Values)) => {
+                    // Parse VALUES subquery
+                    self.next()?; // consume VALUES
+                    let rows = self.parse_values_rows()?;
+                    SubquerySource::Values(ValuesStatement {
+                        rows,
+                        order_by: Vec::new(),
+                        limit: None,
+                        offset: None,
+                    })
+                }
+                _ => {
+                    return Err(Error::ParseError(
+                        "Expected SELECT or VALUES after opening parenthesis in FROM clause".into(),
+                    ));
+                }
+            };
+
+            self.expect(Token::CloseParen)?;
+
+            // Subqueries require an alias
+            if !self.next_is(Keyword::As.into()) {
+                return Err(Error::ParseError(
+                    "Subquery in FROM clause requires an alias (AS name)".into(),
+                ));
+            }
+            let alias = self.next_ident()?;
+
+            Ok(FromClause::Subquery { source, alias })
+        } else {
+            // Parse regular table reference
+            let name = self.next_ident()?;
+
+            // Check for compound object notation (schema.table)
+            if matches!(self.peek()?, Some(Token::Period)) {
+                self.next()?; // consume the period
+                let _object = self.next_ident()?; // consume the object name
+                return Err(Error::CompoundObjectNotSupported);
+            }
+
+            let mut alias = None;
+            if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
+                alias = Some(self.next_ident()?)
+            };
+            Ok(FromClause::Table { name, alias })
         }
-
-        let mut alias = None;
-        if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
-            alias = Some(self.next_ident()?)
-        };
-        Ok(FromClause::Table { name, alias })
     }
 
     // Parses a FROM JOIN type, if present.

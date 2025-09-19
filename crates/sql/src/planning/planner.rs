@@ -6,9 +6,9 @@
 use super::optimizer::Optimizer;
 use super::plan::{AggregateFunc, Direction, JoinType, Node, Plan};
 use crate::error::{Error, Result};
-use crate::parsing::ast::common::{Direction as AstDirection, FromClause};
+use crate::parsing::ast::common::{Direction as AstDirection, FromClause, SubquerySource};
 use crate::parsing::ast::ddl::DdlStatement;
-use crate::parsing::ast::dml::DmlStatement;
+use crate::parsing::ast::dml::{DmlStatement, ValuesStatement};
 use crate::parsing::ast::{
     Column, Expression as AstExpression, InsertSource, Literal, Operator, SelectStatement,
     Statement,
@@ -16,6 +16,7 @@ use crate::parsing::ast::{
 use crate::semantic::AnalyzedStatement;
 use crate::semantic::analyzer::SemanticAnalyzer;
 use crate::storage::mvcc::IndexMetadata;
+use crate::types::DataType;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use std::collections::{BTreeMap, HashMap};
@@ -59,13 +60,19 @@ impl Planner {
     }
 
     /// Plan DDL statements
-    fn plan_ddl(&self, ddl: &DdlStatement, _analyzed: &AnalyzedStatement) -> Result<Plan> {
+    fn plan_ddl(&self, ddl: &DdlStatement, analyzed: &AnalyzedStatement) -> Result<Plan> {
         match ddl {
             DdlStatement::CreateTable {
                 name,
                 columns,
                 if_not_exists,
             } => self.plan_create_table(name.clone(), columns.clone(), *if_not_exists),
+
+            DdlStatement::CreateTableAsValues {
+                name,
+                values,
+                if_not_exists,
+            } => self.plan_create_table_as_values(name.clone(), values, *if_not_exists, analyzed),
 
             DdlStatement::DropTable { names, if_exists } => Ok(Plan::DropTable {
                 names: names.clone(),
@@ -278,6 +285,44 @@ impl Planner {
                         }
                     } else {
                         scan
+                    });
+                }
+
+                FromClause::Subquery { source, alias: _ } => {
+                    // Plan the subquery based on its type
+                    let subquery_node = match source {
+                        SubquerySource::Select(select_stmt) => {
+                            // Plan the SELECT subquery
+                            let subplan = self.plan_select(select_stmt, context.analyzed)?;
+                            match subplan {
+                                Plan::Select(node) | Plan::Query { root: node, .. } => *node,
+                                _ => {
+                                    return Err(Error::ExecutionError(
+                                        "Invalid subquery plan".into(),
+                                    ));
+                                }
+                            }
+                        }
+                        SubquerySource::Values(values_stmt) => {
+                            // Plan the VALUES subquery
+                            self.plan_values_as_subquery(values_stmt, context)?
+                        }
+                    };
+
+                    // Subqueries don't need to be added to the context as tables
+                    // They produce their own column structure
+
+                    node = Some(if let Some(prev) = node {
+                        Node::NestedLoopJoin {
+                            left: Box::new(prev),
+                            right: Box::new(subquery_node),
+                            predicate: Expression::Constant(crate::types::value::Value::boolean(
+                                true,
+                            )),
+                            join_type: JoinType::Inner,
+                        }
+                    } else {
+                        subquery_node
                     });
                 }
 
@@ -515,6 +560,25 @@ impl Planner {
     }
 
     /// Plan a VALUES statement
+    fn plan_values_as_subquery(
+        &self,
+        values_stmt: &ValuesStatement,
+        context: &mut AnalyzedPlanContext,
+    ) -> Result<Node> {
+        // Similar to plan_values but simpler - no ORDER BY, LIMIT, OFFSET for subqueries
+        let rows = values_stmt
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|e| context.resolve_expression_simple(e))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Node::Values { rows })
+    }
+
     fn plan_values(
         &self,
         values_stmt: &crate::parsing::ast::dml::ValuesStatement,
@@ -622,7 +686,10 @@ impl Planner {
             };
         }
 
-        Ok(Plan::Select(Box::new(node)))
+        Ok(Plan::Query {
+            root: Box::new(node),
+            params: Vec::new(),
+        })
     }
 
     // Helper methods...
@@ -684,6 +751,102 @@ impl Planner {
             schema: table,
             if_not_exists,
         })
+    }
+
+    fn plan_create_table_as_values(
+        &self,
+        name: String,
+        values: &ValuesStatement,
+        if_not_exists: bool,
+        analyzed: &AnalyzedStatement,
+    ) -> Result<Plan> {
+        // First, plan the VALUES statement to determine types
+        let values_plan = self.plan_values(values, analyzed)?;
+
+        // Extract the data types from the VALUES plan
+        let column_types = match &values_plan {
+            Plan::Query { root, .. } => {
+                match &**root {
+                    Node::Values { rows } => {
+                        // Determine types from all rows (to handle NULL properly)
+                        if rows.is_empty() {
+                            return Err(Error::ExecutionError("VALUES has no rows".into()));
+                        }
+
+                        let num_cols = rows[0].len();
+                        let mut column_types = vec![DataType::Null; num_cols];
+
+                        // Go through all rows to determine the actual types
+                        for row in rows {
+                            for (i, expr) in row.iter().enumerate() {
+                                let expr_type = self.infer_expression_type(expr)?;
+                                // Update column type if it's more specific than what we have
+                                if column_types[i] == DataType::Null && expr_type != DataType::Null
+                                {
+                                    column_types[i] = expr_type;
+                                }
+                            }
+                        }
+
+                        // If any column is still NULL, default to Str
+                        for dtype in &mut column_types {
+                            if *dtype == DataType::Null {
+                                *dtype = DataType::Str;
+                            }
+                        }
+
+                        column_types
+                    }
+                    _ => return Err(Error::ExecutionError("Expected VALUES node".into())),
+                }
+            }
+            _ => return Err(Error::ExecutionError("Expected Query plan".into())),
+        };
+
+        // Create columns with auto-generated names (column1, column2, etc.)
+        let schema_columns = column_types
+            .iter()
+            .enumerate()
+            .map(|(i, dtype)| {
+                let col_name = format!("column{}", i + 1);
+                crate::types::schema::Column::new(col_name, dtype.clone()).nullable(true) // Default to nullable for VALUES-created tables
+            })
+            .collect();
+
+        let table = Table::new(name.clone(), schema_columns)?;
+
+        // Create a compound plan: CREATE TABLE followed by INSERT
+        Ok(Plan::CreateTableAsValues {
+            name,
+            schema: table,
+            values_plan: Box::new(values_plan),
+            if_not_exists,
+        })
+    }
+
+    fn infer_expression_type(&self, expr: &Expression) -> Result<DataType> {
+        use crate::types::value::Value;
+
+        match expr {
+            Expression::Constant(Value::Null) => Ok(DataType::Null),
+            Expression::Constant(Value::Bool(_)) => Ok(DataType::Bool),
+            Expression::Constant(Value::I32(_)) => Ok(DataType::I32),
+            Expression::Constant(Value::I64(_)) => Ok(DataType::I64),
+            Expression::Constant(Value::I128(_)) => Ok(DataType::I128),
+            Expression::Constant(Value::F64(_)) => Ok(DataType::F64),
+            Expression::Constant(Value::Str(_)) => Ok(DataType::Str),
+            Expression::Constant(Value::Bytea(_)) => Ok(DataType::Bytea),
+            // For complex expressions, default to the most general type
+            Expression::Add(_, _)
+            | Expression::Subtract(_, _)
+            | Expression::Multiply(_, _)
+            | Expression::Divide(_, _)
+            | Expression::Remainder(_, _)
+            | Expression::Exponentiate(_, _) => Ok(DataType::F64),
+            Expression::Concat(_, _) => Ok(DataType::Str),
+            Expression::And(_, _) | Expression::Or(_, _) | Expression::Not(_) => Ok(DataType::Bool),
+            _ => Ok(DataType::Str), // Default to string for unknown expressions
+        }
     }
 
     fn convert_join_type(join_type: &crate::parsing::ast::common::JoinType) -> JoinType {

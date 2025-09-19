@@ -91,9 +91,13 @@ impl MetadataBuilder {
                     // Check if any predicates were added for the main query tables
                     // (not counting subquery predicates)
                     let mut has_main_table_predicates = false;
-                    for (_, table) in input.tables {
+                    for source in input.tables {
+                        let table_name = match source {
+                            super::resolution::TableSource::Table { name, .. } => name,
+                            super::resolution::TableSource::Subquery { alias, .. } => alias,
+                        };
                         for template in &templates[initial_count..] {
-                            if self.template_covers_table(template, table) {
+                            if self.template_covers_table(template, table_name) {
                                 has_main_table_predicates = true;
                                 break;
                             }
@@ -105,10 +109,14 @@ impl MetadataBuilder {
 
                     // If no predicates cover the main tables, add FullTable predicates
                     if !has_main_table_predicates {
-                        for (_, table) in input.tables {
-                            templates.push(PredicateTemplate::FullTable {
-                                table: table.clone(),
-                            });
+                        for source in input.tables {
+                            let table_name = match source {
+                                super::resolution::TableSource::Table { name, .. } => name.clone(),
+                                super::resolution::TableSource::Subquery { alias, .. } => {
+                                    alias.clone()
+                                }
+                            };
+                            templates.push(PredicateTemplate::FullTable { table: table_name });
                         }
                     }
                 }
@@ -245,6 +253,7 @@ impl MetadataBuilder {
 
         match from {
             FromClause::Table { name, .. } => Some(name.clone()),
+            FromClause::Subquery { alias, .. } => Some(alias.clone()),
             FromClause::Join { left, .. } => Self::extract_table_from_clause(left),
         }
     }
@@ -656,6 +665,10 @@ impl MetadataBuilder {
                 templates.push(PredicateTemplate::FullTable {
                     table: name.clone(),
                 });
+            }
+            FromClause::Subquery { .. } => {
+                // Subqueries don't directly reference tables at this level
+                // The tables they use internally are handled when the subquery is analyzed
             }
             FromClause::Join { left, right, .. } => {
                 // Recursively extract tables from joins

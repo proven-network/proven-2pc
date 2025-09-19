@@ -1,6 +1,7 @@
 //! Data Definition Language (DDL) statements: CREATE, DROP, ALTER
 
 use super::common::Direction;
+use super::dml::ValuesStatement;
 use super::expressions::Expression;
 use crate::types::data_type::DataType;
 
@@ -35,6 +36,15 @@ pub enum DdlStatement {
         name: String,
         /// Column specifications.
         columns: Vec<Column>,
+        /// IF NOT EXISTS: if true, don't error if the table already exists.
+        if_not_exists: bool,
+    },
+    /// CREATE TABLE AS VALUES: creates a new table from VALUES clause.
+    CreateTableAsValues {
+        /// The table name.
+        name: String,
+        /// The VALUES statement to populate from.
+        values: ValuesStatement,
         /// IF NOT EXISTS: if true, don't error if the table already exists.
         if_not_exists: bool,
     },

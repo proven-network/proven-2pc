@@ -17,8 +17,8 @@ use super::statement::{
 /// Output from name resolution phase
 #[derive(Debug)]
 pub struct ResolutionOutput {
-    /// Resolved table names and aliases
-    pub tables: Vec<(Option<String>, String)>, // (alias, table_name)
+    /// Resolved table sources
+    pub table_sources: Vec<super::resolution::TableSource>,
 
     /// Column resolution map for O(1) lookups
     pub column_map: ColumnResolutionMap,
@@ -108,13 +108,16 @@ impl SemanticAnalyzer {
     fn resolve_names(&self, ast: &Arc<Statement>) -> Result<ResolutionOutput> {
         let resolver = super::resolution::NameResolver::new(self.schemas.clone());
 
-        // Build tables list from FROM clauses
-        let tables = resolver.extract_tables(ast)?;
+        // Build table sources list from FROM clauses
+        let table_sources = resolver.extract_table_sources(ast)?;
 
         // Build column resolution map
-        let column_map = resolver.build_column_map(&tables, &self.schemas)?;
+        let column_map = resolver.build_column_map(&table_sources, &self.schemas)?;
 
-        Ok(ResolutionOutput { tables, column_map })
+        Ok(ResolutionOutput {
+            table_sources,
+            column_map,
+        })
     }
 
     /// Phase 2: Type Inference
@@ -194,7 +197,7 @@ impl SemanticAnalyzer {
 
         // Create optimization input from previous phases
         let opt_input = OptimizationInput {
-            tables: &resolution.tables,
+            tables: &resolution.table_sources,
             column_map: &resolution.column_map,
             schemas: &self.schemas,
         };
@@ -280,6 +283,9 @@ impl SemanticAnalyzer {
             },
             Statement::Ddl(ddl) => match ddl {
                 crate::parsing::ast::DdlStatement::CreateTable { .. } => StatementType::CreateTable,
+                crate::parsing::ast::DdlStatement::CreateTableAsValues { .. } => {
+                    StatementType::CreateTable
+                }
                 crate::parsing::ast::DdlStatement::DropTable { .. } => StatementType::DropTable,
                 crate::parsing::ast::DdlStatement::CreateIndex { .. } => StatementType::CreateIndex,
                 crate::parsing::ast::DdlStatement::DropIndex { .. } => StatementType::DropIndex,
@@ -727,7 +733,7 @@ pub struct ValidationInput<'a> {
 
 /// Immutable input for optimization phase
 pub struct OptimizationInput<'a> {
-    pub tables: &'a [(Option<String>, String)],
+    pub tables: &'a [super::resolution::TableSource],
     pub column_map: &'a ColumnResolutionMap,
     pub schemas: &'a HashMap<String, Table>,
 }

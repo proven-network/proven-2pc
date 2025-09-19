@@ -8,9 +8,22 @@
 
 use super::statement::{ColumnResolution, ColumnResolutionMap};
 use crate::error::{Error, Result};
+use crate::parsing::ast::common::SubquerySource;
 use crate::parsing::ast::{DmlStatement, FromClause, Statement};
-use crate::types::schema::Table;
+use crate::types::{DataType, schema::Table};
 use std::collections::HashMap;
+
+/// Information about a table source (regular table or subquery)
+#[derive(Debug, Clone)]
+pub enum TableSource {
+    /// Regular table from schema
+    Table { alias: Option<String>, name: String },
+    /// Subquery with generated columns
+    Subquery {
+        alias: String,
+        source: SubquerySource,
+    },
+}
 
 /// Handles all name resolution in the semantic analysis phase
 pub struct NameResolver {
@@ -24,28 +37,37 @@ impl NameResolver {
         Self { schemas }
     }
 
-    /// Extract tables from a statement
-    pub fn extract_tables(&self, statement: &Statement) -> Result<Vec<(Option<String>, String)>> {
-        let mut tables = Vec::new();
+    /// Extract table sources from a statement
+    pub fn extract_table_sources(&self, statement: &Statement) -> Result<Vec<TableSource>> {
+        let mut sources = Vec::new();
 
         if let Statement::Dml(dml) = statement {
             match dml {
                 DmlStatement::Select(select) => {
                     for from_clause in &select.from {
-                        self.extract_from_tables(from_clause, &mut tables)?;
+                        self.extract_from_sources(from_clause, &mut sources)?;
                     }
                 }
                 DmlStatement::Insert { table, .. } => {
                     self.validate_table_exists(table)?;
-                    tables.push((None, table.clone()));
+                    sources.push(TableSource::Table {
+                        alias: None,
+                        name: table.clone(),
+                    });
                 }
                 DmlStatement::Update { table, .. } => {
                     self.validate_table_exists(table)?;
-                    tables.push((None, table.clone()));
+                    sources.push(TableSource::Table {
+                        alias: None,
+                        name: table.clone(),
+                    });
                 }
                 DmlStatement::Delete { table, .. } => {
                     self.validate_table_exists(table)?;
-                    tables.push((None, table.clone()));
+                    sources.push(TableSource::Table {
+                        alias: None,
+                        name: table.clone(),
+                    });
                 }
                 DmlStatement::Values(_) => {
                     // VALUES statements don't reference tables
@@ -53,60 +75,117 @@ impl NameResolver {
             }
         }
 
-        Ok(tables)
+        Ok(sources)
     }
 
-    /// Extract tables from FROM clause
-    fn extract_from_tables(
+    /// Extract table sources from FROM clause
+    fn extract_from_sources(
         &self,
         from: &FromClause,
-        tables: &mut Vec<(Option<String>, String)>,
+        sources: &mut Vec<TableSource>,
     ) -> Result<()> {
         match from {
             FromClause::Table { name, alias } => {
                 self.validate_table_exists(name)?;
-                tables.push((alias.clone(), name.clone()));
+                sources.push(TableSource::Table {
+                    alias: alias.clone(),
+                    name: name.clone(),
+                });
+            }
+            FromClause::Subquery { source, alias } => {
+                // For subqueries, we keep the source information
+                sources.push(TableSource::Subquery {
+                    alias: alias.clone(),
+                    source: source.clone(),
+                });
             }
             FromClause::Join { left, right, .. } => {
-                self.extract_from_tables(left, tables)?;
-                self.extract_from_tables(right, tables)?;
+                self.extract_from_sources(left, sources)?;
+                self.extract_from_sources(right, sources)?;
             }
         }
         Ok(())
     }
 
-    /// Build column map from resolved tables
+    /// Build column map from resolved table sources
     pub fn build_column_map(
         &self,
-        tables: &[(Option<String>, String)],
+        sources: &[TableSource],
         schemas: &HashMap<String, Table>,
     ) -> Result<ColumnResolutionMap> {
         let mut resolution_map = ColumnResolutionMap::default();
         let mut column_counts: HashMap<String, usize> = HashMap::new();
         let mut global_offset = 0;
 
-        for (alias, table_name) in tables.iter() {
-            if let Some(schema) = schemas.get(table_name) {
-                for column in schema.columns.iter() {
-                    // Track column name frequency
-                    *column_counts.entry(column.name.clone()).or_insert(0) += 1;
+        for source in sources {
+            match source {
+                TableSource::Table { alias, name } => {
+                    if let Some(schema) = schemas.get(name) {
+                        for column in schema.columns.iter() {
+                            // Track column name frequency
+                            *column_counts.entry(column.name.clone()).or_insert(0) += 1;
 
-                    let resolution = ColumnResolution {
-                        global_offset,
-                        table_name: table_name.clone(),
-                        data_type: column.datatype.clone(),
-                        nullable: column.nullable,
-                        is_indexed: column.index,
-                    };
+                            let resolution = ColumnResolution {
+                                global_offset,
+                                table_name: name.clone(),
+                                data_type: column.datatype.clone(),
+                                nullable: column.nullable,
+                                is_indexed: column.index,
+                            };
 
-                    let table_qualifier = alias.clone().unwrap_or_else(|| table_name.clone());
-                    resolution_map.add_resolution(
-                        Some(table_qualifier),
-                        column.name.clone(),
-                        resolution,
-                    );
+                            let table_qualifier = alias.clone().unwrap_or_else(|| name.clone());
+                            resolution_map.add_resolution(
+                                Some(table_qualifier),
+                                column.name.clone(),
+                                resolution,
+                            );
 
-                    global_offset += 1;
+                            global_offset += 1;
+                        }
+                    }
+                }
+                TableSource::Subquery { alias, source } => {
+                    // For subqueries, create synthetic columns
+                    match source {
+                        SubquerySource::Values(values_stmt) => {
+                            // VALUES creates columns named column1, column2, etc.
+                            // Use the first row to determine column count and types
+                            if let Some(first_row) = values_stmt.rows.first() {
+                                for (idx, _expr) in first_row.iter().enumerate() {
+                                    let column_name = format!("column{}", idx + 1);
+
+                                    // Track column name frequency
+                                    *column_counts.entry(column_name.clone()).or_insert(0) += 1;
+
+                                    // For VALUES, we don't know the exact type yet, use Null as placeholder
+                                    // The typing phase will determine the actual type
+                                    let resolution = ColumnResolution {
+                                        global_offset,
+                                        table_name: alias.clone(),
+                                        data_type: DataType::Null,
+                                        nullable: true,
+                                        is_indexed: false,
+                                    };
+
+                                    resolution_map.add_resolution(
+                                        Some(alias.clone()),
+                                        column_name.clone(),
+                                        resolution.clone(),
+                                    );
+
+                                    // Also add without table qualifier for column references
+                                    resolution_map.add_resolution(None, column_name, resolution);
+
+                                    global_offset += 1;
+                                }
+                            }
+                        }
+                        SubquerySource::Select(_select_stmt) => {
+                            // For SELECT subqueries, we'd need to analyze the SELECT to get columns
+                            // This is more complex and would require recursive analysis
+                            // For now, we'll skip this as it's not needed for VALUES
+                        }
+                    }
                 }
             }
         }

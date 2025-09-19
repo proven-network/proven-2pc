@@ -35,8 +35,13 @@ pub fn execute_with_params(
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     match plan {
+        Plan::Query { root, params: _ } => {
+            // Query uses immutable storage reference (handles SELECT and VALUES)
+            super::select::execute_select(*root, storage, tx_ctx, params)
+        }
+
         Plan::Select(node) => {
-            // SELECT uses immutable storage reference
+            // SELECT uses immutable storage reference (legacy)
             super::select::execute_select(*node, storage, tx_ctx, params)
         }
 
@@ -69,6 +74,47 @@ pub fn execute_with_params(
         | Plan::DropIndex { .. } => {
             let result_msg = storage.execute_ddl(&plan, tx_ctx.id)?;
             Ok(ExecutionResult::Ddl(result_msg))
+        }
+
+        Plan::CreateTableAsValues {
+            name,
+            schema,
+            values_plan,
+            if_not_exists,
+        } => {
+            // First execute CREATE TABLE
+            let create_plan = Plan::CreateTable {
+                name: name.clone(),
+                schema: schema.clone(),
+                if_not_exists,
+            };
+            let create_msg = storage.execute_ddl(&create_plan, tx_ctx.id)?;
+
+            // Then execute the VALUES insertion
+            // Convert VALUES plan to INSERT
+            if let Plan::Query { root, params: _ } = values_plan.as_ref() {
+                // Execute the insert directly with the VALUES source
+                let insert_result = super::insert::execute_insert(
+                    name.clone(),
+                    None,
+                    *root.clone(),
+                    storage,
+                    tx_ctx,
+                    params,
+                )?;
+
+                // Return success message with row count
+                if let ExecutionResult::Modified(count) = insert_result {
+                    Ok(ExecutionResult::Ddl(format!(
+                        "{} with {} rows inserted",
+                        create_msg, count
+                    )))
+                } else {
+                    Ok(ExecutionResult::Ddl(create_msg))
+                }
+            } else {
+                Ok(ExecutionResult::Ddl(create_msg))
+            }
         }
     }
 }
