@@ -1,86 +1,254 @@
 //! Tests for PRIMARY KEY constraint functionality
 //! Based on gluesql/test-suite/src/primary_key.rs
 
-#[ignore = "Implement test for CREATE TABLE with PRIMARY KEY and basic INSERT/SELECT operations"]
+mod common;
+
+use common::setup_test;
+
 #[test]
 fn test_primary_key_basic_operations() {
-    // Test basic INSERT and SELECT operations on table with PRIMARY KEY
-    // todo!("Implement test for CREATE TABLE with PRIMARY KEY and basic INSERT/SELECT operations")
+    let mut ctx = setup_test();
+
+    // Create table with PRIMARY KEY
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+
+    // Insert test data
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Verify data was inserted correctly
+    assert_rows!(ctx, "SELECT * FROM Allegro", 2);
+
+    // Check specific rows
+    let results = ctx.query("SELECT id, name FROM Allegro ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert!(results[0].get("id").unwrap().contains("1"));
+    assert!(results[0].get("name").unwrap().contains("hello"));
+    assert!(results[1].get("id").unwrap().contains("3"));
+    assert!(results[1].get("name").unwrap().contains("world"));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for SELECT id, name FROM Allegro WHERE id = 1"]
 #[test]
 fn test_primary_key_where_equality() {
-    // Test WHERE clause with equality condition on PRIMARY KEY column
-    // todo!("Implement test for SELECT id, name FROM Allegro WHERE id = 1")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Test WHERE clause with equality on PRIMARY KEY
+    let results = ctx.query("SELECT id, name FROM Allegro WHERE id = 1");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("id").unwrap().contains("1"));
+    assert!(results[0].get("name").unwrap().contains("hello"));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for SELECT id, name FROM Allegro WHERE id < 2"]
 #[test]
 fn test_primary_key_where_comparison() {
-    // Test WHERE clause with comparison operators on PRIMARY KEY column
-    // todo!("Implement test for SELECT id, name FROM Allegro WHERE id < 2")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Test WHERE clause with comparison operator on PRIMARY KEY
+    let results = ctx.query("SELECT id, name FROM Allegro WHERE id < 2");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("id").unwrap().contains("1"));
+    assert!(results[0].get("name").unwrap().contains("hello"));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for SELECT a.id FROM Allegro a JOIN Allegro a2 WHERE a.id = a2.id"]
 #[test]
+#[ignore = "Self-join not yet fully implemented"]
 fn test_primary_key_self_join() {
-    // Test self-join on table with PRIMARY KEY
-    // todo!("Implement test for SELECT a.id FROM Allegro a JOIN Allegro a2 WHERE a.id = a2.id")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Test self-join on PRIMARY KEY
+    let results = ctx.query("SELECT a.id FROM Allegro a JOIN Allegro a2 WHERE a.id = a2.id");
+    assert_eq!(results.len(), 2);
+
+    // Check that we get both ids
+    let ids: Vec<String> = results
+        .iter()
+        .map(|row| row.get("id").unwrap().clone())
+        .collect();
+    assert!(ids.iter().any(|id| id.contains("1")));
+    assert!(ids.iter().any(|id| id.contains("3")));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for SELECT id FROM Allegro WHERE id IN (SELECT id FROM Allegro WHERE id = id)"]
 #[test]
+#[ignore = "IN subquery not yet fully implemented"]
 fn test_primary_key_in_subquery() {
-    // Test PRIMARY KEY column usage in subquery conditions
-    // todo!("Implement test for SELECT id FROM Allegro WHERE id IN (SELECT id FROM Allegro WHERE id = id)")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Test IN subquery with PRIMARY KEY
+    let results =
+        ctx.query("SELECT id FROM Allegro WHERE id IN (SELECT id FROM Allegro WHERE id = id)");
+    assert_eq!(results.len(), 2);
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for INSERT multiple values and verify proper ordering"]
 #[test]
 fn test_primary_key_ordering() {
-    // Test that PRIMARY KEY maintains proper ordering in results
-    // todo!("Implement test for INSERT multiple values and verify proper ordering")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+
+    // Insert values in random order
+    ctx.exec("INSERT INTO Allegro VALUES (5, 'neon'), (2, 'foo'), (4, 'bar')");
+
+    // Insert more values
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Verify PRIMARY KEY maintains order
+    let results = ctx.query("SELECT id, name FROM Allegro ORDER BY id");
+    assert_eq!(results.len(), 5);
+
+    // Check order
+    assert!(results[0].get("id").unwrap().contains("1"));
+    assert!(results[0].get("name").unwrap().contains("hello"));
+    assert!(results[1].get("id").unwrap().contains("2"));
+    assert!(results[1].get("name").unwrap().contains("foo"));
+    assert!(results[2].get("id").unwrap().contains("3"));
+    assert!(results[2].get("name").unwrap().contains("world"));
+    assert!(results[3].get("id").unwrap().contains("4"));
+    assert!(results[3].get("name").unwrap().contains("bar"));
+    assert!(results[4].get("id").unwrap().contains("5"));
+    assert!(results[4].get("name").unwrap().contains("neon"));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for SELECT id, name FROM Allegro WHERE id % 2 = 0"]
 #[test]
+#[ignore = "Modulo operator not yet implemented"]
 fn test_primary_key_modulo_operator() {
-    // Test arithmetic operations (modulo) on PRIMARY KEY column
-    // todo!("Implement test for SELECT id, name FROM Allegro WHERE id % 2 = 0")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (2, 'foo'), (3, 'world'), (4, 'bar')");
+
+    // Test modulo operator on PRIMARY KEY
+    let results = ctx.query("SELECT id, name FROM Allegro WHERE id % 2 = 0");
+    assert_eq!(results.len(), 2);
+
+    // Check that we only get even ids
+    assert!(results[0].get("id").unwrap().contains("2"));
+    assert!(results[0].get("name").unwrap().contains("foo"));
+    assert!(results[1].get("id").unwrap().contains("4"));
+    assert!(results[1].get("name").unwrap().contains("bar"));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for DELETE FROM Allegro WHERE id > 3"]
 #[test]
 fn test_primary_key_delete_operations() {
-    // Test DELETE operations on table with PRIMARY KEY
-    // todo!("Implement test for DELETE FROM Allegro WHERE id > 3")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (2, 'foo'), (3, 'world'), (4, 'bar'), (5, 'neon')");
+
+    // Delete rows where id > 3
+    ctx.exec("DELETE FROM Allegro WHERE id > 3");
+
+    // Verify only rows with id <= 3 remain
+    let results = ctx.query("SELECT id, name FROM Allegro ORDER BY id");
+    assert_eq!(results.len(), 3);
+
+    assert!(results[0].get("id").unwrap().contains("1"));
+    assert!(results[0].get("name").unwrap().contains("hello"));
+    assert!(results[1].get("id").unwrap().contains("2"));
+    assert!(results[1].get("name").unwrap().contains("foo"));
+    assert!(results[2].get("id").unwrap().contains("3"));
+    assert!(results[2].get("name").unwrap().contains("world"));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for INSERT INTO Strslice VALUES (SUBSTR(SUBSTR('foo', 1), 1))"]
 #[test]
+#[ignore = "SUBSTR function not yet implemented"]
 fn test_primary_key_with_function_result() {
-    // Test PRIMARY KEY with values derived from functions
-    // todo!("Implement test for INSERT INTO Strslice VALUES (SUBSTR(SUBSTR('foo', 1), 1))")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Strslice (name TEXT PRIMARY KEY)");
+
+    // Test inserting value derived from function
+    ctx.exec("INSERT INTO Strslice VALUES (SUBSTR(SUBSTR('foo', 1), 1))");
+
+    // Verify the result
+    let results = ctx.query("SELECT name FROM Strslice");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("name").unwrap().contains("foo"));
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for INSERT INTO Allegro VALUES (1, 'another hello') - should fail with duplicate key error"]
 #[test]
 fn test_primary_key_unique_constraint() {
-    // Test that PRIMARY KEY enforces UNIQUE constraint
-    // todo!("Implement test for INSERT INTO Allegro VALUES (1, 'another hello') - should fail with duplicate key error")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Try to insert duplicate PRIMARY KEY - should fail
+    assert_error!(
+        ctx,
+        "INSERT INTO Allegro VALUES (1, 'another hello')",
+        "Unique constraint violation"
+    );
+
+    // Verify original data is unchanged
+    assert_rows!(ctx, "SELECT * FROM Allegro", 2);
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for INSERT INTO Allegro VALUES (NULL, 'hello') - should fail with null value error"]
 #[test]
+#[ignore = "NOT NULL constraint on PRIMARY KEY not yet enforced"]
 fn test_primary_key_not_null_constraint() {
-    // Test that PRIMARY KEY enforces NOT NULL constraint
-    // todo!("Implement test for INSERT INTO Allegro VALUES (NULL, 'hello') - should fail with null value error")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+
+    // Try to insert NULL PRIMARY KEY - should fail
+    assert_error!(ctx, "INSERT INTO Allegro VALUES (NULL, 'hello')", "NULL");
+
+    // Verify no data was inserted
+    assert_rows!(ctx, "SELECT * FROM Allegro", 0);
+
+    ctx.commit();
 }
 
-#[ignore = "Implement test for UPDATE Allegro SET id = 100 WHERE id = 1 - should fail"]
 #[test]
+#[ignore = "UPDATE restriction on PRIMARY KEY not yet implemented"]
 fn test_primary_key_update_not_allowed() {
-    // Test that UPDATE on PRIMARY KEY column is not allowed
-    // todo!("Implement test for UPDATE Allegro SET id = 100 WHERE id = 1 - should fail")
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Allegro (id INTEGER PRIMARY KEY, name TEXT)");
+    ctx.exec("INSERT INTO Allegro VALUES (1, 'hello'), (3, 'world')");
+
+    // Try to UPDATE PRIMARY KEY column - should fail
+    assert_error!(
+        ctx,
+        "UPDATE Allegro SET id = 100 WHERE id = 1",
+        "PRIMARY KEY"
+    );
+
+    // Verify data is unchanged
+    let results = ctx.query("SELECT id FROM Allegro WHERE id = 1");
+    assert_eq!(results.len(), 1);
+    assert!(results[0].get("id").unwrap().contains("1"));
+
+    ctx.commit();
 }
