@@ -275,7 +275,7 @@ pub fn evaluate_with_storage(
                 .iter()
                 .map(|e| evaluate_with_storage(e, row, context, params, storage))
                 .collect();
-            Value::List(values?)
+            Value::Array(values?)
         }
 
         MapLiteral(pairs) => {

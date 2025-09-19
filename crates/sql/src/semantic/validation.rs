@@ -644,34 +644,139 @@ impl SemanticValidator {
                 for row in rows {
                     for (value_expr, target_col) in row.iter().zip(&target_columns) {
                         // Check literal types
-                        if let Expression::Literal(lit) = value_expr {
-                            let value_type = match lit {
-                                Literal::String(_) => crate::types::data_type::DataType::Str,
-                                Literal::Integer(_) => crate::types::data_type::DataType::I64,
-                                Literal::Float(_) => crate::types::data_type::DataType::F64,
-                                Literal::Boolean(_) => crate::types::data_type::DataType::Bool,
-                                Literal::Null => crate::types::data_type::DataType::Null,
-                                _ => continue, // Skip other literals for now
-                            };
+                        match value_expr {
+                            Expression::Literal(lit) => {
+                                let value_type = match lit {
+                                    Literal::String(_) => crate::types::data_type::DataType::Str,
+                                    Literal::Integer(_) => crate::types::data_type::DataType::I64,
+                                    Literal::Float(_) => crate::types::data_type::DataType::F64,
+                                    Literal::Boolean(_) => crate::types::data_type::DataType::Bool,
+                                    Literal::Null => crate::types::data_type::DataType::Null,
+                                    _ => continue, // Skip other literals for now
+                                };
 
-                            // Check NULL constraint first
-                            if matches!(lit, Literal::Null) {
-                                if !target_col.nullable {
-                                    return Err(Error::ExecutionError(format!(
-                                        "Cannot insert NULL into non-nullable column '{}'",
-                                        target_col.name
-                                    )));
+                                // Check NULL constraint first
+                                if matches!(lit, Literal::Null) {
+                                    if !target_col.nullable {
+                                        return Err(Error::ExecutionError(format!(
+                                            "Cannot insert NULL into non-nullable column '{}'",
+                                            target_col.name
+                                        )));
+                                    }
+                                    // NULL is allowed for nullable columns regardless of type
+                                    continue;
                                 }
-                                // NULL is allowed for nullable columns regardless of type
-                                continue;
-                            }
 
-                            // Check if value can be coerced to target type (for non-NULL values)
-                            if !coercion::can_coerce(&value_type, &target_col.datatype) {
-                                return Err(Error::TypeMismatch {
-                                    expected: format!("{:?}", target_col.datatype),
-                                    found: format!("{:?}", value_type),
-                                });
+                                // Check if value can be coerced to target type (for non-NULL values)
+                                if !coercion::can_coerce(&value_type, &target_col.datatype) {
+                                    return Err(Error::TypeMismatch {
+                                        expected: format!("{:?}", target_col.datatype),
+                                        found: format!("{:?}", value_type),
+                                    });
+                                }
+                            }
+                            Expression::ArrayLiteral(elements) => {
+                                // For array literals, check if it can be coerced to the target type
+                                // Arrays can be coerced to LIST types
+                                if let crate::types::data_type::DataType::List(elem_type) =
+                                    &target_col.datatype
+                                {
+                                    // Check each element can be coerced to the element type
+                                    for elem in elements {
+                                        if let Expression::Literal(lit) = elem {
+                                            let elem_value_type = match lit {
+                                                Literal::String(_) => {
+                                                    crate::types::data_type::DataType::Str
+                                                }
+                                                Literal::Integer(_) => {
+                                                    crate::types::data_type::DataType::I64
+                                                }
+                                                Literal::Float(_) => {
+                                                    crate::types::data_type::DataType::F64
+                                                }
+                                                Literal::Boolean(_) => {
+                                                    crate::types::data_type::DataType::Bool
+                                                }
+                                                Literal::Null => {
+                                                    crate::types::data_type::DataType::Null
+                                                }
+                                                _ => continue,
+                                            };
+
+                                            if !matches!(lit, Literal::Null)
+                                                && !coercion::can_coerce(
+                                                    &elem_value_type,
+                                                    elem_type,
+                                                )
+                                            {
+                                                return Err(Error::TypeMismatch {
+                                                    expected: format!("{:?}", elem_type),
+                                                    found: format!("{:?}", elem_value_type),
+                                                });
+                                            }
+                                        }
+                                        // For non-literal expressions in array, skip validation for now
+                                    }
+                                } else if let crate::types::data_type::DataType::Array(
+                                    elem_type,
+                                    size,
+                                ) = &target_col.datatype
+                                {
+                                    // Check array size if specified
+                                    if let Some(expected_size) = size
+                                        && elements.len() != *expected_size
+                                    {
+                                        return Err(Error::ExecutionError(format!(
+                                            "Array size mismatch: expected {} elements, got {}",
+                                            expected_size,
+                                            elements.len()
+                                        )));
+                                    }
+                                    // Check element types
+                                    for elem in elements {
+                                        if let Expression::Literal(lit) = elem {
+                                            let elem_value_type = match lit {
+                                                Literal::String(_) => {
+                                                    crate::types::data_type::DataType::Str
+                                                }
+                                                Literal::Integer(_) => {
+                                                    crate::types::data_type::DataType::I64
+                                                }
+                                                Literal::Float(_) => {
+                                                    crate::types::data_type::DataType::F64
+                                                }
+                                                Literal::Boolean(_) => {
+                                                    crate::types::data_type::DataType::Bool
+                                                }
+                                                Literal::Null => {
+                                                    crate::types::data_type::DataType::Null
+                                                }
+                                                _ => continue,
+                                            };
+
+                                            if !matches!(lit, Literal::Null)
+                                                && !coercion::can_coerce(
+                                                    &elem_value_type,
+                                                    elem_type,
+                                                )
+                                            {
+                                                return Err(Error::TypeMismatch {
+                                                    expected: format!("{:?}", elem_type),
+                                                    found: format!("{:?}", elem_value_type),
+                                                });
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    return Err(Error::TypeMismatch {
+                                        expected: format!("{:?}", target_col.datatype),
+                                        found: "ARRAY".to_string(),
+                                    });
+                                }
+                            }
+                            _ => {
+                                // Skip validation for complex expressions
+                                continue;
                             }
                         }
                     }

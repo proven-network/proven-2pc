@@ -357,6 +357,20 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 .into()
             }
 
+            // ARRAY literal: ARRAY[1, 2, 3]
+            Token::Keyword(Keyword::Array) => {
+                self.expect(Token::OpenBracket)?;
+                let mut elements = Vec::new();
+                if self.peek()? != Some(&Token::CloseBracket) {
+                    elements.push(<Self as ExpressionParser>::parse_expression(self)?);
+                    while self.next_is(Token::Comma) {
+                        elements.push(<Self as ExpressionParser>::parse_expression(self)?);
+                    }
+                }
+                self.expect(Token::CloseBracket)?;
+                Expression::ArrayLiteral(elements)
+            }
+
             // CAST expression: CAST(expr AS type)
             Token::Keyword(Keyword::Cast) => {
                 self.expect(Token::OpenParen)?;
