@@ -13,7 +13,6 @@ use proven_engine::client::MessageStream;
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
 use proven_snapshot::SnapshotStore;
-use serde::Serialize;
 use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -830,11 +829,11 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
     }
 
     /// Send a response back to the coordinator
-    fn send_response<R: Serialize>(
+    fn send_response(
         &self,
         coordinator_id: &str,
         txn_id: &str,
-        response: R,
+        response: E::Response,
         request_id: Option<String>,
     ) {
         // Pre-size HashMap to avoid reallocation (request_id is almost always present)

@@ -2,11 +2,13 @@
 
 use crate::error::{CoordinatorError, Result};
 use crate::responses::{ResponseCollector, ResponseMessage};
+use crate::speculation::SpeculativeContext;
 use parking_lot::Mutex;
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
 use proven_runner::Runner;
-use std::collections::{HashMap, HashSet};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -52,10 +54,19 @@ pub(crate) struct TransactionMetadata {
     pub(crate) streams_with_deadline: HashSet<String>,
     pub(crate) participant_awareness: HashMap<String, HashSet<String>>,
     pub(crate) participant_offsets: HashMap<String, u64>,
+    /// Pending speculated writes organized by stream for ordering enforcement
+    pub(crate) pending_speculated_writes: HashMap<String, VecDeque<Value>>,
+    /// Cache of speculated operation results
+    pub(crate) speculation_cache: HashMap<Value, Value>,
 }
 
 impl TransactionMetadata {
-    pub(crate) fn new(timestamp: HlcTimestamp, deadline: HlcTimestamp) -> Self {
+    pub(crate) fn new(
+        timestamp: HlcTimestamp,
+        deadline: HlcTimestamp,
+        pending_speculated_writes: HashMap<String, VecDeque<Value>>,
+        speculation_cache: HashMap<Value, Value>,
+    ) -> Self {
         Self {
             state: TransactionState::Active,
             participants: Vec::new(),
@@ -65,6 +76,8 @@ impl TransactionMetadata {
             streams_with_deadline: HashSet::new(),
             participant_awareness: HashMap::new(),
             participant_offsets: HashMap::new(),
+            pending_speculated_writes,
+            speculation_cache,
         }
     }
 }
@@ -92,10 +105,14 @@ pub struct Transaction {
 
     /// Request counter for generating unique request IDs
     request_counter: Arc<AtomicU64>,
+
+    /// Speculative execution context for pattern learning
+    speculative_context: SpeculativeContext,
 }
 
 impl Transaction {
     /// Create a new transaction
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: String,
         timestamp: HlcTimestamp,
@@ -104,15 +121,24 @@ impl Transaction {
         response_collector: Arc<ResponseCollector>,
         coordinator_id: String,
         runner: Arc<Runner>,
+        pending_speculated_writes: HashMap<String, VecDeque<Value>>,
+        speculation_cache: HashMap<Value, Value>,
+        speculative_context: SpeculativeContext,
     ) -> Self {
         Self {
             id,
-            metadata: Arc::new(Mutex::new(TransactionMetadata::new(timestamp, deadline))),
+            metadata: Arc::new(Mutex::new(TransactionMetadata::new(
+                timestamp,
+                deadline,
+                pending_speculated_writes,
+                speculation_cache,
+            ))),
             client,
             response_collector,
             coordinator_id,
             runner,
             request_counter: Arc::new(AtomicU64::new(0)),
+            speculative_context,
         }
     }
 
@@ -259,6 +285,20 @@ impl Transaction {
 
     /// Commit this transaction
     pub async fn commit(&self) -> Result<()> {
+        // Check for unexecuted speculated writes
+        {
+            let meta = self.metadata.lock();
+            for (stream, pending_writes) in &meta.pending_speculated_writes {
+                if !pending_writes.is_empty() {
+                    return Err(CoordinatorError::InvalidState(format!(
+                        "Cannot commit: {} unexecuted speculated writes on stream '{}'",
+                        pending_writes.len(),
+                        stream
+                    )));
+                }
+            }
+        }
+
         let participants = {
             let meta = self.metadata.lock();
             if !matches!(meta.state, TransactionState::Active) {
@@ -270,11 +310,21 @@ impl Transaction {
             meta.participants.clone()
         };
 
-        match participants.len() {
+        // Update patterns based on success
+        let result = match participants.len() {
             0 => self.commit_empty(),
             1 => self.commit_single(&participants[0]).await,
             _ => self.commit_multiple(&participants).await,
+        };
+
+        // Update speculation patterns based on commit outcome
+        if result.is_ok() {
+            self.speculative_context.update_patterns(&self.id, true);
+        } else {
+            self.speculative_context.update_patterns(&self.id, false);
         }
+
+        result
     }
 
     /// Abort this transaction

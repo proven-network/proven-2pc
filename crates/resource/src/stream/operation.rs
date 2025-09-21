@@ -1,10 +1,11 @@
 //! Resource operations that can be performed within transactions
 
 use crate::types::Amount;
+use proven_common::{Operation, OperationType};
 use serde::{Deserialize, Serialize};
 
 /// Operations that can be performed on a resource
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceOperation {
     /// Initialize a new resource with metadata
     Initialize {
@@ -49,4 +50,19 @@ pub enum ResourceOperation {
 
     /// Query total supply
     GetTotalSupply,
+}
+
+impl Operation for ResourceOperation {
+    fn operation_type(&self) -> OperationType {
+        match self {
+            ResourceOperation::Initialize { .. } => OperationType::Write,
+            ResourceOperation::UpdateMetadata { .. } => OperationType::Write,
+            ResourceOperation::Mint { .. } => OperationType::Write,
+            ResourceOperation::Burn { .. } => OperationType::Write,
+            ResourceOperation::Transfer { .. } => OperationType::Write,
+            ResourceOperation::GetBalance { .. } => OperationType::Read,
+            ResourceOperation::GetMetadata => OperationType::Read,
+            ResourceOperation::GetTotalSupply => OperationType::Read,
+        }
+    }
 }

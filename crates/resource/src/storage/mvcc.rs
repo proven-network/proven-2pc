@@ -122,10 +122,10 @@ impl ResourceStorage {
 
     /// Get pending balance for an account in a transaction
     pub fn get_pending_balance(&self, account: &str, transaction_id: HlcTimestamp) -> Amount {
-        if let Some(tx_changes) = self.pending_changes.get(&transaction_id) {
-            if let Some(&amount) = tx_changes.get(account) {
-                return amount;
-            }
+        if let Some(tx_changes) = self.pending_changes.get(&transaction_id)
+            && let Some(&amount) = tx_changes.get(account)
+        {
+            return amount;
         }
 
         // If no pending changes, return current balance

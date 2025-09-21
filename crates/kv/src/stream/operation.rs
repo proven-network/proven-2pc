@@ -4,10 +4,11 @@
 //! The actual message structure is provided by the engine crate.
 
 use crate::types::Value;
+use proven_common::{Operation, OperationType};
 use serde::{Deserialize, Serialize};
 
 /// KV operation types that can be sent in messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KvOperation {
     /// Get a value by key
     Get { key: String },
@@ -17,4 +18,14 @@ pub enum KvOperation {
 
     /// Delete a key
     Delete { key: String },
+}
+
+impl Operation for KvOperation {
+    fn operation_type(&self) -> OperationType {
+        match self {
+            KvOperation::Get { .. } => OperationType::Read,
+            KvOperation::Put { .. } => OperationType::Write,
+            KvOperation::Delete { .. } => OperationType::Write,
+        }
+    }
 }

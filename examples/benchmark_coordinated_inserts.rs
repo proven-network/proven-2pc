@@ -55,7 +55,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup phase - Create table
     println!("=== Setup Phase ===");
-    let setup_txn = coordinator.begin(Duration::from_secs(10)).await?;
+    let setup_txn = coordinator
+        .begin(
+            Duration::from_secs(10),
+            vec![],
+            "benchmark_coordinated_inserts_setup".to_string(),
+        )
+        .await?;
     let sql_setup = SqlClient::new(setup_txn.clone());
 
     // Create SQL table (same schema as benchmark_inserts.rs)
@@ -92,7 +98,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for i in 0..NUM_INSERTS {
             // Begin a transaction for each insert (matching benchmark_inserts.rs behavior)
-            let txn = match coordinator_clone.begin(Duration::from_secs(5)).await {
+            let txn = match coordinator_clone
+                .begin(
+                    Duration::from_secs(5),
+                    vec![],
+                    "benchmark_coordinated_inserts_transaction".to_string(),
+                )
+                .await
+            {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("\nError beginning transaction {}: {}", i, e);
@@ -187,7 +200,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify count
     println!("\nVerifying insert count...");
-    let verify_txn = coordinator.begin(Duration::from_secs(10)).await?;
+    let verify_txn = coordinator
+        .begin(
+            Duration::from_secs(10),
+            vec![],
+            "benchmark_coordinated_inserts_verification".to_string(),
+        )
+        .await?;
     let sql_verify = SqlClient::new(verify_txn.clone());
 
     let count_result = sql_verify

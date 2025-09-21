@@ -3,8 +3,8 @@
 //! This trait defines the interface that SQL, KV, and other storage
 //! systems must implement to work with the generic stream processor.
 
+use proven_common::{Operation, Response};
 use proven_hlc::HlcTimestamp;
-use serde::{Serialize, de::DeserializeOwned};
 
 /// When a blocked operation can be retried
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,10 +37,10 @@ pub enum OperationResult<R> {
 /// moving to the next one.
 pub trait TransactionEngine: Send + Sync {
     /// The type of operations this engine processes
-    type Operation: DeserializeOwned + Send + Clone;
+    type Operation: Operation;
 
     /// The type of responses this engine produces
-    type Response: Serialize + Send;
+    type Response: Response;
 
     /// Apply an operation within a transaction context
     ///

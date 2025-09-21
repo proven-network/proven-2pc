@@ -1,11 +1,12 @@
 //! Distributed transaction coordinator
 //!
 //! This crate provides transaction coordination across multiple storage engines
-//! using two-phase commit protocol.
+//! using two-phase commit protocol with speculative execution support.
 
 mod coordinator;
 mod error;
 mod responses;
+mod speculation;
 mod transaction;
 
 pub use coordinator::Coordinator;

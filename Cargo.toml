@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/common",
     "crates/coordinator",
     "crates/engine",
     "crates/hlc",
@@ -19,6 +20,7 @@ members = [
 ]
 default-members = [
     ".",  # Include root package for examples
+    "crates/common",
     "crates/coordinator",
     "crates/engine",
     "crates/hlc",
@@ -67,6 +69,7 @@ uuid = { version = "1.18.1", features = ["serde", "v4"] }
 zstd = "0.13"
 
 # Internal crates
+proven-common = { path = "crates/common" }
 proven-coordinator = { path = "crates/coordinator" }
 proven-engine = { path = "crates/engine" }
 proven-hlc = { path = "crates/hlc" }
@@ -91,6 +94,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+proven-common.workspace = true
 proven-coordinator.workspace = true
 proven-engine.workspace = true
 proven-hlc.workspace = true

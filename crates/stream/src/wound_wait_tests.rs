@@ -31,10 +31,19 @@ mod tests {
     }
 
     // Test operation and response types
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     enum TestOp {
         Lock { resource: String },
         Read { resource: String },
+    }
+
+    impl proven_common::Operation for TestOp {
+        fn operation_type(&self) -> proven_common::OperationType {
+            match self {
+                TestOp::Lock { .. } => proven_common::OperationType::Write,
+                TestOp::Read { .. } => proven_common::OperationType::Read,
+            }
+        }
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +51,8 @@ mod tests {
         Success { message: String },
         Value { data: String },
     }
+
+    impl proven_common::Response for TestResponse {}
 
     // Test engine that simulates lock conflicts
     struct TestEngine {

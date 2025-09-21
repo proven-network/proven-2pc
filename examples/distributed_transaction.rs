@@ -64,7 +64,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Created coordinator with runner integration\n");
 
     // Begin a distributed transaction
-    let transaction = coordinator.begin(Duration::from_secs(60)).await?;
+    let transaction = coordinator
+        .begin(
+            Duration::from_secs(60),
+            vec![],
+            "distributed_transaction".to_string(),
+        )
+        .await?;
     println!("📝 Started transaction: {}\n", transaction.id());
 
     // Create storage-specific clients for this transaction
@@ -168,7 +174,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify the changes (in a new transaction)
     println!("\n--- Verification ---");
-    let verify_txn = coordinator.begin(Duration::from_secs(60)).await?;
+    let verify_txn = coordinator
+        .begin(
+            Duration::from_secs(60),
+            vec![],
+            "distributed_transaction_verification".to_string(),
+        )
+        .await?;
     let sql_verify = SqlClient::new(verify_txn.clone());
     let kv_verify = KvClient::new(verify_txn.clone());
     let resource_verify = ResourceClient::new(verify_txn.clone());
@@ -202,7 +214,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Demonstrate abort scenario
     println!("\n--- Abort Scenario ---");
-    let abort_txn = coordinator.begin(Duration::from_secs(60)).await?;
+    let abort_txn = coordinator
+        .begin(
+            Duration::from_secs(60),
+            vec![],
+            "distributed_transaction_abort".to_string(),
+        )
+        .await?;
     let kv_abort = KvClient::new(abort_txn.clone());
 
     kv_abort
@@ -216,7 +234,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify the aborted data is not visible
     println!("\n--- Verify Aborted Data Not Visible ---");
-    let check_txn = coordinator.begin(Duration::from_secs(60)).await?;
+    let check_txn = coordinator
+        .begin(
+            Duration::from_secs(60),
+            vec![],
+            "distributed_transaction_check".to_string(),
+        )
+        .await?;
     let kv_check = KvClient::new(check_txn.clone());
 
     match kv_check.get("kv_stream", "temp:data").await? {

@@ -23,10 +23,19 @@ mod tests {
     }
 
     /// Simple test operation
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     enum TestOperation {
         Read { key: String },
         Write { key: String, value: String },
+    }
+
+    impl proven_common::Operation for TestOperation {
+        fn operation_type(&self) -> proven_common::OperationType {
+            match self {
+                TestOperation::Read { .. } => proven_common::OperationType::Read,
+                TestOperation::Write { .. } => proven_common::OperationType::Write,
+            }
+        }
     }
 
     /// Simple test response
@@ -35,6 +44,8 @@ mod tests {
         Value(Option<String>),
         Success,
     }
+
+    impl proven_common::Response for TestResponse {}
 
     /// Simple test engine
     struct TestEngine {

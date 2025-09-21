@@ -5,6 +5,7 @@
 //! by the generic stream processor via message headers.
 
 use crate::types::Value;
+use proven_common::Response;
 use serde::{Deserialize, Serialize};
 
 /// Response sent back to coordinator for KV operations
@@ -25,3 +26,5 @@ pub enum KvResponse {
     /// Error occurred during operation
     Error(String),
 }
+
+impl Response for KvResponse {}

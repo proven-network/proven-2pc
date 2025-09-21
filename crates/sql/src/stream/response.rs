@@ -5,6 +5,7 @@
 
 use crate::execution::ExecutionResult;
 use crate::types::value::Value;
+use proven_common::Response;
 use serde::{Deserialize, Serialize};
 
 /// Response sent back to coordinator
@@ -46,3 +47,5 @@ pub fn convert_execution_result(result: ExecutionResult) -> SqlResponse {
         },
     }
 }
+
+impl Response for SqlResponse {}

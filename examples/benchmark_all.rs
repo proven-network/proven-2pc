@@ -86,7 +86,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Warm up each coordinator with a test transaction to ensure channels are ready
     println!("  Warming up coordinators...");
     for (idx, coordinator) in coordinators.iter().enumerate() {
-        match coordinator.begin(Duration::from_secs(1)).await {
+        match coordinator
+            .begin(
+                Duration::from_secs(1),
+                vec![],
+                "benchmark_all_warmup".to_string(),
+            )
+            .await
+        {
             Ok(txn) => {
                 // Do a simple operation to fully exercise the path
                 let kv = KvClient::new(txn.clone());
@@ -108,7 +115,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup phase - Initialize storage
     println!("=== Setup Phase ===");
-    let setup_txn = coordinator.begin(Duration::from_secs(10)).await?;
+    let setup_txn = coordinator
+        .begin(
+            Duration::from_secs(10),
+            vec![],
+            "benchmark_all_setup".to_string(),
+        )
+        .await?;
     let sql_setup = SqlClient::new(setup_txn.clone());
     let resource_setup = ResourceClient::new(setup_txn.clone());
 
@@ -196,7 +209,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 while retry_count < MAX_RETRIES && !transaction_succeeded {
                     // Begin a distributed transaction
-                    let txn = match coordinator.begin(Duration::from_secs(5)).await {
+                    let txn = match coordinator
+                        .begin(
+                            Duration::from_secs(5),
+                            vec![],
+                            "benchmark_all_transaction".to_string(),
+                        )
+                        .await
+                    {
                         Ok(t) => t,
                         Err(_e) => {
                             retry_count += 1;
@@ -488,7 +508,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         verify_coordinator_client,
         runner.clone(),
     ));
-    let verify_txn = verify_coordinator.begin(Duration::from_secs(10)).await?;
+    let verify_txn = verify_coordinator
+        .begin(
+            Duration::from_secs(10),
+            vec![],
+            "benchmark_all_verification".to_string(),
+        )
+        .await?;
     let kv_verify = KvClient::new(verify_txn.clone());
     let queue_verify = QueueClient::new(verify_txn.clone());
     let sql_verify = SqlClient::new(verify_txn.clone());

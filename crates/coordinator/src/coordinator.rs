@@ -2,10 +2,13 @@
 
 use crate::error::Result;
 use crate::responses::ResponseCollector;
+use crate::speculation::{SpeculativeContext, SpeculationConfig};
 use crate::transaction::Transaction;
 use proven_engine::MockClient;
 use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
 use proven_runner::Runner;
+use serde_json::Value;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +29,9 @@ pub struct Coordinator {
 
     /// Runner for managing stream processors
     runner: Arc<Runner>,
+
+    /// Speculative execution context for pattern learning and prediction
+    speculative_context: SpeculativeContext,
 }
 
 impl Coordinator {
@@ -45,17 +51,26 @@ impl Coordinator {
         ));
         response_collector.start();
 
+        // Create speculative context with default config
+        let speculative_context = SpeculativeContext::new(SpeculationConfig::default());
+
         Self {
             coordinator_id,
             hlc,
             response_collector,
             client,
             runner,
+            speculative_context,
         }
     }
 
     /// Begin a new distributed transaction
-    pub async fn begin(&self, timeout: Duration) -> Result<Transaction> {
+    pub async fn begin(
+        &self,
+        timeout: Duration,
+        transaction_args: Vec<Value>,
+        speculative_category: String,
+    ) -> Result<Transaction> {
         let timestamp = self.hlc.now();
         let txn_id = timestamp.to_string();
 
@@ -67,6 +82,56 @@ impl Coordinator {
             timestamp.node_id,
         );
 
+        // Start learning for this transaction
+        self.speculative_context.begin_learning(
+            txn_id.clone(),
+            speculative_category.clone(),
+            transaction_args.clone(),
+        );
+
+        // Predict operations to speculate
+        let operations_by_stream = self.speculative_context.predict_operations_by_stream(
+            &speculative_category,
+            &transaction_args,
+        );
+
+        // Separate write operations by stream for ordering enforcement
+        let mut pending_writes_by_stream = HashMap::new();
+        let speculation_cache = HashMap::new();
+
+        // Track speculated operations and identify writes
+        for (stream, operations) in operations_by_stream {
+            let mut write_queue = VecDeque::new();
+
+            for op in &operations {
+                // For Phase 1, we can't determine operation type from JSON
+                // This will be properly implemented when we integrate with actual Operation types
+                // For now, we'll track all operations as potential writes to be safe
+                write_queue.push_back(op.clone());
+
+                // Record that we're speculatively executing this
+                self.speculative_context.record_speculation(&txn_id, op.clone());
+
+                // Fire off speculative execution (non-blocking)
+                // This would actually execute the operation speculatively
+                // For Phase 1, we're just setting up the structure
+                let _txn_id_clone = txn_id.clone();
+                let _client = self.client.clone();
+                let _stream_clone = stream.clone();
+                let _op_clone = op.clone();
+
+                // TODO: Actually execute speculatively in background task
+                // tokio::spawn(async move {
+                //     // Execute operation speculatively
+                //     // Store result in shared cache
+                // });
+            }
+
+            if !write_queue.is_empty() {
+                pending_writes_by_stream.insert(stream, write_queue);
+            }
+        }
+
         Ok(Transaction::new(
             txn_id,
             timestamp,
@@ -75,6 +140,9 @@ impl Coordinator {
             self.response_collector.clone(),
             self.coordinator_id.clone(),
             self.runner.clone(),
+            pending_writes_by_stream,
+            speculation_cache,
+            self.speculative_context.clone(),
         ))
     }
 

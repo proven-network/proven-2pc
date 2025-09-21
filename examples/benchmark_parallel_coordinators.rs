@@ -69,7 +69,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner.clone(),
     ));
 
-    let setup_txn = setup_coordinator.begin(Duration::from_secs(10)).await?;
+    let setup_txn = setup_coordinator
+        .begin(
+            Duration::from_secs(10),
+            vec![],
+            "benchmark_parallel_coordinators_setup".to_string(),
+        )
+        .await?;
     let sql_setup = SqlClient::new(setup_txn.clone());
 
     sql_setup
@@ -119,7 +125,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             for i in start_id..end_id {
                 // Begin transaction
-                let txn = match coordinator.begin(Duration::from_secs(5)).await {
+                let txn = match coordinator
+                    .begin(
+                        Duration::from_secs(5),
+                        vec![],
+                        "benchmark_parallel_coordinators_transaction".to_string(),
+                    )
+                    .await
+                {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!(
@@ -245,7 +258,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify count
     println!("\nVerifying insert count...");
-    let verify_txn = setup_coordinator.begin(Duration::from_secs(10)).await?;
+    let verify_txn = setup_coordinator
+        .begin(
+            Duration::from_secs(10),
+            vec![],
+            "benchmark_parallel_coordinators_verification".to_string(),
+        )
+        .await?;
     let sql_verify = SqlClient::new(verify_txn.clone());
 
     let count_result = sql_verify

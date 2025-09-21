@@ -1,6 +1,7 @@
 //! Response types for resource operations
 
 use crate::types::Amount;
+use proven_common::Response;
 use serde::{Deserialize, Serialize};
 
 /// Response from a resource operation
@@ -61,3 +62,5 @@ pub enum ResourceResponse {
     /// Error occurred
     Error(String),
 }
+
+impl Response for ResourceResponse {}

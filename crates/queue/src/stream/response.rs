@@ -1,6 +1,7 @@
 //! Queue response types
 
 use crate::types::QueueValue;
+use proven_common::Response;
 use serde::{Deserialize, Serialize};
 
 /// Response types for queue operations
@@ -27,3 +28,5 @@ pub enum QueueResponse {
     /// Operation failed
     Error(String),
 }
+
+impl Response for QueueResponse {}
