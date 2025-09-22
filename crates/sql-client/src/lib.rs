@@ -329,14 +329,10 @@ impl SqlClient {
         stream_name: String,
         operation: SqlOperation,
     ) -> Result<SqlResponse, SqlError> {
-        // Serialize the operation
-        let operation_bytes = serde_json::to_vec(&operation)
-            .map_err(|e| SqlError::SerializationError(e.to_string()))?;
-
-        // Execute through the transaction
+        // Execute through the transaction with the operation object
         let response_bytes = self
             .transaction
-            .execute(stream_name, operation_bytes)
+            .execute(stream_name, &operation)
             .await
             .map_err(|e| SqlError::CoordinatorError(e.to_string()))?;
 

@@ -35,6 +35,9 @@ pub enum CoordinatorError {
     #[error("Transaction was wounded by {wounded_by}")]
     TransactionWounded { wounded_by: String },
 
+    #[error("Speculation failed: {0}")]
+    SpeculationFailed(String),
+
     #[error("Operation failed: {0}")]
     OperationFailed(String),
 

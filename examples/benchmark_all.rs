@@ -4,7 +4,7 @@
 //! across all storage types (KV, Queue, Resource, SQL) using distributed
 //! transactions through the coordinator.
 
-use proven_coordinator::Coordinator;
+use proven_coordinator::{Coordinator, CoordinatorError};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::types::Value;
 use proven_kv_client::KvClient;
@@ -206,26 +206,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 const MAX_RETRIES: usize = 3;
                 let mut retry_count = 0;
                 let mut transaction_succeeded = false;
+                let mut use_speculation = true; // Start with speculation enabled
 
                 while retry_count < MAX_RETRIES && !transaction_succeeded {
-                    // Begin a distributed transaction
-                    let txn = match coordinator
-                        .begin(
-                            Duration::from_secs(5),
-                            vec![],
-                            "benchmark_all_transaction".to_string(),
-                        )
-                        .await
-                    {
-                        Ok(t) => t,
-                        Err(_e) => {
-                            retry_count += 1;
-                            retries.fetch_add(1, Ordering::Relaxed);
-                            if retry_count >= MAX_RETRIES {
-                                failed.fetch_add(1, Ordering::Relaxed);
-                                completed.fetch_add(1, Ordering::Relaxed);
+                    // Begin a distributed transaction (with or without speculation)
+                    let txn = if use_speculation {
+                        match coordinator
+                            .begin(
+                                Duration::from_secs(5),
+                                vec![],
+                                "benchmark_all_transaction".to_string(),
+                            )
+                            .await
+                        {
+                            Ok(t) => t,
+                            Err(_e) => {
+                                retry_count += 1;
+                                retries.fetch_add(1, Ordering::Relaxed);
+                                if retry_count >= MAX_RETRIES {
+                                    failed.fetch_add(1, Ordering::Relaxed);
+                                    completed.fetch_add(1, Ordering::Relaxed);
+                                }
+                                continue;
                             }
-                            continue;
+                        }
+                    } else {
+                        // Use begin_without_speculation for retries after speculation failure
+                        match coordinator
+                            .begin_without_speculation(
+                                Duration::from_secs(5),
+                                vec![],
+                                "benchmark_all_transaction".to_string(),
+                            )
+                            .await
+                        {
+                            Ok(t) => t,
+                            Err(_e) => {
+                                retry_count += 1;
+                                retries.fetch_add(1, Ordering::Relaxed);
+                                if retry_count >= MAX_RETRIES {
+                                    failed.fetch_add(1, Ordering::Relaxed);
+                                    completed.fetch_add(1, Ordering::Relaxed);
+                                }
+                                continue;
+                            }
                         }
                     };
 
@@ -359,7 +383,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 transaction_succeeded = true;
                                 successful.fetch_add(1, Ordering::Relaxed);
                             }
-                            Err(_e) => {
+                            Err(e) => {
+                                // Check if this was a speculation failure
+                                if matches!(e, CoordinatorError::SpeculationFailed(_)) {
+                                    // Disable speculation for next retry
+                                    use_speculation = false;
+                                }
                                 retry_count += 1;
                                 retries.fetch_add(1, Ordering::Relaxed);
                                 if retry_count >= MAX_RETRIES {

@@ -1,7 +1,7 @@
 //! Value types for resource amounts
 
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::{Add, Sub};
