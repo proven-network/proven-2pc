@@ -5,6 +5,7 @@
 
 use proven_hlc::HlcTimestamp;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use proven_stream::engine::BlockingInfo;
 
 use crate::execution;
 use crate::parsing::CachingParser;
@@ -126,6 +127,8 @@ impl SqlTransactionEngine {
         };
 
         // Step 4: Check for conflicts with active transactions
+        let mut blockers = Vec::new();
+
         for (other_tx_id, other_tx) in &self.active_transactions {
             if other_tx_id == &txn_id {
                 continue; // Skip self
@@ -144,11 +147,18 @@ impl SqlTransactionEngine {
                     | ConflictInfo::InsertInsert => RetryOn::CommitOrAbort,
                 };
 
-                return OperationResult::WouldBlock {
-                    blocking_txn: *other_tx_id,
+                blockers.push(BlockingInfo {
+                    txn: *other_tx_id,
                     retry_on,
-                };
+                });
             }
+        }
+
+        if !blockers.is_empty() {
+            // Sort by transaction ID (which embeds timestamp - oldest first)
+            blockers.sort_by_key(|b| b.txn);
+
+            return OperationResult::WouldBlock { blockers };
         }
 
         // Step 5: Add predicates to transaction context

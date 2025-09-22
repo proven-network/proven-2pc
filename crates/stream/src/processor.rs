@@ -449,21 +449,27 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                 Ok(())
             }
 
-            OperationResult::WouldBlock {
-                blocking_txn,
-                retry_on,
-            } => {
+            OperationResult::WouldBlock { blockers } => {
+                // Log all blockers
+                let blocker_list: Vec<String> = blockers.iter().map(|b| b.txn.to_string()).collect();
                 println!(
-                    "[{}] DEFERRED: WouldBlock for txn {}: {}",
-                    self.stream_name, txn_id, blocking_txn
+                    "[{}] DEFERRED: WouldBlock for txn {}: {:?}",
+                    self.stream_name, txn_id, blocker_list
                 );
-
                 println!("Operation: {:?}", operation);
 
-                // Decide: wound or wait based on transaction ages
-                if txn_id < blocking_txn {
-                    // We're older - wound the younger blocking transaction
-                    self.wound_transaction(blocking_txn, txn_id).await;
+                // Find younger blockers that we should wound
+                let younger_blockers: Vec<_> = blockers
+                    .iter()
+                    .filter(|b| b.txn > txn_id)
+                    .map(|b| b.txn)
+                    .collect();
+
+                if !younger_blockers.is_empty() {
+                    // We're older than some blockers - wound them all
+                    for victim in younger_blockers {
+                        self.wound_transaction(victim, txn_id).await;
+                    }
 
                     // Retry the operation after wounding
                     match self.engine.apply_operation(operation.clone(), txn_id) {
@@ -471,34 +477,37 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                             self.send_response(coordinator_id, txn_id_str, response, request_id);
                             Ok(())
                         }
-                        OperationResult::WouldBlock {
-                            blocking_txn: new_blocker,
-                            retry_on: new_retry_on,
-                        } => {
-                            // Still blocked after wounding - defer without sending response
-                            // The coordinator will wait for the actual completion
-                            self.deferred_manager.defer_operation(
-                                operation,
-                                txn_id,
-                                new_blocker,
-                                new_retry_on,
-                                coordinator_id.to_string(),
-                                request_id,
-                            );
+                        OperationResult::WouldBlock { blockers: new_blockers } => {
+                            // Still blocked after wounding - should only be older transactions now
+                            // For now, use the first blocker for backward compatibility
+                            // TODO: Update deferred manager to track all blockers
+                            if let Some(first_blocker) = new_blockers.first() {
+                                self.deferred_manager.defer_operation(
+                                    operation,
+                                    txn_id,
+                                    first_blocker.txn,
+                                    first_blocker.retry_on,
+                                    coordinator_id.to_string(),
+                                    request_id,
+                                );
+                            }
                             Ok(())
                         }
                     }
                 } else {
-                    // We're younger - must wait without sending response
-                    // The coordinator will wait for the actual completion
-                    self.deferred_manager.defer_operation(
-                        operation,
-                        txn_id,
-                        blocking_txn,
-                        retry_on,
-                        coordinator_id.to_string(),
-                        request_id,
-                    );
+                    // All blockers are older - we must wait
+                    // For now, use the first blocker for backward compatibility
+                    // TODO: Update deferred manager to track all blockers
+                    if let Some(first_blocker) = blockers.first() {
+                        self.deferred_manager.defer_operation(
+                            operation,
+                            txn_id,
+                            first_blocker.txn,
+                            first_blocker.retry_on,
+                            coordinator_id.to_string(),
+                            request_id,
+                        );
+                    }
                     Ok(())
                 }
             }

@@ -5,6 +5,7 @@ use crate::stream::{ResourceOperation, ResourceResponse, TransactionContext};
 use crate::types::Amount;
 use proven_hlc::HlcTimestamp;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use proven_stream::engine::BlockingInfo;
 use std::collections::HashMap;
 
 /// Resource engine for processing resource operations
@@ -275,8 +276,10 @@ impl TransactionEngine for ResourceTransactionEngine {
                 };
 
                 OperationResult::WouldBlock {
-                    blocking_txn: txn_id, // Would need to parse from error
-                    retry_on,
+                    blockers: vec![BlockingInfo {
+                        txn: txn_id, // Would need to parse from error
+                        retry_on,
+                    }],
                 }
             }
             Err(err) => OperationResult::Complete(ResourceResponse::Error(err)),

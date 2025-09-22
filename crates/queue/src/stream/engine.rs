@@ -8,7 +8,7 @@ use crate::storage::mvcc::QueueEntry;
 use crate::stream::transaction::QueueTransactionManager;
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
-use proven_stream::engine::{OperationResult, RetryOn, TransactionEngine};
+use proven_stream::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Queue engine that implements the TransactionEngine trait
@@ -75,8 +75,10 @@ impl TransactionEngine for QueueTransactionEngine {
                 };
 
                 OperationResult::WouldBlock {
-                    blocking_txn: holder,
-                    retry_on,
+                    blockers: vec![BlockingInfo {
+                        txn: holder,
+                        retry_on,
+                    }],
                 }
             }
             Err(err) => OperationResult::Complete(QueueResponse::Error(format!("{:?}", err))),

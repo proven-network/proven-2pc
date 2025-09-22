@@ -58,7 +58,7 @@ fn test_read_write_conflict_same_table() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     // Commit tx2 to unblock tx3
@@ -122,7 +122,7 @@ fn test_write_write_conflict() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     // Commit tx2
@@ -336,7 +336,7 @@ fn test_insert_insert_conflict_same_pk() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     engine.commit(tx2).unwrap();
@@ -389,7 +389,7 @@ fn test_delete_read_conflict() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     engine.commit(tx2).unwrap();
@@ -442,7 +442,7 @@ fn test_prepare_releases_read_locks() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     // Prepare tx2 - this should release read predicates
@@ -540,7 +540,7 @@ fn test_complex_multi_statement_transaction() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     // Transaction 4: Read transactions table - should NOT block
@@ -608,7 +608,7 @@ fn test_phantom_prevention() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     engine.commit(tx2).unwrap();
@@ -663,7 +663,7 @@ fn test_aggregation_conflict() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2)
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
     engine.commit(tx2).unwrap();
@@ -971,7 +971,7 @@ fn test_overlapping_ranges_do_conflict() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Overlapping ranges should conflict"
     );
 
@@ -1125,7 +1125,7 @@ fn test_complex_and_predicates_partial_overlap() {
         tx4,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Overlapping compound predicates should conflict"
     );
 
@@ -1185,7 +1185,7 @@ fn test_not_equal_predicate() {
     );
     // FullTable predicate (from tx2) should block tx3's equality predicate
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "NOT EQUAL should use conservative FullTable predicate and block"
     );
 
@@ -1458,7 +1458,7 @@ fn test_like_vs_equals_no_conflict() {
         tx4,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Equality predicate 'apple' should conflict with LIKE 'ap%'"
     );
 
@@ -1531,7 +1531,7 @@ fn test_subquery_read_predicates() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Subquery should lock departments table for reading"
     );
 
@@ -1547,7 +1547,7 @@ fn test_subquery_read_predicates() {
         tx4,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Outer query should lock users table for reading"
     );
 
@@ -1638,7 +1638,7 @@ fn test_exists_subquery_predicates() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "EXISTS subquery should lock orders table"
     );
 
@@ -1708,7 +1708,7 @@ fn test_scalar_subquery_predicates() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Scalar subquery should lock products table"
     );
 
@@ -1791,7 +1791,7 @@ fn test_nested_subquery_predicates() {
         tx3,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Nested subquery should lock t3 table"
     );
 
@@ -1806,7 +1806,7 @@ fn test_nested_subquery_predicates() {
         tx4,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Nested subquery should lock t2 table"
     );
 
@@ -1821,7 +1821,7 @@ fn test_nested_subquery_predicates() {
         tx5,
     );
     assert!(
-        matches!(result, OperationResult::WouldBlock { blocking_txn, .. } if blocking_txn == tx2),
+        matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2)),
         "Outer query should lock t1 table"
     );
 

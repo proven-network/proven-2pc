@@ -5,6 +5,7 @@
 
 use proven_hlc::HlcTimestamp;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use proven_stream::engine::BlockingInfo;
 
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
@@ -60,23 +61,18 @@ impl KvTransactionEngine {
                     value: value.map(|arc| (*arc).clone()),
                 })
             }
-            LockAttemptResult::Conflict { holder, mode } => {
+            LockAttemptResult::Conflict { holders } => {
                 // Debug: log the blocking situation
-                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {} (get)", txn_id, holder);
+                let blocker_list: Vec<String> = holders.iter().map(|(h, _)| h.to_string()).collect();
+                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (get)", txn_id, blocker_list);
 
-                // Determine retry timing based on conflict type
-                let retry_on = if mode == LockMode::Shared {
-                    // Blocked by another reader - shouldn't happen for shared locks
-                    RetryOn::CommitOrAbort
-                } else {
-                    // Blocked by a writer - must wait for commit/abort
-                    RetryOn::CommitOrAbort
-                };
+                // For reads blocked by writes, we always need to wait for commit/abort
+                let blockers = holders.into_iter().map(|(h, _mode)| BlockingInfo {
+                    txn: h,
+                    retry_on: RetryOn::CommitOrAbort,
+                }).collect();
 
-                OperationResult::WouldBlock {
-                    blocking_txn: holder,
-                    retry_on,
-                }
+                OperationResult::WouldBlock { blockers }
             }
         }
     }
@@ -114,23 +110,24 @@ impl KvTransactionEngine {
                     previous,
                 })
             }
-            LockAttemptResult::Conflict { holder, mode } => {
+            LockAttemptResult::Conflict { holders } => {
                 // Debug: log the blocking situation
-                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {} (put)", txn_id, holder);
+                let blocker_list: Vec<String> = holders.iter().map(|(h, _)| h.to_string()).collect();
+                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (put)", txn_id, blocker_list);
 
-                // Determine retry timing based on conflict type
-                let retry_on = if mode == LockMode::Shared {
-                    // Blocked by a reader - can retry after prepare
-                    RetryOn::Prepare
-                } else {
-                    // Blocked by another writer - must wait for commit/abort
-                    RetryOn::CommitOrAbort
-                };
+                // Map each blocker to appropriate retry condition
+                let blockers = holders.into_iter().map(|(h, mode)| BlockingInfo {
+                    txn: h,
+                    retry_on: if mode == LockMode::Shared {
+                        // Blocked by reader - can retry after prepare
+                        RetryOn::Prepare
+                    } else {
+                        // Blocked by writer - must wait for commit/abort
+                        RetryOn::CommitOrAbort
+                    },
+                }).collect();
 
-                OperationResult::WouldBlock {
-                    blocking_txn: holder,
-                    retry_on,
-                }
+                OperationResult::WouldBlock { blockers }
             }
         }
     }
@@ -164,23 +161,24 @@ impl KvTransactionEngine {
                     deleted: existed,
                 })
             }
-            LockAttemptResult::Conflict { holder, mode } => {
+            LockAttemptResult::Conflict { holders } => {
                 // Debug: log the blocking situation
-                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {} (delete)", txn_id, holder);
+                let blocker_list: Vec<String> = holders.iter().map(|(h, _)| h.to_string()).collect();
+                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (delete)", txn_id, blocker_list);
 
-                // Determine retry timing based on conflict type
-                let retry_on = if mode == LockMode::Shared {
-                    // Blocked by a reader - can retry after prepare
-                    RetryOn::Prepare
-                } else {
-                    // Blocked by another writer - must wait for commit/abort
-                    RetryOn::CommitOrAbort
-                };
+                // Map each blocker to appropriate retry condition
+                let blockers = holders.into_iter().map(|(h, mode)| BlockingInfo {
+                    txn: h,
+                    retry_on: if mode == LockMode::Shared {
+                        // Blocked by reader - can retry after prepare
+                        RetryOn::Prepare
+                    } else {
+                        // Blocked by writer - must wait for commit/abort
+                        RetryOn::CommitOrAbort
+                    },
+                }).collect();
 
-                OperationResult::WouldBlock {
-                    blocking_txn: holder,
-                    retry_on,
-                }
+                OperationResult::WouldBlock { blockers }
             }
         }
     }

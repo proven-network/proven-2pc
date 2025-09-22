@@ -15,6 +15,15 @@ pub enum RetryOn {
     CommitOrAbort,
 }
 
+/// Information about a blocking transaction
+#[derive(Debug, Clone)]
+pub struct BlockingInfo {
+    /// The blocking transaction
+    pub txn: HlcTimestamp,
+    /// When we can retry after this specific blocker
+    pub retry_on: RetryOn,
+}
+
 /// Result of attempting to apply an operation
 #[derive(Debug, Clone)]
 pub enum OperationResult<R> {
@@ -23,10 +32,9 @@ pub enum OperationResult<R> {
 
     /// Operation would block - defer and retry when appropriate
     WouldBlock {
-        /// Transaction holding the lock that would cause blocking
-        blocking_txn: HlcTimestamp,
-        /// When this operation can be retried
-        retry_on: RetryOn,
+        /// Transactions holding locks that would cause blocking (sorted by age, oldest first)
+        /// Each includes when we can retry after that specific blocker
+        blockers: Vec<BlockingInfo>,
     },
 }
 

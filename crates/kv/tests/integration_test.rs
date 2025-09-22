@@ -274,12 +274,10 @@ fn test_write_write_conflict() {
     };
     let result = engine.apply_operation(put_op.clone(), tx2);
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::CommitOrAbort);
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
         }
         _ => panic!("Expected WouldBlock for write-write conflict"),
     }
@@ -350,12 +348,10 @@ fn test_read_lock_released_on_prepare() {
     );
 
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::Prepare); // Can retry after prepare
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::Prepare); // Can retry after prepare
         }
         _ => panic!("Expected WouldBlock, got {:?}", result),
     }
@@ -403,12 +399,10 @@ fn test_write_lock_not_released_on_prepare() {
     );
 
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::CommitOrAbort); // Must wait for commit/abort
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort); // Must wait for commit/abort
         }
         _ => panic!("Expected WouldBlock, got {:?}", result),
     }
@@ -425,12 +419,10 @@ fn test_write_lock_not_released_on_prepare() {
     );
 
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::CommitOrAbort);
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
         }
         _ => panic!("Expected WouldBlock after prepare, got {:?}", result),
     }
@@ -486,12 +478,10 @@ fn test_multiple_reads_released_on_prepare() {
     );
 
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::Prepare);
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::Prepare);
         }
         _ => panic!("Expected WouldBlock, got {:?}", result),
     }
@@ -567,10 +557,8 @@ fn test_mixed_locks_partial_release() {
     );
     assert!(matches!(
         result,
-        OperationResult::WouldBlock {
-            retry_on: RetryOn::Prepare,
-            ..
-        }
+        OperationResult::WouldBlock { blockers }
+        if blockers.iter().any(|b| b.retry_on == RetryOn::Prepare)
     ));
 
     // TX2: Try to read key2 (blocked by write lock)
@@ -582,10 +570,8 @@ fn test_mixed_locks_partial_release() {
     );
     assert!(matches!(
         result,
-        OperationResult::WouldBlock {
-            retry_on: RetryOn::CommitOrAbort,
-            ..
-        }
+        OperationResult::WouldBlock { blockers }
+        if blockers.iter().any(|b| b.retry_on == RetryOn::CommitOrAbort)
     ));
 
     // TX1: Prepare (releases read locks on key1 and key3, keeps write lock on key2)
@@ -620,9 +606,7 @@ fn test_mixed_locks_partial_release() {
     );
     assert!(matches!(
         result,
-        OperationResult::WouldBlock {
-            retry_on: RetryOn::CommitOrAbort,
-            ..
-        }
+        OperationResult::WouldBlock { blockers }
+        if blockers.iter().any(|b| b.retry_on == RetryOn::CommitOrAbort)
     ));
 }

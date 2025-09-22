@@ -43,12 +43,10 @@ pub struct LockInfo {
 pub enum LockAttemptResult {
     /// Lock would be granted if requested
     WouldGrant,
-    /// Lock conflicts with an existing lock
+    /// Lock conflicts with existing locks
     Conflict {
-        /// Transaction holding the conflicting lock
-        holder: TxId,
-        /// Mode of the conflicting lock
-        mode: LockMode,
+        /// All transactions holding conflicting locks (sorted by age, oldest first)
+        holders: Vec<(TxId, LockMode)>,
     },
 }
 
@@ -70,7 +68,9 @@ impl LockManager {
     pub fn check(&self, tx_id: TxId, key: &str, mode: LockMode) -> LockAttemptResult {
         // Check for existing locks on this key
         if let Some(holders) = self.locks.get(key) {
-            // Check compatibility with all current holders
+            // Collect all conflicting holders
+            let mut conflicts = Vec::new();
+
             for holder in holders {
                 // Skip if it's the same transaction (re-entrant locks)
                 if holder.holder == tx_id {
@@ -79,11 +79,17 @@ impl LockManager {
 
                 // Check compatibility
                 if !holder.mode.is_compatible_with(mode) {
-                    return LockAttemptResult::Conflict {
-                        holder: holder.holder,
-                        mode: holder.mode,
-                    };
+                    conflicts.push((holder.holder, holder.mode));
                 }
+            }
+
+            if !conflicts.is_empty() {
+                // Sort by transaction ID (which embeds timestamp - oldest first)
+                conflicts.sort_by_key(|(txn, _)| *txn);
+
+                return LockAttemptResult::Conflict {
+                    holders: conflicts,
+                };
             }
         }
 
@@ -184,9 +190,10 @@ mod tests {
 
         // Conflicting lock should report conflict
         match manager.check(tx2, "key1", LockMode::Exclusive) {
-            LockAttemptResult::Conflict { holder, mode } => {
-                assert_eq!(holder, tx1);
-                assert_eq!(mode, LockMode::Exclusive);
+            LockAttemptResult::Conflict { holders } => {
+                assert_eq!(holders.len(), 1);
+                assert_eq!(holders[0].0, tx1);
+                assert_eq!(holders[0].1, LockMode::Exclusive);
             }
             _ => panic!("Expected conflict"),
         }

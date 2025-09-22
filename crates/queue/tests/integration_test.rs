@@ -87,46 +87,52 @@ fn test_transaction_isolation() {
     engine.begin_transaction(tx1);
     engine.begin_transaction(tx2);
 
-    // tx1 enqueues a value (acquires exclusive lock)
-    let enqueue_op = QueueOperation::Enqueue {
+    // tx1 dequeues a value (acquires exclusive lock - blocks other operations)
+    let dequeue_op = QueueOperation::Dequeue {
         queue_name: "isolated_queue".to_string(),
-        value: QueueValue::Integer(42),
     };
 
-    let result = engine.apply_operation(enqueue_op, tx1);
+    let result = engine.apply_operation(dequeue_op, tx1);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Enqueued)
+        OperationResult::Complete(QueueResponse::Dequeued(None)) // Empty queue
     ));
 
-    // tx2 tries to read the queue but is blocked by tx1's exclusive lock
-    // This is correct behavior for eager locking
+    // tx2 tries to read the size (should be blocked by tx1's exclusive lock)
     let size_op = QueueOperation::Size {
         queue_name: "isolated_queue".to_string(),
     };
 
     let result = engine.apply_operation(size_op.clone(), tx2);
-    assert!(matches!(result, OperationResult::WouldBlock { .. }));
 
-    // Commit tx1 to release its lock
+    // Should be blocked because Exclusive (Dequeue) blocks Shared (Size)
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+        }
+        _ => panic!("Expected WouldBlock, got {:?}", result),
+    }
+
+    // Commit tx1 to release the exclusive lock
     assert!(engine.commit(tx1).is_ok());
 
-    // Now tx2 can read and should see the committed value
+    // tx2 can now read the size
     let result = engine.apply_operation(size_op.clone(), tx2);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Size(1))
+        OperationResult::Complete(QueueResponse::Size(0)) // Still empty after dequeue
     ));
     assert!(engine.commit(tx2).is_ok());
 
-    // Start a new transaction - should also see the committed value
+    // Start a new transaction - should also see empty queue
     let tx3 = create_timestamp(300);
     engine.begin_transaction(tx3);
 
     let result = engine.apply_operation(size_op, tx3);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Size(1))
+        OperationResult::Complete(QueueResponse::Size(0)) // Still empty after dequeue
     ));
 
     assert!(engine.commit(tx3).is_ok());
@@ -156,7 +162,7 @@ fn test_concurrent_access_with_locking() {
     };
 
     let result = engine.apply_operation(dequeue_op.clone(), tx2);
-    assert!(matches!(result, OperationResult::WouldBlock { .. }));
+    assert!(matches!(result, OperationResult::WouldBlock { blockers } if !blockers.is_empty()));
 
     // After tx1 commits, tx2 should be able to proceed
     assert!(engine.commit(tx1).is_ok());
@@ -472,29 +478,27 @@ fn test_read_lock_released_on_prepare() {
     let result = engine.apply_operation(peek_op, tx1);
     assert!(matches!(result, OperationResult::Complete(_)));
 
-    // TX2: Try to enqueue to queue1 (should be blocked)
-    let enqueue_op = QueueOperation::Enqueue {
+    // TX2: Try to dequeue from queue1 (should be blocked - Exclusive vs Shared)
+    let dequeue_op = QueueOperation::Dequeue {
         queue_name: "queue1".to_string(),
-        value: QueueValue::String("value2".to_string()),
     };
-    let result = engine.apply_operation(enqueue_op.clone(), tx2);
+    let result = engine.apply_operation(dequeue_op.clone(), tx2);
 
+    // Should be blocked because Exclusive (Dequeue) conflicts with Shared (Peek)
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::Prepare); // Can retry after prepare
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::Prepare); // Can retry after prepare
         }
         _ => panic!("Expected WouldBlock, got {:?}", result),
     }
 
-    // TX1: Prepare (should release read lock)
+    // TX1: Prepare (releases read lock)
     engine.prepare(tx1).expect("Prepare should succeed");
 
-    // TX2: Retry enqueue (should now succeed)
-    let result = engine.apply_operation(enqueue_op, tx2);
+    // TX2: Retry dequeue (should now succeed since read lock was released)
+    let result = engine.apply_operation(dequeue_op, tx2);
     assert!(matches!(result, OperationResult::Complete(_)));
 }
 
@@ -508,49 +512,44 @@ fn test_write_lock_not_released_on_prepare() {
     engine.begin_transaction(tx1);
     engine.begin_transaction(tx2);
 
-    // TX1: Enqueue to queue1 (acquires exclusive lock)
-    let enqueue_op = QueueOperation::Enqueue {
+    // TX1: Dequeue from queue1 (acquires exclusive lock)
+    let dequeue_op = QueueOperation::Dequeue {
         queue_name: "queue1".to_string(),
-        value: QueueValue::String("value1".to_string()),
     };
-    let result = engine.apply_operation(enqueue_op, tx1);
+    let result = engine.apply_operation(dequeue_op, tx1);
     assert!(matches!(result, OperationResult::Complete(_)));
 
-    // TX2: Try to peek queue1 (should be blocked)
+    // TX2: Try to peek queue1 (should be blocked by exclusive lock)
     let peek_op = QueueOperation::Peek {
         queue_name: "queue1".to_string(),
     };
     let result = engine.apply_operation(peek_op.clone(), tx2);
 
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::CommitOrAbort); // Must wait for commit/abort
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort); // Must wait for commit/abort
         }
         _ => panic!("Expected WouldBlock, got {:?}", result),
     }
 
-    // TX1: Prepare (write lock should NOT be released)
+    // TX1: Prepare (exclusive lock should NOT be released)
     engine.prepare(tx1).expect("Prepare should succeed");
 
     // TX2: Retry peek (should still be blocked)
     let result = engine.apply_operation(peek_op.clone(), tx2);
 
     match result {
-        OperationResult::WouldBlock {
-            blocking_txn,
-            retry_on,
-        } => {
-            assert_eq!(blocking_txn, tx1);
-            assert_eq!(retry_on, RetryOn::CommitOrAbort);
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx1);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
         }
         _ => panic!("Expected WouldBlock after prepare, got {:?}", result),
     }
 
-    // TX1: Commit (should release write lock)
+    // TX1: Commit (should release exclusive lock)
     engine.commit(tx1).expect("Commit should succeed");
 
     // TX2: Retry peek (should now succeed)

@@ -83,8 +83,10 @@ mod tests {
                     {
                         // Just report the conflict - stream processor handles wound-wait
                         return OperationResult::WouldBlock {
-                            blocking_txn: holder,
-                            retry_on: RetryOn::CommitOrAbort,
+                            blockers: vec![crate::engine::BlockingInfo {
+                                txn: holder,
+                                retry_on: RetryOn::CommitOrAbort,
+                            }],
                         };
                     }
                     self.locks.insert(resource, txn_id);
