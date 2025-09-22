@@ -258,10 +258,10 @@ impl SequenceLearner {
         }
 
         // Structurally equivalent patterns
-        self.patterns_structurally_equal(&t1.pattern, &t2.pattern)
+        Self::patterns_structurally_equal(&t1.pattern, &t2.pattern)
     }
 
-    fn patterns_structurally_equal(&self, v1: &Value, v2: &Value) -> bool {
+    fn patterns_structurally_equal(v1: &Value, v2: &Value) -> bool {
         match (v1, v2) {
             (Value::String(s1), Value::String(s2)) => {
                 // Both should have placeholders in same positions
@@ -274,7 +274,7 @@ impl SequenceLearner {
                     && m1.keys().all(|k| m2.contains_key(k))
                     && m1.iter().all(|(k, v1)| {
                         m2.get(k)
-                            .map_or(false, |v2| self.patterns_structurally_equal(v1, v2))
+                            .is_some_and(|v2| Self::patterns_structurally_equal(v1, v2))
                     })
             }
             (Value::Array(a1), Value::Array(a2)) => {
@@ -282,7 +282,7 @@ impl SequenceLearner {
                     && a1
                         .iter()
                         .zip(a2.iter())
-                        .all(|(v1, v2)| self.patterns_structurally_equal(v1, v2))
+                        .all(|(v1, v2)| Self::patterns_structurally_equal(v1, v2))
             }
             _ => v1 == v2,
         }

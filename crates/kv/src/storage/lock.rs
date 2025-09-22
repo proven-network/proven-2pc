@@ -87,9 +87,7 @@ impl LockManager {
                 // Sort by transaction ID (which embeds timestamp - oldest first)
                 conflicts.sort_by_key(|(txn, _)| *txn);
 
-                return LockAttemptResult::Conflict {
-                    holders: conflicts,
-                };
+                return LockAttemptResult::Conflict { holders: conflicts };
             }
         }
 

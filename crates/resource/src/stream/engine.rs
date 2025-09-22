@@ -4,8 +4,8 @@ use crate::storage::{CompactedResourceData, ReservationManager, ReservationType,
 use crate::stream::{ResourceOperation, ResourceResponse, TransactionContext};
 use crate::types::Amount;
 use proven_hlc::HlcTimestamp;
-use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 use proven_stream::engine::BlockingInfo;
+use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 use std::collections::HashMap;
 
 /// Resource engine for processing resource operations

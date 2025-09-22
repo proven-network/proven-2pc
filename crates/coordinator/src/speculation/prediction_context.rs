@@ -201,7 +201,6 @@ impl PredictionContext {
         }
     }
 
-
     /// Check if all predicted operations were executed
     pub fn all_predictions_used(&self) -> bool {
         self.current_position >= self.predictions.len()
@@ -265,8 +264,15 @@ impl PredictionContext {
 
     /// Set a test response receiver (for testing only)
     #[cfg(test)]
-    pub fn set_test_receiver(&mut self, position: usize, receiver: oneshot::Receiver<Result<Vec<u8>>>) {
-        self.response_receivers.lock().unwrap().insert(position, receiver);
+    pub fn set_test_receiver(
+        &mut self,
+        position: usize,
+        receiver: oneshot::Receiver<Result<Vec<u8>>>,
+    ) {
+        self.response_receivers
+            .lock()
+            .unwrap()
+            .insert(position, receiver);
     }
 
     /// Execute all predicted operations speculatively using the executor
@@ -289,7 +295,10 @@ impl PredictionContext {
 
             let stream = pred_op.stream.clone();
             let op_index = stream_operations.entry(stream.clone()).or_default().len();
-            stream_operations.get_mut(&stream).unwrap().push(operation_bytes);
+            stream_operations
+                .get_mut(&stream)
+                .unwrap()
+                .push(operation_bytes);
 
             // Map (stream, op_index) to original position
             position_map.insert((stream, op_index), i);
@@ -376,14 +385,18 @@ mod tests {
         }
 
         // Check matching operations
-        let result1 = context.check("kv", &json!({"Get": {"key": "user:bob"}}), false).await;
+        let result1 = context
+            .check("kv", &json!({"Get": {"key": "user:bob"}}), false)
+            .await;
         assert!(matches!(result1, CheckResult::Match { .. }));
 
-        let result2 = context.check(
-            "kv",
-            &json!({"Put": {"key": "user:bob", "value": 100}}),
-            true,
-        ).await;
+        let result2 = context
+            .check(
+                "kv",
+                &json!({"Put": {"key": "user:bob", "value": 100}}),
+                true,
+            )
+            .await;
         assert!(matches!(result2, CheckResult::Match { .. }));
 
         // All predictions used
@@ -433,15 +446,19 @@ mod tests {
         }
 
         // First operation matches
-        let result1 = context.check("kv", &json!({"Get": {"key": "user:bob"}}), false).await;
+        let result1 = context
+            .check("kv", &json!({"Get": {"key": "user:bob"}}), false)
+            .await;
         assert!(matches!(result1, CheckResult::Match { .. }));
 
         // Second operation doesn't match (different value)
-        let result2 = context.check(
-            "kv",
-            &json!({"Put": {"key": "user:bob", "value": 200}}),
-            true,
-        ).await;
+        let result2 = context
+            .check(
+                "kv",
+                &json!({"Put": {"key": "user:bob", "value": 200}}),
+                true,
+            )
+            .await;
         assert!(matches!(result2, CheckResult::SpeculationFailed { .. }));
 
         assert!(context.has_failed());

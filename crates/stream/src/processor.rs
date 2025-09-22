@@ -451,7 +451,8 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
 
             OperationResult::WouldBlock { blockers } => {
                 // Log all blockers
-                let blocker_list: Vec<String> = blockers.iter().map(|b| b.txn.to_string()).collect();
+                let blocker_list: Vec<String> =
+                    blockers.iter().map(|b| b.txn.to_string()).collect();
                 println!(
                     "[{}] DEFERRED: WouldBlock for txn {}: {:?}",
                     self.stream_name, txn_id, blocker_list
@@ -477,7 +478,9 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                             self.send_response(coordinator_id, txn_id_str, response, request_id);
                             Ok(())
                         }
-                        OperationResult::WouldBlock { blockers: new_blockers } => {
+                        OperationResult::WouldBlock {
+                            blockers: new_blockers,
+                        } => {
                             // Still blocked after wounding - should only be older transactions now
                             // For now, use the first blocker for backward compatibility
                             // TODO: Update deferred manager to track all blockers

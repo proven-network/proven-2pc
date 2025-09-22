@@ -4,8 +4,8 @@
 //! operation execution while delegating message handling to the generic processor.
 
 use proven_hlc::HlcTimestamp;
-use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 use proven_stream::engine::BlockingInfo;
+use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};
 use crate::storage::mvcc::MvccStorage;
@@ -63,14 +63,21 @@ impl KvTransactionEngine {
             }
             LockAttemptResult::Conflict { holders } => {
                 // Debug: log the blocking situation
-                let blocker_list: Vec<String> = holders.iter().map(|(h, _)| h.to_string()).collect();
-                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (get)", txn_id, blocker_list);
+                let blocker_list: Vec<String> =
+                    holders.iter().map(|(h, _)| h.to_string()).collect();
+                println!(
+                    "[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (get)",
+                    txn_id, blocker_list
+                );
 
                 // For reads blocked by writes, we always need to wait for commit/abort
-                let blockers = holders.into_iter().map(|(h, _mode)| BlockingInfo {
-                    txn: h,
-                    retry_on: RetryOn::CommitOrAbort,
-                }).collect();
+                let blockers = holders
+                    .into_iter()
+                    .map(|(h, _mode)| BlockingInfo {
+                        txn: h,
+                        retry_on: RetryOn::CommitOrAbort,
+                    })
+                    .collect();
 
                 OperationResult::WouldBlock { blockers }
             }
@@ -112,20 +119,27 @@ impl KvTransactionEngine {
             }
             LockAttemptResult::Conflict { holders } => {
                 // Debug: log the blocking situation
-                let blocker_list: Vec<String> = holders.iter().map(|(h, _)| h.to_string()).collect();
-                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (put)", txn_id, blocker_list);
+                let blocker_list: Vec<String> =
+                    holders.iter().map(|(h, _)| h.to_string()).collect();
+                println!(
+                    "[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (put)",
+                    txn_id, blocker_list
+                );
 
                 // Map each blocker to appropriate retry condition
-                let blockers = holders.into_iter().map(|(h, mode)| BlockingInfo {
-                    txn: h,
-                    retry_on: if mode == LockMode::Shared {
-                        // Blocked by reader - can retry after prepare
-                        RetryOn::Prepare
-                    } else {
-                        // Blocked by writer - must wait for commit/abort
-                        RetryOn::CommitOrAbort
-                    },
-                }).collect();
+                let blockers = holders
+                    .into_iter()
+                    .map(|(h, mode)| BlockingInfo {
+                        txn: h,
+                        retry_on: if mode == LockMode::Shared {
+                            // Blocked by reader - can retry after prepare
+                            RetryOn::Prepare
+                        } else {
+                            // Blocked by writer - must wait for commit/abort
+                            RetryOn::CommitOrAbort
+                        },
+                    })
+                    .collect();
 
                 OperationResult::WouldBlock { blockers }
             }
@@ -163,20 +177,27 @@ impl KvTransactionEngine {
             }
             LockAttemptResult::Conflict { holders } => {
                 // Debug: log the blocking situation
-                let blocker_list: Vec<String> = holders.iter().map(|(h, _)| h.to_string()).collect();
-                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (delete)", txn_id, blocker_list);
+                let blocker_list: Vec<String> =
+                    holders.iter().map(|(h, _)| h.to_string()).collect();
+                println!(
+                    "[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (delete)",
+                    txn_id, blocker_list
+                );
 
                 // Map each blocker to appropriate retry condition
-                let blockers = holders.into_iter().map(|(h, mode)| BlockingInfo {
-                    txn: h,
-                    retry_on: if mode == LockMode::Shared {
-                        // Blocked by reader - can retry after prepare
-                        RetryOn::Prepare
-                    } else {
-                        // Blocked by writer - must wait for commit/abort
-                        RetryOn::CommitOrAbort
-                    },
-                }).collect();
+                let blockers = holders
+                    .into_iter()
+                    .map(|(h, mode)| BlockingInfo {
+                        txn: h,
+                        retry_on: if mode == LockMode::Shared {
+                            // Blocked by reader - can retry after prepare
+                            RetryOn::Prepare
+                        } else {
+                            // Blocked by writer - must wait for commit/abort
+                            RetryOn::CommitOrAbort
+                        },
+                    })
+                    .collect();
 
                 OperationResult::WouldBlock { blockers }
             }
@@ -265,7 +286,11 @@ impl TransactionEngine for KvTransactionEngine {
         // Debug: check what locks are being held before release
         let locks_before = self.lock_manager.locks_held_by(txn_id);
         if !locks_before.is_empty() {
-            println!("[kv] ABORT: Releasing {} locks for txn {}", locks_before.len(), txn_id);
+            println!(
+                "[kv] ABORT: Releasing {} locks for txn {}",
+                locks_before.len(),
+                txn_id
+            );
         }
 
         // Remove transaction context
@@ -280,7 +305,11 @@ impl TransactionEngine for KvTransactionEngine {
         // Debug: verify locks are released
         let locks_after = self.lock_manager.locks_held_by(txn_id);
         if !locks_after.is_empty() {
-            println!("[kv] ERROR: {} locks still held after abort for txn {}", locks_after.len(), txn_id);
+            println!(
+                "[kv] ERROR: {} locks still held after abort for txn {}",
+                locks_after.len(),
+                txn_id
+            );
         }
 
         Ok(())

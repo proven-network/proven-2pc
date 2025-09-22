@@ -189,7 +189,8 @@ impl StreamManager {
                 name
             )));
         }
-        self.streams.insert(name.clone(), Mutex::new(Stream::new(name)));
+        self.streams
+            .insert(name.clone(), Mutex::new(Stream::new(name)));
         Ok(())
     }
 

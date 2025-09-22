@@ -113,93 +113,6 @@ impl ArgumentFlattener {
         // Could add fuzzy matching, pattern detection, etc.
         s1 == s2
     }
-
-    /// Extract a value from args using a JSONPath
-    pub fn extract_path(args: &[Value], path: &str) -> Option<Value> {
-        // Parse path like "$[0].user.name" or "$[1][2].field"
-        if !path.starts_with("$[") {
-            return None;
-        }
-
-        // Find the first ] to get the array index
-        let close_bracket = path.find(']')?;
-        let index_str = &path[2..close_bracket];
-        let index: usize = index_str.parse().ok()?;
-
-        // Get the arg at this index
-        let mut current = args.get(index)?;
-
-        // Process the rest of the path
-        let rest = &path[close_bracket + 1..];
-        if rest.is_empty() {
-            return Some(current.clone());
-        }
-
-        // Parse remaining path segments
-        let segments = Self::parse_path_segments(rest);
-
-        for segment in segments {
-            match segment {
-                PathSegment::Field(field) => {
-                    current = current.get(field)?;
-                }
-                PathSegment::Index(idx) => {
-                    current = current.get(idx)?;
-                }
-            }
-        }
-
-        Some(current.clone())
-    }
-
-    /// Parse path segments like ".field[0].other"
-    fn parse_path_segments(path: &str) -> Vec<PathSegment> {
-        let mut segments = Vec::new();
-        let mut current = String::new();
-        let mut in_bracket = false;
-
-        for ch in path.chars() {
-            match ch {
-                '.' if !in_bracket => {
-                    if !current.is_empty() {
-                        segments.push(PathSegment::Field(current.clone()));
-                        current.clear();
-                    }
-                }
-                '[' => {
-                    if !current.is_empty() {
-                        segments.push(PathSegment::Field(current.clone()));
-                        current.clear();
-                    }
-                    in_bracket = true;
-                }
-                ']' => {
-                    if in_bracket {
-                        if let Ok(idx) = current.parse::<usize>() {
-                            segments.push(PathSegment::Index(idx));
-                        }
-                        current.clear();
-                        in_bracket = false;
-                    }
-                }
-                _ => {
-                    current.push(ch);
-                }
-            }
-        }
-
-        if !current.is_empty() {
-            segments.push(PathSegment::Field(current));
-        }
-
-        segments
-    }
-}
-
-#[derive(Debug, Clone)]
-enum PathSegment {
-    Field(String),
-    Index(usize),
 }
 
 #[cfg(test)]
@@ -269,25 +182,6 @@ mod tests {
         assert_eq!(
             flattener.find_value(&flattened, &json!(100)),
             Some("$[0].amount".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_path() {
-        let args = vec![json!({
-            "user": {
-                "name": "alice",
-                "scores": [10, 20, 30]
-            }
-        })];
-
-        assert_eq!(
-            ArgumentFlattener::extract_path(&args, "$[0].user.name"),
-            Some(json!("alice"))
-        );
-        assert_eq!(
-            ArgumentFlattener::extract_path(&args, "$[0].user.scores[1]"),
-            Some(json!(20))
         );
     }
 }

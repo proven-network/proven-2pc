@@ -4,8 +4,8 @@
 //! eliminating the need for row-level locks.
 
 use proven_hlc::HlcTimestamp;
-use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 use proven_stream::engine::BlockingInfo;
+use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution;
 use crate::parsing::CachingParser;
@@ -279,7 +279,10 @@ impl TransactionEngine for SqlTransactionEngine {
         self.active_transactions.remove(&txn_id);
 
         if was_active {
-            println!("[sql] ABORT: Removed txn {} from active_transactions", txn_id);
+            println!(
+                "[sql] ABORT: Removed txn {} from active_transactions",
+                txn_id
+            );
         } else {
             println!("[sql] ABORT: Txn {} was not in active_transactions", txn_id);
         }
