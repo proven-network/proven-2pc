@@ -1,10 +1,10 @@
 //! Response collection and handling
 
 use crate::error::{CoordinatorError, Result};
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use proven_engine::{Message, MockClient};
 use proven_hlc::HlcTimestamp;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -109,10 +109,10 @@ impl ResponseMessage {
 /// Collects responses from storage engines
 pub struct ResponseCollector {
     /// Responses indexed by request_id (can have multiple responses per request)
-    responses: Arc<Mutex<HashMap<String, Vec<ResponseMessage>>>>,
+    responses: Arc<DashMap<String, Vec<ResponseMessage>>>,
 
     /// Notify channels for when new responses arrive
-    notifiers: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    notifiers: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
 
     /// Client for subscribing to responses
     client: Arc<MockClient>,
@@ -127,8 +127,8 @@ pub struct ResponseCollector {
 impl ResponseCollector {
     pub fn new(client: Arc<MockClient>, coordinator_id: String) -> Self {
         Self {
-            responses: Arc::new(Mutex::new(HashMap::new())),
-            notifiers: Arc::new(Mutex::new(HashMap::new())),
+            responses: Arc::new(DashMap::new()),
+            notifiers: Arc::new(DashMap::new()),
             client,
             coordinator_id,
             task: Mutex::new(None),
@@ -159,14 +159,12 @@ impl ResponseCollector {
 
                     // Store the response
                     responses
-                        .lock()
                         .entry(request_id.clone())
                         .or_default()
                         .push(response);
 
-                    // Notify any waiters - get notifier without holding lock
-                    let notifier = notifiers.lock().get(request_id).cloned();
-                    if let Some(notifier) = notifier {
+                    // Notify any waiters
+                    if let Some(notifier) = notifiers.get(request_id) {
                         notifier.notify_waiters();
                     }
                 }
@@ -245,13 +243,11 @@ impl ResponseCollector {
         timeout: Duration,
     ) -> Result<ResponseMessage> {
         // Create or get notifier for this request FIRST
-        let notifier = {
-            let mut notifiers = self.notifiers.lock();
-            notifiers
-                .entry(request_id.clone())
-                .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
-                .clone()
-        };
+        let notifier = self
+            .notifiers
+            .entry(request_id.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+            .clone();
 
         // Wait for notification with timeout
         let deadline = tokio::time::Instant::now() + timeout;
@@ -261,32 +257,26 @@ impl ResponseCollector {
             let notified = notifier.notified();
 
             // Check if response already arrived
-            // Use a block to ensure the lock is dropped before waiting
-            let response_opt = {
-                let mut responses = self.responses.lock();
-                if let Some(response_list) = responses.get_mut(&request_id) {
-                    if !response_list.is_empty() {
-                        Some(response_list.remove(0))
-                    } else {
-                        None
-                    }
+            let response_opt = if let Some(mut entry) = self.responses.get_mut(&request_id) {
+                let list = entry.value_mut();
+                if !list.is_empty() {
+                    Some(list.remove(0))
                 } else {
                     None
                 }
+            } else {
+                None
             };
 
             // If we got a response, clean up if needed and return
             if let Some(response) = response_opt {
                 // Check if we should clean up empty entries
+                if let Some(entry) = self.responses.get(&request_id)
+                    && entry.is_empty()
                 {
-                    let mut responses = self.responses.lock();
-                    if let Some(response_list) = responses.get(&request_id)
-                        && response_list.is_empty()
-                    {
-                        responses.remove(&request_id);
-                        // Also remove notifier
-                        self.notifiers.lock().remove(&request_id);
-                    }
+                    drop(entry); // Release the reference first
+                    self.responses.remove(&request_id);
+                    self.notifiers.remove(&request_id);
                 }
                 return Ok(response);
             }
@@ -294,7 +284,7 @@ impl ResponseCollector {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 // Clean up notifier on timeout
-                self.notifiers.lock().remove(&request_id);
+                self.notifiers.remove(&request_id);
                 return Err(CoordinatorError::ResponseTimeout);
             }
 
@@ -306,7 +296,7 @@ impl ResponseCollector {
                 }
                 Err(_) => {
                     // Timeout - clean up notifier
-                    self.notifiers.lock().remove(&request_id);
+                    self.notifiers.remove(&request_id);
                     return Err(CoordinatorError::ResponseTimeout);
                 }
             }

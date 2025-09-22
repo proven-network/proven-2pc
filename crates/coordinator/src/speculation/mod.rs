@@ -100,9 +100,9 @@ impl SpeculationContext {
         let learner = self.learner.lock().unwrap();
 
         if let Some(prediction) = self.predictor.predict(category, args, &learner) {
-            PredictionContext::new(prediction, self.learner.clone())
+            PredictionContext::new(prediction, args.to_vec(), self.learner.clone())
         } else {
-            PredictionContext::empty(self.learner.clone())
+            PredictionContext::empty(category.to_string(), args.to_vec(), self.learner.clone())
         }
     }
 
@@ -112,6 +112,14 @@ impl SpeculationContext {
         let learner = self.learner.lock().unwrap();
         learner.get_all_patterns().clone()
     }
+
+    /// Create an empty prediction context for transactions without speculation
+    ///
+    /// This is used for retry transactions after speculation failure, or when
+    /// we explicitly want to avoid speculation while still learning from the operations.
+    pub fn create_empty_context(&self, category: &str, args: &[Value]) -> PredictionContext {
+        PredictionContext::empty(category.to_string(), args.to_vec(), self.learner.clone())
+    }
 }
 
 #[cfg(test)]
@@ -119,8 +127,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn test_sequence_learning_and_prediction() {
+    #[tokio::test]
+    async fn test_sequence_learning_and_prediction() {
         let config = SpeculationConfig {
             min_confidence_read: 0.0,
             min_confidence_write: 0.0,
@@ -141,30 +149,31 @@ mod tests {
             // Create prediction context (even for learning - ensures consistency)
             let mut pred_ctx = context.create_prediction_context("transfer", &args);
 
-            // Simulate executing operations
-            pred_ctx.check(
+            // For learning, we don't need responses, just track operations
+            // Simulate executing operations (they'll return NoPrediction since no responses set)
+            let _ = pred_ctx.check(
                 "kv_stream",
                 &json!({"Get": {"key": format!("user:{}:balance", user_id)}}),
                 false,
-            );
-            pred_ctx.check(
+            ).await;
+            let _ = pred_ctx.check(
                 "kv_stream",
                 &json!({"Put": {"key": format!("user:{}:balance", user_id), "value": 100 + i}}),
                 true,
-            );
+            ).await;
 
             // First 3 have same pattern
             if i < 3 {
-                pred_ctx.check(
+                let _ = pred_ctx.check(
                     "kv_stream",
                     &json!({"Get": {"key": format!("user:{}:history", user_id)}}),
                     false,
-                );
+                ).await;
             }
             // 4th diverges after first two operations
 
             // Report outcome - this is where learning happens
-            pred_ctx.report_outcome("transfer", &args, true);
+            pred_ctx.report_outcome(true);
         }
 
         // Create prediction context for new transaction
@@ -182,19 +191,29 @@ mod tests {
             "Should learn common prefix"
         );
 
+        // Simulate speculation execution by creating fake receivers
+        {
+            let (tx0, rx0) = tokio::sync::oneshot::channel();
+            let (tx1, rx1) = tokio::sync::oneshot::channel();
+            let _ = tx0.send(Ok(b"fake_response_1".to_vec()));
+            let _ = tx1.send(Ok(b"fake_response_2".to_vec()));
+            pred_context.set_test_receiver(0, rx0);
+            pred_context.set_test_receiver(1, rx1);
+        }
+
         // Simulate transaction execution - operations match predictions
         let result1 = pred_context.check(
             "kv_stream",
             &json!({"Get": {"key": "user:alice:balance"}}),
             false,
-        );
+        ).await;
         assert!(matches!(result1, CheckResult::Match { .. }));
 
         let result2 = pred_context.check(
             "kv_stream",
             &json!({"Put": {"key": "user:alice:balance", "value": 500}}),
             true,
-        );
+        ).await;
         assert!(matches!(result2, CheckResult::Match { .. }));
 
         // Should have no more predictions
@@ -202,12 +221,12 @@ mod tests {
             "kv_stream",
             &json!({"Get": {"key": "user:alice:history"}}),
             false,
-        );
+        ).await;
         assert!(matches!(result3, CheckResult::NoPrediction));
     }
 
-    #[test]
-    fn test_speculation_failure_detection() {
+    #[tokio::test]
+    async fn test_speculation_failure_detection() {
         let config = SpeculationConfig {
             min_confidence_read: 0.0,
             min_confidence_write: 0.0,
@@ -220,20 +239,27 @@ mod tests {
         // Learn a pattern using PredictionContext
         let args = vec![json!({"user": "bob", "amount": 100})];
         let mut pred_ctx = context.create_prediction_context("test", &args);
-        pred_ctx.check("kv", &json!({"Get": {"key": "user:bob"}}), false);
-        pred_ctx.check(
+        let _ = pred_ctx.check("kv", &json!({"Get": {"key": "user:bob"}}), false).await;
+        let _ = pred_ctx.check(
             "kv",
             &json!({"Put": {"key": "user:bob", "value": 100}}),
             true,
-        );
-        pred_ctx.report_outcome("test", &args, true);
+        ).await;
+        pred_ctx.report_outcome(true);
 
         // Create prediction for new transaction
         let new_args = vec![json!({"user": "alice", "amount": 200})];
         let mut pred_context = context.create_prediction_context("test", &new_args);
 
+        // Simulate speculation execution for first operation only
+        {
+            let (tx0, rx0) = tokio::sync::oneshot::channel();
+            let _ = tx0.send(Ok(b"fake_response".to_vec()));
+            pred_context.set_test_receiver(0, rx0);
+        }
+
         // First operation matches
-        let result1 = pred_context.check("kv", &json!({"Get": {"key": "user:alice"}}), false);
+        let result1 = pred_context.check("kv", &json!({"Get": {"key": "user:alice"}}), false).await;
         assert!(matches!(result1, CheckResult::Match { .. }));
 
         // Second operation doesn't match (different amount)
@@ -241,7 +267,7 @@ mod tests {
             "kv",
             &json!({"Put": {"key": "user:alice", "value": 999}}),
             true,
-        );
+        ).await;
         assert!(matches!(result2, CheckResult::SpeculationFailed { .. }));
 
         assert!(pred_context.has_failed());

@@ -61,6 +61,9 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holder, mode } => {
+                // Debug: log the blocking situation
+                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {} (get)", txn_id, holder);
+
                 // Determine retry timing based on conflict type
                 let retry_on = if mode == LockMode::Shared {
                     // Blocked by another reader - shouldn't happen for shared locks
@@ -112,6 +115,9 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holder, mode } => {
+                // Debug: log the blocking situation
+                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {} (put)", txn_id, holder);
+
                 // Determine retry timing based on conflict type
                 let retry_on = if mode == LockMode::Shared {
                     // Blocked by a reader - can retry after prepare
@@ -159,6 +165,9 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holder, mode } => {
+                // Debug: log the blocking situation
+                println!("[kv_stream] DEFERRED: WouldBlock for txn {}: {} (delete)", txn_id, holder);
+
                 // Determine retry timing based on conflict type
                 let retry_on = if mode == LockMode::Shared {
                     // Blocked by a reader - can retry after prepare
@@ -255,6 +264,12 @@ impl TransactionEngine for KvTransactionEngine {
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        // Debug: check what locks are being held before release
+        let locks_before = self.lock_manager.locks_held_by(txn_id);
+        if !locks_before.is_empty() {
+            println!("[kv] ABORT: Releasing {} locks for txn {}", locks_before.len(), txn_id);
+        }
+
         // Remove transaction context
         self.active_transactions.remove(&txn_id);
 
@@ -263,6 +278,12 @@ impl TransactionEngine for KvTransactionEngine {
 
         // Release all locks
         self.lock_manager.release_all(txn_id);
+
+        // Debug: verify locks are released
+        let locks_after = self.lock_manager.locks_held_by(txn_id);
+        if !locks_after.is_empty() {
+            println!("[kv] ERROR: {} locks still held after abort for txn {}", locks_after.len(), txn_id);
+        }
 
         Ok(())
     }

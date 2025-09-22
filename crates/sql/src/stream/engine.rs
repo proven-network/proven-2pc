@@ -262,8 +262,17 @@ impl TransactionEngine for SqlTransactionEngine {
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
+        // Debug: check if transaction exists
+        let was_active = self.active_transactions.contains_key(&txn_id);
+
         // Remove transaction
         self.active_transactions.remove(&txn_id);
+
+        if was_active {
+            println!("[sql] ABORT: Removed txn {} from active_transactions", txn_id);
+        } else {
+            println!("[sql] ABORT: Txn {} was not in active_transactions", txn_id);
+        }
 
         // Abort in storage
         self.storage

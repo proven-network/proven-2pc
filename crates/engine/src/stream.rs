@@ -4,9 +4,9 @@
 //! and consumer tracking.
 
 use crate::{Message, MockEngineError, Result};
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use proven_hlc::{HlcTimestamp, NodeId};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -163,39 +163,44 @@ struct StreamConsumer {
 }
 
 /// Stream manager that handles multiple streams
-#[derive(Default)]
 pub struct StreamManager {
-    streams: Arc<Mutex<HashMap<String, Stream>>>,
+    streams: Arc<DashMap<String, Mutex<Stream>>>,
+}
+
+impl Default for StreamManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StreamManager {
     /// Create a new stream manager
     pub fn new() -> Self {
         Self {
-            streams: Arc::new(Mutex::new(HashMap::new())),
+            streams: Arc::new(DashMap::new()),
         }
     }
 
     /// Create a new stream
     pub fn create_stream(&self, name: String) -> Result<()> {
-        let mut streams = self.streams.lock();
-        if streams.contains_key(&name) {
+        if self.streams.contains_key(&name) {
             return Err(MockEngineError::InvalidOperation(format!(
                 "Stream '{}' already exists",
                 name
             )));
         }
-        streams.insert(name.clone(), Stream::new(name));
+        self.streams.insert(name.clone(), Mutex::new(Stream::new(name)));
         Ok(())
     }
 
     /// Append messages to a stream
     pub fn append_to_stream(&self, name: &str, messages: Vec<Message>) -> Result<u64> {
-        let mut streams = self.streams.lock();
-        let stream = streams
-            .get_mut(name)
+        let stream_lock = self
+            .streams
+            .get(name)
             .ok_or_else(|| MockEngineError::StreamNotFound(name.to_string()))?;
 
+        let mut stream = stream_lock.lock();
         let sequence = stream.append(messages);
         stream.cleanup_consumers();
         Ok(sequence)
@@ -207,17 +212,18 @@ impl StreamManager {
         name: &str,
         start_sequence: Option<u64>,
     ) -> Result<mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)>> {
-        let mut streams = self.streams.lock();
-        let stream = streams
-            .get_mut(name)
+        let stream_lock = self
+            .streams
+            .get(name)
             .ok_or_else(|| MockEngineError::StreamNotFound(name.to_string()))?;
 
+        let mut stream = stream_lock.lock();
         Ok(stream.create_consumer(start_sequence))
     }
 
     /// Check if a stream exists
     pub fn stream_exists(&self, name: &str) -> bool {
-        self.streams.lock().contains_key(name)
+        self.streams.contains_key(name)
     }
 
     /// Create a stream that reads messages until deadline
@@ -229,11 +235,12 @@ impl StreamManager {
     ) -> Result<impl TokioStream<Item = DeadlineStreamItem>> {
         // Extract necessary data while holding the lock
         let (messages, is_past_deadline) = {
-            let streams = self.streams.lock();
-            let stream = streams
+            let stream_lock = self
+                .streams
                 .get(stream_name)
                 .ok_or_else(|| MockEngineError::StreamNotFound(stream_name.to_string()))?;
 
+            let stream = stream_lock.lock();
             (
                 stream.get_messages_from(start_offset),
                 stream.is_past_deadline(deadline),

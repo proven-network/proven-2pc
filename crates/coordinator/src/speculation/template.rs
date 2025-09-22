@@ -3,7 +3,7 @@
 use crate::speculation::args::{ArgumentFlattener, FlattenedArgs};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A template with JSONPath placeholders
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -19,6 +19,11 @@ pub struct Template {
 
     /// The stream this operation targets
     pub stream: String,
+
+    /// Maps placeholder paths to their original types (for type preservation)
+    /// e.g., "$[0].amount" -> "string" means the operation had a string
+    #[serde(default)]
+    pub original_types: HashMap<String, String>,
 }
 
 /// Extracts templates from operations by finding correlations with arguments
@@ -59,8 +64,14 @@ impl TemplateExtractor {
         // Clone operation and replace values found in args with placeholders
         let mut pattern = operation.clone();
         let mut required_paths = HashSet::new();
+        let mut original_types = HashMap::new();
 
-        self.replace_with_placeholders(&mut pattern, &flattened, &mut required_paths);
+        self.replace_with_placeholders(
+            &mut pattern,
+            &flattened,
+            &mut required_paths,
+            &mut original_types,
+        );
 
         // Only create template if we found at least one correlation
         if required_paths.is_empty() {
@@ -72,6 +83,7 @@ impl TemplateExtractor {
             required_paths,
             is_write,
             stream: stream.to_string(),
+            original_types,
         })
     }
 
@@ -81,10 +93,11 @@ impl TemplateExtractor {
         value: &mut Value,
         flattened: &FlattenedArgs,
         required_paths: &mut HashSet<String>,
+        original_types: &mut HashMap<String, String>,
     ) {
         match value {
             Value::String(s) => {
-                // First check for exact match
+                // First check for exact string match
                 if let Some(path) = self
                     .flattener
                     .find_value(flattened, &Value::String(s.clone()))
@@ -94,8 +107,26 @@ impl TemplateExtractor {
                         "{}{}{}",
                         self.placeholder_prefix, path, self.placeholder_suffix
                     );
-                    required_paths.insert(path);
+                    required_paths.insert(path.clone());
+                    original_types.insert(path, "string".to_string());
                     return;
+                }
+
+                // If the string looks like a number, also check for numeric match
+                // This handles cases where operation has "10" but args has 10
+                if let Ok(n_val) = serde_json::from_str::<serde_json::Value>(s) {
+                    if n_val.is_number() {
+                        if let Some(path) = self.flattener.find_value(flattened, &n_val) {
+                            // Replace with placeholder - track that original was string!
+                            *s = format!(
+                                "{}{}{}",
+                                self.placeholder_prefix, path, self.placeholder_suffix
+                            );
+                            required_paths.insert(path.clone());
+                            original_types.insert(path, "string".to_string());
+                            return;
+                        }
+                    }
                 }
 
                 // If no exact match, try substring detection
@@ -140,12 +171,13 @@ impl TemplateExtractor {
                     .flattener
                     .find_value(flattened, &Value::Number(n.clone()))
                 {
-                    // Replace with placeholder (as string)
+                    // Replace with placeholder (as string) - track original was number
                     *value = Value::String(format!(
                         "{}{}{}",
                         self.placeholder_prefix, path, self.placeholder_suffix
                     ));
-                    required_paths.insert(path);
+                    required_paths.insert(path.clone());
+                    original_types.insert(path, "number".to_string());
                 }
             }
             Value::Bool(b) => {
@@ -155,19 +187,20 @@ impl TemplateExtractor {
                         "{}{}{}",
                         self.placeholder_prefix, path, self.placeholder_suffix
                     ));
-                    required_paths.insert(path);
+                    required_paths.insert(path.clone());
+                    original_types.insert(path, "bool".to_string());
                 }
             }
             Value::Object(map) => {
                 // Recursively process all values in the object
                 for (_, v) in map.iter_mut() {
-                    self.replace_with_placeholders(v, flattened, required_paths);
+                    self.replace_with_placeholders(v, flattened, required_paths, original_types);
                 }
             }
             Value::Array(arr) => {
                 // Recursively process all elements in the array
                 for v in arr.iter_mut() {
-                    self.replace_with_placeholders(v, flattened, required_paths);
+                    self.replace_with_placeholders(v, flattened, required_paths, original_types);
                 }
             }
             Value::Null => {
@@ -255,7 +288,7 @@ impl TemplateInstantiator {
 
         // Clone pattern and replace placeholders
         let mut result = template.pattern.clone();
-        self.replace_placeholders(&mut result, &flattened)?;
+        self.replace_placeholders(&mut result, &flattened, &template.original_types)?;
 
         Ok(result)
     }
@@ -265,6 +298,7 @@ impl TemplateInstantiator {
         &self,
         value: &mut Value,
         flattened: &FlattenedArgs,
+        original_types: &HashMap<String, String>,
     ) -> Result<(), String> {
         match value {
             Value::String(s) => {
@@ -296,24 +330,49 @@ impl TemplateInstantiator {
                         // Get the value from flattened args
                         if let Some(arg_value) = flattened.get(path) {
                             if is_entire_string_placeholder {
-                                // If the entire string is a placeholder, replace the whole value
-                                *value = arg_value.clone();
+                                // Check what the original type was
+                                if let Some(orig_type) = original_types.get(path) {
+                                    match orig_type.as_str() {
+                                        "string" => {
+                                            // Original was string, keep as string
+                                            let string_value = match arg_value {
+                                                Value::String(s) => s.clone(),
+                                                Value::Number(n) => n.to_string(),
+                                                Value::Bool(b) => b.to_string(),
+                                                Value::Null => "null".to_string(),
+                                                _ => arg_value.to_string(),
+                                            };
+                                            *s = string_value;
+                                        }
+                                        "number" | "bool" => {
+                                            // Original was number/bool, use arg value directly
+                                            *value = arg_value.clone();
+                                        }
+                                        _ => {
+                                            // Unknown type, use arg value
+                                            *value = arg_value.clone();
+                                        }
+                                    }
+                                } else {
+                                    // No type info, use arg value
+                                    *value = arg_value.clone();
+                                }
                                 return Ok(());
                             } else {
-                                // Otherwise, do string replacement
-                                let replacement = match arg_value {
+                                // Otherwise, do substring replacement (always as string)
+                                let string_value = match arg_value {
                                     Value::String(s) => s.clone(),
                                     Value::Number(n) => n.to_string(),
                                     Value::Bool(b) => b.to_string(),
+                                    Value::Null => "null".to_string(),
                                     _ => arg_value.to_string(),
                                 };
 
-                                // Replace this placeholder with the actual value
                                 let placeholder = format!(
                                     "{}{}{}",
                                     self.placeholder_prefix, path, self.placeholder_suffix
                                 );
-                                result = result.replace(&placeholder, &replacement);
+                                result = result.replace(&placeholder, &string_value);
                                 found_any = true;
                             }
                         } else {
@@ -334,13 +393,13 @@ impl TemplateInstantiator {
             Value::Object(map) => {
                 // Recursively process all values
                 for (_, v) in map.iter_mut() {
-                    self.replace_placeholders(v, flattened)?;
+                    self.replace_placeholders(v, flattened, original_types)?;
                 }
             }
             Value::Array(arr) => {
                 // Recursively process all elements
                 for v in arr.iter_mut() {
-                    self.replace_placeholders(v, flattened)?;
+                    self.replace_placeholders(v, flattened, original_types)?;
                 }
             }
             _ => {
@@ -508,7 +567,7 @@ mod tests {
             json!({
                 "type": "transfer",
                 "user": "bob",
-                "amount": 200
+                "amount": 200  // Number because operation had number
             })
         );
     }

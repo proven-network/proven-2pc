@@ -15,7 +15,9 @@ pub type TxId = HlcTimestamp;
 pub enum LockMode {
     /// Shared lock for reading (peek, size, isEmpty)
     Shared,
-    /// Exclusive lock for writing (enqueue, dequeue, clear)
+    /// Append lock for enqueue operations (compatible with other appends)
+    Append,
+    /// Exclusive lock for destructive operations (dequeue, clear)
     Exclusive,
 }
 
@@ -25,6 +27,10 @@ impl LockMode {
         match (*self, other) {
             // Multiple shared locks are compatible
             (LockMode::Shared, LockMode::Shared) => true,
+            // Multiple append locks are compatible (concurrent enqueues)
+            (LockMode::Append, LockMode::Append) => true,
+            // Append and shared are compatible (can read while appending)
+            (LockMode::Append, LockMode::Shared) | (LockMode::Shared, LockMode::Append) => true,
             // Everything else is incompatible
             _ => false,
         }

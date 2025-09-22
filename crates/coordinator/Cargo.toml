@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+base64 = "0.21"
 crossbeam-queue = "0.3"
+dashmap = "6.1.0"
 parking_lot.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true

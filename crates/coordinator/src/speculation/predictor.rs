@@ -4,7 +4,7 @@
 //! with new argument values. It returns entire sequences or nothing (all-or-nothing approach).
 
 use crate::speculation::SpeculationConfig;
-use crate::speculation::learning::{SequenceLearner, SequencePattern};
+use crate::speculation::learning::SequenceLearner;
 use crate::speculation::template::TemplateInstantiator;
 use serde_json::Value;
 
@@ -22,9 +22,6 @@ pub struct PredictedOperation {
 
     /// Position in the sequence
     pub position: usize,
-
-    /// Expected response (will be filled by speculation execution)
-    pub expected_response: Option<Value>,
 }
 
 /// Result of prediction attempt
@@ -83,7 +80,6 @@ impl SequencePredictor {
                         stream: op_pattern.stream.clone(),
                         is_write: op_pattern.is_write,
                         position: op_pattern.position,
-                        expected_response: None, // Will be filled later
                     });
                 }
                 Err(_err) => {
@@ -173,6 +169,152 @@ mod tests {
         let get_op = &prediction.operations[1];
         assert!(!get_op.is_write);
         assert!(get_op.operation.to_string().contains("alice"));
+    }
+
+    #[test]
+    fn test_template_preserves_operation_string_type() {
+        // This test verifies that when operations have string values
+        // but args have numeric values, the template system preserves
+        // the string type in the operation
+        let config = SpeculationConfig {
+            min_occurrences: 2,
+            min_confidence_read: 0.0,
+            min_confidence_write: 0.0,
+            ..Default::default()
+        };
+
+        let mut learner = SequenceLearner::new(config.clone());
+        let predictor = SequencePredictor::new(config);
+
+        // Learn from transactions where operations have string "10"
+        // but args have numeric 10
+        for i in 0..2 {
+            let args = vec![json!({
+                "from": format!("account_{}", i),
+                "to": format!("account_{}", (i + 1) % 2),
+                "amount": 10  // Numeric in args
+            })];
+
+            let ops = vec![(
+                "resource_stream".to_string(),
+                json!({
+                    "Transfer": {
+                        "from": format!("account_{}", i),
+                        "to": format!("account_{}", (i + 1) % 2),
+                        "amount": "10",  // String in operation!
+                        "memo": null
+                    }
+                }),
+                true,
+            )];
+
+            learner.learn_from_transaction("transfer", &args, &ops);
+        }
+
+        // Now predict with numeric amount in args
+        let new_args = vec![json!({
+            "from": "account_99",
+            "to": "account_0",
+            "amount": 10  // Numeric value
+        })];
+
+        let result = predictor.predict("transfer", &new_args, &learner);
+        assert!(result.is_some());
+
+        let prediction = result.unwrap();
+        assert_eq!(prediction.operations.len(), 1);
+
+        // The predicted operation should have string "10" to match the template
+        let predicted_op = &prediction.operations[0];
+        let transfer = &predicted_op.operation["Transfer"];
+
+        // This should be "10" (string), not 10 (number)
+        assert_eq!(
+            transfer["amount"],
+            json!("10"), // Should be string to match operation format
+            "Amount should be string to preserve operation format"
+        );
+    }
+
+    #[test]
+    fn test_type_mismatch_in_templates() {
+        // This test replicates the issue where template instantiation
+        // doesn't match due to type differences (e.g., number vs string)
+        let config = SpeculationConfig {
+            min_occurrences: 2,
+            min_confidence_read: 0.0,
+            min_confidence_write: 0.0,
+            ..Default::default()
+        };
+
+        let mut learner = SequenceLearner::new(config.clone());
+        let predictor = SequencePredictor::new(config);
+
+        // First transaction: Learn with string amounts (like from JSON input)
+        let args1 = vec![json!({
+            "from": "account_0",
+            "to": "account_1",
+            "amount": "10"  // String value
+        })];
+
+        let ops1 = vec![(
+            "resource_stream".to_string(),
+            json!({
+                "Transfer": {
+                    "from": "account_0",
+                    "to": "account_1",
+                    "amount": "10",  // String in operation too
+                    "memo": null
+                }
+            }),
+            true,
+        )];
+        learner.learn_from_transaction("transfer", &args1, &ops1);
+
+        // Second transaction: Same pattern with string
+        let args2 = vec![json!({
+            "from": "account_1",
+            "to": "account_0",
+            "amount": "10"  // String value
+        })];
+
+        let ops2 = vec![(
+            "resource_stream".to_string(),
+            json!({
+                "Transfer": {
+                    "from": "account_1",
+                    "to": "account_0",
+                    "amount": "10",  // String
+                    "memo": null
+                }
+            }),
+            true,
+        )];
+        learner.learn_from_transaction("transfer", &args2, &ops2);
+
+        // Now predict with numeric amount - this is what causes the mismatch
+        let new_args = vec![json!({
+            "from": "account_99",
+            "to": "account_0",
+            "amount": 10  // Numeric value this time!
+        })];
+
+        let result = predictor.predict("transfer", &new_args, &learner);
+        assert!(result.is_some());
+
+        let prediction = result.unwrap();
+        assert_eq!(prediction.operations.len(), 1);
+
+        // The predicted operation should preserve the string format from the learned pattern
+        let predicted_op = &prediction.operations[0];
+        let transfer = &predicted_op.operation["Transfer"];
+
+        // This should be "10" (string) to preserve the operation format
+        assert_eq!(
+            transfer["amount"],
+            json!("10"), // Should be string to preserve operation format
+            "Amount should be string to preserve operation format"
+        );
     }
 
     #[test]

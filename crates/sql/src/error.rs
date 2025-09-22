@@ -74,9 +74,6 @@ pub enum Error {
     #[error("Transaction not found: {0}")]
     TransactionNotFound(HlcTimestamp),
 
-    #[error("Transaction aborted: {0}")]
-    TransactionAborted(HlcTimestamp),
-
     #[error("Transaction not active: {0}")]
     TransactionNotActive(HlcTimestamp),
 

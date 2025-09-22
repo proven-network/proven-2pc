@@ -54,21 +54,24 @@ impl TransactionEngine for QueueTransactionEngine {
             Err(crate::stream::transaction::TransactionError::LockConflict { holder, mode }) => {
                 // Check what operation we're trying to do
                 let our_mode = match &operation {
-                    QueueOperation::Enqueue { .. }
-                    | QueueOperation::Dequeue { .. }
-                    | QueueOperation::Clear { .. } => LockMode::Exclusive,
+                    QueueOperation::Enqueue { .. } => LockMode::Append,
+                    QueueOperation::Dequeue { .. } | QueueOperation::Clear { .. } => {
+                        LockMode::Exclusive
+                    }
                     QueueOperation::Peek { .. }
                     | QueueOperation::Size { .. }
                     | QueueOperation::IsEmpty { .. } => LockMode::Shared,
                 };
 
                 // Determine retry timing based on conflict type
-                let retry_on = if our_mode == LockMode::Exclusive && mode == LockMode::Shared {
-                    // Write blocked by read - can retry after prepare
-                    RetryOn::Prepare
-                } else {
+                let retry_on = match (our_mode, mode) {
+                    // Exclusive blocked by read - can retry after prepare
+                    (LockMode::Exclusive, LockMode::Shared) => RetryOn::Prepare,
+                    // Append blocked by read - can continue (they're compatible!)
+                    // This shouldn't happen due to compatibility check
+                    (LockMode::Append, LockMode::Shared) => RetryOn::Prepare,
                     // All other conflicts need commit/abort
-                    RetryOn::CommitOrAbort
+                    _ => RetryOn::CommitOrAbort,
                 };
 
                 OperationResult::WouldBlock {

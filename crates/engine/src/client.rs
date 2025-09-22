@@ -9,7 +9,7 @@ use crate::{
     stream::DeadlineStreamItem,
 };
 use proven_hlc::HlcTimestamp;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 
@@ -44,8 +44,65 @@ impl MockClient {
     where
         M: Into<Message>,
     {
+        // Wait to simulate network latency
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
         let messages: Vec<Message> = messages.into_iter().map(Into::into).collect();
         self.engine.publish_to_stream(&stream_name, messages)
+    }
+
+    /// Write messages to multiple streams in the same consensus group (batched)
+    /// This amortizes network latency when publishing to streams in the same group
+    pub async fn publish_to_streams<M>(
+        &self,
+        streams_and_messages: std::collections::HashMap<String, Vec<M>>,
+    ) -> Result<std::collections::HashMap<String, u64>>
+    where
+        M: Into<Message>,
+    {
+        // First, validate all streams are in the same consensus group
+        let mut group_id = None;
+        for stream_name in streams_and_messages.keys() {
+            let stream_info = self
+                .get_stream_info(stream_name)
+                .await?
+                .ok_or_else(|| crate::MockEngineError::StreamNotFound(stream_name.clone()))?;
+
+            // Extract group from placement
+            let current_group = match stream_info.placement {
+                crate::engine::StreamPlacement::Group(g) => g,
+                crate::engine::StreamPlacement::Global => {
+                    return Err(crate::MockEngineError::InvalidOperation(format!(
+                        "Stream '{}' has global placement, not in a consensus group",
+                        stream_name
+                    )));
+                }
+            };
+
+            match group_id {
+                None => group_id = Some(current_group),
+                Some(expected) if expected != current_group => {
+                    return Err(crate::MockEngineError::InvalidOperation(format!(
+                        "Stream '{}' is in group {:?}, expected {:?}. All streams must be in the same consensus group for batched publishing",
+                        stream_name, current_group, expected
+                    )));
+                }
+                _ => {} // Same group, continue
+            }
+        }
+
+        // Single network round-trip for all streams in the group
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // Now publish to each stream and collect results
+        let mut results = std::collections::HashMap::new();
+        for (stream_name, messages) in streams_and_messages {
+            let messages: Vec<Message> = messages.into_iter().map(Into::into).collect();
+            let sequence = self.engine.publish_to_stream(&stream_name, messages)?;
+            results.insert(stream_name, sequence);
+        }
+
+        Ok(results)
     }
 
     /// Stream messages from a stream

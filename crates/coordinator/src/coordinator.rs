@@ -1,6 +1,7 @@
 //! Core coordinator implementation
 
 use crate::error::Result;
+use crate::executor::Executor;
 use crate::responses::ResponseCollector;
 use crate::speculation::{SpeculationConfig, SpeculationContext};
 use crate::transaction::Transaction;
@@ -8,7 +9,6 @@ use proven_engine::MockClient;
 use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
 use proven_runner::Runner;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,7 +63,10 @@ impl Coordinator {
         }
     }
 
-    /// Begin a new distributed transaction
+    /// Begin a new distributed transaction with speculation
+    ///
+    /// This will attempt to predict and pre-execute operations based on learned patterns.
+    /// If speculation fails during execution, the client should retry with `begin_without_speculation`.
     pub async fn begin(
         &self,
         timeout: Duration,
@@ -81,21 +84,89 @@ impl Coordinator {
             timestamp.node_id,
         );
 
-        // Start learning for this transaction
-        let prediction_context = self
-            .speculative_context
-            .create_prediction_context(&speculative_category, &transaction_args);
-
-        Ok(Transaction::new(
+        // Create transaction-scoped executor with all context
+        let executor = Arc::new(Executor::new(
             txn_id,
             timestamp,
             deadline,
+            self.coordinator_id.clone(),
             self.client.clone(),
             self.response_collector.clone(),
-            self.coordinator_id.clone(),
             self.runner.clone(),
-            prediction_context,
-        ))
+        ));
+
+        // Create prediction context for this transaction
+        let mut prediction_context = self
+            .speculative_context
+            .create_prediction_context(&speculative_category, &transaction_args);
+
+        // Execute predictions speculatively using the same executor
+        // This is best-effort - if it fails, we continue without predictions
+        if let Err(e) = prediction_context
+            .execute_predictions(executor.clone())
+            .await
+        {
+            tracing::debug!("Failed to execute speculative predictions: {}", e);
+        }
+
+        // Create transaction with executor and predictions
+        Ok(Transaction::new(executor, prediction_context))
+    }
+
+    /// Begin a new distributed transaction without speculation
+    ///
+    /// This is typically used for retrying after a speculation failure.
+    /// Operations are still tracked for learning, but no predictions are made.
+    ///
+    /// ## Usage Pattern
+    /// ```ignore
+    /// // First attempt with speculation
+    /// let txn = coordinator.begin(timeout, args.clone(), "transfer").await?;
+    /// match txn.execute(stream, &op).await {
+    ///     Err(CoordinatorError::SpeculationFailed(_)) => {
+    ///         // Retry without speculation
+    ///         let txn = coordinator.begin_without_speculation(timeout, args, "transfer").await?;
+    ///         // Re-execute operations...
+    ///     }
+    ///     // ... handle other cases
+    /// }
+    /// ```
+    pub async fn begin_without_speculation(
+        &self,
+        timeout: Duration,
+        transaction_args: Vec<Value>,
+        speculative_category: String,
+    ) -> Result<Transaction> {
+        let timestamp = self.hlc.now();
+        let txn_id = timestamp.to_string();
+
+        // Calculate deadline
+        let timeout_us = timeout.as_micros() as u64;
+        let deadline = HlcTimestamp::new(
+            timestamp.physical + timeout_us,
+            timestamp.logical,
+            timestamp.node_id,
+        );
+
+        // Create transaction-scoped executor with all context
+        let executor = Arc::new(Executor::new(
+            txn_id,
+            timestamp,
+            deadline,
+            self.coordinator_id.clone(),
+            self.client.clone(),
+            self.response_collector.clone(),
+            self.runner.clone(),
+        ));
+
+        // Create an empty prediction context for learning without speculation
+        // This ensures we still track operations for improving patterns
+        let prediction_context = self
+            .speculative_context
+            .create_empty_context(&speculative_category, &transaction_args);
+
+        // Create transaction without any speculative execution
+        Ok(Transaction::new(executor, prediction_context))
     }
 
     /// Stop the coordinator (cleanup)

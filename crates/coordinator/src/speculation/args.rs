@@ -96,10 +96,10 @@ impl ArgumentFlattener {
         // For strings, we could do fuzzy matching here
         if let Value::String(target_str) = target {
             for (path, value) in flattened {
-                if let Value::String(s) = value {
-                    if self.strings_similar(target_str, s) {
-                        return Some(path.clone());
-                    }
+                if let Value::String(s) = value
+                    && self.strings_similar(target_str, s)
+                {
+                    return Some(path.clone());
                 }
             }
         }

@@ -1,17 +1,18 @@
 //! Transaction implementation with active methods
+//!
+//! The Transaction handles state management and 2PC coordination,
+//! while delegating all execution to the transaction-scoped Executor.
 
 use crate::error::{CoordinatorError, Result};
-use crate::responses::{ResponseCollector, ResponseMessage};
-use crate::speculation::PredictionContext;
+use crate::executor::Executor;
+use crate::responses::ResponseMessage;
+use crate::speculation::{CheckResult, PredictionContext};
 use parking_lot::Mutex;
 use proven_common::Operation;
-use proven_engine::{Message, MockClient};
-use proven_hlc::HlcTimestamp;
-use proven_runner::Runner;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::sync::Mutex as AsyncMutex;
 
 /// Transaction state in the coordinator
 #[derive(Debug, Clone, PartialEq)]
@@ -43,245 +44,135 @@ pub enum PrepareVote {
     Error(String),
 }
 
-/// Transaction metadata (internal)
-#[derive(Debug)]
-pub(crate) struct TransactionMetadata {
-    pub(crate) state: TransactionState,
-    pub(crate) participants: Vec<String>,
-    pub(crate) timestamp: HlcTimestamp,
-    pub(crate) deadline: HlcTimestamp,
-    pub(crate) prepare_votes: HashMap<String, PrepareVote>,
-    pub(crate) streams_with_deadline: HashSet<String>,
-    pub(crate) participant_awareness: HashMap<String, HashSet<String>>,
-    pub(crate) participant_offsets: HashMap<String, u64>,
-}
-
-impl TransactionMetadata {
-    pub(crate) fn new(timestamp: HlcTimestamp, deadline: HlcTimestamp) -> Self {
-        Self {
-            state: TransactionState::Active,
-            participants: Vec::new(),
-            timestamp,
-            deadline,
-            prepare_votes: HashMap::new(),
-            streams_with_deadline: HashSet::new(),
-            participant_awareness: HashMap::new(),
-            participant_offsets: HashMap::new(),
-        }
-    }
-}
-
 /// Active transaction object with methods
 #[derive(Clone)]
 pub struct Transaction {
-    /// Transaction ID
-    id: String,
+    /// Transaction state
+    state: Arc<Mutex<TransactionState>>,
 
-    /// Transaction metadata
-    metadata: Arc<Mutex<TransactionMetadata>>,
+    /// Prepare votes from participants
+    prepare_votes: Arc<Mutex<HashMap<String, PrepareVote>>>,
 
-    /// Client for sending messages
-    client: Arc<MockClient>,
+    /// Transaction-scoped executor with all context
+    executor: Arc<Executor>,
 
-    /// Response collector
-    response_collector: Arc<ResponseCollector>,
-
-    /// Coordinator ID for routing
-    coordinator_id: String,
-
-    /// Runner for ensuring processors are running
-    runner: Arc<Runner>,
-
-    /// Request counter for generating unique request IDs
-    request_counter: Arc<AtomicU64>,
-
-    /// Speculative execution context for pattern learning
-    prediction_context: PredictionContext,
+    /// Speculative execution context for pattern learning (async mutex to avoid deadlocks)
+    prediction_context: Arc<AsyncMutex<PredictionContext>>,
 }
 
 impl Transaction {
     /// Create a new transaction
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        id: String,
-        timestamp: HlcTimestamp,
-        deadline: HlcTimestamp,
-        client: Arc<MockClient>,
-        response_collector: Arc<ResponseCollector>,
-        coordinator_id: String,
-        runner: Arc<Runner>,
-        prediction_context: PredictionContext,
-    ) -> Self {
+    pub fn new(executor: Arc<Executor>, prediction_context: PredictionContext) -> Self {
         Self {
-            id,
-            metadata: Arc::new(Mutex::new(TransactionMetadata::new(timestamp, deadline))),
-            client,
-            response_collector,
-            coordinator_id,
-            runner,
-            request_counter: Arc::new(AtomicU64::new(0)),
-            prediction_context,
+            state: Arc::new(Mutex::new(TransactionState::Active)),
+            prepare_votes: Arc::new(Mutex::new(HashMap::new())),
+            executor,
+            prediction_context: Arc::new(AsyncMutex::new(prediction_context)),
         }
     }
 
     /// Get the transaction ID
     pub fn id(&self) -> &str {
-        &self.id
+        &self.executor.txn_id
     }
 
     /// Get the current transaction state
     pub fn state(&self) -> TransactionState {
-        self.metadata.lock().state.clone()
+        self.state.lock().clone()
     }
 
     /// Get the transaction timestamp
-    pub fn timestamp(&self) -> HlcTimestamp {
-        self.metadata.lock().timestamp
+    pub fn timestamp(&self) -> proven_hlc::HlcTimestamp {
+        self.executor.timestamp
     }
 
     /// Execute an operation on a stream
     ///
     /// This method:
-    /// 1. Sends the operation to the specified stream
-    /// 2. Waits for and returns the response
-    /// 3. Handles protocol-level concerns (deferred, wounded, etc.)
-    ///
-    /// The operation bytes and response bytes are opaque to the coordinator.
-    /// Clients handle serialization/deserialization.
+    /// 1. Checks predictions first for speculated responses
+    /// 2. Falls back to normal execution if no prediction
+    /// 3. Aborts on speculation failure
     pub async fn execute<O: Operation>(&self, stream: String, operation: &O) -> Result<Vec<u8>> {
-        // Batch metadata operations under a single lock
-        let (timeout, deadline_str, _is_first_participant) = {
-            let mut meta = self.metadata.lock();
-
-            // Get current physical time in microseconds
-            let now_micros = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_micros() as u64;
-
-            // Check if we've exceeded the deadline
-            if now_micros >= meta.deadline.physical {
-                return Err(CoordinatorError::DeadlineExceeded);
+        // Check state
+        {
+            let state = self.state.lock();
+            if !matches!(*state, TransactionState::Active) {
+                return Err(CoordinatorError::InvalidState(format!(
+                    "Cannot execute operations in state {:?}",
+                    *state
+                )));
             }
-
-            // Calculate remaining time and convert to Duration
-            let remaining_micros = meta.deadline.physical - now_micros;
-            let timeout = Duration::from_micros(remaining_micros);
-
-            // Check if this is first contact with stream
-            let is_first_participant = meta.participants.is_empty();
-            let deadline_str = if !meta.participants.contains(&stream) {
-                meta.participants.push(stream.clone());
-
-                // For single-stream transactions, skip the extra tracking overhead
-                if !is_first_participant {
-                    // Only do complex tracking for multi-stream transactions
-                    meta.participant_offsets.insert(stream.clone(), 0);
-                    meta.participant_awareness
-                        .insert(stream.clone(), Default::default());
-                }
-
-                // Mark this stream as having received the deadline
-                meta.streams_with_deadline.insert(stream.clone());
-
-                // Return deadline to include in headers
-                Some(meta.deadline.to_string())
-            } else {
-                None
-            };
-
-            (timeout, deadline_str, is_first_participant)
-        };
-
-        // Generate request ID for correlation using atomic counter
-        let request_id = format!(
-            "op-{}-{}-{}",
-            self.id,
-            stream,
-            self.request_counter.fetch_add(1, Ordering::Relaxed)
-        );
-
-        // Build message headers
-        let mut headers = HashMap::new();
-        headers.insert("txn_id".to_string(), self.id.clone());
-        headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
-        headers.insert("request_id".to_string(), request_id.clone());
-
-        // Include deadline if this is first contact with stream
-        if let Some(deadline) = deadline_str {
-            headers.insert("txn_deadline".to_string(), deadline);
         }
 
-        // Ensure processor is running for this stream
-        // Use the transaction timeout as the minimum duration for the processor
-        self.runner
-            .ensure_processor(&stream, timeout)
-            .await
-            .map_err(|e| {
-                CoordinatorError::EngineError(format!("Failed to ensure processor: {}", e))
-            })?;
+        // Determine if this is a write operation
+        let is_write = operation.operation_type() == proven_common::OperationType::Write;
 
-        // Send operation to stream
-        let message_body =
-            serde_json::to_vec(&operation).map_err(CoordinatorError::SerializationError)?;
-        let message = Message::new(message_body, headers);
-        self.client
-            .publish_to_stream(stream, vec![message])
-            .await
-            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+        // Check with predictions first
+        let op_value =
+            serde_json::to_value(operation).map_err(CoordinatorError::SerializationError)?;
 
-        // Wait for response
-        let response = self
-            .response_collector
-            .wait_for_response(request_id, timeout)
-            .await?;
+        // Use async-aware mutex for prediction context
+        let check_result = {
+            let mut pred_context = self.prediction_context.lock().await;
+            pred_context.check(&stream, &op_value, is_write).await
+        };
 
-        // Handle protocol-level response status
-        match response {
-            ResponseMessage::Complete { body, .. } => Ok(body),
-            ResponseMessage::Wounded { wounded_by, .. } => {
-                Err(CoordinatorError::TransactionWounded {
-                    wounded_by: wounded_by.to_string(),
-                })
+        match check_result {
+            CheckResult::Match { response, .. } => {
+                // Use speculated response directly
+                Ok(response)
             }
-            ResponseMessage::Error { kind, .. } => {
-                use crate::responses::ErrorKind;
-                match kind {
-                    ErrorKind::DeadlineExceeded | ErrorKind::PrepareAfterDeadline => {
-                        Err(CoordinatorError::DeadlineExceeded)
-                    }
-                    ErrorKind::InvalidDeadlineFormat | ErrorKind::DeadlineRequired => Err(
-                        CoordinatorError::OperationFailed(format!("Protocol error: {:?}", kind)),
-                    ),
-                    ErrorKind::SerializationFailed(msg)
-                    | ErrorKind::EngineError(msg)
-                    | ErrorKind::Unknown(msg) => Err(CoordinatorError::OperationFailed(msg)),
-                }
+            CheckResult::NoPrediction => {
+                // Execute normally through executor
+                self.executor.execute_operation(&stream, operation).await
             }
-            ResponseMessage::Prepared { .. } => {
-                // Prepared responses shouldn't come here (only in 2PC)
-                Err(CoordinatorError::OperationFailed(
-                    "Unexpected prepared response".to_string(),
-                ))
+            CheckResult::SpeculationFailed {
+                expected,
+                actual,
+                position,
+            } => {
+                // Speculation failed - abort transaction
+                // Client should retry with begin_without_speculation()
+                self.abort().await?;
+                Err(CoordinatorError::SpeculationFailed(format!(
+                    "Operation mismatch at position {}: expected {}, got {}",
+                    position, expected, actual
+                )))
             }
         }
     }
 
     /// Commit this transaction
     pub async fn commit(&self) -> Result<()> {
-        let participants = {
-            let meta = self.metadata.lock();
-            if !matches!(meta.state, TransactionState::Active) {
+        // Check state
+        {
+            let state = self.state.lock();
+            if !matches!(*state, TransactionState::Active) {
                 return Err(CoordinatorError::InvalidState(format!(
                     "Cannot commit transaction in state {:?}",
-                    meta.state
+                    *state
                 )));
             }
-            meta.participants.clone()
-        };
+        }
+
+        // Check if all predictions were used
+        let should_abort = {
+            let pred_context = self.prediction_context.lock().await;
+            pred_context.prediction_count() > 0 && !pred_context.all_predictions_used()
+        }; // Lock is dropped here
+
+        if should_abort {
+            // Transaction didn't follow predicted pattern - abort
+            self.abort().await?;
+            return Err(CoordinatorError::SpeculationFailed(
+                "Transaction did not use all predicted operations".to_string(),
+            ));
+        }
+
+        let participants = self.executor.participants();
 
         match participants.len() {
-            0 => self.commit_empty(),
+            0 => self.commit_empty().await,
             1 => self.commit_single(&participants[0]).await,
             _ => self.commit_multiple(&participants).await,
         }
@@ -289,174 +180,127 @@ impl Transaction {
 
     /// Abort this transaction
     pub async fn abort(&self) -> Result<()> {
-        let participants = {
-            let mut meta = self.metadata.lock();
+        {
+            let mut state = self.state.lock();
             if matches!(
-                meta.state,
+                *state,
                 TransactionState::Committed | TransactionState::Aborted
             ) {
                 return Ok(()); // Already terminated
             }
-            meta.state = TransactionState::Aborting;
-            meta.participants.clone()
-        };
-
-        // Send abort to all participants
-        for stream in participants {
-            let mut headers = HashMap::new();
-            headers.insert("txn_id".to_string(), self.id.clone());
-            headers.insert("txn_phase".to_string(), "abort".to_string());
-
-            let message = Message::new(Vec::new(), headers);
-            self.client
-                .publish_to_stream(stream, vec![message])
-                .await
-                .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+            *state = TransactionState::Aborting;
         }
 
-        self.metadata.lock().state = TransactionState::Aborted;
+        let participants = self.executor.participants();
+
+        // Build all abort messages
+        let mut abort_messages = Vec::new();
+        for participant in participants {
+            let mut headers = HashMap::new();
+            headers.insert("txn_id".to_string(), self.executor.txn_id.clone());
+            headers.insert("txn_phase".to_string(), "abort".to_string());
+
+            abort_messages.push((participant.clone(), headers, Vec::new()));
+        }
+
+        // Send all abort messages in a single batch (fire and forget)
+        if !abort_messages.is_empty() {
+            let _ = self.executor.send_messages_batch(abort_messages).await;
+        }
+
+        *self.state.lock() = TransactionState::Aborted;
         Ok(())
     }
 
     /// Commit empty transaction (no participants)
-    fn commit_empty(&self) -> Result<()> {
-        let mut meta = self.metadata.lock();
-        meta.state = TransactionState::Committed;
+    async fn commit_empty(&self) -> Result<()> {
+        *self.state.lock() = TransactionState::Committed;
+
+        // Report successful commit to prediction context for learning
+        self.prediction_context.lock().await.report_outcome(true);
+
         Ok(())
     }
 
     /// Commit with single participant optimization
     async fn commit_single(&self, participant: &str) -> Result<()> {
         // Update state
+        *self.state.lock() = TransactionState::Preparing;
+
+        // Send prepare_and_commit
+        let request_id = self
+            .executor
+            .generate_phase_request_id("prepare_and_commit");
+        let headers = self
+            .executor
+            .build_phase_headers("prepare_and_commit", &request_id);
+
+        let timeout = self.executor.get_timeout()?.min(Duration::from_secs(2)); // Cap at 2 seconds for prepare
+
+        let response = self
+            .executor
+            .send_and_wait(participant, headers, Vec::new(), timeout)
+            .await?;
+
+        // Parse and record vote
+        let vote = self.parse_prepare_vote(&response);
         {
-            let mut meta = self.metadata.lock();
-            meta.state = TransactionState::Preparing;
+            let mut votes = self.prepare_votes.lock();
+            votes.insert(participant.to_string(), vote.clone());
         }
 
-        // Send prepare_and_commit using atomic counter
-        let request_id = format!(
-            "prepare_commit-{}-{}",
-            self.id,
-            self.request_counter.fetch_add(1, Ordering::Relaxed)
-        );
+        if matches!(vote, PrepareVote::Prepared) {
+            *self.state.lock() = TransactionState::Committed;
 
-        let mut headers = HashMap::new();
-        headers.insert("txn_id".to_string(), self.id.clone());
-        headers.insert("txn_phase".to_string(), "prepare_and_commit".to_string());
-        headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
-        headers.insert("request_id".to_string(), request_id.clone());
+            // Report successful commit to prediction context for learning
+            self.prediction_context.lock().await.report_outcome(true);
 
-        let message = Message::new(Vec::new(), headers);
-        self.client
-            .publish_to_stream(participant.to_string(), vec![message])
-            .await
-            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
-
-        // Wait for response
-        let success = match self
-            .collect_prepare_votes(&[participant.to_string()], &request_id)
-            .await
-        {
-            Ok(prepared) => prepared,
-            Err(e) => {
-                // Always abort on any prepare error (including timeout)
-                // For single participant, the prepare_and_commit already told them to abort
-                let mut meta = self.metadata.lock();
-                meta.state = TransactionState::Aborted;
-                return Err(e);
-            }
-        };
-
-        if !success {
-            let mut meta = self.metadata.lock();
-            meta.state = TransactionState::Aborted;
-            return Ok(()); // Participant handled abort
+            Ok(())
+        } else {
+            *self.state.lock() = TransactionState::Aborted;
+            Err(CoordinatorError::TransactionAborted)
         }
-
-        // Mark as committed
-        {
-            let mut meta = self.metadata.lock();
-            meta.state = TransactionState::Committed;
-        }
-
-        Ok(())
     }
 
     /// Commit with standard 2PC
     async fn commit_multiple(&self, participants: &[String]) -> Result<()> {
         // Phase 1: Prepare
-        {
-            let mut meta = self.metadata.lock();
-            meta.state = TransactionState::Preparing;
-        }
-
-        // Generate request ID for this prepare round using atomic counter
-        let request_id = format!(
-            "prepare-{}-{}",
-            self.id,
-            self.request_counter.fetch_add(1, Ordering::Relaxed)
-        );
+        *self.state.lock() = TransactionState::Preparing;
 
         // Send prepare to all participants
-        for stream in participants {
-            // Calculate any remaining participant awareness updates
-            let new_participant_offsets = self.calculate_new_participants(stream);
+        let request_id = self.executor.generate_phase_request_id("prepare");
 
-            // Update awareness
-            if !new_participant_offsets.is_empty() {
-                let mut meta = self.metadata.lock();
-                if let Some(awareness) = meta.participant_awareness.get_mut(stream) {
-                    for participant in new_participant_offsets.keys() {
-                        awareness.insert(participant.clone());
-                    }
-                }
-            }
+        // Build all prepare messages
+        let mut prepare_messages = Vec::new();
+        for participant in participants {
+            // Calculate new participants this one doesn't know about
+            let new_participants = self.executor.calculate_new_participants(participant);
 
-            let mut headers = HashMap::new();
-            headers.insert("txn_id".to_string(), self.id.clone());
-            headers.insert("txn_phase".to_string(), "prepare".to_string());
-            headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
-            headers.insert("request_id".to_string(), request_id.clone());
+            // Build headers
+            let mut headers = self.executor.build_phase_headers("prepare", &request_id);
 
-            // Include any new participants
-            if !new_participant_offsets.is_empty() {
+            if !new_participants.is_empty() {
+                // Update awareness tracking
+                self.executor
+                    .update_participant_awareness(participant, &new_participants);
+
+                // Add new participants to headers
                 headers.insert(
                     "new_participants".to_string(),
-                    serde_json::to_string(&new_participant_offsets).unwrap(),
+                    serde_json::to_string(&new_participants).unwrap(),
                 );
             }
 
-            let message = Message::new(Vec::new(), headers);
-            self.client
-                .publish_to_stream(stream.clone(), vec![message])
-                .await
-                .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+            prepare_messages.push((participant.clone(), headers, Vec::new()));
         }
 
-        // Wait for prepare votes
-        let all_prepared = match self.collect_prepare_votes(participants, &request_id).await {
-            Ok(prepared) => prepared,
-            Err(e) => {
-                // Check if we're past the deadline
-                let past_deadline = {
-                    let meta = self.metadata.lock();
-                    let now_micros = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_micros() as u64;
-                    now_micros >= meta.deadline.physical
-                };
+        // Send all prepare messages in a single batch
+        self.executor.send_messages_batch(prepare_messages).await?;
 
-                if past_deadline {
-                    // Transaction is already effectively aborted by deadline
-                    // No need to send explicit abort messages
-                } else {
-                    // Still within deadline, explicitly abort
-                    let _ = self.abort().await;
-                }
-                return Err(e);
-            }
-        };
+        // Collect prepare votes from all participants
+        let all_prepared = self
+            .collect_prepare_votes(participants, &request_id)
+            .await?;
 
         if !all_prepared {
             // Abort if any participant couldn't prepare
@@ -465,68 +309,44 @@ impl Transaction {
         }
 
         // Update state to prepared
-        {
-            let mut meta = self.metadata.lock();
-            meta.state = TransactionState::Prepared;
-        }
+        *self.state.lock() = TransactionState::Prepared;
 
         // Phase 2: Commit
-        {
-            let mut meta = self.metadata.lock();
-            meta.state = TransactionState::Committing;
-        }
+        *self.state.lock() = TransactionState::Committing;
 
-        // Send commit to all participants
-        for stream in participants {
+        // Build all commit messages
+        let mut commit_messages = Vec::new();
+        for participant in participants {
             let mut headers = HashMap::new();
-            headers.insert("txn_id".to_string(), self.id.clone());
+            headers.insert("txn_id".to_string(), self.executor.txn_id.clone());
             headers.insert("txn_phase".to_string(), "commit".to_string());
 
-            let message = Message::new(Vec::new(), headers);
-            self.client
-                .publish_to_stream(stream.clone(), vec![message])
-                .await
-                .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+            commit_messages.push((participant.clone(), headers, Vec::new()));
         }
 
+        // Send all commit messages in a single batch (fire and forget)
+        let _ = self.executor.send_messages_batch(commit_messages).await;
+
         // Mark as committed
-        {
-            let mut meta = self.metadata.lock();
-            meta.state = TransactionState::Committed;
-        }
+        *self.state.lock() = TransactionState::Committed;
+
+        // Report successful commit to prediction context for learning
+        self.prediction_context.lock().await.report_outcome(true);
 
         Ok(())
     }
 
-    /// Calculate new participants that a stream doesn't know about
-    fn calculate_new_participants(&self, stream: &str) -> HashMap<String, u64> {
-        let meta = self.metadata.lock();
-
-        // Fast path: single-stream transactions have no other participants
-        if meta.participants.len() <= 1 {
-            return HashMap::new();
-        }
-
-        let mut new_participants = HashMap::new();
-
-        let stream_awareness = meta
-            .participant_awareness
-            .get(stream)
-            .cloned()
-            .unwrap_or_default();
-
-        for participant in &meta.participants {
-            if participant != stream && !stream_awareness.contains(participant) {
-                let offset = meta
-                    .participant_offsets
-                    .get(participant)
-                    .copied()
-                    .unwrap_or(0);
-                new_participants.insert(participant.clone(), offset);
+    /// Parse a response into a prepare vote
+    fn parse_prepare_vote(&self, response: &ResponseMessage) -> PrepareVote {
+        match response {
+            ResponseMessage::Complete { .. } | ResponseMessage::Prepared { .. } => {
+                PrepareVote::Prepared
             }
+            ResponseMessage::Wounded { wounded_by, .. } => PrepareVote::Wounded {
+                wounded_by: wounded_by.to_string(),
+            },
+            ResponseMessage::Error { kind, .. } => PrepareVote::Error(format!("{:?}", kind)),
         }
-
-        new_participants
     }
 
     /// Collect prepare votes from participants
@@ -537,26 +357,13 @@ impl Transaction {
     ) -> Result<bool> {
         let mut pending_participants: HashSet<String> = participants.iter().cloned().collect();
 
-        // Use remaining time until transaction deadline for prepare timeout
-        let timeout_duration = {
-            let meta = self.metadata.lock();
-            let now_micros = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_micros() as u64;
-
-            if now_micros >= meta.deadline.physical {
-                // Already past deadline
-                return Err(CoordinatorError::DeadlineExceeded);
-            }
-
-            let remaining_micros = meta.deadline.physical - now_micros;
-            // Cap at 2 seconds to avoid waiting too long for unresponsive participants
-            // This helps prevent slowdowns when a processor is unresponsive
-            Duration::from_micros(remaining_micros).min(Duration::from_secs(2))
-        };
+        // Calculate timeout for collecting votes
+        let timeout_duration = self.executor.get_timeout()?;
 
         let deadline = tokio::time::Instant::now() + timeout_duration;
+
+        // Get response collector
+        let response_collector = self.executor.response_collector();
 
         while !pending_participants.is_empty() {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -565,45 +372,35 @@ impl Transaction {
             }
 
             // Try to get a response
-            match self
-                .response_collector
+            match response_collector
                 .wait_for_response(request_id.to_string(), remaining)
                 .await
             {
                 Ok(response) => {
                     // Get participant from response
-                    if let Some(participant_str) = response.participant()
-                        && pending_participants.contains(participant_str)
-                    {
+                    if let Some(participant_str) = response.participant() {
                         let participant = participant_str.to_string();
-                        let vote = match response {
-                            ResponseMessage::Complete { .. } | ResponseMessage::Prepared { .. } => {
-                                PrepareVote::Prepared
+
+                        if pending_participants.contains(&participant) {
+                            let vote = self.parse_prepare_vote(&response);
+
+                            // Record vote
+                            {
+                                let mut votes = self.prepare_votes.lock();
+                                votes.insert(participant.clone(), vote.clone());
                             }
-                            ResponseMessage::Wounded { wounded_by, .. } => PrepareVote::Wounded {
-                                wounded_by: wounded_by.to_string(),
-                            },
-                            ResponseMessage::Error { kind, .. } => {
-                                // Convert error kind to string for PrepareVote
-                                PrepareVote::Error(format!("{:?}", kind))
+
+                            pending_participants.remove(&participant);
+
+                            // Check if this is a negative vote
+                            if !matches!(vote, PrepareVote::Prepared) {
+                                return Ok(false); // Abort if any participant can't prepare
                             }
-                        };
-
-                        // Record vote
-                        {
-                            let mut meta = self.metadata.lock();
-                            meta.prepare_votes.insert(participant.clone(), vote.clone());
-                        }
-
-                        pending_participants.remove(&participant);
-
-                        // Check if this is a negative vote
-                        if !matches!(vote, PrepareVote::Prepared) {
-                            return Ok(false); // Abort if any participant can't prepare
                         }
                     }
                 }
                 Err(CoordinatorError::ResponseTimeout) => {
+                    // Timeout waiting for a participant
                     return Err(CoordinatorError::PrepareTimeout);
                 }
                 Err(e) => return Err(e),

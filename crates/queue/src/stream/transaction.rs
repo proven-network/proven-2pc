@@ -99,7 +99,7 @@ impl QueueTransactionManager {
 
         // Determine required lock mode
         let (queue_name, lock_mode) = match operation {
-            QueueOperation::Enqueue { queue_name, .. } => (queue_name.clone(), LockMode::Exclusive),
+            QueueOperation::Enqueue { queue_name, .. } => (queue_name.clone(), LockMode::Append),
             QueueOperation::Dequeue { queue_name } => (queue_name.clone(), LockMode::Exclusive),
             QueueOperation::Clear { queue_name } => (queue_name.clone(), LockMode::Exclusive),
             QueueOperation::Peek { queue_name } => (queue_name.clone(), LockMode::Shared),

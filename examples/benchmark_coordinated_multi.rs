@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("=== Simple Speculation Benchmark ===\n");
 
     // Initialize the mock engine
@@ -68,26 +68,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Give processors time to initialize
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Create coordinators
-    const NUM_COORDINATORS: usize = 4;
-    let mut coordinators = Vec::new();
-    for i in 0..NUM_COORDINATORS {
-        let coordinator_client = Arc::new(MockClient::new(
-            format!("coordinator-{}", i + 1),
-            engine.clone(),
-        ));
-        let coordinator = Arc::new(Coordinator::new(
-            format!("coordinator-{}", i + 1),
-            coordinator_client,
-            runner.clone(),
-        ));
-        coordinators.push(coordinator);
-    }
-    println!("✓ Created {} coordinators", NUM_COORDINATORS);
+    // Create a single coordinator since we're parallelizing transactions
+    let coordinator_client = Arc::new(MockClient::new("coordinator".to_string(), engine.clone()));
+    let coordinator = Arc::new(Coordinator::new(
+        "coordinator".to_string(),
+        coordinator_client,
+        runner.clone(),
+    ));
+    println!("✓ Created coordinator");
 
     // Setup phase
     println!("\n=== Setup Phase ===");
-    let setup_txn = coordinators[0]
+    let setup_txn = coordinator
         .begin(Duration::from_secs(10), vec![], "setup".to_string())
         .await?;
 
@@ -129,17 +121,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Benchmark Configuration ===");
     const WARMUP_TRANSACTIONS: usize = 100;
     const NUM_TRANSACTIONS: usize = 10_000;
+    const MAX_CONCURRENT: Option<usize> = Some(1000); // Limit concurrent transactions to reduce contention
 
     println!("Warmup transactions:    {}", WARMUP_TRANSACTIONS);
     println!("Benchmark transactions: {}", NUM_TRANSACTIONS);
     println!("Operations per txn:     4 (KV, Queue, Resource, SQL)");
-    println!("Coordinators:           {}", NUM_COORDINATORS);
+    println!(
+        "Parallelism:            1 coordinator, {} max concurrent tasks",
+        MAX_CONCURRENT.unwrap_or(NUM_TRANSACTIONS)
+    );
 
     // Warmup phase - establish patterns
     println!("\n=== Warmup Phase (Pattern Learning) ===");
     for i in 0..WARMUP_TRANSACTIONS {
-        let coordinator = &coordinators[i % NUM_COORDINATORS];
-
         // Create transaction arguments that directly map to operations
         let args = vec![json!({
             "key": format!("item_{}", i),
@@ -158,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
 
-        execute_simple_transaction(i, &args[0], txn).await?;
+        let _ = execute_simple_transaction(i, &args[0], txn).await;
 
         if (i + 1) % 25 == 0 {
             println!("  Completed {} warmup transactions", i + 1);
@@ -166,71 +160,131 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("✓ Warmup complete");
 
-    // Let the learning worker process patterns
-    tokio::time::sleep(Duration::from_secs(6)).await;
-
     // Main benchmark phase
     println!("\n=== Benchmark Phase (With Speculation) ===");
 
     let successful_txns = Arc::new(AtomicUsize::new(0));
     let failed_txns = Arc::new(AtomicUsize::new(0));
+    let total_retries = Arc::new(AtomicUsize::new(0));
+    let total_latency_us = Arc::new(AtomicUsize::new(0));
     let start_time = Instant::now();
 
     let mut tasks = JoinSet::new();
-    let txns_per_coordinator = NUM_TRANSACTIONS / NUM_COORDINATORS;
 
-    for (coordinator_idx, coordinator) in coordinators.into_iter().enumerate() {
-        let successful = successful_txns.clone();
-        let failed = failed_txns.clone();
-
-        tasks.spawn(async move {
-            let start_idx = coordinator_idx * txns_per_coordinator;
-            let end_idx = if coordinator_idx == NUM_COORDINATORS - 1 {
-                NUM_TRANSACTIONS
-            } else {
-                start_idx + txns_per_coordinator
-            };
-
-            for i in start_idx..end_idx {
-                // Same pattern of arguments as warmup
-                let args = vec![json!({
-                    "key": format!("item_{}", i + WARMUP_TRANSACTIONS),
-                    "value": format!("value_{}", i + WARMUP_TRANSACTIONS),
-                    "message": format!("msg_{}", i + WARMUP_TRANSACTIONS),
-                    "from_account": format!("account_{}", i % NUM_ACCOUNTS),
-                    "to_account": format!("account_{}", (i + 1) % NUM_ACCOUNTS),
-                    "amount": 10
-                })];
-
-                // Begin with speculation enabled
-                let txn = match coordinator
-                    .begin(
-                        Duration::from_secs(5),
-                        args.clone(),
-                        "simple_transaction".to_string(),
-                    )
-                    .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("Failed to begin transaction: {:?}", e);
-                        failed.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                };
-
-                match execute_simple_transaction(i + WARMUP_TRANSACTIONS, &args[0], txn).await {
-                    Ok(_) => {
-                        successful.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        eprintln!("Transaction {} failed: {:?}", i, e);
-                        failed.fetch_add(1, Ordering::Relaxed);
+    // Spawn tasks with optional concurrency limit
+    for i in 0..NUM_TRANSACTIONS {
+        // Wait if we've reached the concurrency limit
+        if let Some(max) = MAX_CONCURRENT {
+            while tasks.len() >= max {
+                // Wait for at least one task to complete
+                if let Some(result) = tasks.join_next().await {
+                    match result {
+                        Ok(_) => {}
+                        Err(e) => eprintln!("Task failed: {}", e),
                     }
                 }
             }
+        }
 
-            coordinator_idx
+        let coordinator = coordinator.clone();
+        let successful = successful_txns.clone();
+        let failed = failed_txns.clone();
+        let retries = total_retries.clone();
+        let latency_tracker = total_latency_us.clone();
+
+        tasks.spawn(async move {
+            let task_start = Instant::now();
+            // Same pattern of arguments as warmup
+            let args = vec![json!({
+                "key": format!("item_{}", i + WARMUP_TRANSACTIONS),
+                "value": format!("value_{}", i + WARMUP_TRANSACTIONS),
+                "message": format!("msg_{}", i + WARMUP_TRANSACTIONS),
+                "from_account": format!("account_{}", i % NUM_ACCOUNTS),
+                "to_account": format!("account_{}", (i + 1) % NUM_ACCOUNTS),
+                "amount": 10
+            })];
+
+            // Retry loop with exponential backoff
+            let mut retry_count = 0;
+            let mut disable_speculation = false;
+            const MAX_RETRIES: u32 = 10;
+
+            loop {
+                // Begin with speculation enabled unless we had a speculation failure
+                let txn = match if disable_speculation {
+                    coordinator
+                        .begin_without_speculation(
+                            Duration::from_secs(5),
+                            args.clone(),
+                            "simple_transaction".to_string(),
+                        )
+                        .await
+                } else {
+                    coordinator
+                        .begin(
+                            Duration::from_secs(5),
+                            args.clone(),
+                            "simple_transaction".to_string(),
+                        )
+                        .await
+                } {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("Failed to begin transaction {}: {:?}", i, e);
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+                // Execute the transaction and convert error immediately
+                let result =
+                    execute_simple_transaction(i + WARMUP_TRANSACTIONS, &args[0], txn).await;
+
+                match result {
+                    Ok(_) => {
+                        successful.fetch_add(1, Ordering::Relaxed);
+                        let task_duration = task_start.elapsed();
+                        latency_tracker
+                            .fetch_add(task_duration.as_micros() as usize, Ordering::Relaxed);
+                        return;
+                    }
+                    Err(e) => {
+                        // Convert to string immediately to avoid Send issues
+                        let error_str = e.to_string();
+
+                        // Check if it's a wound/abort that we should retry
+                        let should_retry = error_str.contains("Transaction was aborted")
+                            || error_str.contains("Transaction was wounded")
+                            || error_str.contains("Speculation failed")
+                            || error_str.contains("Response timeout");
+
+                        if should_retry && retry_count < MAX_RETRIES {
+                            retry_count += 1;
+                            retries.fetch_add(1, Ordering::Relaxed);
+
+                            // Only disable speculation if it was a speculation failure
+                            if error_str.contains("Speculation failed") {
+                                disable_speculation = true;
+                            }
+
+                            // Exponential backoff: 1ms, 2ms, 4ms, 8ms, 16ms
+                            let backoff_ms = 1u64 << retry_count;
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+
+                        // Max retries exceeded or non-retryable error
+                        if retry_count > 0 {
+                            eprintln!(
+                                "Transaction {} failed after {} retries: {}",
+                                i, retry_count, error_str
+                            );
+                        }
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
         });
     }
 
@@ -279,11 +333,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total_seconds = total_duration.as_secs_f64();
     let final_successful = successful_txns.load(Ordering::Relaxed);
     let final_failed = failed_txns.load(Ordering::Relaxed);
+    let final_retries = total_retries.load(Ordering::Relaxed);
+    let total_latency_micros = total_latency_us.load(Ordering::Relaxed);
+
+    // Calculate actual average latency
+    let avg_latency_ms = if final_successful > 0 {
+        (total_latency_micros as f64 / final_successful as f64) / 1000.0
+    } else {
+        0.0
+    };
 
     println!("\n=== Benchmark Results ===");
     println!("Total transactions:      {}", NUM_TRANSACTIONS);
     println!("Successful transactions: {}", final_successful);
     println!("Failed transactions:     {}", final_failed);
+    println!("Total retries:           {}", final_retries);
     println!(
         "Success rate:            {:.1}%",
         (final_successful as f64 / NUM_TRANSACTIONS as f64) * 100.0
@@ -298,25 +362,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (final_successful * 4) as f64 / total_seconds
     );
     println!(
-        "Avg latency:             {:.3} ms/transaction",
+        "Avg latency:             {:.3} ms/transaction (actual)",
+        avg_latency_ms
+    );
+    println!(
+        "Amortized time:          {:.3} ms/transaction",
         (total_seconds * 1000.0) / final_successful as f64
     );
+    if final_retries > 0 {
+        println!(
+            "Avg retries per txn:     {:.2}",
+            final_retries as f64 / NUM_TRANSACTIONS as f64
+        );
+    }
 
     // Wait a bit for any pending operations to complete
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Verification phase
+    // Verification phase - use the same coordinator
     println!("\n=== Verification Phase ===");
-    let verify_coordinator_client = Arc::new(MockClient::new(
-        "verify-coordinator".to_string(),
-        engine.clone(),
-    ));
-    let verify_coordinator = Arc::new(Coordinator::new(
-        "verify-coordinator".to_string(),
-        verify_coordinator_client,
-        runner.clone(),
-    ));
-    let verify_txn = verify_coordinator
+    let verify_txn = coordinator
         .begin(Duration::from_secs(10), vec![], "verification".to_string())
         .await?;
     let kv_verify = KvClient::new(verify_txn.clone());
@@ -367,7 +432,7 @@ async fn execute_simple_transaction(
     _index: usize,
     args: &serde_json::Value,
     txn: Transaction,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let kv = KvClient::new(txn.clone());
     let queue = QueueClient::new(txn.clone());
     let resource = ResourceClient::new(txn.clone());
