@@ -7,6 +7,7 @@ use crate::{
     Message, MockEngineError, Result,
     stream::{DeadlineStreamItem, StreamManager},
 };
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
@@ -48,8 +49,9 @@ pub struct MockEngine {
     /// Stream manager for ordered message streams
     streams: Arc<StreamManager>,
 
-    /// Pub/sub subscriptions
-    subscriptions: Arc<Mutex<HashMap<String, Vec<mpsc::UnboundedSender<Message>>>>>,
+    /// Pub/sub subscriptions - using flume for lock-free publishing
+    /// Each pattern has a list of senders (one per subscriber)
+    subscriptions: Arc<DashMap<String, Vec<flume::Sender<Message>>>>,
 
     /// Request/reply handlers
     request_handlers: Arc<Mutex<HashMap<String, RequestHandler>>>,
@@ -74,7 +76,7 @@ impl MockEngine {
 
         Self {
             streams: Arc::new(StreamManager::new()),
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            subscriptions: Arc::new(DashMap::new()),
             request_handlers: Arc::new(Mutex::new(HashMap::new())),
             stream_info: Arc::new(Mutex::new(HashMap::new())),
             group_membership: Arc::new(Mutex::new(group_membership)),
@@ -121,15 +123,17 @@ impl MockEngine {
 
     /// Publish messages to a subject (pub/sub)
     pub fn publish(&self, subject: &str, messages: Vec<Message>) -> Result<()> {
-        let subs = self.subscriptions.lock();
-
         // Find all matching subscriptions
         let mut sent = false;
-        for (pattern, subscribers) in subs.iter() {
+        for entry in self.subscriptions.iter() {
+            let pattern = entry.key();
+            let senders = entry.value();
+
             if subject_matches(subject, pattern) {
-                for sub in subscribers {
+                for sender in senders {
                     for msg in &messages {
-                        let _ = sub.send(msg.clone());
+                        // flume send is non-blocking and lock-free
+                        let _ = sender.send(msg.clone());
                         sent = true;
                     }
                 }
@@ -156,11 +160,13 @@ impl MockEngine {
     }
 
     /// Subscribe to a subject pattern
-    pub fn subscribe(&self, subject_pattern: &str) -> mpsc::UnboundedReceiver<Message> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub fn subscribe(&self, subject_pattern: &str) -> flume::Receiver<Message> {
+        // Create a new channel for this subscriber
+        let (tx, rx) = flume::unbounded();
 
-        let mut subs = self.subscriptions.lock();
-        subs.entry(subject_pattern.to_string())
+        // Add the sender to our subscription list
+        self.subscriptions
+            .entry(subject_pattern.to_string())
             .or_default()
             .push(tx);
 
@@ -230,10 +236,14 @@ impl MockEngine {
 
     /// Clean up closed subscriptions
     pub fn cleanup(&self) {
-        let mut subs = self.subscriptions.lock();
-        for subscribers in subs.values_mut() {
-            subscribers.retain(|s| !s.is_closed());
+        // Remove senders that no longer have receivers
+        for mut entry in self.subscriptions.iter_mut() {
+            entry
+                .value_mut()
+                .retain(|sender| sender.receiver_count() > 0);
         }
+        // Remove patterns with no senders
+        self.subscriptions.retain(|_, senders| !senders.is_empty());
 
         let mut handlers = self.request_handlers.lock();
         handlers.retain(|_, h| !h.is_closed());

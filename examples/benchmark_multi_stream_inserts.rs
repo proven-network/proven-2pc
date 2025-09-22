@@ -76,14 +76,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Give processors time to initialize
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
-    // Create a single coordinator
-    let coordinator_client = Arc::new(MockClient::new("coordinator".to_string(), engine.clone()));
-    let coordinator = Arc::new(Coordinator::new(
-        "coordinator".to_string(),
-        coordinator_client,
-        runner.clone(),
-    ));
-    println!("✓ Created coordinator");
+    // Create one coordinator per stream for better parallelism
+    let coordinators: Vec<Arc<Coordinator>> = stream_names
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let coord_name = format!("coordinator_{}", i);
+            let coordinator_client = Arc::new(MockClient::new(coord_name.clone(), engine.clone()));
+            Arc::new(Coordinator::new(
+                coord_name.clone(),
+                coordinator_client,
+                runner.clone(),
+            ))
+        })
+        .collect();
+    println!(
+        "✓ Created {} coordinators (one per stream)",
+        coordinators.len()
+    );
 
     // Setup phase - create tables in each stream
     println!("\n=== Setup Phase ===");
@@ -91,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     for (i, stream_name) in stream_names.iter().enumerate() {
         let stream_name = stream_name.clone();
-        let coordinator = coordinator.clone();
+        let coordinator = coordinators[i].clone();
 
         setup_tasks.spawn(async move {
             let setup_txn = coordinator
@@ -137,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for i in 0..WARMUP_TRANSACTIONS {
         let stream_idx = i % num_streams;
         let stream_name = stream_names[stream_idx].clone();
-        let coordinator = coordinator.clone();
+        let coordinator = coordinators[stream_idx].clone();
         let successful = warmup_successful.clone();
         let failed = warmup_failed.clone();
 
@@ -229,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Round-robin distribution across streams
         let stream_idx = i % num_streams;
         let stream_name = stream_names[stream_idx].clone();
-        let coordinator = coordinator.clone();
+        let coordinator = coordinators[stream_idx].clone();
 
         // Wait if we've reached the concurrency limit
         if let Some(max) = MAX_CONCURRENT {
@@ -449,7 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Verification phase - check each stream
     println!("\n=== Verification Phase ===");
     for (i, stream_name) in stream_names.iter().enumerate() {
-        let verify_txn = coordinator
+        let verify_txn = coordinators[i]
             .begin_with_stream(
                 Duration::from_secs(10),
                 vec![],

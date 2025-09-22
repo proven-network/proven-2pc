@@ -224,13 +224,13 @@ use futures;
 
 /// Stream of messages from pub/sub subscriptions (without timestamps/sequence)
 pub struct PubSubMessageStream {
-    receiver: mpsc::UnboundedReceiver<Message>,
+    receiver: flume::Receiver<Message>,
 }
 
 impl PubSubMessageStream {
     /// Receive the next message
     pub async fn recv(&mut self) -> Option<Message> {
-        self.receiver.recv().await
+        self.receiver.recv_async().await.ok()
     }
 
     /// Try to receive without blocking
@@ -244,9 +244,15 @@ impl futures::Stream for PubSubMessageStream {
     type Item = Message;
 
     fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
+        self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.receiver.poll_recv(cx)
+        // Use flume's async recv with futures
+        use futures::FutureExt;
+        self.receiver
+            .recv_async()
+            .boxed()
+            .poll_unpin(cx)
+            .map(|res| res.ok())
     }
 }

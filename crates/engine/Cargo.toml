@@ -4,17 +4,18 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-async-stream = { workspace = true }
-dashmap = "6.1.0"
-futures = { workspace = true }
-parking_lot = { workspace = true }
-proven-hlc = { workspace = true }
-serde = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
-tokio-stream = { workspace = true }
-uuid = { workspace = true }
+async-stream.workspace = true
+dashmap.workspace = true
+flume.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+proven-hlc.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-proven-kv = { path = "../kv" }
-proven-sql = { path = "../sql" }
+proven-kv.workspace = true
+proven-sql.workspace = true
