@@ -715,18 +715,8 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
     ) -> Result<()> {
-        println!(
-            "[{}] ABORT: Received abort for txn {}",
-            self.stream_name, txn_id
-        );
-
         match self.engine.abort(txn_id) {
             Ok(()) => {
-                println!(
-                    "[{}] ABORT: Successfully aborted txn {}",
-                    self.stream_name, txn_id
-                );
-
                 // Clean up wounded tracking
                 self.wounded_transactions.remove(&txn_id);
                 self.deferred_manager
@@ -741,45 +731,6 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                 );
                 Err(ProcessorError::EngineError(e))
             }
-        }
-    }
-
-    /// Cleanup expired transactions that haven't been properly terminated
-    async fn cleanup_expired_transactions(&mut self, current_time: HlcTimestamp) {
-        // Find all transactions past deadline
-        let mut expired_transactions = Vec::new();
-
-        for (txn_id, deadline) in &self.transaction_deadlines {
-            if current_time > *deadline {
-                expired_transactions.push(*txn_id);
-            }
-        }
-
-        // Abort expired transactions
-        for txn_id in expired_transactions {
-            println!(
-                "[{}] CLEANUP: Aborting expired transaction {}",
-                self.stream_name, txn_id
-            );
-
-            // Abort in the engine to release any resources/locks
-            if let Err(e) = self.engine.abort(txn_id) {
-                println!(
-                    "[{}] ERROR: Failed to abort expired transaction {}: {}",
-                    self.stream_name, txn_id, e
-                );
-            }
-
-            // Clean up our tracking
-            self.transaction_deadlines.remove(&txn_id);
-            self.transaction_coordinators.remove(&txn_id);
-            self.transaction_participants.remove(&txn_id);
-            self.wounded_transactions.remove(&txn_id);
-            self.deferred_manager
-                .remove_operations_for_transaction(&txn_id);
-
-            // Retry deferred operations
-            self.retry_deferred_operations(txn_id).await;
         }
     }
 
@@ -1239,29 +1190,12 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         mut shutdown_rx: oneshot::Receiver<()>,
         mut live_stream: MessageStream,
     ) -> Result<()> {
-        // Track when we last ran cleanup
-        let mut last_cleanup = std::time::Instant::now();
-
         // Process live messages continuously
         loop {
             // Check for shutdown signal
             if shutdown_rx.try_recv().is_ok() {
                 tracing::info!("Stream processor for {} shutting down", self.stream_name);
                 break;
-            }
-
-            // Periodically check for expired transactions (every 1 second)
-            if last_cleanup.elapsed() > Duration::from_secs(1) {
-                let current_time = proven_hlc::HlcTimestamp::new(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64,
-                    0,
-                    proven_hlc::NodeId::new(0),
-                );
-                self.cleanup_expired_transactions(current_time).await;
-                last_cleanup = std::time::Instant::now();
             }
 
             // Check for messages with a timeout to allow periodic snapshot checks and shutdown checks
