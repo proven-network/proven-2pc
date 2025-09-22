@@ -120,8 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Benchmark configuration
     println!("\n=== Benchmark Configuration ===");
     const WARMUP_TRANSACTIONS: usize = 100;
-    const NUM_TRANSACTIONS: usize = 10_000;
-    const MAX_CONCURRENT: Option<usize> = Some(1000); // Limit concurrent transactions to reduce contention
+    const NUM_TRANSACTIONS: usize = 100_000;
+    const MAX_CONCURRENT: Option<usize> = Some(1_000);
 
     println!("Warmup transactions:    {}", WARMUP_TRANSACTIONS);
     println!("Benchmark transactions: {}", NUM_TRANSACTIONS);

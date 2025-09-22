@@ -5,6 +5,7 @@
 
 pub mod engine;
 pub mod operation;
+pub mod predicate_index;
 pub mod response;
 pub mod stats_cache;
 pub mod transaction;

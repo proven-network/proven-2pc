@@ -14,6 +14,7 @@ use crate::semantic::CachingSemanticAnalyzer;
 use crate::storage::mvcc::MvccStorage;
 use crate::stream::{
     operation::SqlOperation,
+    predicate_index::PredicateIndex,
     response::{SqlResponse, convert_execution_result},
     transaction::TransactionContext,
 };
@@ -27,6 +28,9 @@ pub struct SqlTransactionEngine {
 
     /// Active transactions with their predicates
     active_transactions: HashMap<HlcTimestamp, TransactionContext>,
+
+    /// Fast predicate index for conflict detection
+    predicate_index: PredicateIndex,
 
     /// Current migration version
     migration_version: u32,
@@ -55,6 +59,7 @@ impl SqlTransactionEngine {
         Self {
             storage,
             active_transactions: HashMap::new(),
+            predicate_index: PredicateIndex::new(),
             migration_version: 0,
             parser,
             analyzer,
@@ -126,31 +131,35 @@ impl SqlTransactionEngine {
             analyzed.extract_predicates(&[])
         };
 
-        // Step 4: Check for conflicts with active transactions
+        // Step 4: Check for conflicts using the predicate index
         let mut blockers = Vec::new();
 
-        for (other_tx_id, other_tx) in &self.active_transactions {
-            if other_tx_id == &txn_id {
-                continue; // Skip self
-            }
+        // Use index to find potential conflicts - O(1) or O(log n) instead of O(n)
+        let potential_conflicts = self
+            .predicate_index
+            .find_potential_conflicts(txn_id, &query_predicates);
 
-            // Check if our predicates conflict with theirs
-            if let Some(conflict) = query_predicates.conflicts_with(&other_tx.predicates) {
-                // Determine when we can retry based on the conflict type
-                use crate::semantic::predicate::ConflictInfo;
-                let retry_on = match conflict {
-                    // If they're reading and we want to write, we can retry after they prepare
-                    ConflictInfo::WriteRead => RetryOn::Prepare,
-                    // For all other conflicts, we must wait until commit/abort
-                    ConflictInfo::ReadWrite
-                    | ConflictInfo::WriteWrite
-                    | ConflictInfo::InsertInsert => RetryOn::CommitOrAbort,
-                };
+        // Only check the candidates identified by the index
+        for candidate_tx_id in potential_conflicts {
+            if let Some(other_tx) = self.active_transactions.get(&candidate_tx_id) {
+                // Check if our predicates actually conflict with theirs
+                if let Some(conflict) = query_predicates.conflicts_with(&other_tx.predicates) {
+                    // Determine when we can retry based on the conflict type
+                    use crate::semantic::predicate::ConflictInfo;
+                    let retry_on = match conflict {
+                        // If they're reading and we want to write, we can retry after they prepare
+                        ConflictInfo::WriteRead => RetryOn::Prepare,
+                        // For all other conflicts, we must wait until commit/abort
+                        ConflictInfo::ReadWrite
+                        | ConflictInfo::WriteWrite
+                        | ConflictInfo::InsertInsert => RetryOn::CommitOrAbort,
+                    };
 
-                blockers.push(BlockingInfo {
-                    txn: *other_tx_id,
-                    retry_on,
-                });
+                    blockers.push(BlockingInfo {
+                        txn: candidate_tx_id,
+                        retry_on,
+                    });
+                }
             }
         }
 
@@ -161,9 +170,13 @@ impl SqlTransactionEngine {
             return OperationResult::WouldBlock { blockers };
         }
 
-        // Step 5: Add predicates to transaction context
+        // Step 5: Add predicates to transaction context and update index
         let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
-        tx_ctx.add_predicates(query_predicates);
+        tx_ctx.add_predicates(query_predicates.clone());
+
+        // Update the predicate index with the new predicates
+        self.predicate_index
+            .update_transaction(txn_id, &query_predicates);
 
         // Step 6: NOW plan the statement (only after conflict checking passes)
         let plan = match self.planner.plan(analyzed.clone()) {
@@ -263,6 +276,9 @@ impl TransactionEngine for SqlTransactionEngine {
             .remove(&txn_id)
             .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
 
+        // Remove from predicate index
+        self.predicate_index.remove_transaction(&txn_id);
+
         // Commit in storage
         self.storage
             .commit_transaction(txn_id)
@@ -272,20 +288,11 @@ impl TransactionEngine for SqlTransactionEngine {
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
-        // Debug: check if transaction exists
-        let was_active = self.active_transactions.contains_key(&txn_id);
-
         // Remove transaction
         self.active_transactions.remove(&txn_id);
 
-        if was_active {
-            println!(
-                "[sql] ABORT: Removed txn {} from active_transactions",
-                txn_id
-            );
-        } else {
-            println!("[sql] ABORT: Txn {} was not in active_transactions", txn_id);
-        }
+        // Remove from predicate index
+        self.predicate_index.remove_transaction(&txn_id);
 
         // Abort in storage
         self.storage
@@ -346,6 +353,7 @@ impl TransactionEngine for SqlTransactionEngine {
         // Clear existing state
         self.storage = MvccStorage::new();
         self.active_transactions.clear();
+        self.predicate_index = PredicateIndex::new();
         self.migration_version = 0; // Reset migration version
 
         // Restore storage from compacted data
