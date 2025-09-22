@@ -133,32 +133,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Warmup phase - establish patterns
     println!("\n=== Warmup Phase (Pattern Learning) ===");
+
+    let warmup_successful = Arc::new(AtomicUsize::new(0));
+    let warmup_failed = Arc::new(AtomicUsize::new(0));
+    let warmup_start = Instant::now();
+
+    let mut warmup_tasks = JoinSet::new();
+
+    // Spawn all warmup tasks
     for i in 0..WARMUP_TRANSACTIONS {
-        // Create transaction arguments that directly map to operations
-        let args = vec![json!({
-            "key": format!("item_{}", i),
-            "value": format!("value_{}", i),
-            "message": format!("msg_{}", i),
-            "from_account": format!("account_{}", i % NUM_ACCOUNTS),
-            "to_account": format!("account_{}", (i + 1) % NUM_ACCOUNTS),
-            "amount": 10
-        })];
+        let coordinator = coordinator.clone();
+        let successful = warmup_successful.clone();
+        let failed = warmup_failed.clone();
 
-        let txn = coordinator
-            .begin_without_speculation(
-                Duration::from_secs(5),
-                args.clone(),
-                "simple_transaction".to_string(),
-            )
-            .await?;
+        warmup_tasks.spawn(async move {
+            // Create transaction arguments that directly map to operations
+            let args = vec![json!({
+                "key": format!("item_{}", i),
+                "value": format!("value_{}", i),
+                "message": format!("msg_{}", i),
+                "from_account": format!("account_{}", i % NUM_ACCOUNTS),
+                "to_account": format!("account_{}", (i + 1) % NUM_ACCOUNTS),
+                "amount": 10
+            })];
 
-        let _ = execute_simple_transaction(i, &args[0], txn).await;
+            let txn = match coordinator
+                .begin_without_speculation(
+                    Duration::from_secs(5),
+                    args.clone(),
+                    "simple_transaction".to_string(),
+                )
+                .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Failed to begin warmup transaction {}: {:?}", i, e);
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
 
-        if (i + 1) % 25 == 0 {
-            println!("  Completed {} warmup transactions", i + 1);
+            if let Err(e) = execute_simple_transaction(i, &args[0], txn.clone()).await {
+                eprintln!("Failed to execute warmup transaction {}: {:?}", i, e);
+                let _ = txn.abort().await;
+                failed.fetch_add(1, Ordering::Relaxed);
+            } else {
+                successful.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    }
+
+    // Monitor warmup progress
+    let warmup_monitor_successful = warmup_successful.clone();
+    let warmup_monitor_failed = warmup_failed.clone();
+    let warmup_monitor_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let success = warmup_monitor_successful.load(Ordering::Relaxed);
+            let fail = warmup_monitor_failed.load(Ordering::Relaxed);
+            let total = success + fail;
+
+            if total >= WARMUP_TRANSACTIONS {
+                break;
+            }
+
+            if total > 0 && total.is_multiple_of(25) {
+                println!("  Completed {} warmup transactions", total);
+            }
+        }
+    });
+
+    // Wait for all warmup tasks to complete
+    while let Some(result) = warmup_tasks.join_next().await {
+        match result {
+            Ok(_) => {}
+            Err(e) => eprintln!("Warmup task failed: {}", e),
         }
     }
-    println!("✓ Warmup complete");
+
+    warmup_monitor_handle.abort();
+
+    let warmup_duration = warmup_start.elapsed();
+    let final_warmup_successful = warmup_successful.load(Ordering::Relaxed);
+    let final_warmup_failed = warmup_failed.load(Ordering::Relaxed);
+
+    println!(
+        "✓ Warmup complete: {} successful, {} failed in {:.2}s",
+        final_warmup_successful,
+        final_warmup_failed,
+        warmup_duration.as_secs_f64()
+    );
 
     // Main benchmark phase
     println!("\n=== Benchmark Phase (With Speculation) ===");
@@ -238,7 +303,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 // Execute the transaction and convert error immediately
                 let result =
-                    execute_simple_transaction(i + WARMUP_TRANSACTIONS, &args[0], txn).await;
+                    execute_simple_transaction(i + WARMUP_TRANSACTIONS, &args[0], txn.clone())
+                        .await;
 
                 match result {
                     Ok(_) => {
@@ -273,13 +339,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             continue;
                         }
 
+                        let _ = txn.abort().await;
+
                         // Max retries exceeded or non-retryable error
-                        if retry_count > 0 {
-                            eprintln!(
-                                "Transaction {} failed after {} retries: {}",
-                                i, retry_count, error_str
-                            );
-                        }
+                        eprintln!(
+                            "Transaction {} failed after {} retries: {}",
+                            i, retry_count, error_str
+                        );
                         failed.fetch_add(1, Ordering::Relaxed);
                         return;
                     }

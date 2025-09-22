@@ -93,28 +93,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Warmup phase - establish patterns
     println!("\n=== Warmup Phase (Pattern Learning) ===");
+
+    let warmup_successful = Arc::new(AtomicUsize::new(0));
+    let warmup_failed = Arc::new(AtomicUsize::new(0));
+    let warmup_start = Instant::now();
+
+    let mut warmup_tasks = JoinSet::new();
+
+    // Spawn all warmup tasks
     for i in 0..WARMUP_TRANSACTIONS {
-        let args = vec![json!({
-            "id": format!("record_{:08}", i),
-            "content": format!("Warmup content for record {}", i),
-            "timestamp": i as i64
-        })];
+        let coordinator = coordinator.clone();
+        let successful = warmup_successful.clone();
+        let failed = warmup_failed.clone();
 
-        let txn = coordinator
-            .begin(
-                Duration::from_secs(5),
-                args.clone(),
-                "sql_insert".to_string(),
-            )
-            .await?;
+        warmup_tasks.spawn(async move {
+            let args = vec![json!({
+                "id": format!("record_{:08}", i),
+                "content": format!("Warmup content for record {}", i),
+                "timestamp": i as i64
+            })];
 
-        execute_sql_insert(i, &args[0], txn).await?;
+            let txn = match coordinator
+                .begin(
+                    Duration::from_secs(5),
+                    args.clone(),
+                    "sql_insert".to_string(),
+                )
+                .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Failed to begin warmup transaction {}: {:?}", i, e);
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
 
-        if (i + 1) % 25 == 0 {
-            println!("  Completed {} warmup transactions", i + 1);
+            if let Err(e) = execute_sql_insert(i, &args[0], txn.clone()).await {
+                eprintln!("Failed to execute warmup transaction {}: {:?}", i, e);
+                let _ = txn.abort().await;
+                failed.fetch_add(1, Ordering::Relaxed);
+            } else {
+                successful.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    }
+
+    // Monitor warmup progress
+    let warmup_monitor_successful = warmup_successful.clone();
+    let warmup_monitor_failed = warmup_failed.clone();
+    let warmup_monitor_handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let success = warmup_monitor_successful.load(Ordering::Relaxed);
+            let fail = warmup_monitor_failed.load(Ordering::Relaxed);
+            let total = success + fail;
+
+            if total >= WARMUP_TRANSACTIONS {
+                break;
+            }
+
+            if total > 0 && total.is_multiple_of(25) {
+                println!("  Completed {} warmup transactions", total);
+            }
+        }
+    });
+
+    // Wait for all warmup tasks to complete
+    while let Some(result) = warmup_tasks.join_next().await {
+        match result {
+            Ok(_) => {}
+            Err(e) => eprintln!("Warmup task failed: {}", e),
         }
     }
-    println!("✓ Warmup complete");
+
+    warmup_monitor_handle.abort();
+
+    let warmup_duration = warmup_start.elapsed();
+    let final_warmup_successful = warmup_successful.load(Ordering::Relaxed);
+    let final_warmup_failed = warmup_failed.load(Ordering::Relaxed);
+
+    println!(
+        "✓ Warmup complete: {} successful, {} failed in {:.2}s",
+        final_warmup_successful,
+        final_warmup_failed,
+        warmup_duration.as_secs_f64()
+    );
 
     // Main benchmark phase
     println!("\n=== Benchmark Phase (With Speculation) ===");
@@ -189,7 +254,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 };
 
                 // Execute the transaction
-                let result = execute_sql_insert(i + WARMUP_TRANSACTIONS, &args[0], txn).await;
+                let result =
+                    execute_sql_insert(i + WARMUP_TRANSACTIONS, &args[0], txn.clone()).await;
 
                 match result {
                     Ok(_) => {
@@ -223,6 +289,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                             continue;
                         }
+
+                        let _ = txn.abort().await;
 
                         // Max retries exceeded or non-retryable error
                         eprintln!(

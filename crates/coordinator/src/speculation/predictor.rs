@@ -101,17 +101,6 @@ impl SequencePredictor {
             confidence: pattern.confidence,
         })
     }
-
-    /// Check if we should attempt speculation based on configuration
-    pub fn should_speculate(&self, confidence: f64, has_writes: bool) -> bool {
-        let threshold = if has_writes {
-            self.config.min_confidence_write
-        } else {
-            self.config.min_confidence_read
-        };
-
-        confidence >= threshold
-    }
 }
 
 #[cfg(test)]

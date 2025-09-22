@@ -122,6 +122,15 @@ impl Transaction {
                 // Use speculated response directly
                 Ok(response)
             }
+            CheckResult::SpeculativeExecutionFailed { position, reason } => {
+                // Speculation failed - abort transaction
+                // Client should retry with begin_without_speculation()
+                self.abort().await?;
+                Err(CoordinatorError::SpeculationFailed(format!(
+                    "Speculated operation {} failed: {}",
+                    position, reason
+                )))
+            }
             CheckResult::NoPrediction => {
                 // Execute normally through executor
                 self.executor.execute_operation(&stream, operation).await

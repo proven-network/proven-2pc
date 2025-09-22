@@ -114,19 +114,18 @@ impl TemplateExtractor {
 
                 // If the string looks like a number, also check for numeric match
                 // This handles cases where operation has "10" but args has 10
-                if let Ok(n_val) = serde_json::from_str::<serde_json::Value>(s) {
-                    if n_val.is_number() {
-                        if let Some(path) = self.flattener.find_value(flattened, &n_val) {
-                            // Replace with placeholder - track that original was string!
-                            *s = format!(
-                                "{}{}{}",
-                                self.placeholder_prefix, path, self.placeholder_suffix
-                            );
-                            required_paths.insert(path.clone());
-                            original_types.insert(path, "string".to_string());
-                            return;
-                        }
-                    }
+                if let Ok(n_val) = serde_json::from_str::<serde_json::Value>(s)
+                    && n_val.is_number()
+                    && let Some(path) = self.flattener.find_value(flattened, &n_val)
+                {
+                    // Replace with placeholder - track that original was string!
+                    *s = format!(
+                        "{}{}{}",
+                        self.placeholder_prefix, path, self.placeholder_suffix
+                    );
+                    required_paths.insert(path.clone());
+                    original_types.insert(path, "string".to_string());
+                    return;
                 }
 
                 // If no exact match, try substring detection
@@ -206,47 +205,6 @@ impl TemplateExtractor {
             Value::Null => {
                 // Null values are left as-is
             }
-        }
-    }
-
-    /// Check if two templates are structurally similar
-    pub fn templates_similar(&self, t1: &Template, t2: &Template) -> bool {
-        if t1.stream != t2.stream || t1.is_write != t2.is_write {
-            return false;
-        }
-
-        // Templates must use the same required paths to be considered similar
-        if t1.required_paths != t2.required_paths {
-            return false;
-        }
-
-        self.values_structurally_equal(&t1.pattern, &t2.pattern)
-    }
-
-    fn values_structurally_equal(&self, v1: &Value, v2: &Value) -> bool {
-        match (v1, v2) {
-            (Value::String(s1), Value::String(s2)) => {
-                // Both placeholders or both not
-                let is_placeholder1 = s1.starts_with(&self.placeholder_prefix);
-                let is_placeholder2 = s2.starts_with(&self.placeholder_prefix);
-                is_placeholder1 == is_placeholder2
-            }
-            (Value::Object(m1), Value::Object(m2)) => {
-                m1.len() == m2.len()
-                    && m1.keys().all(|k| m2.contains_key(k))
-                    && m1.iter().all(|(k, v1)| {
-                        m2.get(k)
-                            .map_or(false, |v2| self.values_structurally_equal(v1, v2))
-                    })
-            }
-            (Value::Array(a1), Value::Array(a2)) => {
-                a1.len() == a2.len()
-                    && a1
-                        .iter()
-                        .zip(a2.iter())
-                        .all(|(v1, v2)| self.values_structurally_equal(v1, v2))
-            }
-            _ => v1 == v2,
         }
     }
 }

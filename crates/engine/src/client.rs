@@ -13,6 +13,9 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 
+/// Delay to simulate network latency
+static PUBLISH_DELAY: Duration = Duration::from_millis(20);
+
 /// Mock client for interacting with the mock engine
 #[derive(Clone)]
 pub struct MockClient {
@@ -45,9 +48,10 @@ impl MockClient {
         M: Into<Message>,
     {
         // Wait to simulate network latency
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(PUBLISH_DELAY).await;
 
         let messages: Vec<Message> = messages.into_iter().map(Into::into).collect();
+
         self.engine.publish_to_stream(&stream_name, messages)
     }
 
@@ -92,7 +96,7 @@ impl MockClient {
         }
 
         // Single network round-trip for all streams in the group
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(PUBLISH_DELAY).await;
 
         // Now publish to each stream and collect results
         let mut results = std::collections::HashMap::new();

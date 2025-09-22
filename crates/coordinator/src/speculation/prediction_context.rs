@@ -12,6 +12,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
+/// Type alias for response receivers map
+type ResponseReceivers = Arc<Mutex<HashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>>;
+
 /// Result of checking an operation against predictions
 #[derive(Debug)]
 pub enum CheckResult {
@@ -24,6 +27,10 @@ pub enum CheckResult {
         actual: String,
         position: usize,
     },
+
+    /// Operation matched prediction but speculative execution failed
+    /// The operation needs to be executed normally
+    SpeculativeExecutionFailed { position: usize, reason: String },
 
     /// No more predictions (transaction continues beyond speculation)
     NoPrediction,
@@ -58,7 +65,7 @@ pub struct PredictionContext {
 
     /// Response receivers for async execution
     /// We store them in an Arc<Mutex> to allow cloning and concurrent access
-    response_receivers: Arc<Mutex<HashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>>,
+    response_receivers: ResponseReceivers,
 }
 
 impl PredictionContext {
@@ -125,24 +132,37 @@ impl PredictionContext {
                         // Got successful response
                         CheckResult::Match { response, is_write }
                     }
-                    Ok(Err(_err)) => {
+                    Ok(Err(err)) => {
                         // Execution failed
-                        // tracing::warn!("Speculated execution failed for position {}: {}", position, err);
-                        CheckResult::NoPrediction
+                        tracing::warn!(
+                            "Speculated execution failed for position {}: {}",
+                            position,
+                            err
+                        );
+                        CheckResult::SpeculativeExecutionFailed {
+                            position,
+                            reason: format!("Execution error: {}", err),
+                        }
                     }
                     Err(_) => {
                         // Channel was dropped (shouldn't happen)
-                        // tracing::warn!("Response channel dropped for position {}", position);
-                        CheckResult::NoPrediction
+                        tracing::warn!("Response channel dropped for position {}", position);
+                        CheckResult::SpeculativeExecutionFailed {
+                            position,
+                            reason: "Response channel was dropped".to_string(),
+                        }
                     }
                 }
             } else {
                 // No receiver available - speculation execution likely didn't run
-                // tracing::warn!(
-                //     "Matched operation at position {} but no response available",
-                //     position
-                // );
-                CheckResult::NoPrediction
+                tracing::warn!(
+                    "Matched operation at position {} but no response available",
+                    position
+                );
+                CheckResult::SpeculativeExecutionFailed {
+                    position,
+                    reason: "No speculative response available".to_string(),
+                }
             }
         } else {
             // Mismatch - speculation failed
@@ -174,11 +194,11 @@ impl PredictionContext {
 
         // Compare operation structure
         // This is simplified - in reality we might want fuzzy matching
-        self.values_equivalent(&predicted.operation, operation)
+        Self::values_equivalent(&predicted.operation, operation)
     }
 
     /// Check if two JSON values are equivalent (allowing some flexibility)
-    fn values_equivalent(&self, v1: &Value, v2: &Value) -> bool {
+    fn values_equivalent(v1: &Value, v2: &Value) -> bool {
         match (v1, v2) {
             (Value::Object(m1), Value::Object(m2)) => {
                 // Check all keys match
@@ -188,14 +208,14 @@ impl PredictionContext {
 
                 // Check all values match recursively
                 m1.iter()
-                    .all(|(k, v1)| m2.get(k).map_or(false, |v2| self.values_equivalent(v1, v2)))
+                    .all(|(k, v1)| m2.get(k).is_some_and(|v2| Self::values_equivalent(v1, v2)))
             }
             (Value::Array(a1), Value::Array(a2)) => {
                 a1.len() == a2.len()
                     && a1
                         .iter()
                         .zip(a2.iter())
-                        .all(|(v1, v2)| self.values_equivalent(v1, v2))
+                        .all(|(v1, v2)| Self::values_equivalent(v1, v2))
             }
             _ => v1 == v2,
         }

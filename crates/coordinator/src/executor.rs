@@ -221,17 +221,18 @@ impl Executor {
             return Ok(HashMap::new());
         }
 
-        // Determine timeout (use max timeout if any stream has deadline)
-        let has_deadline = stream_operations
-            .keys()
-            .any(|s| self.streams_with_deadline.lock().contains(s));
-        let timeout = if has_deadline {
-            Duration::from_secs(30)
-        } else {
-            Duration::from_secs(5)
-        };
+        // Calculate timeout from deadline
+        let timeout = self.calculate_timeout()?;
 
-        let deadline_str = has_deadline.then(|| self.deadline.to_string());
+        // Track which streams need the deadline header
+        let mut stream_needs_deadline = HashMap::new();
+        for stream in stream_operations.keys() {
+            // Track participant and check if this is first contact
+            let needs_deadline = self.track_participant(stream);
+            if needs_deadline.is_some() {
+                stream_needs_deadline.insert(stream.clone(), true);
+            }
+        }
 
         // Ensure all processors are running
         for stream in stream_operations.keys() {
@@ -256,8 +257,9 @@ impl Executor {
 
                 // Build headers
                 let mut headers = self.build_base_headers(&request_id);
-                if let Some(deadline) = &deadline_str {
-                    headers.insert("txn_deadline".to_string(), deadline.clone());
+                // Only add deadline on the first message to each stream
+                if op_idx == 0 && stream_needs_deadline.get(&stream).copied().unwrap_or(false) {
+                    headers.insert("txn_deadline".to_string(), self.deadline.to_string());
                 }
 
                 // Create message
