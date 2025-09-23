@@ -29,6 +29,120 @@ impl ResourceTransactionEngine {
         }
     }
 
+    /// Execute a read-only operation at a specific timestamp
+    fn execute_read_at_timestamp(
+        &self,
+        operation: &ResourceOperation,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<ResourceResponse> {
+        match operation {
+            ResourceOperation::GetBalance { account } => {
+                // Try to perform snapshot read
+                match self
+                    .storage
+                    .get_balance_at_timestamp(account, read_timestamp)
+                {
+                    Some(balance) => OperationResult::Complete(ResourceResponse::Balance {
+                        account: account.clone(),
+                        amount: balance,
+                    }),
+                    None => {
+                        // There are earlier pending writes - need to find which transactions
+                        let pending_writers = self.storage.get_pending_balance_writers(account);
+                        let earlier_writers: Vec<HlcTimestamp> = pending_writers
+                            .into_iter()
+                            .filter(|&tx_id| tx_id < read_timestamp)
+                            .collect();
+
+                        let blockers = earlier_writers
+                            .into_iter()
+                            .map(|txn| BlockingInfo {
+                                txn,
+                                retry_on: RetryOn::CommitOrAbort,
+                            })
+                            .collect();
+
+                        OperationResult::WouldBlock { blockers }
+                    }
+                }
+            }
+
+            ResourceOperation::GetMetadata => {
+                // Try to perform snapshot reads for both metadata and supply
+                match (
+                    self.storage.get_metadata_at_timestamp(read_timestamp),
+                    self.storage.get_supply_at_timestamp(read_timestamp),
+                ) {
+                    (Some(metadata), Some(supply)) => {
+                        OperationResult::Complete(ResourceResponse::Metadata {
+                            name: metadata.name,
+                            symbol: metadata.symbol,
+                            decimals: metadata.decimals,
+                            total_supply: supply,
+                        })
+                    }
+                    _ => {
+                        // There are earlier pending writes - collect all blockers
+                        let mut blockers = Vec::new();
+
+                        // Check metadata writers
+                        let metadata_writers = self.storage.has_pending_metadata_write();
+                        for tx_id in metadata_writers {
+                            if tx_id < read_timestamp {
+                                blockers.push(BlockingInfo {
+                                    txn: tx_id,
+                                    retry_on: RetryOn::CommitOrAbort,
+                                });
+                            }
+                        }
+
+                        // Check supply writers
+                        let supply_writers = self.storage.has_pending_supply_write();
+                        for tx_id in supply_writers {
+                            if tx_id < read_timestamp && !blockers.iter().any(|b| b.txn == tx_id) {
+                                blockers.push(BlockingInfo {
+                                    txn: tx_id,
+                                    retry_on: RetryOn::CommitOrAbort,
+                                });
+                            }
+                        }
+
+                        OperationResult::WouldBlock { blockers }
+                    }
+                }
+            }
+
+            ResourceOperation::GetTotalSupply => {
+                // Try to perform snapshot read
+                match self.storage.get_supply_at_timestamp(read_timestamp) {
+                    Some(supply) => {
+                        OperationResult::Complete(ResourceResponse::TotalSupply { amount: supply })
+                    }
+                    None => {
+                        // There are earlier pending writes - need to find which transactions
+                        let pending_writers = self.storage.has_pending_supply_write();
+                        let earlier_writers: Vec<HlcTimestamp> = pending_writers
+                            .into_iter()
+                            .filter(|&tx_id| tx_id < read_timestamp)
+                            .collect();
+
+                        let blockers = earlier_writers
+                            .into_iter()
+                            .map(|txn| BlockingInfo {
+                                txn,
+                                retry_on: RetryOn::CommitOrAbort,
+                            })
+                            .collect();
+
+                        OperationResult::WouldBlock { blockers }
+                    }
+                }
+            }
+
+            _ => panic!("Must be read-only operation for snapshot reads"),
+        }
+    }
+
     /// Process a resource operation
     fn process_operation(
         &mut self,
@@ -65,7 +179,7 @@ impl ResourceTransactionEngine {
 
                 // Initialize in storage
                 self.storage
-                    .initialize(name.clone(), symbol.clone(), *decimals)?;
+                    .initialize(transaction_id, name.clone(), symbol.clone(), *decimals)?;
 
                 Ok(ResourceResponse::Initialized {
                     name: name.clone(),
@@ -93,7 +207,8 @@ impl ResourceTransactionEngine {
                 tx_ctx.set_modifies_metadata();
 
                 // Update in storage
-                self.storage.update_metadata(name.clone(), symbol.clone())?;
+                self.storage
+                    .update_metadata(transaction_id, name.clone(), symbol.clone())?;
 
                 Ok(ResourceResponse::MetadataUpdated {
                     name: name.clone(),
@@ -225,7 +340,7 @@ impl ResourceTransactionEngine {
             }
 
             ResourceOperation::GetBalance { account } => {
-                let balance = self.storage.get_balance(account, transaction_id);
+                let balance = self.storage.get_pending_balance(account, transaction_id);
                 Ok(ResourceResponse::Balance {
                     account: account.clone(),
                     amount: balance,
@@ -233,17 +348,18 @@ impl ResourceTransactionEngine {
             }
 
             ResourceOperation::GetMetadata => {
-                let metadata = self.storage.get_metadata();
+                let metadata = self.storage.get_pending_metadata(transaction_id);
+                let supply = self.storage.get_pending_supply(transaction_id);
                 Ok(ResourceResponse::Metadata {
-                    name: metadata.name.clone(),
-                    symbol: metadata.symbol.clone(),
+                    name: metadata.name,
+                    symbol: metadata.symbol,
                     decimals: metadata.decimals,
-                    total_supply: self.storage.get_total_supply(),
+                    total_supply: supply,
                 })
             }
 
             ResourceOperation::GetTotalSupply => Ok(ResourceResponse::TotalSupply {
-                amount: self.storage.get_total_supply(),
+                amount: self.storage.get_pending_supply(transaction_id),
             }),
         }
     }
@@ -252,6 +368,14 @@ impl ResourceTransactionEngine {
 impl TransactionEngine for ResourceTransactionEngine {
     type Operation = ResourceOperation;
     type Response = ResourceResponse;
+
+    fn read_at_timestamp(
+        &self,
+        operation: Self::Operation,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<Self::Response> {
+        self.execute_read_at_timestamp(&operation, read_timestamp)
+    }
 
     fn begin(&mut self, txn_id: HlcTimestamp) {
         self.storage.begin_transaction(txn_id);

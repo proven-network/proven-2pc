@@ -18,123 +18,266 @@ pub struct ResourceMetadata {
 struct BalanceVersion {
     amount: Amount,
     timestamp: HlcTimestamp,
+    created_by: HlcTimestamp, // Transaction that created this version
+}
+
+/// Versioned metadata entry
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MetadataVersion {
+    metadata: ResourceMetadata,
+    timestamp: HlcTimestamp,
+    created_by: HlcTimestamp,
+}
+
+/// Versioned supply entry
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SupplyVersion {
+    amount: Amount,
+    timestamp: HlcTimestamp,
+    created_by: HlcTimestamp,
 }
 
 /// MVCC storage for resource data
 pub struct ResourceStorage {
-    /// Resource metadata
-    metadata: ResourceMetadata,
+    // === Committed versions (for snapshot reads) ===
+    /// Resource metadata versions
+    metadata_versions: Vec<MetadataVersion>,
 
-    /// Total supply of the resource
-    total_supply: Amount,
+    /// Total supply versions
+    supply_versions: Vec<SupplyVersion>,
 
     /// Account balances with MVCC
     /// BTreeMap<account, Vec<BalanceVersion>> where versions are sorted by timestamp
-    balances: BTreeMap<String, Vec<BalanceVersion>>,
+    balance_versions: BTreeMap<String, Vec<BalanceVersion>>,
 
-    /// Active transactions and their uncommitted changes
-    /// Map<transaction_id, Map<account, pending_balance>>
-    pending_changes: BTreeMap<HlcTimestamp, BTreeMap<String, Amount>>,
+    // === Pending changes (for transaction isolation) ===
+    /// Pending metadata changes per transaction
+    pending_metadata: BTreeMap<HlcTimestamp, ResourceMetadata>,
 
     /// Pending supply changes per transaction
-    /// Map<transaction_id, new_supply>
     pending_supply: BTreeMap<HlcTimestamp, Amount>,
+
+    /// Pending balance changes per transaction
+    /// Map<transaction_id, Map<account, pending_balance>>
+    pending_balances: BTreeMap<HlcTimestamp, BTreeMap<String, Amount>>,
+
+    /// Transaction start times for visibility checks
+    transaction_start_times: BTreeMap<HlcTimestamp, HlcTimestamp>,
 }
 
 impl ResourceStorage {
     /// Create a new resource storage
     pub fn new() -> Self {
+        use proven_hlc::NodeId;
+
+        // Initialize with default versions at timestamp 0
+        let init_timestamp = HlcTimestamp::new(0, 0, NodeId::new(0));
+
         Self {
-            metadata: ResourceMetadata::default(),
-            total_supply: Amount::zero(),
-            balances: BTreeMap::new(),
-            pending_changes: BTreeMap::new(),
+            metadata_versions: vec![MetadataVersion {
+                metadata: ResourceMetadata::default(),
+                timestamp: init_timestamp,
+                created_by: init_timestamp,
+            }],
+            supply_versions: vec![SupplyVersion {
+                amount: Amount::zero(),
+                timestamp: init_timestamp,
+                created_by: init_timestamp,
+            }],
+            balance_versions: BTreeMap::new(),
+            pending_metadata: BTreeMap::new(),
             pending_supply: BTreeMap::new(),
+            pending_balances: BTreeMap::new(),
+            transaction_start_times: BTreeMap::new(),
         }
     }
 
     /// Initialize the resource metadata
     pub fn initialize(
         &mut self,
+        txn_id: HlcTimestamp,
         name: String,
         symbol: String,
         decimals: u32,
     ) -> Result<(), String> {
-        if self.metadata.initialized {
+        // Check current metadata (considering pending changes)
+        let current = self.get_pending_metadata(txn_id);
+        if current.initialized {
             return Err("Resource already initialized".to_string());
         }
 
-        self.metadata = ResourceMetadata {
+        let metadata = ResourceMetadata {
             name,
             symbol,
             decimals,
             initialized: true,
         };
 
+        self.pending_metadata.insert(txn_id, metadata);
         Ok(())
     }
 
     /// Update resource metadata
     pub fn update_metadata(
         &mut self,
+        txn_id: HlcTimestamp,
         name: Option<String>,
         symbol: Option<String>,
     ) -> Result<(), String> {
-        if !self.metadata.initialized {
+        let mut metadata = self.get_pending_metadata(txn_id);
+
+        if !metadata.initialized {
             return Err("Resource not initialized".to_string());
         }
 
         if let Some(name) = name {
-            self.metadata.name = name;
+            metadata.name = name;
         }
         if let Some(symbol) = symbol {
-            self.metadata.symbol = symbol;
+            metadata.symbol = symbol;
         }
 
+        self.pending_metadata.insert(txn_id, metadata);
         Ok(())
     }
 
-    /// Get resource metadata
-    pub fn get_metadata(&self) -> &ResourceMetadata {
-        &self.metadata
+    /// Get resource metadata for a transaction (considers pending changes)
+    pub fn get_pending_metadata(&self, txn_id: HlcTimestamp) -> ResourceMetadata {
+        // First check pending changes
+        if let Some(pending) = self.pending_metadata.get(&txn_id) {
+            return pending.clone();
+        }
+
+        // Otherwise return latest committed
+        self.metadata_versions
+            .last()
+            .map(|v| v.metadata.clone())
+            .unwrap_or_default()
     }
 
-    /// Get total supply
-    pub fn get_total_supply(&self) -> Amount {
-        self.total_supply
+    /// Get resource metadata at a specific timestamp (snapshot read)
+    /// Returns None if there are earlier pending writes that haven't committed
+    pub fn get_metadata_at_timestamp(
+        &self,
+        read_timestamp: HlcTimestamp,
+    ) -> Option<ResourceMetadata> {
+        // Check for pending writes from earlier transactions
+        for &tx_id in self.pending_metadata.keys() {
+            if tx_id < read_timestamp {
+                // There's a pending metadata change from an earlier transaction
+                // Must wait for it to commit/abort before reading
+                return None;
+            }
+        }
+
+        // Find the latest version visible at read_timestamp
+        for version in self.metadata_versions.iter().rev() {
+            if version.timestamp <= read_timestamp {
+                return Some(version.metadata.clone());
+            }
+        }
+
+        Some(ResourceMetadata::default())
     }
 
-    /// Get balance for an account at a specific timestamp (MVCC read)
-    pub fn get_balance(&self, account: &str, timestamp: HlcTimestamp) -> Amount {
-        // First check if there are any versions for this account
-        if let Some(versions) = self.balances.get(account) {
-            // Find the latest version that is <= timestamp
+    /// Get total supply for a transaction (considers pending changes)
+    pub fn get_pending_supply(&self, txn_id: HlcTimestamp) -> Amount {
+        // First check pending changes
+        if let Some(&pending) = self.pending_supply.get(&txn_id) {
+            return pending;
+        }
+
+        // Otherwise return latest committed
+        self.supply_versions
+            .last()
+            .map(|v| v.amount)
+            .unwrap_or_else(Amount::zero)
+    }
+
+    /// Get total supply at a specific timestamp (snapshot read)
+    /// Returns None if there are earlier pending writes that haven't committed
+    pub fn get_supply_at_timestamp(&self, read_timestamp: HlcTimestamp) -> Option<Amount> {
+        // Check for pending writes from earlier transactions
+        for &tx_id in self.pending_supply.keys() {
+            if tx_id < read_timestamp {
+                // There's a pending supply change from an earlier transaction
+                // Must wait for it to commit/abort before reading
+                return None;
+            }
+        }
+
+        // Find the latest version visible at read_timestamp
+        for version in self.supply_versions.iter().rev() {
+            if version.timestamp <= read_timestamp {
+                return Some(version.amount);
+            }
+        }
+
+        Some(Amount::zero())
+    }
+
+    /// Get balance at a specific timestamp (snapshot read)
+    /// Returns None if there are earlier pending writes that haven't committed
+    pub fn get_balance_at_timestamp(
+        &self,
+        account: &str,
+        read_timestamp: HlcTimestamp,
+    ) -> Option<Amount> {
+        // Check for pending writes from earlier transactions
+        for (&tx_id, balances) in &self.pending_balances {
+            if tx_id < read_timestamp && balances.contains_key(account) {
+                // There's a pending balance change from an earlier transaction
+                // Must wait for it to commit/abort before reading
+                return None;
+            }
+        }
+
+        // Find the latest committed version visible at read_timestamp
+        if let Some(versions) = self.balance_versions.get(account) {
             for version in versions.iter().rev() {
-                if version.timestamp <= timestamp {
+                if version.timestamp <= read_timestamp {
+                    return Some(version.amount);
+                }
+            }
+        }
+
+        Some(Amount::zero())
+    }
+
+    /// Get pending balance for an account in a transaction
+    pub fn get_pending_balance(&self, account: &str, transaction_id: HlcTimestamp) -> Amount {
+        // First check pending changes for this transaction
+        if let Some(tx_balances) = self.pending_balances.get(&transaction_id)
+            && let Some(&amount) = tx_balances.get(account)
+        {
+            return amount;
+        }
+
+        // Get transaction start time or use transaction_id as fallback
+        let tx_start = self
+            .transaction_start_times
+            .get(&transaction_id)
+            .copied()
+            .unwrap_or(transaction_id);
+
+        // Return committed balance visible at transaction start
+        if let Some(versions) = self.balance_versions.get(account) {
+            for version in versions.iter().rev() {
+                if version.timestamp <= tx_start {
                     return version.amount;
                 }
             }
         }
 
-        // No balance history means zero balance
         Amount::zero()
-    }
-
-    /// Get pending balance for an account in a transaction
-    pub fn get_pending_balance(&self, account: &str, transaction_id: HlcTimestamp) -> Amount {
-        if let Some(tx_changes) = self.pending_changes.get(&transaction_id)
-            && let Some(&amount) = tx_changes.get(account)
-        {
-            return amount;
-        }
-
-        // If no pending changes, return current balance
-        self.get_balance(account, transaction_id)
     }
 
     /// Begin tracking changes for a transaction
     pub fn begin_transaction(&mut self, transaction_id: HlcTimestamp) {
-        self.pending_changes.insert(transaction_id, BTreeMap::new());
+        self.transaction_start_times
+            .insert(transaction_id, transaction_id);
+        self.pending_balances
+            .insert(transaction_id, BTreeMap::new());
     }
 
     /// Update pending balance for an account in a transaction
@@ -144,12 +287,12 @@ impl ResourceStorage {
         account: &str,
         new_balance: Amount,
     ) -> Result<(), String> {
-        let tx_changes = self
-            .pending_changes
+        let tx_balances = self
+            .pending_balances
             .get_mut(&transaction_id)
             .ok_or_else(|| format!("Transaction {} not found", transaction_id))?;
 
-        tx_changes.insert(account.to_string(), new_balance);
+        tx_balances.insert(account.to_string(), new_balance);
         Ok(())
     }
 
@@ -160,12 +303,8 @@ impl ResourceStorage {
         delta: Amount,
         is_mint: bool,
     ) -> Result<Amount, String> {
-        // Get current pending supply for this transaction or use the global supply
-        let current_supply = self
-            .pending_supply
-            .get(&transaction_id)
-            .copied()
-            .unwrap_or(self.total_supply);
+        // Get current supply (pending or committed)
+        let current_supply = self.get_pending_supply(transaction_id);
 
         let new_supply = if is_mint {
             current_supply + delta
@@ -185,33 +324,53 @@ impl ResourceStorage {
 
     /// Commit a transaction's changes
     pub fn commit_transaction(&mut self, transaction_id: HlcTimestamp) -> Result<(), String> {
-        let tx_changes = self
-            .pending_changes
-            .remove(&transaction_id)
-            .ok_or_else(|| format!("Transaction {} not found", transaction_id))?;
-
-        // Apply all pending changes to the main storage
-        for (account, new_balance) in tx_changes {
-            let version = BalanceVersion {
-                amount: new_balance,
+        // Commit metadata changes
+        if let Some(metadata) = self.pending_metadata.remove(&transaction_id) {
+            self.metadata_versions.push(MetadataVersion {
+                metadata,
                 timestamp: transaction_id,
-            };
-
-            self.balances.entry(account).or_default().push(version);
+                created_by: transaction_id,
+            });
         }
 
-        // Commit supply change if any
-        if let Some(new_supply) = self.pending_supply.remove(&transaction_id) {
-            self.total_supply = new_supply;
+        // Commit supply changes
+        if let Some(supply) = self.pending_supply.remove(&transaction_id) {
+            self.supply_versions.push(SupplyVersion {
+                amount: supply,
+                timestamp: transaction_id,
+                created_by: transaction_id,
+            });
         }
+
+        // Commit balance changes
+        if let Some(tx_balances) = self.pending_balances.remove(&transaction_id) {
+            for (account, new_balance) in tx_balances {
+                let version = BalanceVersion {
+                    amount: new_balance,
+                    timestamp: transaction_id,
+                    created_by: transaction_id,
+                };
+
+                self.balance_versions
+                    .entry(account)
+                    .or_default()
+                    .push(version);
+            }
+        }
+
+        // Clean up transaction metadata
+        self.transaction_start_times.remove(&transaction_id);
 
         Ok(())
     }
 
     /// Abort a transaction and discard its changes
     pub fn abort_transaction(&mut self, transaction_id: HlcTimestamp) {
-        self.pending_changes.remove(&transaction_id);
+        // Just remove all pending data - super cheap!
+        self.pending_metadata.remove(&transaction_id);
         self.pending_supply.remove(&transaction_id);
+        self.pending_balances.remove(&transaction_id);
+        self.transaction_start_times.remove(&transaction_id);
     }
 
     /// Get a compacted view of the storage for snapshots
@@ -220,17 +379,56 @@ impl ResourceStorage {
         let mut latest_balances = BTreeMap::new();
 
         // For each account, get only the latest balance version
-        for (account, versions) in &self.balances {
+        for (account, versions) in &self.balance_versions {
             if let Some(latest) = versions.last() {
                 latest_balances.insert(account.clone(), latest.amount);
             }
         }
 
         CompactedResourceData {
-            metadata: self.metadata.clone(),
-            total_supply: self.total_supply,
+            metadata: self
+                .metadata_versions
+                .last()
+                .map(|v| v.metadata.clone())
+                .unwrap_or_default(),
+            total_supply: self
+                .supply_versions
+                .last()
+                .map(|v| v.amount)
+                .unwrap_or_else(Amount::zero),
             balances: latest_balances,
         }
+    }
+
+    /// Check if there are pending balance writes from a transaction
+    pub fn has_pending_balance_write(&self, tx_id: &HlcTimestamp, account: &str) -> bool {
+        self.pending_balances
+            .get(tx_id)
+            .is_some_and(|balances| balances.contains_key(account))
+    }
+
+    /// Get all transactions with pending balance writes for an account
+    pub fn get_pending_balance_writers(&self, account: &str) -> Vec<HlcTimestamp> {
+        self.pending_balances
+            .iter()
+            .filter_map(|(tx_id, balances)| {
+                if balances.contains_key(account) {
+                    Some(*tx_id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Check if there are pending metadata writes
+    pub fn has_pending_metadata_write(&self) -> Vec<HlcTimestamp> {
+        self.pending_metadata.keys().copied().collect()
+    }
+
+    /// Check if there are pending supply writes
+    pub fn has_pending_supply_write(&self) -> Vec<HlcTimestamp> {
+        self.pending_supply.keys().copied().collect()
     }
 
     /// Restore from compacted data
@@ -239,26 +437,39 @@ impl ResourceStorage {
         use proven_hlc::NodeId;
 
         // Clear any existing data
-        self.metadata = ResourceMetadata::default();
-        self.total_supply = Amount::zero();
-        self.balances.clear();
-        self.pending_changes.clear();
+        self.metadata_versions.clear();
+        self.supply_versions.clear();
+        self.balance_versions.clear();
+        self.pending_metadata.clear();
         self.pending_supply.clear();
-
-        // Restore metadata and supply
-        self.metadata = data.metadata;
-        self.total_supply = data.total_supply;
+        self.pending_balances.clear();
+        self.transaction_start_times.clear();
 
         // Create a special "restore" timestamp
         let restore_timestamp = HlcTimestamp::new(0, 0, NodeId::new(0));
 
-        // Restore all balances with the restore timestamp
+        // Restore metadata
+        self.metadata_versions.push(MetadataVersion {
+            metadata: data.metadata,
+            timestamp: restore_timestamp,
+            created_by: restore_timestamp,
+        });
+
+        // Restore supply
+        self.supply_versions.push(SupplyVersion {
+            amount: data.total_supply,
+            timestamp: restore_timestamp,
+            created_by: restore_timestamp,
+        });
+
+        // Restore all balances
         for (account, amount) in data.balances {
             let version = BalanceVersion {
                 amount,
                 timestamp: restore_timestamp,
+                created_by: restore_timestamp,
             };
-            self.balances.insert(account, vec![version]);
+            self.balance_versions.insert(account, vec![version]);
         }
     }
 }
@@ -291,16 +502,18 @@ mod tests {
         let mut storage = ResourceStorage::new();
 
         // Initialize resource
-        storage
-            .initialize("Test Token".to_string(), "TEST".to_string(), 8)
-            .unwrap();
-        assert_eq!(storage.get_metadata().name, "Test Token");
-        assert_eq!(storage.get_metadata().decimals, 8);
-
-        // Test balance operations
         let tx1 = make_timestamp(100);
         storage.begin_transaction(tx1);
 
+        storage
+            .initialize(tx1, "Test Token".to_string(), "TEST".to_string(), 8)
+            .unwrap();
+
+        let metadata = storage.get_pending_metadata(tx1);
+        assert_eq!(metadata.name, "Test Token");
+        assert_eq!(metadata.decimals, 8);
+
+        // Test balance operations
         storage
             .update_pending_balance(tx1, "alice", Amount::from_integer(100, 0))
             .unwrap();
@@ -310,9 +523,11 @@ mod tests {
         );
 
         storage.commit_transaction(tx1).unwrap();
+
+        // Read committed data at a later timestamp
         assert_eq!(
-            storage.get_balance("alice", make_timestamp(200)),
-            Amount::from_integer(100, 0)
+            storage.get_balance_at_timestamp("alice", make_timestamp(200)),
+            Some(Amount::from_integer(100, 0))
         );
     }
 }

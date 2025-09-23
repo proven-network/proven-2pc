@@ -3,7 +3,7 @@
 use proven_hlc::{HlcTimestamp, NodeId};
 use proven_resource::stream::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
 use proven_resource::types::Amount;
-use proven_stream::{OperationResult, TransactionEngine};
+use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 fn make_timestamp(n: u64) -> HlcTimestamp {
     HlcTimestamp::new(n, 0, NodeId::new(0))
@@ -566,5 +566,618 @@ fn test_transaction_rollback() {
             assert_eq!(amount, Amount::from_integer(0, 0));
         }
         _ => panic!("Expected Balance response"),
+    }
+}
+
+#[test]
+fn test_snapshot_read_properly_blocks_on_pending_writes() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize resource and mint some tokens
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Start a write transaction at timestamp 200 (but don't commit)
+    let tx_write = make_timestamp(200);
+    engine.begin(tx_write);
+    engine.apply_operation(
+        ResourceOperation::Transfer {
+            from: "alice".to_string(),
+            to: "bob".to_string(),
+            amount: Amount::from_integer(100, 8),
+            memo: None,
+        },
+        tx_write,
+    );
+
+    // Snapshot read at timestamp 300 MUST block
+    // because there's a pending write from timestamp 200
+    let read_ts = make_timestamp(300);
+    let get_op = ResourceOperation::GetBalance {
+        account: "alice".to_string(),
+    };
+
+    let result = engine.read_at_timestamp(get_op, read_ts);
+
+    // Must block with correct blocker info
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx_write);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
+        }
+        _ => panic!("Expected WouldBlock but got {:?}", result),
+    }
+
+    // Commit the write transaction
+    engine.commit(tx_write);
+
+    // Now the same read should succeed
+    let get_op = ResourceOperation::GetBalance {
+        account: "alice".to_string(),
+    };
+    let result = engine.read_at_timestamp(get_op, read_ts);
+
+    match result {
+        OperationResult::Complete(ResourceResponse::Balance { amount, .. }) => {
+            // Should see the new balance after transfer
+            assert_eq!(amount, Amount::from_integer(900, 8));
+        }
+        _ => panic!("Expected Complete but got {:?}", result),
+    }
+}
+
+#[test]
+fn test_metadata_read_properly_blocks() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize resource
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Old Name".to_string(),
+            symbol: "OLD".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Start a metadata update transaction (but don't commit)
+    let tx_update = make_timestamp(200);
+    engine.begin(tx_update);
+    engine.apply_operation(
+        ResourceOperation::UpdateMetadata {
+            name: Some("New Name".to_string()),
+            symbol: Some("NEW".to_string()),
+        },
+        tx_update,
+    );
+
+    // Snapshot read at timestamp 300 MUST block
+    let read_ts = make_timestamp(300);
+    let result = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts);
+
+    // Must block
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx_update);
+        }
+        _ => panic!("Expected WouldBlock but got {:?}", result),
+    }
+
+    // Abort the update transaction
+    engine.abort(tx_update);
+
+    // Now the read should succeed and see the old metadata
+    let result = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts);
+
+    match result {
+        OperationResult::Complete(ResourceResponse::Metadata { name, symbol, .. }) => {
+            assert_eq!(name, "Old Name");
+            assert_eq!(symbol, "OLD");
+        }
+        _ => panic!("Expected Complete but got {:?}", result),
+    }
+}
+
+#[test]
+fn test_supply_read_properly_blocks() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize and mint initial supply
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Start another mint transaction (but don't commit)
+    let tx_mint = make_timestamp(200);
+    engine.begin(tx_mint);
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "bob".to_string(),
+            amount: Amount::from_integer(500, 8),
+            memo: None,
+        },
+        tx_mint,
+    );
+
+    // Snapshot read at timestamp 300 MUST block
+    let read_ts = make_timestamp(300);
+    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts);
+
+    // Must block
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx_mint);
+        }
+        _ => panic!("Expected WouldBlock but got {:?}", result),
+    }
+
+    // Commit the mint transaction
+    engine.commit(tx_mint);
+
+    // Now the read should succeed and see the new supply
+    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts);
+
+    match result {
+        OperationResult::Complete(ResourceResponse::TotalSupply { amount }) => {
+            assert_eq!(amount, Amount::from_integer(1500, 8));
+        }
+        _ => panic!("Expected Complete but got {:?}", result),
+    }
+}
+
+#[test]
+fn test_no_blocking_when_no_pending_writes() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize and setup initial state
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Read at timestamp 200 - no pending transactions, should succeed immediately
+    let read_ts = make_timestamp(200);
+
+    // Test balance read
+    let result = engine.read_at_timestamp(
+        ResourceOperation::GetBalance {
+            account: "alice".to_string(),
+        },
+        read_ts,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Test metadata read
+    let result = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts);
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Test supply read
+    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts);
+    assert!(matches!(result, OperationResult::Complete(_)));
+}
+
+#[test]
+fn test_snapshot_read_balance_doesnt_block_write() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize resource and mint some tokens
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Start a write transaction
+    let tx_write = make_timestamp(300); // Write is AFTER the read timestamp
+    engine.begin(tx_write);
+
+    // Apply a transfer (write operation)
+    let transfer_op = ResourceOperation::Transfer {
+        from: "alice".to_string(),
+        to: "bob".to_string(),
+        amount: Amount::from_integer(100, 8),
+        memo: None,
+    };
+    let result = engine.apply_operation(transfer_op, tx_write);
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Snapshot read at timestamp 250 should NOT block
+    // (read is BEFORE the write transaction at 300)
+    let read_ts = make_timestamp(250);
+    let get_op = ResourceOperation::GetBalance {
+        account: "alice".to_string(),
+    };
+
+    let result = engine.read_at_timestamp(get_op, read_ts);
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // The read should see the old balance (before transfer)
+    if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
+        assert_eq!(amount, Amount::from_integer(1000, 8));
+    } else {
+        panic!("Expected balance response");
+    }
+
+    engine.commit(tx_write);
+}
+
+#[test]
+fn test_snapshot_read_blocks_on_earlier_write() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize resource
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Start a write transaction at timestamp 200
+    let tx_write = make_timestamp(200);
+    engine.begin(tx_write);
+
+    // Apply a transfer
+    let transfer_op = ResourceOperation::Transfer {
+        from: "alice".to_string(),
+        to: "bob".to_string(),
+        amount: Amount::from_integer(100, 8),
+        memo: None,
+    };
+    engine.apply_operation(transfer_op, tx_write);
+
+    // Snapshot read at timestamp 250 SHOULD block on alice's balance
+    // (the write at 200 is earlier than read at 250)
+    let read_ts = make_timestamp(250);
+    let get_op = ResourceOperation::GetBalance {
+        account: "alice".to_string(),
+    };
+
+    let result = engine.read_at_timestamp(get_op, read_ts);
+
+    // Should block waiting for tx_write to commit/abort
+    assert!(matches!(result, OperationResult::WouldBlock { .. }));
+
+    if let OperationResult::WouldBlock { blockers } = result {
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].txn, tx_write);
+    }
+
+    engine.commit(tx_write);
+}
+
+#[test]
+fn test_snapshot_read_metadata_consistency() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize resource
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Update metadata at timestamp 200
+    let tx2 = make_timestamp(200);
+    engine.begin(tx2);
+    engine.apply_operation(
+        ResourceOperation::UpdateMetadata {
+            name: Some("New Token".to_string()),
+            symbol: None,
+        },
+        tx2,
+    );
+    engine.commit(tx2);
+
+    // Snapshot read at timestamp 150 should see old metadata
+    let read_ts1 = make_timestamp(150);
+    let result = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts1);
+
+    if let OperationResult::Complete(ResourceResponse::Metadata { name, symbol, .. }) = result {
+        assert_eq!(name, "Test Token");
+        assert_eq!(symbol, "TEST");
+    } else {
+        panic!("Expected metadata response");
+    }
+
+    // Snapshot read at timestamp 250 should see new metadata
+    let read_ts2 = make_timestamp(250);
+    let result = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts2);
+
+    if let OperationResult::Complete(ResourceResponse::Metadata { name, symbol, .. }) = result {
+        assert_eq!(name, "New Token");
+        assert_eq!(symbol, "TEST");
+    } else {
+        panic!("Expected metadata response");
+    }
+}
+
+#[test]
+fn test_snapshot_read_total_supply() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize resource
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Mint tokens at timestamp 200
+    let tx2 = make_timestamp(200);
+    engine.begin(tx2);
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx2,
+    );
+    engine.commit(tx2);
+
+    // Burn tokens at timestamp 300
+    let tx3 = make_timestamp(300);
+    engine.begin(tx3);
+    engine.apply_operation(
+        ResourceOperation::Burn {
+            from: "alice".to_string(),
+            amount: Amount::from_integer(300, 8),
+            memo: None,
+        },
+        tx3,
+    );
+    engine.commit(tx3);
+
+    // Read at different timestamps
+    let read_ts1 = make_timestamp(150);
+    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts1);
+    if let OperationResult::Complete(ResourceResponse::TotalSupply { amount }) = result {
+        assert_eq!(amount, Amount::zero());
+    } else {
+        panic!("Expected total supply response");
+    }
+
+    let read_ts2 = make_timestamp(250);
+    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts2);
+    if let OperationResult::Complete(ResourceResponse::TotalSupply { amount }) = result {
+        assert_eq!(amount, Amount::from_integer(1000, 8));
+    } else {
+        panic!("Expected total supply response");
+    }
+
+    let read_ts3 = make_timestamp(350);
+    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts3);
+    if let OperationResult::Complete(ResourceResponse::TotalSupply { amount }) = result {
+        assert_eq!(amount, Amount::from_integer(700, 8));
+    } else {
+        panic!("Expected total supply response");
+    }
+}
+
+#[test]
+fn test_snapshot_read_ignores_aborted_writes() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize and mint tokens
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Start a write transaction that will be aborted
+    let tx_abort = make_timestamp(200);
+    engine.begin(tx_abort);
+    engine.apply_operation(
+        ResourceOperation::Transfer {
+            from: "alice".to_string(),
+            to: "bob".to_string(),
+            amount: Amount::from_integer(500, 8),
+            memo: None,
+        },
+        tx_abort,
+    );
+
+    // Abort the transaction
+    engine.abort(tx_abort);
+
+    // Snapshot read at timestamp 250 should see original balance
+    // (aborted transaction should not affect reads)
+    let read_ts = make_timestamp(250);
+    let get_op = ResourceOperation::GetBalance {
+        account: "alice".to_string(),
+    };
+
+    let result = engine.read_at_timestamp(get_op, read_ts);
+
+    // Should NOT block (transaction was aborted)
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
+        assert_eq!(amount, Amount::from_integer(1000, 8));
+    } else {
+        panic!("Expected balance response");
+    }
+}
+
+#[test]
+fn test_concurrent_snapshot_reads() {
+    let mut engine = ResourceTransactionEngine::new();
+
+    // Initialize and set up initial state
+    let tx1 = make_timestamp(100);
+    engine.begin(tx1);
+    engine.apply_operation(
+        ResourceOperation::Initialize {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            decimals: 8,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "alice".to_string(),
+            amount: Amount::from_integer(1000, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.apply_operation(
+        ResourceOperation::Mint {
+            to: "bob".to_string(),
+            amount: Amount::from_integer(500, 8),
+            memo: None,
+        },
+        tx1,
+    );
+    engine.commit(tx1);
+
+    // Multiple snapshot reads at the same timestamp should all succeed
+    let read_ts = make_timestamp(200);
+
+    // Read alice's balance
+    let result1 = engine.read_at_timestamp(
+        ResourceOperation::GetBalance {
+            account: "alice".to_string(),
+        },
+        read_ts,
+    );
+    assert!(matches!(result1, OperationResult::Complete(_)));
+
+    // Read bob's balance
+    let result2 = engine.read_at_timestamp(
+        ResourceOperation::GetBalance {
+            account: "bob".to_string(),
+        },
+        read_ts,
+    );
+    assert!(matches!(result2, OperationResult::Complete(_)));
+
+    // Read metadata
+    let result3 = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts);
+    assert!(matches!(result3, OperationResult::Complete(_)));
+
+    // Read total supply
+    let result4 = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts);
+    assert!(matches!(result4, OperationResult::Complete(_)));
+
+    // Verify values
+    if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result1 {
+        assert_eq!(amount, Amount::from_integer(1000, 8));
+    }
+    if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result2 {
+        assert_eq!(amount, Amount::from_integer(500, 8));
+    }
+    if let OperationResult::Complete(ResourceResponse::TotalSupply { amount }) = result4 {
+        assert_eq!(amount, Amount::from_integer(1500, 8));
     }
 }
