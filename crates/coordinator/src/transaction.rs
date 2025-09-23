@@ -217,6 +217,10 @@ impl Transaction {
         }
 
         *self.state.lock() = TransactionState::Aborted;
+
+        // Report failed transaction to prediction context for learning (async)
+        self.report_outcome_async(false).await;
+
         Ok(())
     }
 
@@ -224,8 +228,8 @@ impl Transaction {
     async fn commit_empty(&self) -> Result<()> {
         *self.state.lock() = TransactionState::Committed;
 
-        // Report successful commit to prediction context for learning
-        self.prediction_context.lock().await.report_outcome(true);
+        // Report successful commit to prediction context for learning (async)
+        self.report_outcome_async(true).await;
 
         Ok(())
     }
@@ -260,8 +264,8 @@ impl Transaction {
         if matches!(vote, PrepareVote::Prepared) {
             *self.state.lock() = TransactionState::Committed;
 
-            // Report successful commit to prediction context for learning
-            self.prediction_context.lock().await.report_outcome(true);
+            // Report successful commit to prediction context for learning (async)
+            self.report_outcome_async(true).await;
 
             Ok(())
         } else {
@@ -338,8 +342,8 @@ impl Transaction {
         // Mark as committed
         *self.state.lock() = TransactionState::Committed;
 
-        // Report successful commit to prediction context for learning
-        self.prediction_context.lock().await.report_outcome(true);
+        // Report successful commit to prediction context for learning (async)
+        self.report_outcome_async(true).await;
 
         Ok(())
     }
@@ -417,5 +421,15 @@ impl Transaction {
 
         // All participants voted to prepare
         Ok(true)
+    }
+
+    /// Report transaction outcome to prediction context asynchronously
+    /// This spawns a background task to avoid blocking the commit path
+    async fn report_outcome_async(&self, success: bool) {
+        let prediction_context = self.prediction_context.clone();
+
+        tokio::spawn(async move {
+            prediction_context.lock().await.report_outcome(success);
+        });
     }
 }

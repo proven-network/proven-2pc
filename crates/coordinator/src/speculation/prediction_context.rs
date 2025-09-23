@@ -7,9 +7,10 @@ use crate::error::Result;
 use crate::executor::Executor;
 use crate::speculation::learning::SequenceLearner;
 use crate::speculation::predictor::{PredictedOperation, PredictionResult};
+use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 /// Type alias for response receivers map
@@ -58,7 +59,7 @@ pub struct PredictionContext {
     failure_point: Option<usize>,
 
     /// Reference to learner for feedback
-    learner: Arc<Mutex<SequenceLearner>>,
+    learner: Arc<RwLock<SequenceLearner>>,
 
     /// Operations that were actually executed
     executed_operations: Vec<(String, Value, bool)>,
@@ -73,7 +74,7 @@ impl PredictionContext {
     pub fn new(
         prediction: PredictionResult,
         args: Vec<Value>,
-        learner: Arc<Mutex<SequenceLearner>>,
+        learner: Arc<RwLock<SequenceLearner>>,
     ) -> Self {
         Self {
             predictions: prediction.operations,
@@ -89,7 +90,11 @@ impl PredictionContext {
     }
 
     /// Create an empty context when no speculation is available
-    pub fn empty(category: String, args: Vec<Value>, learner: Arc<Mutex<SequenceLearner>>) -> Self {
+    pub fn empty(
+        category: String,
+        args: Vec<Value>,
+        learner: Arc<RwLock<SequenceLearner>>,
+    ) -> Self {
         Self {
             predictions: Vec::new(),
             current_position: 0,
@@ -123,7 +128,7 @@ impl PredictionContext {
             self.current_position += 1;
 
             // Try to get and await the receiver for this position
-            let receiver_opt = self.response_receivers.lock().unwrap().remove(&position);
+            let receiver_opt = self.response_receivers.lock().remove(&position);
 
             if let Some(receiver) = receiver_opt {
                 // Await the response
@@ -239,7 +244,7 @@ impl PredictionContext {
     /// Report results back to the learner
     /// This is the PRIMARY way to record all transaction outcomes
     pub fn report_outcome(&self, transaction_succeeded: bool) {
-        let mut learner = self.learner.lock().unwrap();
+        let mut learner = self.learner.write();
 
         if let Some(failure_pos) = self.failure_point {
             // Speculation failed - truncate pattern at failure point
@@ -289,10 +294,7 @@ impl PredictionContext {
         position: usize,
         receiver: oneshot::Receiver<Result<Vec<u8>>>,
     ) {
-        self.response_receivers
-            .lock()
-            .unwrap()
-            .insert(position, receiver);
+        self.response_receivers.lock().insert(position, receiver);
     }
 
     /// Execute all predicted operations speculatively using the executor
@@ -335,7 +337,7 @@ impl PredictionContext {
                     }
                 }
                 // Store all receivers
-                *self.response_receivers.lock().unwrap() = all_receivers;
+                *self.response_receivers.lock() = all_receivers;
             }
             Err(e) => {
                 // Log but don't fail - speculation is best-effort
@@ -387,7 +389,7 @@ mod tests {
         let new_args = vec![json!({"user": "bob"})];
         let prediction = predictor.predict("test", &new_args, &learner).unwrap();
 
-        let learner_arc = Arc::new(Mutex::new(learner));
+        let learner_arc = Arc::new(RwLock::new(learner));
         let mut context = PredictionContext::new(prediction, new_args.clone(), learner_arc.clone());
 
         // Simulate speculation execution by creating fake receivers
@@ -455,7 +457,7 @@ mod tests {
         let new_args = vec![json!({"user": "bob"})];
         let prediction = predictor.predict("test", &new_args, &learner).unwrap();
 
-        let learner_arc = Arc::new(Mutex::new(learner));
+        let learner_arc = Arc::new(RwLock::new(learner));
         let mut context = PredictionContext::new(prediction, new_args.clone(), learner_arc.clone());
 
         // Simulate speculation execution for first operation only

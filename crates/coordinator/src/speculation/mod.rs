@@ -11,9 +11,10 @@ pub mod prediction_context;
 pub mod predictor;
 pub mod template;
 
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 // Re-export V2 types as primary
 pub use learning::{SequenceLearner, SequencePattern};
@@ -80,16 +81,14 @@ impl Default for SpeculationConfig {
 ///
 /// This ensures ALL transactions go through PredictionContext for consistent learning.
 pub struct SpeculationContext {
-    learner: std::sync::Arc<std::sync::Mutex<SequenceLearner>>,
+    learner: Arc<RwLock<SequenceLearner>>,
     predictor: SequencePredictor,
 }
 
 impl SpeculationContext {
     /// Create a new speculation context
     pub fn new(config: SpeculationConfig) -> Self {
-        use std::sync::{Arc, Mutex};
-
-        let learner = Arc::new(Mutex::new(SequenceLearner::new(config.clone())));
+        let learner = Arc::new(RwLock::new(SequenceLearner::new(config.clone())));
         let predictor = SequencePredictor::new(config.clone());
 
         Self { learner, predictor }
@@ -97,7 +96,7 @@ impl SpeculationContext {
 
     /// Create a prediction context for a new transaction
     pub fn create_prediction_context(&self, category: &str, args: &[Value]) -> PredictionContext {
-        let learner = self.learner.lock().unwrap();
+        let learner = self.learner.read();
 
         if let Some(prediction) = self.predictor.predict(category, args, &learner) {
             PredictionContext::new(prediction, args.to_vec(), self.learner.clone())
@@ -109,7 +108,7 @@ impl SpeculationContext {
     /// Get current patterns (for debugging/monitoring)
     #[allow(dead_code)]
     pub fn get_patterns(&self) -> HashMap<String, SequencePattern> {
-        let learner = self.learner.lock().unwrap();
+        let learner = self.learner.read();
         learner.get_all_patterns().clone()
     }
 
