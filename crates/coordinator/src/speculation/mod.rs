@@ -38,6 +38,12 @@ pub struct SpeculationConfig {
 
     /// Minimum occurrences before a pattern is considered
     pub min_occurrences: u32,
+
+    /// Minimum confidence threshold for auto-commit read optimization
+    pub auto_commit_read_confidence: f64,
+
+    /// Minimum number of samples before considering auto-commit optimization
+    pub auto_commit_min_samples: u64,
 }
 
 impl Default for SpeculationConfig {
@@ -48,6 +54,8 @@ impl Default for SpeculationConfig {
             max_speculation_per_txn: 100,
             detect_string_patterns: true,
             min_occurrences: 5,
+            auto_commit_read_confidence: 0.95,
+            auto_commit_min_samples: 50,
         }
     }
 }

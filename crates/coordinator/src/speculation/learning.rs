@@ -8,6 +8,7 @@ use crate::speculation::template::{Template, TemplateExtractor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// A single operation in a learned sequence
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -131,10 +132,29 @@ impl SequencePattern {
     }
 }
 
+/// Statistics about read-only transactions per category
+#[derive(Debug, Clone, Default)]
+pub struct CategoryStats {
+    /// Total number of transactions seen for this category
+    pub total_transactions: u64,
+
+    /// Number of transactions that were read-only
+    pub read_only_transactions: u64,
+
+    /// Last time a write was seen (for staleness detection)
+    pub last_write_seen: Option<Instant>,
+
+    /// Last time a read-only transaction was seen
+    pub last_read_only_seen: Option<Instant>,
+}
+
 /// Manages sequence pattern learning
 pub struct Learner {
     /// Patterns organized by category
     patterns: HashMap<String, SequencePattern>,
+
+    /// Read-only statistics per category
+    category_stats: HashMap<String, CategoryStats>,
 
     /// Configuration
     config: SpeculationConfig,
@@ -147,6 +167,7 @@ impl Learner {
     pub fn new(config: SpeculationConfig) -> Self {
         Self {
             patterns: HashMap::new(),
+            category_stats: HashMap::new(),
             config,
             extractor: TemplateExtractor::new(),
         }
@@ -159,6 +180,18 @@ impl Learner {
         args: &[Value],
         operations: &[(String, Value, bool)],
     ) {
+        // Update category stats
+        let is_read_only = !operations.iter().any(|(_, _, is_write)| *is_write);
+        let stats = self.category_stats.entry(category.to_string()).or_default();
+        stats.total_transactions += 1;
+
+        if is_read_only {
+            stats.read_only_transactions += 1;
+            stats.last_read_only_seen = Some(Instant::now());
+        } else {
+            stats.last_write_seen = Some(Instant::now());
+        }
+
         // Extract templates for this transaction
         let mut templates = Vec::new();
 
@@ -298,6 +331,27 @@ impl Learner {
     /// Get all patterns (for monitoring/debugging)
     pub fn get_all_patterns(&self) -> &HashMap<String, SequencePattern> {
         &self.patterns
+    }
+
+    /// Get category statistics for a specific category
+    pub fn get_category_stats(&self, category: &str) -> Option<&CategoryStats> {
+        self.category_stats.get(category)
+    }
+
+    /// Check if a category should try read-only transactions based on historical data
+    pub fn should_try_read_only(&self, category: &str) -> bool {
+        self.category_stats.get(category).is_some_and(|stats| {
+            let read_only_probability = {
+                if stats.total_transactions == 0 {
+                    return false;
+                }
+
+                stats.read_only_transactions as f64 / stats.total_transactions as f64
+            };
+
+            read_only_probability >= self.config.auto_commit_read_confidence
+                && stats.total_transactions >= self.config.auto_commit_min_samples
+        })
     }
 
     /// Record feedback about a failed speculation
