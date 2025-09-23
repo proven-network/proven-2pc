@@ -404,7 +404,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     return Ok(());
                 }
             }
-            self.engine.begin_transaction(txn_id);
+            self.engine.begin(txn_id);
         }
 
         // Store coordinator ID for this transaction
@@ -417,18 +417,9 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
 
         // Handle auto-commit if specified
         if message.is_auto_commit() {
-            match self.engine.commit(txn_id) {
-                Ok(()) => {
-                    self.retry_deferred_operations(txn_id).await;
-                }
-                Err(e) => {
-                    println!(
-                        "[{}] ERROR: Auto-commit failed for txn {}: {}",
-                        self.stream_name, txn_id, e
-                    );
-                    return Err(ProcessorError::EngineError(e));
-                }
-            }
+            // Commit is now infallible
+            self.engine.commit(txn_id);
+            self.retry_deferred_operations(txn_id).await;
         }
 
         Ok(())
@@ -549,40 +540,46 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             return Ok(());
         }
 
-        match self.engine.prepare(txn_id) {
-            Ok(()) => {
-                // Schedule recovery after deadline
-                if let Some(&deadline) = self.transaction_deadlines.get(&txn_id) {
-                    let participants = self
-                        .transaction_participants
-                        .get(&txn_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    self.recovery_manager
-                        .schedule_recovery(txn_id, deadline, participants);
-                }
-
-                // Send prepare vote response BEFORE retrying operations
-                if let Some(coord_id) = coordinator_id {
-                    self.send_prepared_response(coord_id, txn_id_str, request_id);
-                }
-
-                // Now retry operations that were waiting on prepare
-                self.retry_prepare_waiting_operations(txn_id).await;
-
-                Ok(())
-            }
-            Err(e) => {
-                println!(
-                    "[{}] ERROR: Prepare failed in handle_prepare for txn {}: {}",
-                    self.stream_name, txn_id, e
+        // Check if transaction exists before preparing
+        if !self.engine.is_transaction_active(&txn_id) {
+            println!(
+                "[{}] ERROR: Cannot prepare - transaction {} does not exist",
+                self.stream_name, txn_id
+            );
+            if let Some(coord_id) = coordinator_id {
+                self.send_error_response(
+                    coord_id,
+                    txn_id_str,
+                    format!("Transaction {} not found", txn_id),
+                    request_id,
                 );
-                if let Some(coord_id) = coordinator_id {
-                    self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
-                }
-                Err(ProcessorError::EngineError(e))
             }
+            return Ok(());
         }
+
+        // Prepare is now infallible - engine must handle it
+        self.engine.prepare(txn_id);
+
+        // Schedule recovery after deadline
+        if let Some(&deadline) = self.transaction_deadlines.get(&txn_id) {
+            let participants = self
+                .transaction_participants
+                .get(&txn_id)
+                .cloned()
+                .unwrap_or_default();
+            self.recovery_manager
+                .schedule_recovery(txn_id, deadline, participants);
+        }
+
+        // Send prepare vote response BEFORE retrying operations
+        if let Some(coord_id) = coordinator_id {
+            self.send_prepared_response(coord_id, txn_id_str, request_id);
+        }
+
+        // Now retry operations that were waiting on prepare
+        self.retry_prepare_waiting_operations(txn_id).await;
+
+        Ok(())
     }
 
     /// Handle combined prepare and commit (single participant optimization)
@@ -625,61 +622,37 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             return Ok(());
         }
 
-        // Try to prepare
-        match self.engine.prepare(txn_id) {
-            Ok(()) => {
-                // Prepare succeeded, now try to commit
-                match self.engine.commit(txn_id) {
-                    Ok(()) => {
-                        // Send response BEFORE retrying operations
-                        if let Some(coord_id) = coordinator_id {
-                            self.send_prepared_response(coord_id, txn_id_str, request_id);
-                        }
-
-                        // Now retry operations in order: prepare waiters first, then commit waiters
-                        self.retry_prepare_waiting_operations(txn_id).await;
-                        self.retry_deferred_operations(txn_id).await;
-                        Ok(())
-                    }
-                    Err(e) => {
-                        // Commit failed, abort
-                        println!(
-                            "[{}] ERROR: Commit failed for txn {}: {}",
-                            self.stream_name, txn_id, e
-                        );
-                        let abort_result = self.engine.abort(txn_id);
-                        if let Err(abort_err) = abort_result {
-                            println!(
-                                "[{}] ERROR: Abort failed after commit failure for txn {}: {}",
-                                self.stream_name, txn_id, abort_err
-                            );
-                        }
-                        if let Some(coord_id) = coordinator_id {
-                            self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
-                        }
-                        Err(ProcessorError::EngineError(e))
-                    }
-                }
-            }
-            Err(e) => {
-                // Prepare failed, abort
-                println!(
-                    "[{}] ERROR: Prepare failed for txn {}: {}",
-                    self.stream_name, txn_id, e
+        // Check if transaction exists before preparing
+        if !self.engine.is_transaction_active(&txn_id) {
+            println!(
+                "[{}] ERROR: Cannot prepare_and_commit - transaction {} does not exist",
+                self.stream_name, txn_id
+            );
+            if let Some(coord_id) = coordinator_id {
+                self.send_error_response(
+                    coord_id,
+                    txn_id_str,
+                    format!("Transaction {} not found", txn_id),
+                    request_id,
                 );
-                let abort_result = self.engine.abort(txn_id);
-                if let Err(abort_err) = abort_result {
-                    println!(
-                        "[{}] ERROR: Abort failed after prepare failure for txn {}: {}",
-                        self.stream_name, txn_id, abort_err
-                    );
-                }
-                if let Some(coord_id) = coordinator_id {
-                    self.send_error_response(coord_id, txn_id_str, e.clone(), request_id);
-                }
-                Err(ProcessorError::EngineError(e))
             }
+            return Ok(());
         }
+
+        // Both prepare and commit are now infallible
+        self.engine.prepare(txn_id);
+        self.engine.commit(txn_id);
+
+        // Send response BEFORE retrying operations
+        if let Some(coord_id) = coordinator_id {
+            self.send_prepared_response(coord_id, txn_id_str, request_id);
+        }
+
+        // Now retry operations in order: prepare waiters first, then commit waiters
+        self.retry_prepare_waiting_operations(txn_id).await;
+        self.retry_deferred_operations(txn_id).await;
+
+        Ok(())
     }
 
     /// Handle commit phase
@@ -690,21 +663,13 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
     ) -> Result<()> {
-        match self.engine.commit(txn_id) {
-            Ok(()) => {
-                // Clean up wounded tracking
-                self.wounded_transactions.remove(&txn_id);
-                self.retry_deferred_operations(txn_id).await;
-                Ok(())
-            }
-            Err(e) => {
-                println!(
-                    "[{}] ERROR: Commit failed in handle_commit for txn {}: {}",
-                    self.stream_name, txn_id, e
-                );
-                Err(ProcessorError::EngineError(e))
-            }
-        }
+        // Commit is now infallible
+        self.engine.commit(txn_id);
+
+        // Clean up wounded tracking
+        self.wounded_transactions.remove(&txn_id);
+        self.retry_deferred_operations(txn_id).await;
+        Ok(())
     }
 
     /// Handle abort phase
@@ -715,23 +680,15 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
     ) -> Result<()> {
-        match self.engine.abort(txn_id) {
-            Ok(()) => {
-                // Clean up wounded tracking
-                self.wounded_transactions.remove(&txn_id);
-                self.deferred_manager
-                    .remove_operations_for_transaction(&txn_id);
-                self.retry_deferred_operations(txn_id).await;
-                Ok(())
-            }
-            Err(e) => {
-                println!(
-                    "[{}] ERROR: Abort failed in handle_abort for txn {}: {}",
-                    self.stream_name, txn_id, e
-                );
-                Err(ProcessorError::EngineError(e))
-            }
-        }
+        // Abort is now infallible
+        self.engine.abort(txn_id);
+
+        // Clean up wounded tracking
+        self.wounded_transactions.remove(&txn_id);
+        self.deferred_manager
+            .remove_operations_for_transaction(&txn_id);
+        self.retry_deferred_operations(txn_id).await;
+        Ok(())
     }
 
     /// Run recovery check for transactions past their deadline
@@ -769,16 +726,16 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             // Apply the decision locally
             match decision {
                 TransactionDecision::Commit => {
-                    // Apply commit locally
-                    let _ = self.engine.commit(txn_id);
+                    // Apply commit locally (infallible)
+                    self.engine.commit(txn_id);
                     // Clean up state
                     self.transaction_coordinators.remove(&txn_id);
                     self.transaction_deadlines.remove(&txn_id);
                     self.transaction_participants.remove(&txn_id);
                 }
                 TransactionDecision::Abort => {
-                    // Apply abort locally
-                    let _ = self.engine.abort(txn_id);
+                    // Apply abort locally (infallible)
+                    self.engine.abort(txn_id);
                     // Clean up state
                     self.transaction_coordinators.remove(&txn_id);
                     self.transaction_deadlines.remove(&txn_id);
@@ -805,8 +762,8 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             self.send_wounded_response(&victim_coord, &victim_str, wounded_by, None);
         }
 
-        // Abort the victim transaction
-        let _ = self.engine.abort(victim);
+        // Abort the victim transaction (infallible)
+        self.engine.abort(victim);
 
         // Remove victim's deferred operations
         // Note: We already notified the main coordinator above

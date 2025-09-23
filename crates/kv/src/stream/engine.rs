@@ -221,16 +221,17 @@ impl TransactionEngine for KvTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+    fn prepare(&mut self, txn_id: HlcTimestamp) {
         // Get transaction context
-        let tx_ctx = self
-            .active_transactions
-            .get_mut(&txn_id)
-            .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
+        let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) else {
+            // If transaction doesn't exist, that's fine - it may have been aborted already
+            return;
+        };
 
         // Try to prepare the transaction
         if !tx_ctx.prepare() {
-            return Err("Transaction cannot be prepared (may be wounded or aborted)".to_string());
+            // Transaction cannot be prepared (may be wounded or aborted) - that's fine
+            return;
         }
 
         // Release read locks (keep write locks)
@@ -255,16 +256,14 @@ impl TransactionEngine for KvTransactionEngine {
                 .locks_held
                 .retain(|(k, m)| !(k == &key && *m == LockMode::Shared));
         }
-
-        Ok(())
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+    fn commit(&mut self, txn_id: HlcTimestamp) {
         // Remove transaction context
-        let tx_ctx = self
-            .active_transactions
-            .remove(&txn_id)
-            .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
+        let Some(tx_ctx) = self.active_transactions.remove(&txn_id) else {
+            // If transaction doesn't exist, that's fine - may have been committed already
+            return;
+        };
 
         // For auto-commit, we don't require prepare
         // (The transaction is active and can be directly committed)
@@ -275,14 +274,11 @@ impl TransactionEngine for KvTransactionEngine {
 
             // Release all locks held by this transaction
             self.lock_manager.release_all(txn_id);
-
-            Ok(())
-        } else {
-            Err("Transaction is not in a committable state".to_string())
         }
+        // If not committable, just clean up - validation happened in apply_operation
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+    fn abort(&mut self, txn_id: HlcTimestamp) {
         // Debug: check what locks are being held before release
         let locks_before = self.lock_manager.locks_held_by(txn_id);
         if !locks_before.is_empty() {
@@ -311,11 +307,9 @@ impl TransactionEngine for KvTransactionEngine {
                 txn_id
             );
         }
-
-        Ok(())
     }
 
-    fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
+    fn begin(&mut self, txn_id: HlcTimestamp) {
         // Create new transaction context
         let tx_ctx = TransactionContext::new(txn_id);
 

@@ -15,7 +15,7 @@ fn test_basic_queue_operations() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Test enqueue
     let enqueue1 = QueueOperation::Enqueue {
@@ -75,7 +75,7 @@ fn test_basic_queue_operations() {
         OperationResult::Complete(QueueResponse::Dequeued(None))
     ));
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 #[test]
@@ -84,8 +84,8 @@ fn test_transaction_isolation() {
     let tx1 = create_timestamp(100);
     let tx2 = create_timestamp(200);
 
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // tx1 dequeues a value (acquires exclusive lock - blocks other operations)
     let dequeue_op = QueueOperation::Dequeue {
@@ -115,7 +115,7 @@ fn test_transaction_isolation() {
     }
 
     // Commit tx1 to release the exclusive lock
-    assert!(engine.commit(tx1).is_ok());
+    engine.commit(tx1);
 
     // tx2 can now read the size
     let result = engine.apply_operation(size_op.clone(), tx2);
@@ -123,11 +123,11 @@ fn test_transaction_isolation() {
         result,
         OperationResult::Complete(QueueResponse::Size(0)) // Still empty after dequeue
     ));
-    assert!(engine.commit(tx2).is_ok());
+    engine.commit(tx2);
 
     // Start a new transaction - should also see empty queue
     let tx3 = create_timestamp(300);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
 
     let result = engine.apply_operation(size_op, tx3);
     assert!(matches!(
@@ -135,7 +135,7 @@ fn test_transaction_isolation() {
         OperationResult::Complete(QueueResponse::Size(0)) // Still empty after dequeue
     ));
 
-    assert!(engine.commit(tx3).is_ok());
+    engine.commit(tx3);
 }
 
 #[test]
@@ -144,8 +144,8 @@ fn test_concurrent_access_with_locking() {
     let tx1 = create_timestamp(100);
     let tx2 = create_timestamp(200);
 
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // tx1 acquires exclusive lock by enqueuing
     let enqueue_op = QueueOperation::Enqueue {
@@ -165,7 +165,7 @@ fn test_concurrent_access_with_locking() {
     assert!(matches!(result, OperationResult::WouldBlock { blockers } if !blockers.is_empty()));
 
     // After tx1 commits, tx2 should be able to proceed
-    assert!(engine.commit(tx1).is_ok());
+    engine.commit(tx1);
 
     // Now tx2 can dequeue
     let result = engine.apply_operation(dequeue_op, tx2);
@@ -174,7 +174,7 @@ fn test_concurrent_access_with_locking() {
         OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "tx1_data"
     ));
 
-    assert!(engine.commit(tx2).is_ok());
+    engine.commit(tx2);
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn test_abort_rollback() {
     let mut engine = QueueTransactionEngine::new();
     let tx1 = create_timestamp(100);
 
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     // Enqueue some values
     for i in 0..3 {
@@ -205,11 +205,11 @@ fn test_abort_rollback() {
     ));
 
     // Abort the transaction
-    assert!(engine.abort(tx1).is_ok());
+    engine.abort(tx1);
 
     // Start new transaction - should see empty queue
     let tx2 = create_timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     let result = engine.apply_operation(size_op, tx2);
     assert!(matches!(
@@ -217,7 +217,7 @@ fn test_abort_rollback() {
         OperationResult::Complete(QueueResponse::Size(0))
     ));
 
-    assert!(engine.commit(tx2).is_ok());
+    engine.commit(tx2);
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn test_multiple_queues() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Create multiple queues
     let queues = ["queue_a", "queue_b", "queue_c"];
@@ -251,7 +251,7 @@ fn test_multiple_queues() {
         ));
     }
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 #[test]
@@ -259,7 +259,7 @@ fn test_peek_operation() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Enqueue a value
     let enqueue_op = QueueOperation::Enqueue {
@@ -298,7 +298,7 @@ fn test_peek_operation() {
         OperationResult::Complete(QueueResponse::Size(1))
     ));
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn test_clear_operation() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Enqueue multiple values
     for i in 0..5 {
@@ -356,7 +356,7 @@ fn test_clear_operation() {
         OperationResult::Complete(QueueResponse::IsEmpty(true))
     ));
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 #[test]
@@ -367,17 +367,17 @@ fn test_shared_locks_for_reads() {
     let tx3 = create_timestamp(300);
 
     // First transaction enqueues and commits
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     let enqueue_op = QueueOperation::Enqueue {
         queue_name: "shared_queue".to_string(),
         value: QueueValue::String("shared_data".to_string()),
     };
     engine.apply_operation(enqueue_op, tx1);
-    assert!(engine.commit(tx1).is_ok());
+    engine.commit(tx1);
 
     // Now two transactions try to read concurrently
-    engine.begin_transaction(tx2);
-    engine.begin_transaction(tx3);
+    engine.begin(tx2);
+    engine.begin(tx3);
 
     // Both should be able to peek (shared lock)
     let peek_op = QueueOperation::Peek {
@@ -413,8 +413,8 @@ fn test_shared_locks_for_reads() {
         OperationResult::Complete(QueueResponse::Size(1))
     ));
 
-    assert!(engine.commit(tx2).is_ok());
-    assert!(engine.commit(tx3).is_ok());
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -422,7 +422,7 @@ fn test_various_value_types() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Test different value types
     let values = [
@@ -458,7 +458,7 @@ fn test_various_value_types() {
         }
     }
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 #[test]
@@ -468,8 +468,8 @@ fn test_read_lock_released_on_prepare() {
     let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
     // Begin both transactions
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Peek queue1 (acquires shared lock)
     let peek_op = QueueOperation::Peek {
@@ -495,7 +495,7 @@ fn test_read_lock_released_on_prepare() {
     }
 
     // TX1: Prepare (releases read lock)
-    engine.prepare(tx1).expect("Prepare should succeed");
+    engine.prepare(tx1);
 
     // TX2: Retry dequeue (should now succeed since read lock was released)
     let result = engine.apply_operation(dequeue_op, tx2);
@@ -509,8 +509,8 @@ fn test_write_lock_not_released_on_prepare() {
     let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
     // Begin both transactions
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Dequeue from queue1 (acquires exclusive lock)
     let dequeue_op = QueueOperation::Dequeue {
@@ -535,7 +535,7 @@ fn test_write_lock_not_released_on_prepare() {
     }
 
     // TX1: Prepare (exclusive lock should NOT be released)
-    engine.prepare(tx1).expect("Prepare should succeed");
+    engine.prepare(tx1);
 
     // TX2: Retry peek (should still be blocked)
     let result = engine.apply_operation(peek_op.clone(), tx2);
@@ -550,7 +550,7 @@ fn test_write_lock_not_released_on_prepare() {
     }
 
     // TX1: Commit (should release exclusive lock)
-    engine.commit(tx1).expect("Commit should succeed");
+    engine.commit(tx1);
 
     // TX2: Retry peek (should now succeed)
     let result = engine.apply_operation(peek_op, tx2);

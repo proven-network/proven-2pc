@@ -12,7 +12,7 @@ fn test_resource_snapshot_and_restore() {
 
     // Initialize the resource
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine1.begin_transaction(txn1);
+    engine1.begin(txn1);
 
     let init_op = ResourceOperation::Initialize {
         name: "Test Token".to_string(),
@@ -40,12 +40,12 @@ fn test_resource_snapshot_and_restore() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Commit transaction
-    engine1.prepare(txn1).unwrap();
-    engine1.commit(txn1).unwrap();
+    engine1.prepare(txn1);
+    engine1.commit(txn1);
 
     // Do a transfer in a new transaction
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine1.begin_transaction(txn2);
+    engine1.begin(txn2);
 
     let transfer_op = ResourceOperation::Transfer {
         from: "alice".to_string(),
@@ -56,8 +56,8 @@ fn test_resource_snapshot_and_restore() {
     let result = engine1.apply_operation(transfer_op, txn2);
     assert!(matches!(result, OperationResult::Complete(_)));
 
-    engine1.prepare(txn2).unwrap();
-    engine1.commit(txn2).unwrap();
+    engine1.prepare(txn2);
+    engine1.commit(txn2);
 
     // Take a snapshot
     let snapshot = engine1.snapshot().unwrap();
@@ -69,7 +69,7 @@ fn test_resource_snapshot_and_restore() {
 
     // Verify balances were restored
     let txn3 = HlcTimestamp::new(3, 0, NodeId::new(1));
-    engine2.begin_transaction(txn3);
+    engine2.begin(txn3);
 
     // Check Alice's balance (1000 - 100 = 900)
     let balance_op = ResourceOperation::GetBalance {
@@ -126,7 +126,7 @@ fn test_snapshot_with_active_transaction_fails() {
 
     // Begin a transaction
     let txn = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn);
+    engine.begin(txn);
 
     // Try to snapshot with active transaction
     let result = engine.snapshot();
@@ -134,7 +134,7 @@ fn test_snapshot_with_active_transaction_fails() {
     assert!(result.unwrap_err().contains("active transactions"));
 
     // Commit the transaction
-    engine.commit(txn).unwrap();
+    engine.commit(txn);
 
     // Now snapshot should succeed
     let result = engine.snapshot();
@@ -147,7 +147,7 @@ fn test_snapshot_with_burns() {
 
     // Initialize and mint
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn1);
+    engine.begin(txn1);
 
     let init_op = ResourceOperation::Initialize {
         name: "Burn Token".to_string(),
@@ -163,12 +163,12 @@ fn test_snapshot_with_burns() {
     };
     engine.apply_operation(mint_op, txn1);
 
-    engine.prepare(txn1).unwrap();
-    engine.commit(txn1).unwrap();
+    engine.prepare(txn1);
+    engine.commit(txn1);
 
     // Burn some tokens
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine.begin_transaction(txn2);
+    engine.begin(txn2);
 
     let burn_op = ResourceOperation::Burn {
         from: "treasury".to_string(),
@@ -177,8 +177,8 @@ fn test_snapshot_with_burns() {
     };
     engine.apply_operation(burn_op, txn2);
 
-    engine.prepare(txn2).unwrap();
-    engine.commit(txn2).unwrap();
+    engine.prepare(txn2);
+    engine.commit(txn2);
 
     // Take snapshot
     let snapshot = engine.snapshot().unwrap();
@@ -189,7 +189,7 @@ fn test_snapshot_with_burns() {
 
     // Verify remaining balance and supply
     let txn3 = HlcTimestamp::new(3, 0, NodeId::new(1));
-    engine2.begin_transaction(txn3);
+    engine2.begin(txn3);
 
     let balance_op = ResourceOperation::GetBalance {
         account: "treasury".to_string(),
@@ -212,7 +212,7 @@ fn test_snapshot_compression() {
 
     // Initialize resource
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn1);
+    engine.begin(txn1);
 
     let init_op = ResourceOperation::Initialize {
         name: "Compression Test Token".to_string(),
@@ -232,8 +232,8 @@ fn test_snapshot_compression() {
         engine.apply_operation(mint_op, txn1);
     }
 
-    engine.prepare(txn1).unwrap();
-    engine.commit(txn1).unwrap();
+    engine.prepare(txn1);
+    engine.commit(txn1);
 
     // Take snapshot
     let snapshot = engine.snapshot().unwrap();
@@ -250,7 +250,7 @@ fn test_snapshot_compression() {
 
     // Spot check some accounts
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine2.begin_transaction(txn2);
+    engine2.begin(txn2);
 
     for i in [0, 100, 500, 999] {
         let balance_op = ResourceOperation::GetBalance {
@@ -269,7 +269,7 @@ fn test_metadata_preserved_in_snapshot() {
 
     // Initialize with specific metadata
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn1);
+    engine.begin(txn1);
 
     let init_op = ResourceOperation::Initialize {
         name: "My Special Token".to_string(),
@@ -278,12 +278,12 @@ fn test_metadata_preserved_in_snapshot() {
     };
     engine.apply_operation(init_op, txn1);
 
-    engine.prepare(txn1).unwrap();
-    engine.commit(txn1).unwrap();
+    engine.prepare(txn1);
+    engine.commit(txn1);
 
     // Update metadata
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine.begin_transaction(txn2);
+    engine.begin(txn2);
 
     let update_op = ResourceOperation::UpdateMetadata {
         name: Some("My Updated Token".to_string()),
@@ -291,8 +291,8 @@ fn test_metadata_preserved_in_snapshot() {
     };
     engine.apply_operation(update_op, txn2);
 
-    engine.prepare(txn2).unwrap();
-    engine.commit(txn2).unwrap();
+    engine.prepare(txn2);
+    engine.commit(txn2);
 
     // Snapshot and restore
     let snapshot = engine.snapshot().unwrap();
@@ -301,7 +301,7 @@ fn test_metadata_preserved_in_snapshot() {
 
     // Verify metadata was preserved
     let txn3 = HlcTimestamp::new(3, 0, NodeId::new(1));
-    engine2.begin_transaction(txn3);
+    engine2.begin(txn3);
 
     let metadata_op = ResourceOperation::GetMetadata;
     let result = engine2.apply_operation(metadata_op, txn3);

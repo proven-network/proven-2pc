@@ -13,7 +13,7 @@ fn test_queue_snapshot_and_restore() {
 
     // Begin transaction and add data
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine1.begin_transaction(txn1);
+    engine1.begin(txn1);
 
     // Enqueue some values to different queues
     let op1 = QueueOperation::Enqueue {
@@ -38,8 +38,8 @@ fn test_queue_snapshot_and_restore() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Commit transaction
-    engine1.prepare(txn1).unwrap();
-    engine1.commit(txn1).unwrap();
+    engine1.prepare(txn1);
+    engine1.commit(txn1);
 
     // Take a snapshot
     let snapshot = engine1.snapshot().unwrap();
@@ -51,7 +51,7 @@ fn test_queue_snapshot_and_restore() {
 
     // Verify data was restored by dequeuing
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine2.begin_transaction(txn2);
+    engine2.begin(txn2);
 
     // Dequeue from orders queue
     let dequeue1 = QueueOperation::Dequeue {
@@ -92,7 +92,7 @@ fn test_snapshot_with_active_transaction_fails() {
 
     // Begin a transaction
     let txn = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn);
+    engine.begin(txn);
 
     // Try to snapshot with active transaction
     let result = engine.snapshot();
@@ -100,7 +100,7 @@ fn test_snapshot_with_active_transaction_fails() {
     assert!(result.unwrap_err().contains("active transactions"));
 
     // Commit the transaction
-    engine.commit(txn).unwrap();
+    engine.commit(txn);
 
     // Now snapshot should succeed
     let result = engine.snapshot();
@@ -113,7 +113,7 @@ fn test_snapshot_with_empty_queues() {
 
     // Add data then dequeue everything
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn1);
+    engine.begin(txn1);
 
     // Enqueue values
     let op1 = QueueOperation::Enqueue {
@@ -128,12 +128,12 @@ fn test_snapshot_with_empty_queues() {
     };
     engine.apply_operation(op2, txn1);
 
-    engine.prepare(txn1).unwrap();
-    engine.commit(txn1).unwrap();
+    engine.prepare(txn1);
+    engine.commit(txn1);
 
     // Dequeue everything in a new transaction
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine.begin_transaction(txn2);
+    engine.begin(txn2);
 
     let dequeue1 = QueueOperation::Dequeue {
         queue_name: "temp".to_string(),
@@ -145,8 +145,8 @@ fn test_snapshot_with_empty_queues() {
     };
     engine.apply_operation(dequeue2, txn2);
 
-    engine.prepare(txn2).unwrap();
-    engine.commit(txn2).unwrap();
+    engine.prepare(txn2);
+    engine.commit(txn2);
 
     // Take snapshot
     let snapshot = engine.snapshot().unwrap();
@@ -157,7 +157,7 @@ fn test_snapshot_with_empty_queues() {
 
     // Verify queue is empty
     let txn3 = HlcTimestamp::new(3, 0, NodeId::new(1));
-    engine2.begin_transaction(txn3);
+    engine2.begin(txn3);
 
     let is_empty = QueueOperation::IsEmpty {
         queue_name: "temp".to_string(),
@@ -174,7 +174,7 @@ fn test_snapshot_compression() {
 
     // Add a lot of repetitive data to test compression
     let txn = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn);
+    engine.begin(txn);
 
     // Create data with good compression potential
     let long_string = "A".repeat(1000);
@@ -186,8 +186,8 @@ fn test_snapshot_compression() {
         engine.apply_operation(op, txn);
     }
 
-    engine.prepare(txn).unwrap();
-    engine.commit(txn).unwrap();
+    engine.prepare(txn);
+    engine.commit(txn);
 
     // Take snapshot
     let snapshot = engine.snapshot().unwrap();
@@ -204,7 +204,7 @@ fn test_snapshot_compression() {
 
     // Spot check a queue
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine2.begin_transaction(txn2);
+    engine2.begin(txn2);
 
     let size_op = QueueOperation::Size {
         queue_name: "queue0".to_string(),
@@ -222,7 +222,7 @@ fn test_queue_ordering_preserved_in_snapshot() {
 
     // Create a queue with specific ordering
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn1);
+    engine.begin(txn1);
 
     for i in 1..=5 {
         let op = QueueOperation::Enqueue {
@@ -232,8 +232,8 @@ fn test_queue_ordering_preserved_in_snapshot() {
         engine.apply_operation(op, txn1);
     }
 
-    engine.prepare(txn1).unwrap();
-    engine.commit(txn1).unwrap();
+    engine.prepare(txn1);
+    engine.commit(txn1);
 
     // Snapshot and restore
     let snapshot = engine.snapshot().unwrap();
@@ -242,7 +242,7 @@ fn test_queue_ordering_preserved_in_snapshot() {
 
     // Verify order is preserved by dequeuing
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine2.begin_transaction(txn2);
+    engine2.begin(txn2);
 
     for expected in 1..=5 {
         let dequeue = QueueOperation::Dequeue {

@@ -24,7 +24,7 @@ fn test_read_write_conflict_same_table() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -33,11 +33,11 @@ fn test_read_write_conflict_same_table() {
         tx1,
     );
     assert!(matches!(result, OperationResult::Complete(_)));
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Start reading from users table
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -49,7 +49,7 @@ fn test_read_write_conflict_same_table() {
 
     // Transaction 3: Try to write to users table - should block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -62,7 +62,7 @@ fn test_read_write_conflict_same_table() {
     );
 
     // Commit tx2 to unblock tx3
-    engine.commit(tx2).unwrap();
+    engine.commit(tx2);
 
     // Now tx3 should succeed
     let result = engine.apply_operation(
@@ -73,7 +73,7 @@ fn test_read_write_conflict_same_table() {
         tx3,
     );
     assert!(matches!(result, OperationResult::Complete(_)));
-    engine.commit(tx3).unwrap();
+    engine.commit(tx3);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn test_write_write_conflict() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -97,11 +97,11 @@ fn test_write_write_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Start updating account
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -113,7 +113,7 @@ fn test_write_write_conflict() {
 
     // Transaction 3: Try to update same account - should block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -126,7 +126,7 @@ fn test_write_write_conflict() {
     );
 
     // Commit tx2
-    engine.commit(tx2).unwrap();
+    engine.commit(tx2);
 
     // Now tx3 should succeed
     let result = engine.apply_operation(
@@ -137,7 +137,7 @@ fn test_write_write_conflict() {
         tx3,
     );
     assert!(matches!(result, OperationResult::Complete(_)));
-    engine.commit(tx3).unwrap();
+    engine.commit(tx3);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn test_no_conflict_different_tables() {
 
     // Create tables
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -161,11 +161,11 @@ fn test_no_conflict_different_tables() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Write to users
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -177,7 +177,7 @@ fn test_no_conflict_different_tables() {
 
     // Transaction 3: Write to products - should NOT block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -188,8 +188,8 @@ fn test_no_conflict_different_tables() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Both should commit successfully
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn test_no_conflict_different_rows_with_filter() {
 
     // Create table with data
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -213,11 +213,11 @@ fn test_no_conflict_different_rows_with_filter() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Update electronics items
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -229,7 +229,7 @@ fn test_no_conflict_different_rows_with_filter() {
 
     // Transaction 3: Update books items - should NOT block (different predicates)
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -241,8 +241,8 @@ fn test_no_conflict_different_rows_with_filter() {
     // so they don't conflict. This is correct behavior.
     assert!(matches!(result, OperationResult::Complete(_)));
 
-    engine.commit(tx2).unwrap();
-    engine.abort(tx3).unwrap();
+    engine.commit(tx2);
+    engine.abort(tx3);
 }
 
 #[test]
@@ -251,7 +251,7 @@ fn test_read_read_no_conflict() {
 
     // Create table with data
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -266,11 +266,11 @@ fn test_read_read_no_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Read data
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -282,7 +282,7 @@ fn test_read_read_no_conflict() {
 
     // Transaction 3: Also read data - should NOT block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -293,8 +293,8 @@ fn test_read_read_no_conflict() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Both can commit
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn test_insert_insert_conflict_same_pk() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -311,11 +311,11 @@ fn test_insert_insert_conflict_same_pk() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Insert with id=1
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -327,7 +327,7 @@ fn test_insert_insert_conflict_same_pk() {
 
     // Transaction 3: Try to insert with same id - should block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -339,8 +339,8 @@ fn test_insert_insert_conflict_same_pk() {
         matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
-    engine.commit(tx2).unwrap();
-    engine.abort(tx3).unwrap();
+    engine.commit(tx2);
+    engine.abort(tx3);
 }
 
 #[test]
@@ -349,7 +349,7 @@ fn test_delete_read_conflict() {
 
     // Create table with data
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -364,11 +364,11 @@ fn test_delete_read_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Read all records (no filter for conservative conflict detection)
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -380,7 +380,7 @@ fn test_delete_read_conflict() {
 
     // Transaction 3: Try to delete records - should block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -392,8 +392,8 @@ fn test_delete_read_conflict() {
         matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -402,7 +402,7 @@ fn test_prepare_releases_read_locks() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -417,11 +417,11 @@ fn test_prepare_releases_read_locks() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Read data
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -433,7 +433,7 @@ fn test_prepare_releases_read_locks() {
 
     // Transaction 3: Try to write - should block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -446,7 +446,7 @@ fn test_prepare_releases_read_locks() {
     );
 
     // Prepare tx2 - this should release read predicates
-    engine.prepare(tx2).unwrap();
+    engine.prepare(tx2);
 
     // Now tx3 should succeed since read predicates were released
     let result = engine.apply_operation(
@@ -459,8 +459,8 @@ fn test_prepare_releases_read_locks() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Both can commit
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -469,7 +469,7 @@ fn test_complex_multi_statement_transaction() {
 
     // Setup
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -493,11 +493,11 @@ fn test_complex_multi_statement_transaction() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Transfer money (multiple statements)
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     // Read source balance
     let result = engine.apply_operation(
@@ -531,7 +531,7 @@ fn test_complex_multi_statement_transaction() {
 
     // Transaction 3: Try to read account 1 - should block (tx2 has write predicate)
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -545,7 +545,7 @@ fn test_complex_multi_statement_transaction() {
 
     // Transaction 4: Read transactions table - should NOT block
     let tx4 = timestamp(4);
-    engine.begin_transaction(tx4);
+    engine.begin(tx4);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -556,9 +556,9 @@ fn test_complex_multi_statement_transaction() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Clean up
-    engine.commit(tx2).unwrap();
-    engine.abort(tx3).unwrap();
-    engine.commit(tx4).unwrap();
+    engine.commit(tx2);
+    engine.abort(tx3);
+    engine.commit(tx4);
 }
 
 #[test]
@@ -567,7 +567,7 @@ fn test_phantom_prevention() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -582,11 +582,11 @@ fn test_phantom_prevention() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Read all orders (conservative approach for phantom prevention)
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -599,7 +599,7 @@ fn test_phantom_prevention() {
     // Transaction 3: Try to insert a new order - should block
     // (This prevents phantoms - tx2's read predicate covers the entire table)
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -611,8 +611,8 @@ fn test_phantom_prevention() {
         matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -621,7 +621,7 @@ fn test_aggregation_conflict() {
 
     // Create table with data
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -637,11 +637,11 @@ fn test_aggregation_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Calculate sum of sales
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -654,7 +654,7 @@ fn test_aggregation_conflict() {
     // Transaction 3: Try to insert new sale - should block
     // (Aggregation needs stable view of all data)
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -666,8 +666,8 @@ fn test_aggregation_conflict() {
         matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == tx2))
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -676,7 +676,7 @@ fn test_non_overlapping_ranges_no_conflict() {
 
     // Create table with data
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -695,11 +695,11 @@ fn test_non_overlapping_ranges_no_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query old events (timestamp < 500)
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -712,7 +712,7 @@ fn test_non_overlapping_ranges_no_conflict() {
     // Transaction 3: Query recent events (timestamp > 1000) - should NOT block
     // These ranges don't overlap: (−∞, 500) vs (1000, +∞)
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -726,8 +726,8 @@ fn test_non_overlapping_ranges_no_conflict() {
     );
 
     // Both can commit
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -736,7 +736,7 @@ fn test_compound_predicates_different_columns() {
 
     // Create table with composite data
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -762,11 +762,11 @@ fn test_compound_predicates_different_columns() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Update NYC pending orders
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -781,7 +781,7 @@ fn test_compound_predicates_different_columns() {
     // Transaction 3: Update LA shipped orders - should NOT block
     // Different combination: (NYC, pending) vs (LA, shipped)
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -797,8 +797,8 @@ fn test_compound_predicates_different_columns() {
     );
 
     // Both can commit
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -807,7 +807,7 @@ fn test_between_ranges_no_overlap() {
 
     // Create table with numeric data
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -826,11 +826,11 @@ fn test_between_ranges_no_overlap() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Process low values (10-30)
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -845,7 +845,7 @@ fn test_between_ranges_no_overlap() {
     // Transaction 3: Process high values (70-100) - should NOT block
     // Ranges [10, 30] and [70, 100] don't overlap
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -861,8 +861,8 @@ fn test_between_ranges_no_overlap() {
     );
 
     // Both can commit
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -871,7 +871,7 @@ fn test_in_list_predicates() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -889,11 +889,11 @@ fn test_in_list_predicates() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Update specific tasks by ID
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -906,7 +906,7 @@ fn test_in_list_predicates() {
     // Transaction 3: Update different specific tasks - should NOT block
     // IN lists (1,2,3) and (4,5,6) don't overlap
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -920,8 +920,8 @@ fn test_in_list_predicates() {
     );
 
     // Both can commit
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -930,7 +930,7 @@ fn test_overlapping_ranges_do_conflict() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -945,11 +945,11 @@ fn test_overlapping_ranges_do_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query values 20-40
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -962,7 +962,7 @@ fn test_overlapping_ranges_do_conflict() {
     // Transaction 3: Update overlapping range 30-50 - SHOULD block
     // Ranges [20, 40] and [30, 50] overlap at [30, 40]
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -975,8 +975,8 @@ fn test_overlapping_ranges_do_conflict() {
         "Overlapping ranges should conflict"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.abort(tx3).unwrap();
+    engine.commit(tx2);
+    engine.abort(tx3);
 }
 
 #[test]
@@ -985,7 +985,7 @@ fn test_same_column_different_values_no_conflict() {
 
     // Create indexed table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1010,11 +1010,11 @@ fn test_same_column_different_values_no_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query active users
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1027,7 +1027,7 @@ fn test_same_column_different_values_no_conflict() {
     // Transaction 3: Update inactive users - should NOT block
     // Different equality predicates on indexed column
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1040,8 +1040,8 @@ fn test_same_column_different_values_no_conflict() {
         "Different equality values on same column should not conflict"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -1050,7 +1050,7 @@ fn test_complex_and_predicates_partial_overlap() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1077,11 +1077,11 @@ fn test_complex_and_predicates_partial_overlap() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query expensive electronics
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1096,7 +1096,7 @@ fn test_complex_and_predicates_partial_overlap() {
     // Transaction 3: Update cheap books - should NOT block
     // (electronics AND price > 150) doesn't overlap with (books AND price < 50)
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1114,7 +1114,7 @@ fn test_complex_and_predicates_partial_overlap() {
     // Transaction 4: Update expensive electronics - SHOULD block
     // This overlaps with tx2's predicate
     let tx4 = timestamp(4);
-    engine.begin_transaction(tx4);
+    engine.begin(tx4);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1129,9 +1129,9 @@ fn test_complex_and_predicates_partial_overlap() {
         "Overlapping compound predicates should conflict"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
-    engine.abort(tx4).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
+    engine.abort(tx4);
 }
 
 #[test]
@@ -1140,7 +1140,7 @@ fn test_not_equal_predicate() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1157,11 +1157,11 @@ fn test_not_equal_predicate() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query all non-A items
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1175,7 +1175,7 @@ fn test_not_equal_predicate() {
     // Since NOT EQUAL is not extracted as a specific predicate,
     // tx2 falls back to FullTable predicate, which conflicts with everything
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1189,8 +1189,8 @@ fn test_not_equal_predicate() {
         "NOT EQUAL should use conservative FullTable predicate and block"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.abort(tx3).unwrap();
+    engine.commit(tx2);
+    engine.abort(tx3);
 }
 
 #[test]
@@ -1199,7 +1199,7 @@ fn test_like_predicates_no_conflict() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1219,11 +1219,11 @@ fn test_like_predicates_no_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query gmail users
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1236,7 +1236,7 @@ fn test_like_predicates_no_conflict() {
     // Transaction 3: Update yahoo users - should NOT block
     // Different LIKE patterns that don't overlap
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1249,8 +1249,8 @@ fn test_like_predicates_no_conflict() {
         "Non-overlapping LIKE patterns should not conflict"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -1259,7 +1259,7 @@ fn test_is_null_predicates() {
 
     // Create table with nullable column
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1284,11 +1284,11 @@ fn test_is_null_predicates() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query orders with notes
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1301,7 +1301,7 @@ fn test_is_null_predicates() {
     // Transaction 3: Update orders without notes - should NOT block
     // IS NULL vs IS NOT NULL are disjoint predicates
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1316,7 +1316,7 @@ fn test_is_null_predicates() {
 
     // Transaction 4: Query orders without customers
     let tx4 = timestamp(4);
-    engine.begin_transaction(tx4);
+    engine.begin(tx4);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1327,9 +1327,9 @@ fn test_is_null_predicates() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // All should be able to commit
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
-    engine.commit(tx4).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
+    engine.commit(tx4);
 }
 
 #[test]
@@ -1338,7 +1338,7 @@ fn test_like_prefix_patterns() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1358,11 +1358,11 @@ fn test_like_prefix_patterns() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query /home files
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1375,7 +1375,7 @@ fn test_like_prefix_patterns() {
     // Transaction 3: Update /var files - should NOT block
     // Prefix patterns '/home/%' and '/var/%' don't overlap
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1389,8 +1389,8 @@ fn test_like_prefix_patterns() {
         "Non-overlapping LIKE prefixes should not conflict"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -1399,7 +1399,7 @@ fn test_like_vs_equals_no_conflict() {
 
     // Create table
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1416,11 +1416,11 @@ fn test_like_vs_equals_no_conflict() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query products starting with 'ap'
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1433,7 +1433,7 @@ fn test_like_vs_equals_no_conflict() {
     // Transaction 3: Update 'banana' - should NOT block
     // 'banana' doesnt match pattern 'ap%'
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1449,7 +1449,7 @@ fn test_like_vs_equals_no_conflict() {
     // Transaction 4: Update 'apple' - SHOULD block
     // 'apple' matches pattern 'ap%'
     let tx4 = timestamp(4);
-    engine.begin_transaction(tx4);
+    engine.begin(tx4);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1462,9 +1462,9 @@ fn test_like_vs_equals_no_conflict() {
         "Equality predicate 'apple' should conflict with LIKE 'ap%'"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
-    engine.abort(tx4).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
+    engine.abort(tx4);
 }
 
 // ==================== SUBQUERY PREDICATE TESTS ====================
@@ -1475,7 +1475,7 @@ fn test_subquery_read_predicates() {
 
     // Create tables
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1505,11 +1505,11 @@ fn test_subquery_read_predicates() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Query with subquery - should lock both tables
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1522,7 +1522,7 @@ fn test_subquery_read_predicates() {
     // Transaction 3: Try to modify departments - should block
     // because tx2's subquery is reading from departments
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1538,7 +1538,7 @@ fn test_subquery_read_predicates() {
     // Transaction 4: Try to modify users - should also block
     // because tx2's outer query is reading from users
     let tx4 = timestamp(4);
-    engine.begin_transaction(tx4);
+    engine.begin(tx4);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1552,7 +1552,7 @@ fn test_subquery_read_predicates() {
     );
 
     // Commit tx2 to release locks
-    engine.commit(tx2).unwrap();
+    engine.commit(tx2);
 
     // Now tx3 and tx4 should succeed
     let result = engine.apply_operation(
@@ -1573,8 +1573,8 @@ fn test_subquery_read_predicates() {
     );
     assert!(matches!(result, OperationResult::Complete(_)));
 
-    engine.commit(tx3).unwrap();
-    engine.commit(tx4).unwrap();
+    engine.commit(tx3);
+    engine.commit(tx4);
 }
 
 #[test]
@@ -1583,7 +1583,7 @@ fn test_exists_subquery_predicates() {
 
     // Create tables
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1613,11 +1613,11 @@ fn test_exists_subquery_predicates() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: EXISTS subquery
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1629,7 +1629,7 @@ fn test_exists_subquery_predicates() {
 
     // Transaction 3: Try to insert into orders - should block
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1642,8 +1642,8 @@ fn test_exists_subquery_predicates() {
         "EXISTS subquery should lock orders table"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -1652,7 +1652,7 @@ fn test_scalar_subquery_predicates() {
 
     // Create tables
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1682,11 +1682,11 @@ fn test_scalar_subquery_predicates() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Scalar subquery
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1699,7 +1699,7 @@ fn test_scalar_subquery_predicates() {
     // Transaction 3: Try to update products in category 2 - should block
     // because the scalar subquery is reading products with category_id = 2
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1712,8 +1712,8 @@ fn test_scalar_subquery_predicates() {
         "Scalar subquery should lock products table"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.commit(tx3).unwrap();
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -1722,7 +1722,7 @@ fn test_nested_subquery_predicates() {
 
     // Create tables
     let tx1 = timestamp(1);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
     engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1765,11 +1765,11 @@ fn test_nested_subquery_predicates() {
         },
         tx1,
     );
-    engine.commit(tx1).unwrap();
+    engine.commit(tx1);
 
     // Transaction 2: Nested subqueries
     let tx2 = timestamp(2);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
     let result = engine.apply_operation(
         SqlOperation::Query {
             params: None,
@@ -1782,7 +1782,7 @@ fn test_nested_subquery_predicates() {
     // Transaction 3: Try to modify t3 - should block
     // because the innermost subquery reads from t3
     let tx3 = timestamp(3);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1797,7 +1797,7 @@ fn test_nested_subquery_predicates() {
 
     // Transaction 4: Try to modify t2 - should also block
     let tx4 = timestamp(4);
-    engine.begin_transaction(tx4);
+    engine.begin(tx4);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1812,7 +1812,7 @@ fn test_nested_subquery_predicates() {
 
     // Transaction 5: Try to modify t1 - should also block
     let tx5 = timestamp(5);
-    engine.begin_transaction(tx5);
+    engine.begin(tx5);
     let result = engine.apply_operation(
         SqlOperation::Execute {
             params: None,
@@ -1825,8 +1825,8 @@ fn test_nested_subquery_predicates() {
         "Outer query should lock t1 table"
     );
 
-    engine.commit(tx2).unwrap();
-    engine.abort(tx3).unwrap();
-    engine.abort(tx4).unwrap();
-    engine.abort(tx5).unwrap();
+    engine.commit(tx2);
+    engine.abort(tx3);
+    engine.abort(tx4);
+    engine.abort(tx5);
 }

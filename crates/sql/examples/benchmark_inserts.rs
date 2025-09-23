@@ -18,7 +18,7 @@ fn main() {
     // Create table
     println!("Creating table...");
     let txn_id = HlcTimestamp::new(1000000000, 0, NodeId::new(1));
-    sql_engine.begin_transaction(txn_id);
+    sql_engine.begin(txn_id);
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE bench (
@@ -33,9 +33,7 @@ fn main() {
 
     match sql_engine.apply_operation(create_table, txn_id) {
         proven_stream::OperationResult::Complete(_) => {
-            sql_engine
-                .commit(txn_id)
-                .expect("Failed to commit table creation");
+            sql_engine.commit(txn_id);
             println!("✓ Table created");
         }
         _ => panic!("Failed to create table"),
@@ -56,7 +54,7 @@ fn main() {
     for i in 0..NUM_INSERTS {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
-        sql_engine.begin_transaction(txn_id);
+        sql_engine.begin(txn_id);
 
         // Create insert operation
         let insert = SqlOperation::Execute {
@@ -73,10 +71,7 @@ fn main() {
         match sql_engine.apply_operation(insert, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
-                if let Err(e) = sql_engine.commit(txn_id) {
-                    eprintln!("\nError committing insert {}: {}", i, e);
-                    break;
-                }
+                sql_engine.commit(txn_id);
             }
             _ => {
                 eprintln!("\nError at insert {}", i);
@@ -120,7 +115,7 @@ fn main() {
     // Verify count
     println!("\nVerifying insert count...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    sql_engine.begin_transaction(verify_txn);
+    sql_engine.begin(verify_txn);
 
     let count_query = SqlOperation::Query {
         sql: "SELECT COUNT(*) FROM bench".to_string(),
@@ -131,9 +126,7 @@ fn main() {
         proven_stream::OperationResult::Complete(_response) => {
             // In a real system, we'd parse the response to get the actual count
             println!("✓ Count query executed successfully");
-            sql_engine
-                .commit(verify_txn)
-                .expect("Failed to commit count query");
+            sql_engine.commit(verify_txn);
         }
         _ => println!("⚠ Count query failed"),
     }

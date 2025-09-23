@@ -35,7 +35,7 @@ impl TestContext {
     /// Begin a new transaction
     pub fn begin(&mut self) {
         let tx = self.next_timestamp();
-        self.engine.begin_transaction(tx);
+        self.engine.begin(tx);
         self.in_transaction = true;
         self.current_tx = Some(tx);
     }
@@ -43,9 +43,7 @@ impl TestContext {
     /// Commit the current transaction
     pub fn commit(&mut self) {
         if let Some(tx) = self.current_tx {
-            self.engine
-                .commit(tx)
-                .expect("Failed to commit transaction");
+            self.engine.commit(tx);
             self.in_transaction = false;
             self.current_tx = None;
         }
@@ -54,7 +52,7 @@ impl TestContext {
     /// Abort the current transaction
     pub fn abort(&mut self) {
         if let Some(tx) = self.current_tx {
-            self.engine.abort(tx).expect("Failed to abort transaction");
+            self.engine.abort(tx);
             self.in_transaction = false;
             self.current_tx = None;
         }

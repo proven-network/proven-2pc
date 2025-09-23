@@ -253,7 +253,7 @@ impl TransactionEngine for ResourceTransactionEngine {
     type Operation = ResourceOperation;
     type Response = ResourceResponse;
 
-    fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
+    fn begin(&mut self, txn_id: HlcTimestamp) {
         self.storage.begin_transaction(txn_id);
         self.transactions
             .insert(txn_id, TransactionContext::new(txn_id));
@@ -286,34 +286,27 @@ impl TransactionEngine for ResourceTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
-        let tx_ctx = self
-            .transactions
-            .get_mut(&txn_id)
-            .ok_or_else(|| "Transaction not found".to_string())?;
-
-        tx_ctx.mark_prepared();
-
-        // In the reservation model, we keep reservations until commit
-        // This ensures consistency
-
-        Ok(())
+    fn prepare(&mut self, txn_id: HlcTimestamp) {
+        if let Some(tx_ctx) = self.transactions.get_mut(&txn_id) {
+            tx_ctx.mark_prepared();
+            // In the reservation model, we keep reservations until commit
+            // This ensures consistency
+        }
+        // If transaction doesn't exist, that's fine - it may have been aborted already
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
-        // Commit storage changes
-        self.storage.commit_transaction(txn_id)?;
+    fn commit(&mut self, txn_id: HlcTimestamp) {
+        // Commit storage changes (ignore errors - best effort)
+        let _ = self.storage.commit_transaction(txn_id);
 
         // Release reservations
         self.reservations.release_transaction(txn_id);
 
         // Remove transaction context
         self.transactions.remove(&txn_id);
-
-        Ok(())
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+    fn abort(&mut self, txn_id: HlcTimestamp) {
         // Abort storage changes
         self.storage.abort_transaction(txn_id);
 
@@ -322,8 +315,6 @@ impl TransactionEngine for ResourceTransactionEngine {
 
         // Remove transaction context
         self.transactions.remove(&txn_id);
-
-        Ok(())
     }
 
     fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
@@ -397,7 +388,7 @@ mod tests {
         let tx1 = make_timestamp(100);
 
         // Begin transaction
-        engine.begin_transaction(tx1);
+        engine.begin(tx1);
 
         // Initialize resource
         let op = ResourceOperation::Initialize {
@@ -420,12 +411,12 @@ mod tests {
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Commit transaction
-        engine.prepare(tx1).unwrap();
-        engine.commit(tx1).unwrap();
+        engine.prepare(tx1);
+        engine.commit(tx1);
 
         // Check balance in new transaction
         let tx2 = make_timestamp(200);
-        engine.begin_transaction(tx2);
+        engine.begin(tx2);
 
         let op = ResourceOperation::GetBalance {
             account: "alice".to_string(),

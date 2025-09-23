@@ -60,26 +60,28 @@ pub trait TransactionEngine: Send + Sync {
         txn_id: HlcTimestamp,
     ) -> OperationResult<Self::Response>;
 
+    /// Begin a new transaction
+    ///
+    /// Initialize any necessary transaction state.
+    fn begin(&mut self, txn_id: HlcTimestamp);
+
     /// Prepare a transaction for commit (2PC phase 1)
     ///
-    /// Should validate that the transaction can be committed and
-    /// make any necessary preparations, but not actually commit.
-    fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
+    /// Marks the transaction as prepared. The transaction must exist.
+    /// This is an infallible operation - validation should happen in apply_operation.
+    fn prepare(&mut self, txn_id: HlcTimestamp);
 
     /// Commit a prepared transaction (2PC phase 2)
     ///
     /// Makes all changes from the transaction visible.
-    fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
+    /// This is an infallible operation - the transaction must exist.
+    fn commit(&mut self, txn_id: HlcTimestamp);
 
     /// Abort a transaction, rolling back any changes
     ///
-    /// Should clean up all transaction state and release locks.
-    fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String>;
-
-    /// Begin a new transaction
-    ///
-    /// Initialize any necessary transaction state.
-    fn begin_transaction(&mut self, txn_id: HlcTimestamp);
+    /// Cleans up all transaction state and releases locks.
+    /// This is an infallible operation - safe to call even if transaction doesn't exist.
+    fn abort(&mut self, txn_id: HlcTimestamp);
 
     /// Check if a transaction is currently active
     fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool;

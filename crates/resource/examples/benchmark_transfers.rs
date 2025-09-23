@@ -20,7 +20,7 @@ fn main() {
     // Initialize the resource
     println!("Initializing resource...");
     let init_txn = HlcTimestamp::new(1000000000, 0, NodeId::new(1));
-    resource_engine.begin_transaction(init_txn);
+    resource_engine.begin(init_txn);
 
     let init_op = ResourceOperation::Initialize {
         name: "BenchToken".to_string(),
@@ -30,9 +30,7 @@ fn main() {
 
     match resource_engine.apply_operation(init_op, init_txn) {
         proven_stream::OperationResult::Complete(_) => {
-            resource_engine
-                .commit(init_txn)
-                .expect("Failed to commit initialization");
+            resource_engine.commit(init_txn);
             println!("✓ Resource initialized");
         }
         _ => panic!("Failed to initialize resource"),
@@ -41,7 +39,7 @@ fn main() {
     // Mint initial supply to the source account
     println!("Minting initial supply...");
     let mint_txn = HlcTimestamp::new(1000000001, 0, NodeId::new(1));
-    resource_engine.begin_transaction(mint_txn);
+    resource_engine.begin(mint_txn);
 
     // Mint 1 billion tokens (with 6 decimals)
     let mint_amount = Amount::from(Decimal::from(1_000_000_000i64));
@@ -53,9 +51,7 @@ fn main() {
 
     match resource_engine.apply_operation(mint_op, mint_txn) {
         proven_stream::OperationResult::Complete(_) => {
-            resource_engine
-                .commit(mint_txn)
-                .expect("Failed to commit mint");
+            resource_engine.commit(mint_txn);
             println!("✓ Initial supply minted");
         }
         _ => panic!("Failed to mint initial supply"),
@@ -69,7 +65,7 @@ fn main() {
 
     for i in 0..NUM_ACCOUNTS {
         let setup_txn = HlcTimestamp::new(1500000000 + i as u64, 0, NodeId::new(1));
-        resource_engine.begin_transaction(setup_txn);
+        resource_engine.begin(setup_txn);
 
         let transfer_op = ResourceOperation::Transfer {
             from: "source_account".to_string(),
@@ -80,9 +76,7 @@ fn main() {
 
         match resource_engine.apply_operation(transfer_op, setup_txn) {
             proven_stream::OperationResult::Complete(_) => {
-                resource_engine
-                    .commit(setup_txn)
-                    .expect("Failed to commit setup transfer");
+                resource_engine.commit(setup_txn);
             }
             _ => panic!("Failed to setup account {}", i),
         }
@@ -106,7 +100,7 @@ fn main() {
     for i in 0..NUM_TRANSFERS {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
-        resource_engine.begin_transaction(txn_id);
+        resource_engine.begin(txn_id);
 
         // Create transfer operation
         // Transfer between different account pairs to avoid conflicts
@@ -146,15 +140,12 @@ fn main() {
         match resource_engine.apply_operation(transfer, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
-                if let Err(e) = resource_engine.commit(txn_id) {
-                    eprintln!("\nError committing transfer {}: {}", i, e);
-                    break;
-                }
+                resource_engine.commit(txn_id);
             }
             proven_stream::OperationResult::WouldBlock { .. } => {
                 // In a real system, we'd retry after the blocking transaction
                 // For benchmark, just skip and continue
-                resource_engine.abort(txn_id).ok();
+                resource_engine.abort(txn_id);
                 continue;
             }
         }
@@ -195,7 +186,7 @@ fn main() {
     // Verify balances
     println!("\nVerifying sample balances...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    resource_engine.begin_transaction(verify_txn);
+    resource_engine.begin(verify_txn);
 
     // Check source account balance
     let balance_op = ResourceOperation::GetBalance {
@@ -228,9 +219,7 @@ fn main() {
         }
     }
 
-    resource_engine
-        .commit(verify_txn)
-        .expect("Failed to commit verification transaction");
+    resource_engine.commit(verify_txn);
 
     println!(
         "✓ Verified {}/{} sample account balances",
@@ -240,15 +229,13 @@ fn main() {
 
     // Check total supply
     let supply_txn = HlcTimestamp::new(10000000000, 0, NodeId::new(1));
-    resource_engine.begin_transaction(supply_txn);
+    resource_engine.begin(supply_txn);
 
     let supply_op = ResourceOperation::GetTotalSupply;
     match resource_engine.apply_operation(supply_op, supply_txn) {
         proven_stream::OperationResult::Complete(_) => {
             println!("✓ Total supply query successful");
-            resource_engine
-                .commit(supply_txn)
-                .expect("Failed to commit supply query");
+            resource_engine.commit(supply_txn);
         }
         _ => println!("⚠ Total supply query failed"),
     }

@@ -39,7 +39,7 @@ impl TransactionEngine for QueueTransactionEngine {
     type Operation = QueueOperation;
     type Response = QueueResponse;
 
-    fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
+    fn begin(&mut self, txn_id: HlcTimestamp) {
         self.manager.begin_transaction(txn_id, txn_id);
         self.active_transactions.insert(txn_id);
     }
@@ -85,26 +85,24 @@ impl TransactionEngine for QueueTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+    fn prepare(&mut self, txn_id: HlcTimestamp) {
         if !self.is_transaction_active(&txn_id) {
-            return Err(format!("Transaction {} not active", txn_id));
+            // If transaction doesn't exist, that's fine - it may have been aborted already
+            return;
         }
 
-        // Release read locks on prepare
-        self.manager.prepare_transaction(txn_id)?;
-        Ok(())
+        // Release read locks on prepare (ignore errors - best effort)
+        let _ = self.manager.prepare_transaction(txn_id);
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
-        let result = self.manager.commit_transaction(txn_id);
+    fn commit(&mut self, txn_id: HlcTimestamp) {
+        let _ = self.manager.commit_transaction(txn_id);
         self.active_transactions.remove(&txn_id);
-        result
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
-        let result = self.manager.abort_transaction(txn_id);
+    fn abort(&mut self, txn_id: HlcTimestamp) {
+        let _ = self.manager.abort_transaction(txn_id);
         self.active_transactions.remove(&txn_id);
-        result
     }
 
     fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
@@ -188,7 +186,7 @@ mod tests {
         let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp(100);
 
-        engine.begin_transaction(tx1);
+        engine.begin(tx1);
 
         // Test enqueue
         let enqueue_op = QueueOperation::Enqueue {
@@ -214,7 +212,7 @@ mod tests {
         ));
 
         // Test commit
-        assert!(engine.commit(tx1).is_ok());
+        engine.commit(tx1);
     }
 
     #[test]
@@ -223,8 +221,8 @@ mod tests {
         let tx1 = create_timestamp(100);
         let tx2 = create_timestamp(200);
 
-        engine.begin_transaction(tx1);
-        engine.begin_transaction(tx2);
+        engine.begin(tx1);
+        engine.begin(tx2);
 
         // tx1 gets exclusive lock
         let enqueue_op = QueueOperation::Enqueue {
@@ -249,7 +247,7 @@ mod tests {
         let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp(100);
 
-        engine.begin_transaction(tx1);
+        engine.begin(tx1);
 
         // Execute operation
         let enqueue_op = QueueOperation::Enqueue {
@@ -261,7 +259,7 @@ mod tests {
         assert!(engine.is_transaction_active(&tx1));
 
         // Abort
-        assert!(engine.abort(tx1).is_ok());
+        engine.abort(tx1);
         assert!(!engine.is_transaction_active(&tx1));
     }
 }

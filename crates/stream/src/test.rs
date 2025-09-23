@@ -88,21 +88,19 @@ mod tests {
             }
         }
 
-        fn prepare(&mut self, _txn_id: HlcTimestamp) -> Result<(), String> {
-            Ok(())
+        fn prepare(&mut self, _txn_id: HlcTimestamp) {
+            // No-op for test engine
         }
 
-        fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        fn commit(&mut self, txn_id: HlcTimestamp) {
             self.active_txns.retain(|&id| id != txn_id);
-            Ok(())
         }
 
-        fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        fn abort(&mut self, txn_id: HlcTimestamp) {
             self.active_txns.retain(|&id| id != txn_id);
-            Ok(())
         }
 
-        fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
+        fn begin(&mut self, txn_id: HlcTimestamp) {
             self.active_txns.push(txn_id);
         }
 
@@ -318,7 +316,7 @@ mod tests {
 
         // Verify the restored engine is functional
         let txn_id = HlcTimestamp::new(100, 0, NodeId::new(1));
-        engine2.begin_transaction(txn_id);
+        engine2.begin(txn_id);
         let result = engine2.apply_operation(
             TestOperation::Write {
                 key: "key4".to_string(),
@@ -327,7 +325,7 @@ mod tests {
             txn_id,
         );
         assert!(matches!(result, OperationResult::Complete(_)));
-        engine2.commit(txn_id).unwrap();
+        engine2.commit(txn_id);
         assert_eq!(engine2.data.get("key4"), Some(&"value4".to_string()));
     }
 
@@ -337,7 +335,7 @@ mod tests {
 
         // Begin a transaction
         let txn_id = HlcTimestamp::new(1, 0, NodeId::new(1));
-        engine.begin_transaction(txn_id);
+        engine.begin(txn_id);
 
         // Should fail to snapshot with active transaction
         let result = engine.snapshot();
@@ -345,7 +343,7 @@ mod tests {
         assert!(result.unwrap_err().contains("active transactions"));
 
         // Commit the transaction
-        engine.commit(txn_id).unwrap();
+        engine.commit(txn_id);
 
         // Now snapshot should succeed
         let result = engine.snapshot();

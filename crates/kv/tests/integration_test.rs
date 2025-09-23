@@ -18,7 +18,7 @@ fn test_basic_get_put_delete() {
     let mut engine = KvTransactionEngine::new();
     let tx = timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Test PUT
     let put_op = KvOperation::Put {
@@ -84,7 +84,7 @@ fn test_basic_get_put_delete() {
         _ => panic!("Expected successful get, got {:?}", result),
     }
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 #[test]
@@ -93,8 +93,8 @@ fn test_transaction_isolation() {
     let tx1 = timestamp(100);
     let tx2 = timestamp(200);
 
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Put a value
     let put_op = KvOperation::Put {
@@ -112,7 +112,7 @@ fn test_transaction_isolation() {
     assert!(matches!(result, OperationResult::WouldBlock { .. }));
 
     // Commit TX1
-    assert!(engine.commit(tx1).is_ok());
+    engine.commit(tx1);
 
     // TX2: Now should be able to read
     let result = engine.apply_operation(get_op, tx2);
@@ -124,7 +124,7 @@ fn test_transaction_isolation() {
         _ => panic!("Expected successful get after commit"),
     }
 
-    assert!(engine.commit(tx2).is_ok());
+    engine.commit(tx2);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn test_transaction_abort_rollback() {
     let mut engine = KvTransactionEngine::new();
     let tx1 = timestamp(100);
 
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     // Put some values
     for i in 0..3 {
@@ -144,11 +144,11 @@ fn test_transaction_abort_rollback() {
     }
 
     // Abort the transaction
-    assert!(engine.abort(tx1).is_ok());
+    engine.abort(tx1);
 
     // Start new transaction - should not see aborted values
     let tx2 = timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     for i in 0..3 {
         let get_op = KvOperation::Get {
@@ -163,7 +163,7 @@ fn test_transaction_abort_rollback() {
         }
     }
 
-    assert!(engine.commit(tx2).is_ok());
+    engine.commit(tx2);
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn test_different_value_types() {
     let mut engine = KvTransactionEngine::new();
     let tx = timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Test different value types
     let test_cases = vec![
@@ -205,7 +205,7 @@ fn test_different_value_types() {
         }
     }
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 #[test]
@@ -214,22 +214,22 @@ fn test_concurrent_reads_with_shared_locks() {
 
     // First, create some data
     let tx_setup = timestamp(50);
-    engine.begin_transaction(tx_setup);
+    engine.begin(tx_setup);
     let put_op = KvOperation::Put {
         key: "shared_key".to_string(),
         value: Value::String("shared_data".to_string()),
     };
     engine.apply_operation(put_op, tx_setup);
-    assert!(engine.commit(tx_setup).is_ok());
+    engine.commit(tx_setup);
 
     // Now test concurrent reads
     let tx1 = timestamp(100);
     let tx2 = timestamp(200);
     let tx3 = timestamp(300);
 
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
-    engine.begin_transaction(tx3);
+    engine.begin(tx1);
+    engine.begin(tx2);
+    engine.begin(tx3);
 
     // All transactions should be able to read concurrently (shared locks)
     let get_op = KvOperation::Get {
@@ -245,9 +245,9 @@ fn test_concurrent_reads_with_shared_locks() {
     let result3 = engine.apply_operation(get_op, tx3);
     assert!(matches!(result3, OperationResult::Complete(_)));
 
-    assert!(engine.commit(tx1).is_ok());
-    assert!(engine.commit(tx2).is_ok());
-    assert!(engine.commit(tx3).is_ok());
+    engine.commit(tx1);
+    engine.commit(tx2);
+    engine.commit(tx3);
 }
 
 #[test]
@@ -256,8 +256,8 @@ fn test_write_write_conflict() {
     let tx1 = timestamp(100);
     let tx2 = timestamp(200);
 
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Write to key
     let put_op = KvOperation::Put {
@@ -283,13 +283,13 @@ fn test_write_write_conflict() {
     }
 
     // Commit TX1
-    assert!(engine.commit(tx1).is_ok());
+    engine.commit(tx1);
 
     // TX2: Retry write (should now succeed)
     let result = engine.apply_operation(put_op, tx2);
     assert!(matches!(result, OperationResult::Complete(_)));
 
-    assert!(engine.commit(tx2).is_ok());
+    engine.commit(tx2);
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn test_delete_non_existent_key() {
     let mut engine = KvTransactionEngine::new();
     let tx = timestamp(100);
 
-    engine.begin_transaction(tx);
+    engine.begin(tx);
 
     // Delete non-existent key
     let delete_op = KvOperation::Delete {
@@ -312,7 +312,7 @@ fn test_delete_non_existent_key() {
         _ => panic!("Expected successful delete operation"),
     }
 
-    assert!(engine.commit(tx).is_ok());
+    engine.commit(tx);
 }
 
 // ============================================================================
@@ -326,8 +326,8 @@ fn test_read_lock_released_on_prepare() {
     let tx2 = timestamp(2);
 
     // Begin both transactions
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Read key1 (acquires shared lock)
     let result = engine.apply_operation(
@@ -357,7 +357,7 @@ fn test_read_lock_released_on_prepare() {
     }
 
     // TX1: Prepare (should release read lock)
-    engine.prepare(tx1).expect("Prepare should succeed");
+    engine.prepare(tx1);
 
     // TX2: Retry write (should now succeed)
     let result = engine.apply_operation(
@@ -377,8 +377,8 @@ fn test_write_lock_not_released_on_prepare() {
     let tx2 = timestamp(2);
 
     // Begin both transactions
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Write to key1 (acquires exclusive lock)
     let result = engine.apply_operation(
@@ -408,7 +408,7 @@ fn test_write_lock_not_released_on_prepare() {
     }
 
     // TX1: Prepare (write lock should NOT be released)
-    engine.prepare(tx1).expect("Prepare should succeed");
+    engine.prepare(tx1);
 
     // TX2: Retry read (should still be blocked)
     let result = engine.apply_operation(
@@ -428,7 +428,7 @@ fn test_write_lock_not_released_on_prepare() {
     }
 
     // TX1: Commit (should release write lock)
-    engine.commit(tx1).expect("Commit should succeed");
+    engine.commit(tx1);
 
     // TX2: Retry read (should now succeed)
     let result = engine.apply_operation(
@@ -454,8 +454,8 @@ fn test_multiple_reads_released_on_prepare() {
     let tx2 = timestamp(2);
 
     // Begin both transactions
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Read multiple keys
     for i in 1..=3 {
@@ -487,7 +487,7 @@ fn test_multiple_reads_released_on_prepare() {
     }
 
     // TX1: Prepare (should release all read locks)
-    engine.prepare(tx1).expect("Prepare should succeed");
+    engine.prepare(tx1);
 
     // TX2: Retry write to key2 (should now succeed)
     let result = engine.apply_operation(
@@ -519,8 +519,8 @@ fn test_mixed_locks_partial_release() {
     let tx2 = timestamp(2);
 
     // Begin both transactions
-    engine.begin_transaction(tx1);
-    engine.begin_transaction(tx2);
+    engine.begin(tx1);
+    engine.begin(tx2);
 
     // TX1: Read key1 (shared lock)
     engine.apply_operation(
@@ -575,7 +575,7 @@ fn test_mixed_locks_partial_release() {
     ));
 
     // TX1: Prepare (releases read locks on key1 and key3, keeps write lock on key2)
-    engine.prepare(tx1).expect("Prepare should succeed");
+    engine.prepare(tx1);
 
     // TX2: Retry write to key1 (should succeed - read lock released)
     let result = engine.apply_operation(

@@ -30,7 +30,7 @@ fn main() {
     for i in 0..NUM_PUTS {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
-        kv_engine.begin_transaction(txn_id);
+        kv_engine.begin(txn_id);
 
         // Create put operation with various value types to simulate real usage
         let value = match i % 5 {
@@ -53,10 +53,7 @@ fn main() {
         match kv_engine.apply_operation(put, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
-                if let Err(e) = kv_engine.commit(txn_id) {
-                    eprintln!("\nError committing put {}: {}", i, e);
-                    break;
-                }
+                kv_engine.commit(txn_id);
             }
             _ => {
                 eprintln!("\nError at put {}", i);
@@ -100,7 +97,7 @@ fn main() {
     // Verify a sample of keys
     println!("\nVerifying sample keys...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    kv_engine.begin_transaction(verify_txn);
+    kv_engine.begin(verify_txn);
 
     // Check a few keys to verify they were stored
     let sample_keys = [0, NUM_PUTS / 2, NUM_PUTS - 1];
@@ -121,9 +118,7 @@ fn main() {
         }
     }
 
-    kv_engine
-        .commit(verify_txn)
-        .expect("Failed to commit verification transaction");
+    kv_engine.commit(verify_txn);
 
     println!("✓ Verified {}/{} sample keys", verified, sample_keys.len());
 

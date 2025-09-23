@@ -13,7 +13,7 @@ fn test_kv_snapshot_and_restore() {
 
     // Begin transaction and add data
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine1.begin_transaction(txn1);
+    engine1.begin(txn1);
 
     // Put some values
     let op1 = KvOperation::Put {
@@ -38,8 +38,8 @@ fn test_kv_snapshot_and_restore() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Commit transaction
-    engine1.prepare(txn1).unwrap();
-    engine1.commit(txn1).unwrap();
+    engine1.prepare(txn1);
+    engine1.commit(txn1);
 
     // Take a snapshot
     let snapshot = engine1.snapshot().unwrap();
@@ -51,7 +51,7 @@ fn test_kv_snapshot_and_restore() {
 
     // Verify data was restored by reading it
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine2.begin_transaction(txn2);
+    engine2.begin(txn2);
 
     let read1 = KvOperation::Get {
         key: "user:1".to_string(),
@@ -99,7 +99,7 @@ fn test_snapshot_with_active_transaction_fails() {
 
     // Begin a transaction
     let txn = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn);
+    engine.begin(txn);
 
     // Try to snapshot with active transaction
     let result = engine.snapshot();
@@ -107,7 +107,7 @@ fn test_snapshot_with_active_transaction_fails() {
     assert!(result.unwrap_err().contains("active transactions"));
 
     // Commit the transaction
-    engine.commit(txn).unwrap();
+    engine.commit(txn);
 
     // Now snapshot should succeed
     let result = engine.snapshot();
@@ -120,7 +120,7 @@ fn test_snapshot_with_deleted_keys() {
 
     // Add and delete some data
     let txn1 = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn1);
+    engine.begin(txn1);
 
     // Put values
     let op1 = KvOperation::Put {
@@ -135,20 +135,20 @@ fn test_snapshot_with_deleted_keys() {
     };
     engine.apply_operation(op2, txn1);
 
-    engine.prepare(txn1).unwrap();
-    engine.commit(txn1).unwrap();
+    engine.prepare(txn1);
+    engine.commit(txn1);
 
     // Delete one key in a new transaction
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine.begin_transaction(txn2);
+    engine.begin(txn2);
 
     let del_op = KvOperation::Delete {
         key: "temp1".to_string(),
     };
     engine.apply_operation(del_op, txn2);
 
-    engine.prepare(txn2).unwrap();
-    engine.commit(txn2).unwrap();
+    engine.prepare(txn2);
+    engine.commit(txn2);
 
     // Take snapshot
     let snapshot = engine.snapshot().unwrap();
@@ -159,7 +159,7 @@ fn test_snapshot_with_deleted_keys() {
 
     // Verify deleted key is not present
     let txn3 = HlcTimestamp::new(3, 0, NodeId::new(1));
-    engine2.begin_transaction(txn3);
+    engine2.begin(txn3);
 
     let read1 = KvOperation::Get {
         key: "temp1".to_string(),
@@ -191,7 +191,7 @@ fn test_snapshot_compression() {
 
     // Add a lot of repetitive data to test compression
     let txn = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin_transaction(txn);
+    engine.begin(txn);
 
     // Create data with good compression potential
     let long_string = "A".repeat(1000);
@@ -203,8 +203,8 @@ fn test_snapshot_compression() {
         engine.apply_operation(op, txn);
     }
 
-    engine.prepare(txn).unwrap();
-    engine.commit(txn).unwrap();
+    engine.prepare(txn);
+    engine.commit(txn);
 
     // Take snapshot
     let snapshot = engine.snapshot().unwrap();
@@ -221,7 +221,7 @@ fn test_snapshot_compression() {
 
     // Spot check a value
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
-    engine2.begin_transaction(txn2);
+    engine2.begin(txn2);
 
     let read = KvOperation::Get {
         key: "key50".to_string(),
@@ -240,7 +240,7 @@ fn test_mvcc_compaction_in_snapshot() {
     // Create multiple versions of the same key
     for i in 1..=5 {
         let txn = HlcTimestamp::new(i, 0, NodeId::new(1));
-        engine.begin_transaction(txn);
+        engine.begin(txn);
 
         let op = KvOperation::Put {
             key: "versioned".to_string(),
@@ -248,8 +248,8 @@ fn test_mvcc_compaction_in_snapshot() {
         };
         engine.apply_operation(op, txn);
 
-        engine.prepare(txn).unwrap();
-        engine.commit(txn).unwrap();
+        engine.prepare(txn);
+        engine.commit(txn);
     }
 
     // The MVCC storage now has 5 versions of "versioned"
@@ -261,7 +261,7 @@ fn test_mvcc_compaction_in_snapshot() {
     engine2.restore_from_snapshot(&snapshot).unwrap();
 
     let txn = HlcTimestamp::new(10, 0, NodeId::new(1));
-    engine2.begin_transaction(txn);
+    engine2.begin(txn);
 
     let read = KvOperation::Get {
         key: "versioned".to_string(),

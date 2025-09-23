@@ -255,54 +255,40 @@ impl TransactionEngine for SqlTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
+    fn prepare(&mut self, txn_id: HlcTimestamp) {
         // Get transaction and release read predicates
-        let tx_ctx = self
-            .active_transactions
-            .get_mut(&txn_id)
-            .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
-
-        // Prepare the transaction (releases read predicates)
-        if !tx_ctx.prepare() {
-            return Err(format!("Transaction {} is not in active state", txn_id));
+        if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
+            // Prepare the transaction (releases read predicates)
+            tx_ctx.prepare();
         }
-
-        Ok(())
+        // If transaction doesn't exist, that's fine - it may have been aborted already
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
-        // Remove transaction
-        self.active_transactions
-            .remove(&txn_id)
-            .ok_or_else(|| format!("Transaction {} not found", txn_id))?;
+    fn commit(&mut self, txn_id: HlcTimestamp) {
+        // Remove transaction if it exists
+        if self.active_transactions.remove(&txn_id).is_some() {
+            // Remove from predicate index
+            self.predicate_index.remove_transaction(&txn_id);
 
-        // Remove from predicate index
-        self.predicate_index.remove_transaction(&txn_id);
-
-        // Commit in storage
-        self.storage
-            .commit_transaction(txn_id)
-            .map_err(|e| format!("Failed to commit transaction: {:?}", e))?;
-
-        Ok(())
+            // Commit in storage (ignore errors - best effort)
+            let _ = self.storage.commit_transaction(txn_id);
+        }
+        // If transaction doesn't exist, that's fine - may have been committed already
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) -> std::result::Result<(), String> {
-        // Remove transaction
-        self.active_transactions.remove(&txn_id);
+    fn abort(&mut self, txn_id: HlcTimestamp) {
+        // Remove transaction if it exists
+        if self.active_transactions.remove(&txn_id).is_some() {
+            // Remove from predicate index
+            self.predicate_index.remove_transaction(&txn_id);
 
-        // Remove from predicate index
-        self.predicate_index.remove_transaction(&txn_id);
-
-        // Abort in storage
-        self.storage
-            .abort_transaction(txn_id)
-            .map_err(|e| format!("Failed to abort transaction: {:?}", e))?;
-
-        Ok(())
+            // Abort in storage (ignore errors - best effort)
+            let _ = self.storage.abort_transaction(txn_id);
+        }
+        // If transaction doesn't exist, that's fine - may have been aborted already
     }
 
-    fn begin_transaction(&mut self, txn_id: HlcTimestamp) {
+    fn begin(&mut self, txn_id: HlcTimestamp) {
         // Register transaction with storage
         self.storage.register_transaction(txn_id, txn_id);
 

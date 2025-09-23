@@ -31,7 +31,7 @@ fn main() {
     for i in 0..NUM_ENQUEUES {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
-        queue_engine.begin_transaction(txn_id);
+        queue_engine.begin(txn_id);
 
         // Create enqueue operation with various value types to simulate real usage
         let value = match i % 6 {
@@ -56,10 +56,7 @@ fn main() {
         match queue_engine.apply_operation(enqueue, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
-                if let Err(e) = queue_engine.commit(txn_id) {
-                    eprintln!("\nError committing enqueue {}: {}", i, e);
-                    break;
-                }
+                queue_engine.commit(txn_id);
             }
             _ => {
                 eprintln!("\nError at enqueue {}", i);
@@ -103,7 +100,7 @@ fn main() {
     // Verify queue size
     println!("\nVerifying queue size...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    queue_engine.begin_transaction(verify_txn);
+    queue_engine.begin(verify_txn);
 
     let size_op = QueueOperation::Size {
         queue_name: QUEUE_NAME.to_string(),
@@ -113,9 +110,7 @@ fn main() {
         proven_stream::OperationResult::Complete(_response) => {
             println!("✓ Queue size query executed successfully");
             // The response would contain the actual size
-            queue_engine
-                .commit(verify_txn)
-                .expect("Failed to commit size query");
+            queue_engine.commit(verify_txn);
         }
         _ => println!("⚠ Size query failed"),
     }
@@ -127,7 +122,7 @@ fn main() {
 
     for sample_idx in 0..SAMPLE_SIZE {
         let dequeue_txn = HlcTimestamp::new(10000000000 + sample_idx as u64, 0, NodeId::new(1));
-        queue_engine.begin_transaction(dequeue_txn);
+        queue_engine.begin(dequeue_txn);
 
         let dequeue = QueueOperation::Dequeue {
             queue_name: QUEUE_NAME.to_string(),
@@ -136,9 +131,7 @@ fn main() {
         match queue_engine.apply_operation(dequeue, dequeue_txn) {
             proven_stream::OperationResult::Complete(_) => {
                 verified += 1;
-                queue_engine
-                    .commit(dequeue_txn)
-                    .expect("Failed to commit dequeue");
+                queue_engine.commit(dequeue_txn);
             }
             _ => {
                 println!("⚠ Failed to dequeue item {}", sample_idx);

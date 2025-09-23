@@ -279,6 +279,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             retry_count += 1;
                             retries.fetch_add(1, Ordering::Relaxed);
 
+                            // Abort the failed transaction before retrying
+                            let _ = txn.abort().await;
+
                             // Only disable speculation if it was a speculation failure
                             if error_str.contains("Speculation failed") {
                                 disable_speculation = true;

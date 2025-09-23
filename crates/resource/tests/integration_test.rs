@@ -15,7 +15,7 @@ fn test_resource_lifecycle() {
 
     // Initialize resource
     let tx1 = make_timestamp(100);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     let init_op = ResourceOperation::Initialize {
         name: "Test Token".to_string(),
@@ -37,12 +37,12 @@ fn test_resource_lifecycle() {
         _ => panic!("Expected Initialized response"),
     }
 
-    engine.prepare(tx1).unwrap();
-    engine.commit(tx1).unwrap();
+    engine.prepare(tx1);
+    engine.commit(tx1);
 
     // Cannot initialize twice
     let tx2 = make_timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     let init_op = ResourceOperation::Initialize {
         name: "Another Token".to_string(),
@@ -56,7 +56,7 @@ fn test_resource_lifecycle() {
         OperationResult::Complete(ResourceResponse::Error(_))
     ));
 
-    engine.abort(tx2).unwrap();
+    engine.abort(tx2);
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn test_mint_and_burn() {
 
     // Initialize
     let tx1 = make_timestamp(100);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     engine.apply_operation(
         ResourceOperation::Initialize {
@@ -99,12 +99,12 @@ fn test_mint_and_burn() {
         _ => panic!("Expected Minted response"),
     }
 
-    engine.prepare(tx1).unwrap();
-    engine.commit(tx1).unwrap();
+    engine.prepare(tx1);
+    engine.commit(tx1);
 
     // Burn tokens from alice
     let tx2 = make_timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     let burn_op = ResourceOperation::Burn {
         from: "alice".to_string(),
@@ -128,12 +128,12 @@ fn test_mint_and_burn() {
         _ => panic!("Expected Burned response"),
     }
 
-    engine.prepare(tx2).unwrap();
-    engine.commit(tx2).unwrap();
+    engine.prepare(tx2);
+    engine.commit(tx2);
 
     // Check final balance and total supply
     let tx3 = make_timestamp(300);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
 
     let balance_op = ResourceOperation::GetBalance {
         account: "alice".to_string(),
@@ -164,7 +164,7 @@ fn test_transfer() {
 
     // Initialize and mint
     let tx1 = make_timestamp(100);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     engine.apply_operation(
         ResourceOperation::Initialize {
@@ -184,12 +184,12 @@ fn test_transfer() {
         tx1,
     );
 
-    engine.prepare(tx1).unwrap();
-    engine.commit(tx1).unwrap();
+    engine.prepare(tx1);
+    engine.commit(tx1);
 
     // Transfer from alice to bob
     let tx2 = make_timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     let transfer_op = ResourceOperation::Transfer {
         from: "alice".to_string(),
@@ -216,12 +216,12 @@ fn test_transfer() {
         _ => panic!("Expected Transferred response"),
     }
 
-    engine.prepare(tx2).unwrap();
-    engine.commit(tx2).unwrap();
+    engine.prepare(tx2);
+    engine.commit(tx2);
 
     // Check balances
     let tx3 = make_timestamp(300);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
 
     let alice_balance = engine.apply_operation(
         ResourceOperation::GetBalance {
@@ -258,7 +258,7 @@ fn test_insufficient_balance() {
 
     // Initialize and mint small amount
     let tx1 = make_timestamp(100);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     engine.apply_operation(
         ResourceOperation::Initialize {
@@ -278,12 +278,12 @@ fn test_insufficient_balance() {
         tx1,
     );
 
-    engine.prepare(tx1).unwrap();
-    engine.commit(tx1).unwrap();
+    engine.prepare(tx1);
+    engine.commit(tx1);
 
     // Try to transfer more than balance
     let tx2 = make_timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     let transfer_op = ResourceOperation::Transfer {
         from: "alice".to_string(),
@@ -298,11 +298,11 @@ fn test_insufficient_balance() {
         OperationResult::Complete(ResourceResponse::Error(_))
     ));
 
-    engine.abort(tx2).unwrap();
+    engine.abort(tx2);
 
     // Try to burn more than balance
     let tx3 = make_timestamp(300);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
 
     let burn_op = ResourceOperation::Burn {
         from: "alice".to_string(),
@@ -316,7 +316,7 @@ fn test_insufficient_balance() {
         OperationResult::Complete(ResourceResponse::Error(_))
     ));
 
-    engine.abort(tx3).unwrap();
+    engine.abort(tx3);
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn test_concurrent_transfers_with_reservations() {
 
     // Initialize and mint
     let tx1 = make_timestamp(100);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     engine.apply_operation(
         ResourceOperation::Initialize {
@@ -345,15 +345,15 @@ fn test_concurrent_transfers_with_reservations() {
         tx1,
     );
 
-    engine.prepare(tx1).unwrap();
-    engine.commit(tx1).unwrap();
+    engine.prepare(tx1);
+    engine.commit(tx1);
 
     // Start two concurrent transactions
     let tx2 = make_timestamp(200);
     let tx3 = make_timestamp(201);
 
-    engine.begin_transaction(tx2);
-    engine.begin_transaction(tx3);
+    engine.begin(tx2);
+    engine.begin(tx3);
 
     // First transfer: alice -> bob 60
     let transfer1 = ResourceOperation::Transfer {
@@ -385,15 +385,15 @@ fn test_concurrent_transfers_with_reservations() {
     );
 
     // Commit first transaction
-    engine.prepare(tx2).unwrap();
-    engine.commit(tx2).unwrap();
+    engine.prepare(tx2);
+    engine.commit(tx2);
 
     // Abort second transaction
-    engine.abort(tx3).unwrap();
+    engine.abort(tx3);
 
     // Now the second transfer should work
     let tx4 = make_timestamp(300);
-    engine.begin_transaction(tx4);
+    engine.begin(tx4);
 
     let transfer3 = ResourceOperation::Transfer {
         from: "alice".to_string(),
@@ -405,8 +405,8 @@ fn test_concurrent_transfers_with_reservations() {
     let result3 = engine.apply_operation(transfer3, tx4);
     assert!(matches!(result3, OperationResult::Complete(_)));
 
-    engine.prepare(tx4).unwrap();
-    engine.commit(tx4).unwrap();
+    engine.prepare(tx4);
+    engine.commit(tx4);
 }
 
 #[test]
@@ -415,7 +415,7 @@ fn test_metadata_update() {
 
     // Initialize
     let tx1 = make_timestamp(100);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     engine.apply_operation(
         ResourceOperation::Initialize {
@@ -426,12 +426,12 @@ fn test_metadata_update() {
         tx1,
     );
 
-    engine.prepare(tx1).unwrap();
-    engine.commit(tx1).unwrap();
+    engine.prepare(tx1);
+    engine.commit(tx1);
 
     // Update metadata
     let tx2 = make_timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     let update_op = ResourceOperation::UpdateMetadata {
         name: Some("Updated Token".to_string()),
@@ -447,12 +447,12 @@ fn test_metadata_update() {
         _ => panic!("Expected MetadataUpdated response"),
     }
 
-    engine.prepare(tx2).unwrap();
-    engine.commit(tx2).unwrap();
+    engine.prepare(tx2);
+    engine.commit(tx2);
 
     // Check metadata
     let tx3 = make_timestamp(300);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
 
     let result = engine.apply_operation(ResourceOperation::GetMetadata, tx3);
     match result {
@@ -485,7 +485,7 @@ fn test_transaction_rollback() {
 
     // Initialize and mint
     let tx1 = make_timestamp(100);
-    engine.begin_transaction(tx1);
+    engine.begin(tx1);
 
     engine.apply_operation(
         ResourceOperation::Initialize {
@@ -505,12 +505,12 @@ fn test_transaction_rollback() {
         tx1,
     );
 
-    engine.prepare(tx1).unwrap();
-    engine.commit(tx1).unwrap();
+    engine.prepare(tx1);
+    engine.commit(tx1);
 
     // Start transaction with multiple operations
     let tx2 = make_timestamp(200);
-    engine.begin_transaction(tx2);
+    engine.begin(tx2);
 
     // Transfer to bob
     engine.apply_operation(
@@ -534,11 +534,11 @@ fn test_transaction_rollback() {
     );
 
     // Abort the transaction
-    engine.abort(tx2).unwrap();
+    engine.abort(tx2);
 
     // Check that balances are unchanged
     let tx3 = make_timestamp(300);
-    engine.begin_transaction(tx3);
+    engine.begin(tx3);
 
     let alice_balance = engine.apply_operation(
         ResourceOperation::GetBalance {

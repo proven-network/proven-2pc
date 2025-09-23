@@ -100,23 +100,21 @@ mod tests {
             }
         }
 
-        fn prepare(&mut self, _txn_id: HlcTimestamp) -> Result<(), String> {
-            Ok(())
+        fn prepare(&mut self, _txn_id: HlcTimestamp) {
+            // No-op for test engine
         }
 
-        fn commit(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        fn commit(&mut self, txn_id: HlcTimestamp) {
             // Release locks
             self.locks.retain(|_, &mut holder| holder != txn_id);
-            Ok(())
         }
 
-        fn abort(&mut self, txn_id: HlcTimestamp) -> Result<(), String> {
+        fn abort(&mut self, txn_id: HlcTimestamp) {
             // Release locks
             self.locks.retain(|_, &mut holder| holder != txn_id);
-            Ok(())
         }
 
-        fn begin_transaction(&mut self, _txn_id: HlcTimestamp) {}
+        fn begin(&mut self, _txn_id: HlcTimestamp) {}
 
         fn is_transaction_active(&self, _txn_id: &HlcTimestamp) -> bool {
             true // For test purposes, always consider transactions active
