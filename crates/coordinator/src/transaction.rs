@@ -11,7 +11,6 @@ use parking_lot::Mutex;
 use proven_common::Operation;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Transaction state in the coordinator
@@ -244,7 +243,7 @@ impl Transaction {
             .executor
             .build_phase_headers("prepare_and_commit", &request_id);
 
-        let timeout = self.executor.get_timeout()?.min(Duration::from_secs(2)); // Cap at 2 seconds for prepare
+        let timeout = self.executor.get_timeout()?;
 
         let response = self
             .executor
