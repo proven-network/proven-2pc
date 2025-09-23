@@ -17,9 +17,9 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
 // Re-export V2 types as primary
-pub use learning::{SequenceLearner, SequencePattern};
+pub use learning::{Learner, SequencePattern};
 pub use prediction_context::{CheckResult, PredictionContext};
-pub use predictor::SequencePredictor;
+pub use predictor::Predictor;
 
 /// Configuration for the speculation system
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,15 +81,15 @@ impl Default for SpeculationConfig {
 ///
 /// This ensures ALL transactions go through PredictionContext for consistent learning.
 pub struct SpeculationContext {
-    learner: Arc<RwLock<SequenceLearner>>,
-    predictor: SequencePredictor,
+    learner: Arc<RwLock<Learner>>,
+    predictor: Predictor,
 }
 
 impl SpeculationContext {
     /// Create a new speculation context
     pub fn new(config: SpeculationConfig) -> Self {
-        let learner = Arc::new(RwLock::new(SequenceLearner::new(config.clone())));
-        let predictor = SequencePredictor::new(config.clone());
+        let learner = Arc::new(RwLock::new(Learner::new(config.clone())));
+        let predictor = Predictor::new(config.clone());
 
         Self { learner, predictor }
     }
@@ -287,7 +287,7 @@ mod tests {
                 true,
             )
             .await;
-        assert!(matches!(result2, CheckResult::SpeculationFailed { .. }));
+        assert!(matches!(result2, CheckResult::SpeculationMismatch { .. }));
 
         assert!(pred_context.has_failed());
     }

@@ -134,7 +134,7 @@ impl Transaction {
                 // Execute normally through executor
                 self.executor.execute_operation(&stream, operation).await
             }
-            CheckResult::SpeculationFailed {
+            CheckResult::SpeculationMismatch {
                 expected,
                 actual,
                 position,

@@ -4,7 +4,7 @@
 //! with new argument values. It returns entire sequences or nothing (all-or-nothing approach).
 
 use crate::speculation::SpeculationConfig;
-use crate::speculation::learning::SequenceLearner;
+use crate::speculation::learning::Learner;
 use crate::speculation::template::TemplateInstantiator;
 use serde_json::Value;
 
@@ -41,12 +41,12 @@ pub struct PredictionResult {
 }
 
 /// Generates predictions from learned patterns
-pub struct SequencePredictor {
+pub struct Predictor {
     config: SpeculationConfig,
     instantiator: TemplateInstantiator,
 }
 
-impl SequencePredictor {
+impl Predictor {
     pub fn new(config: SpeculationConfig) -> Self {
         Self {
             config,
@@ -59,7 +59,7 @@ impl SequencePredictor {
         &self,
         category: &str,
         args: &[Value],
-        learner: &SequenceLearner,
+        learner: &Learner,
     ) -> Option<PredictionResult> {
         // Get the pattern for this category
         let pattern = learner.get_pattern(category)?;
@@ -82,13 +82,8 @@ impl SequencePredictor {
                         position: op_pattern.position,
                     });
                 }
-                Err(_err) => {
+                Err(_) => {
                     // If any operation fails to instantiate, abort entire prediction
-                    // log::debug!(
-                    //     "Failed to instantiate operation at position {}: {}",
-                    //     op_pattern.position,
-                    //     err
-                    // );
                     return None;
                 }
             }
@@ -106,7 +101,7 @@ impl SequencePredictor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::speculation::learning::SequenceLearner;
+    use crate::speculation::learning::Learner;
     use serde_json::json;
 
     #[test]
@@ -118,8 +113,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut learner = SequenceLearner::new(config.clone());
-        let predictor = SequencePredictor::new(config);
+        let mut learner = Learner::new(config.clone());
+        let predictor = Predictor::new(config);
 
         // Learn from two similar transactions
         for i in 0..2 {
@@ -172,8 +167,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut learner = SequenceLearner::new(config.clone());
-        let predictor = SequencePredictor::new(config);
+        let mut learner = Learner::new(config.clone());
+        let predictor = Predictor::new(config);
 
         // Learn from transactions where operations have string "10"
         // but args have numeric 10
@@ -236,8 +231,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut learner = SequenceLearner::new(config.clone());
-        let predictor = SequencePredictor::new(config);
+        let mut learner = Learner::new(config.clone());
+        let predictor = Predictor::new(config);
 
         // First transaction: Learn with string amounts (like from JSON input)
         let args1 = vec![json!({
@@ -314,8 +309,8 @@ mod tests {
             min_confidence_write: 0.0,
             ..Default::default()
         };
-        let mut learner = SequenceLearner::new(config.clone());
-        let predictor = SequencePredictor::new(config);
+        let mut learner = Learner::new(config.clone());
+        let predictor = Predictor::new(config);
 
         // Learn a pattern - with substring detection, we only need user
         let args = vec![json!({"user": "alice"})];
@@ -365,8 +360,8 @@ mod tests {
             min_confidence_write: 0.0,
             ..Default::default()
         };
-        let mut learner = SequenceLearner::new(config.clone());
-        let predictor = SequencePredictor::new(config);
+        let mut learner = Learner::new(config.clone());
+        let predictor = Predictor::new(config);
 
         // Learn a pattern that needs user field
         let args = vec![json!({"user": "alice", "amount": 100})];

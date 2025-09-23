@@ -5,7 +5,7 @@
 
 use crate::error::Result;
 use crate::executor::Executor;
-use crate::speculation::learning::SequenceLearner;
+use crate::speculation::learning::Learner;
 use crate::speculation::predictor::{PredictedOperation, PredictionResult};
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
@@ -22,8 +22,11 @@ pub enum CheckResult {
     /// Operation matches prediction - here's the speculated response
     Match { response: Vec<u8>, is_write: bool },
 
+    /// No more predictions (transaction continues beyond speculation)
+    NoPrediction,
+
     /// Operation doesn't match - speculation failed
-    SpeculationFailed {
+    SpeculationMismatch {
         expected: String,
         actual: String,
         position: usize,
@@ -32,9 +35,6 @@ pub enum CheckResult {
     /// Operation matched prediction but speculative execution failed
     /// The operation needs to be executed normally
     SpeculativeExecutionFailed { position: usize, reason: String },
-
-    /// No more predictions (transaction continues beyond speculation)
-    NoPrediction,
 }
 
 /// Tracks the state of speculation during transaction execution
@@ -59,9 +59,9 @@ pub struct PredictionContext {
     failure_point: Option<usize>,
 
     /// Reference to learner for feedback
-    learner: Arc<RwLock<SequenceLearner>>,
+    learner: Arc<RwLock<Learner>>,
 
-    /// Operations that were actually executed
+    /// Operations that were actually executed (stream_name, operation, is_write)
     executed_operations: Vec<(String, Value, bool)>,
 
     /// Response receivers for async execution
@@ -74,7 +74,7 @@ impl PredictionContext {
     pub fn new(
         prediction: PredictionResult,
         args: Vec<Value>,
-        learner: Arc<RwLock<SequenceLearner>>,
+        learner: Arc<RwLock<Learner>>,
     ) -> Self {
         Self {
             predictions: prediction.operations,
@@ -90,11 +90,7 @@ impl PredictionContext {
     }
 
     /// Create an empty context when no speculation is available
-    pub fn empty(
-        category: String,
-        args: Vec<Value>,
-        learner: Arc<RwLock<SequenceLearner>>,
-    ) -> Self {
+    pub fn empty(category: String, args: Vec<Value>, learner: Arc<RwLock<Learner>>) -> Self {
         Self {
             predictions: Vec::new(),
             current_position: 0,
@@ -173,7 +169,7 @@ impl PredictionContext {
             // Mismatch - speculation failed
             self.failure_point = Some(self.current_position);
 
-            CheckResult::SpeculationFailed {
+            CheckResult::SpeculationMismatch {
                 expected: format!(
                     "{}/{}/{}",
                     predicted.stream, predicted.operation, predicted.is_write
@@ -353,8 +349,8 @@ impl PredictionContext {
 mod tests {
     use super::*;
     use crate::speculation::SpeculationConfig;
-    use crate::speculation::learning::SequenceLearner;
-    use crate::speculation::predictor::SequencePredictor;
+    use crate::speculation::learning::Learner;
+    use crate::speculation::predictor::Predictor;
     use serde_json::json;
 
     #[tokio::test]
@@ -366,8 +362,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut learner = SequenceLearner::new(config.clone());
-        let predictor = SequencePredictor::new(config);
+        let mut learner = Learner::new(config.clone());
+        let predictor = Predictor::new(config);
 
         // Learn a pattern
         let args = vec![json!({"user": "alice"})];
@@ -434,8 +430,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut learner = SequenceLearner::new(config.clone());
-        let predictor = SequencePredictor::new(config);
+        let mut learner = Learner::new(config.clone());
+        let predictor = Predictor::new(config);
 
         // Learn a pattern
         let args = vec![json!({"user": "alice"})];
@@ -481,7 +477,7 @@ mod tests {
                 true,
             )
             .await;
-        assert!(matches!(result2, CheckResult::SpeculationFailed { .. }));
+        assert!(matches!(result2, CheckResult::SpeculationMismatch { .. }));
 
         assert!(context.has_failed());
         assert_eq!(context.get_failure_point(), Some(1));

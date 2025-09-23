@@ -132,7 +132,7 @@ impl SequencePattern {
 }
 
 /// Manages sequence pattern learning
-pub struct SequenceLearner {
+pub struct Learner {
     /// Patterns organized by category
     patterns: HashMap<String, SequencePattern>,
 
@@ -143,7 +143,7 @@ pub struct SequenceLearner {
     extractor: TemplateExtractor,
 }
 
-impl SequenceLearner {
+impl Learner {
     pub fn new(config: SpeculationConfig) -> Self {
         Self {
             patterns: HashMap::new(),
@@ -333,7 +333,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut learner = SequenceLearner::new(config);
+        let mut learner = Learner::new(config);
 
         // Transaction 1: Put, Get, Put, Get
         let args1 = vec![json!({"user": "alice", "amount": 100})];
