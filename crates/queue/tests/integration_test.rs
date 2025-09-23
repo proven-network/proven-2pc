@@ -19,7 +19,6 @@ fn test_basic_queue_operations() {
 
     // Test enqueue
     let enqueue1 = QueueOperation::Enqueue {
-        queue_name: "test_queue".to_string(),
         value: QueueValue::String("first".to_string()),
     };
 
@@ -30,7 +29,6 @@ fn test_basic_queue_operations() {
     ));
 
     let enqueue2 = QueueOperation::Enqueue {
-        queue_name: "test_queue".to_string(),
         value: QueueValue::String("second".to_string()),
     };
 
@@ -41,9 +39,7 @@ fn test_basic_queue_operations() {
     ));
 
     // Test size
-    let size_op = QueueOperation::Size {
-        queue_name: "test_queue".to_string(),
-    };
+    let size_op = QueueOperation::Size;
 
     let result = engine.apply_operation(size_op, tx);
     assert!(matches!(
@@ -52,9 +48,7 @@ fn test_basic_queue_operations() {
     ));
 
     // Test dequeue (FIFO)
-    let dequeue_op = QueueOperation::Dequeue {
-        queue_name: "test_queue".to_string(),
-    };
+    let dequeue_op = QueueOperation::Dequeue;
 
     let result = engine.apply_operation(dequeue_op.clone(), tx);
     assert!(matches!(
@@ -88,9 +82,7 @@ fn test_transaction_isolation() {
     engine.begin(tx2);
 
     // tx1 dequeues a value (acquires exclusive lock - blocks other operations)
-    let dequeue_op = QueueOperation::Dequeue {
-        queue_name: "isolated_queue".to_string(),
-    };
+    let dequeue_op = QueueOperation::Dequeue;
 
     let result = engine.apply_operation(dequeue_op, tx1);
     assert!(matches!(
@@ -99,9 +91,7 @@ fn test_transaction_isolation() {
     ));
 
     // tx2 tries to read the size (should be blocked by tx1's exclusive lock)
-    let size_op = QueueOperation::Size {
-        queue_name: "isolated_queue".to_string(),
-    };
+    let size_op = QueueOperation::Size;
 
     let result = engine.apply_operation(size_op.clone(), tx2);
 
@@ -149,7 +139,6 @@ fn test_concurrent_access_with_locking() {
 
     // tx1 acquires exclusive lock by enqueuing
     let enqueue_op = QueueOperation::Enqueue {
-        queue_name: "locked_queue".to_string(),
         value: QueueValue::String("tx1_data".to_string()),
     };
 
@@ -157,9 +146,7 @@ fn test_concurrent_access_with_locking() {
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // tx2 tries to dequeue - should be blocked
-    let dequeue_op = QueueOperation::Dequeue {
-        queue_name: "locked_queue".to_string(),
-    };
+    let dequeue_op = QueueOperation::Dequeue;
 
     let result = engine.apply_operation(dequeue_op.clone(), tx2);
     assert!(matches!(result, OperationResult::WouldBlock { blockers } if !blockers.is_empty()));
@@ -187,16 +174,13 @@ fn test_abort_rollback() {
     // Enqueue some values
     for i in 0..3 {
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "rollback_queue".to_string(),
             value: QueueValue::Integer(i),
         };
         engine.apply_operation(enqueue_op, tx1);
     }
 
     // Check size before abort
-    let size_op = QueueOperation::Size {
-        queue_name: "rollback_queue".to_string(),
-    };
+    let size_op = QueueOperation::Size;
 
     let result = engine.apply_operation(size_op.clone(), tx1);
     assert!(matches!(
@@ -221,40 +205,6 @@ fn test_abort_rollback() {
 }
 
 #[test]
-fn test_multiple_queues() {
-    let mut engine = QueueTransactionEngine::new();
-    let tx = create_timestamp(100);
-
-    engine.begin(tx);
-
-    // Create multiple queues
-    let queues = ["queue_a", "queue_b", "queue_c"];
-
-    for (i, queue_name) in queues.iter().enumerate() {
-        let enqueue_op = QueueOperation::Enqueue {
-            queue_name: queue_name.to_string(),
-            value: QueueValue::Integer(i as i64),
-        };
-        engine.apply_operation(enqueue_op, tx);
-    }
-
-    // Each queue should have one item
-    for queue_name in queues.iter() {
-        let size_op = QueueOperation::Size {
-            queue_name: queue_name.to_string(),
-        };
-
-        let result = engine.apply_operation(size_op, tx);
-        assert!(matches!(
-            result,
-            OperationResult::Complete(QueueResponse::Size(1))
-        ));
-    }
-
-    engine.commit(tx);
-}
-
-#[test]
 fn test_peek_operation() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
@@ -263,16 +213,13 @@ fn test_peek_operation() {
 
     // Enqueue a value
     let enqueue_op = QueueOperation::Enqueue {
-        queue_name: "peek_queue".to_string(),
         value: QueueValue::String("peek_me".to_string()),
     };
 
     engine.apply_operation(enqueue_op, tx);
 
     // Peek should not remove the value
-    let peek_op = QueueOperation::Peek {
-        queue_name: "peek_queue".to_string(),
-    };
+    let peek_op = QueueOperation::Peek;
 
     let result = engine.apply_operation(peek_op.clone(), tx);
     assert!(matches!(
@@ -288,9 +235,7 @@ fn test_peek_operation() {
     ));
 
     // Size should still be 1
-    let size_op = QueueOperation::Size {
-        queue_name: "peek_queue".to_string(),
-    };
+    let size_op = QueueOperation::Size;
 
     let result = engine.apply_operation(size_op, tx);
     assert!(matches!(
@@ -311,16 +256,13 @@ fn test_clear_operation() {
     // Enqueue multiple values
     for i in 0..5 {
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "clear_queue".to_string(),
             value: QueueValue::Integer(i),
         };
         engine.apply_operation(enqueue_op, tx);
     }
 
     // Verify size
-    let size_op = QueueOperation::Size {
-        queue_name: "clear_queue".to_string(),
-    };
+    let size_op = QueueOperation::Size;
 
     let result = engine.apply_operation(size_op.clone(), tx);
     assert!(matches!(
@@ -329,9 +271,7 @@ fn test_clear_operation() {
     ));
 
     // Clear the queue
-    let clear_op = QueueOperation::Clear {
-        queue_name: "clear_queue".to_string(),
-    };
+    let clear_op = QueueOperation::Clear;
 
     let result = engine.apply_operation(clear_op, tx);
     assert!(matches!(
@@ -346,9 +286,7 @@ fn test_clear_operation() {
         OperationResult::Complete(QueueResponse::Size(0))
     ));
 
-    let is_empty_op = QueueOperation::IsEmpty {
-        queue_name: "clear_queue".to_string(),
-    };
+    let is_empty_op = QueueOperation::IsEmpty;
 
     let result = engine.apply_operation(is_empty_op, tx);
     assert!(matches!(
@@ -369,7 +307,6 @@ fn test_shared_locks_for_reads() {
     // First transaction enqueues and commits
     engine.begin(tx1);
     let enqueue_op = QueueOperation::Enqueue {
-        queue_name: "shared_queue".to_string(),
         value: QueueValue::String("shared_data".to_string()),
     };
     engine.apply_operation(enqueue_op, tx1);
@@ -380,9 +317,7 @@ fn test_shared_locks_for_reads() {
     engine.begin(tx3);
 
     // Both should be able to peek (shared lock)
-    let peek_op = QueueOperation::Peek {
-        queue_name: "shared_queue".to_string(),
-    };
+    let peek_op = QueueOperation::Peek;
 
     let result = engine.apply_operation(peek_op.clone(), tx2);
     assert!(matches!(
@@ -397,9 +332,7 @@ fn test_shared_locks_for_reads() {
     ));
 
     // Both should be able to check size (shared lock)
-    let size_op = QueueOperation::Size {
-        queue_name: "shared_queue".to_string(),
-    };
+    let size_op = QueueOperation::Size;
 
     let result = engine.apply_operation(size_op.clone(), tx2);
     assert!(matches!(
@@ -437,7 +370,6 @@ fn test_various_value_types() {
     // Enqueue all value types
     for value in values.iter() {
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "mixed_queue".to_string(),
             value: value.clone(),
         };
         engine.apply_operation(enqueue_op, tx);
@@ -445,9 +377,7 @@ fn test_various_value_types() {
 
     // Dequeue and verify FIFO order
     for expected_value in values.iter() {
-        let dequeue_op = QueueOperation::Dequeue {
-            queue_name: "mixed_queue".to_string(),
-        };
+        let dequeue_op = QueueOperation::Dequeue;
 
         let result = engine.apply_operation(dequeue_op, tx);
         match result {
@@ -472,16 +402,12 @@ fn test_read_lock_released_on_prepare() {
     engine.begin(tx2);
 
     // TX1: Peek queue1 (acquires shared lock)
-    let peek_op = QueueOperation::Peek {
-        queue_name: "queue1".to_string(),
-    };
+    let peek_op = QueueOperation::Peek;
     let result = engine.apply_operation(peek_op, tx1);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to dequeue from queue1 (should be blocked - Exclusive vs Shared)
-    let dequeue_op = QueueOperation::Dequeue {
-        queue_name: "queue1".to_string(),
-    };
+    let dequeue_op = QueueOperation::Dequeue;
     let result = engine.apply_operation(dequeue_op.clone(), tx2);
 
     // Should be blocked because Exclusive (Dequeue) conflicts with Shared (Peek)
@@ -513,16 +439,12 @@ fn test_write_lock_not_released_on_prepare() {
     engine.begin(tx2);
 
     // TX1: Dequeue from queue1 (acquires exclusive lock)
-    let dequeue_op = QueueOperation::Dequeue {
-        queue_name: "queue1".to_string(),
-    };
+    let dequeue_op = QueueOperation::Dequeue;
     let result = engine.apply_operation(dequeue_op, tx1);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to peek queue1 (should be blocked by exclusive lock)
-    let peek_op = QueueOperation::Peek {
-        queue_name: "queue1".to_string(),
-    };
+    let peek_op = QueueOperation::Peek;
     let result = engine.apply_operation(peek_op.clone(), tx2);
 
     match result {
@@ -555,4 +477,274 @@ fn test_write_lock_not_released_on_prepare() {
     // TX2: Retry peek (should now succeed)
     let result = engine.apply_operation(peek_op, tx2);
     assert!(matches!(result, OperationResult::Complete(_)));
+}
+
+// ============================================================================
+// Snapshot Read Tests
+// ============================================================================
+
+#[test]
+fn test_snapshot_peek_doesnt_block_on_later_write() {
+    let mut engine = QueueTransactionEngine::new();
+
+    // Setup: Create a queue with some data
+    let setup_tx = create_timestamp(100);
+    engine.begin(setup_tx);
+    let enqueue_op = QueueOperation::Enqueue {
+        value: QueueValue::String("initial".to_string()),
+    };
+    engine.apply_operation(enqueue_op, setup_tx);
+    engine.commit(setup_tx);
+
+    // Start a write transaction at timestamp 300 (AFTER our read timestamp)
+    let write_tx = create_timestamp(300);
+    engine.begin(write_tx);
+
+    // Write transaction enqueues (gets append lock)
+    let enqueue_op = QueueOperation::Enqueue {
+        value: QueueValue::String("new_value".to_string()),
+    };
+    let result = engine.apply_operation(enqueue_op, write_tx);
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Enqueued)
+    ));
+
+    // Snapshot read at timestamp 200 (BEFORE write tx) should NOT block
+    let read_ts = create_timestamp(200);
+    let peek_op = QueueOperation::Peek;
+
+    let result = engine.read_at_timestamp(peek_op, read_ts);
+    // Should see only committed data (initial value) without blocking
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "initial"
+    ));
+}
+
+#[test]
+fn test_snapshot_size_blocks_on_earlier_write() {
+    let mut engine = QueueTransactionEngine::new();
+
+    // Start a write transaction at timestamp 100
+    let write_tx = create_timestamp(100);
+    engine.begin(write_tx);
+
+    // Write transaction enqueues (but doesn't commit yet)
+    let enqueue_op = QueueOperation::Enqueue {
+        value: QueueValue::String("pending".to_string()),
+    };
+    engine.apply_operation(enqueue_op, write_tx);
+
+    // Snapshot read at timestamp 200 (after write tx started) should block
+    let read_ts = create_timestamp(200);
+    let size_op = QueueOperation::Size;
+
+    let result = engine.read_at_timestamp(size_op, read_ts);
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, write_tx);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
+        }
+        _ => panic!("Expected WouldBlock for snapshot read after pending write"),
+    }
+}
+
+#[test]
+fn test_snapshot_is_empty_sees_committed_state() {
+    let mut engine = QueueTransactionEngine::new();
+
+    // Transaction at time 100: enqueue and commit
+    let tx1 = create_timestamp(100);
+    engine.begin(tx1);
+    for i in 0..3 {
+        let enqueue_op = QueueOperation::Enqueue {
+            value: QueueValue::Integer(i),
+        };
+        engine.apply_operation(enqueue_op, tx1);
+    }
+    engine.commit(tx1);
+
+    // Transaction at time 200: dequeue one and commit
+    let tx2 = create_timestamp(200);
+    engine.begin(tx2);
+    let dequeue_op = QueueOperation::Dequeue;
+    engine.apply_operation(dequeue_op, tx2);
+    engine.commit(tx2);
+
+    // Transaction at time 300: clear and commit
+    let tx3 = create_timestamp(300);
+    engine.begin(tx3);
+    let clear_op = QueueOperation::Clear;
+    engine.apply_operation(clear_op, tx3);
+    engine.commit(tx3);
+
+    // Snapshot reads at different timestamps
+    let is_empty_op = QueueOperation::IsEmpty;
+
+    // Read at time 50 (before any data): should be empty
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(50));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::IsEmpty(true))
+    ));
+
+    // Read at time 150 (after first enqueue): should not be empty
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(150));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::IsEmpty(false))
+    ));
+
+    // Read at time 250 (after dequeue): still not empty (2 items left)
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(250));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::IsEmpty(false))
+    ));
+
+    // Read at time 350 (after clear): should be empty
+    let result = engine.read_at_timestamp(is_empty_op, create_timestamp(350));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::IsEmpty(true))
+    ));
+}
+
+#[test]
+fn test_snapshot_peek_ignores_aborted_operations() {
+    let mut engine = QueueTransactionEngine::new();
+
+    // Transaction 1: enqueue and commit
+    let tx1 = create_timestamp(100);
+    engine.begin(tx1);
+    let enqueue_op = QueueOperation::Enqueue {
+        value: QueueValue::String("committed".to_string()),
+    };
+    engine.apply_operation(enqueue_op, tx1);
+    engine.commit(tx1);
+
+    // Transaction 2: enqueue but abort
+    let tx2 = create_timestamp(200);
+    engine.begin(tx2);
+    let enqueue_op = QueueOperation::Enqueue {
+        value: QueueValue::String("aborted".to_string()),
+    };
+    engine.apply_operation(enqueue_op, tx2);
+    engine.abort(tx2);
+
+    // Snapshot read at time 300 should only see committed value
+    let peek_op = QueueOperation::Peek;
+    let result = engine.read_at_timestamp(peek_op, create_timestamp(300));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "committed"
+    ));
+}
+
+#[test]
+fn test_snapshot_size_with_concurrent_operations() {
+    let mut engine = QueueTransactionEngine::new();
+
+    // Initial state: 2 items committed at time 100
+    let tx1 = create_timestamp(100);
+    engine.begin(tx1);
+    for i in 0..2 {
+        let enqueue_op = QueueOperation::Enqueue {
+            value: QueueValue::Integer(i),
+        };
+        engine.apply_operation(enqueue_op, tx1);
+    }
+    engine.commit(tx1);
+
+    // Start transaction at time 200 that will enqueue more (but not commit yet)
+    let tx2 = create_timestamp(200);
+    engine.begin(tx2);
+    let enqueue_op = QueueOperation::Enqueue {
+        value: QueueValue::Integer(2),
+    };
+    engine.apply_operation(enqueue_op, tx2);
+
+    // Start another transaction at time 300 that also enqueues (not committed)
+    let tx3 = create_timestamp(300);
+    engine.begin(tx3);
+    let enqueue_op = QueueOperation::Enqueue {
+        value: QueueValue::Integer(3),
+    };
+    engine.apply_operation(enqueue_op, tx3);
+
+    // Snapshot read at time 150 should see 2 items
+    let size_op = QueueOperation::Size;
+    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(150));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Size(2))
+    ));
+
+    // Snapshot read at time 250 should block on tx2
+    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(250));
+    assert!(matches!(result, OperationResult::WouldBlock { .. }));
+
+    // Snapshot read at time 350 should block on both tx2 and tx3
+    let result = engine.read_at_timestamp(size_op, create_timestamp(350));
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 2);
+            // Should contain both tx2 and tx3
+            let blocking_txs: Vec<_> = blockers.iter().map(|b| b.txn).collect();
+            assert!(blocking_txs.contains(&tx2));
+            assert!(blocking_txs.contains(&tx3));
+        }
+        _ => panic!("Expected WouldBlock with 2 blockers"),
+    }
+}
+
+#[test]
+fn test_snapshot_fifo_ordering_preserved() {
+    let mut engine = QueueTransactionEngine::new();
+
+    // Enqueue items at different times
+    for i in 0..5 {
+        let tx = create_timestamp((i + 1) * 100);
+        engine.begin(tx);
+        let enqueue_op = QueueOperation::Enqueue {
+            value: QueueValue::Integer(i as i64),
+        };
+        engine.apply_operation(enqueue_op, tx);
+        engine.commit(tx);
+    }
+
+    // Dequeue some items at time 600
+    let tx = create_timestamp(600);
+    engine.begin(tx);
+    for _ in 0..2 {
+        let dequeue_op = QueueOperation::Dequeue;
+        engine.apply_operation(dequeue_op.clone(), tx);
+    }
+    engine.commit(tx);
+
+    // Snapshot peek at different times should show proper FIFO order
+    let peek_op = QueueOperation::Peek;
+
+    // At time 150: should see first item (0)
+    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(150));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(0))))
+    ));
+
+    // At time 350: should still see first item (0)
+    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(350));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(0))))
+    ));
+
+    // At time 650: should see third item (2) after two dequeues
+    let result = engine.read_at_timestamp(peek_op, create_timestamp(650));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(2))))
+    ));
 }

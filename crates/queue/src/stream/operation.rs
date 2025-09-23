@@ -9,59 +9,36 @@ use serde::{Deserialize, Serialize};
 /// Queue operation types that can be sent in messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueueOperation {
-    /// Enqueue a value to the back of a queue
-    Enqueue {
-        queue_name: String,
-        value: QueueValue,
-    },
+    /// Enqueue a value to the back of the queue
+    Enqueue { value: QueueValue },
 
-    /// Dequeue a value from the front of a queue
-    Dequeue { queue_name: String },
+    /// Dequeue a value from the front of the queue
+    Dequeue,
 
     /// Peek at the front value without removing it
-    Peek { queue_name: String },
+    Peek,
 
-    /// Get the size of a queue
-    Size { queue_name: String },
+    /// Get the size of the queue
+    Size,
 
-    /// Check if a queue is empty
-    IsEmpty { queue_name: String },
+    /// Check if the queue is empty
+    IsEmpty,
 
-    /// Clear all values from a queue
-    Clear { queue_name: String },
+    /// Clear all values from the queue
+    Clear,
 }
 
 impl PartialEq for QueueOperation {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (
-                QueueOperation::Enqueue {
-                    queue_name: q1,
-                    value: v1,
-                },
-                QueueOperation::Enqueue {
-                    queue_name: q2,
-                    value: v2,
-                },
-            ) => q1 == q2 && values_equal(v1, v2),
-            (
-                QueueOperation::Dequeue { queue_name: q1 },
-                QueueOperation::Dequeue { queue_name: q2 },
-            ) => q1 == q2,
-            (QueueOperation::Peek { queue_name: q1 }, QueueOperation::Peek { queue_name: q2 }) => {
-                q1 == q2
+            (QueueOperation::Enqueue { value: v1 }, QueueOperation::Enqueue { value: v2 }) => {
+                values_equal(v1, v2)
             }
-            (QueueOperation::Size { queue_name: q1 }, QueueOperation::Size { queue_name: q2 }) => {
-                q1 == q2
-            }
-            (
-                QueueOperation::IsEmpty { queue_name: q1 },
-                QueueOperation::IsEmpty { queue_name: q2 },
-            ) => q1 == q2,
-            (
-                QueueOperation::Clear { queue_name: q1 },
-                QueueOperation::Clear { queue_name: q2 },
-            ) => q1 == q2,
+            (QueueOperation::Dequeue, QueueOperation::Dequeue) => true,
+            (QueueOperation::Peek, QueueOperation::Peek) => true,
+            (QueueOperation::Size, QueueOperation::Size) => true,
+            (QueueOperation::IsEmpty, QueueOperation::IsEmpty) => true,
+            (QueueOperation::Clear, QueueOperation::Clear) => true,
             _ => false,
         }
     }
@@ -86,11 +63,11 @@ impl Operation for QueueOperation {
     fn operation_type(&self) -> OperationType {
         match self {
             QueueOperation::Enqueue { .. } => OperationType::Write,
-            QueueOperation::Dequeue { .. } => OperationType::Write,
-            QueueOperation::Peek { .. } => OperationType::Read,
-            QueueOperation::Size { .. } => OperationType::Read,
-            QueueOperation::IsEmpty { .. } => OperationType::Read,
-            QueueOperation::Clear { .. } => OperationType::Write,
+            QueueOperation::Dequeue => OperationType::Write,
+            QueueOperation::Peek => OperationType::Read,
+            QueueOperation::Size => OperationType::Read,
+            QueueOperation::IsEmpty => OperationType::Read,
+            QueueOperation::Clear => OperationType::Write,
         }
     }
 }

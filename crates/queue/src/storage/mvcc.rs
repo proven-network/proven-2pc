@@ -5,7 +5,7 @@
 
 use crate::types::QueueValue;
 use proven_hlc::HlcTimestamp;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 /// A single entry in the queue
@@ -26,30 +26,37 @@ pub struct QueueEntry {
 enum QueueOp {
     /// Enqueue an entry to the back
     Enqueue { entry: Arc<QueueEntry> },
-    /// Dequeue from the front
+    /// Dequeue from the front (stores the dequeued entry for reconstruction)
     Dequeue,
-    /// Clear all entries
+    /// Clear all entries (stores cleared entries for reconstruction)
     Clear,
 }
 
-/// MVCC storage for queues using operation logging
+/// A committed operation with its timestamp
+#[derive(Debug, Clone)]
+struct CommittedOp {
+    /// The operation
+    op: QueueOp,
+    /// When this operation was committed
+    committed_at: HlcTimestamp,
+}
+
+/// MVCC storage for a single queue using operation logging
 #[derive(Debug)]
 pub struct MvccStorage {
-    /// Base committed state of all queues
-    base_queues: HashMap<String, VecDeque<Arc<QueueEntry>>>,
+    /// Committed operations (ordered by commit time)
+    /// Used to reconstruct queue state at any timestamp
+    committed_operations: Vec<CommittedOp>,
 
-    /// Next entry ID counter for each queue
-    next_entry_ids: HashMap<String, u64>,
+    /// Current committed state of the queue (optimization for current reads)
+    committed_queue: VecDeque<Arc<QueueEntry>>,
 
-    /// Operations performed by each transaction (not yet committed)
-    /// Maps transaction ID -> queue name -> list of operations
-    tx_operations: HashMap<HlcTimestamp, HashMap<String, Vec<QueueOp>>>,
+    /// Next entry ID counter
+    next_entry_id: u64,
 
-    /// Dequeued entries by transaction (for rollback on abort)
-    tx_dequeued: HashMap<HlcTimestamp, HashMap<String, Vec<Arc<QueueEntry>>>>,
-
-    /// Set of committed transactions
-    committed_transactions: HashSet<HlcTimestamp>,
+    /// Pending operations by transaction (not yet committed)
+    /// Maps transaction ID -> list of operations
+    pending_operations: HashMap<HlcTimestamp, Vec<QueueOp>>,
 
     /// Transaction start times for visibility checks
     transaction_start_times: HashMap<HlcTimestamp, HlcTimestamp>,
@@ -59,11 +66,10 @@ impl MvccStorage {
     /// Create a new MVCC storage
     pub fn new() -> Self {
         Self {
-            base_queues: HashMap::new(),
-            next_entry_ids: HashMap::new(),
-            tx_operations: HashMap::new(),
-            tx_dequeued: HashMap::new(),
-            committed_transactions: HashSet::new(),
+            committed_operations: Vec::new(),
+            committed_queue: VecDeque::new(),
+            next_entry_id: 1,
+            pending_operations: HashMap::new(),
             transaction_start_times: HashMap::new(),
         }
     }
@@ -71,70 +77,55 @@ impl MvccStorage {
     /// Register a new transaction
     pub fn register_transaction(&mut self, tx_id: HlcTimestamp, start_time: HlcTimestamp) {
         self.transaction_start_times.insert(tx_id, start_time);
-        self.tx_operations.insert(tx_id, HashMap::new());
-        self.tx_dequeued.insert(tx_id, HashMap::new());
+        self.pending_operations.insert(tx_id, Vec::new());
     }
 
     /// Mark a transaction as committed
     pub fn commit_transaction(&mut self, tx_id: HlcTimestamp) {
-        // Apply all operations from this transaction to base state
-        if let Some(tx_ops) = self.tx_operations.remove(&tx_id) {
-            for (queue_name, ops) in tx_ops {
-                let base_queue = self.base_queues.entry(queue_name.clone()).or_default();
+        // Move pending operations to committed with timestamp
+        if let Some(ops) = self.pending_operations.remove(&tx_id) {
+            for op in ops {
+                // Record the committed operation with timestamp
+                let committed_op = CommittedOp {
+                    op: op.clone(),
+                    committed_at: tx_id, // Using tx_id as commit timestamp
+                };
+                self.committed_operations.push(committed_op);
 
-                for op in ops {
-                    match op {
-                        QueueOp::Enqueue { entry } => {
-                            base_queue.push_back(entry);
-                        }
-                        QueueOp::Dequeue => {
-                            // Already removed from base during operation
-                        }
-                        QueueOp::Clear => {
-                            base_queue.clear();
-                        }
+                // Apply to committed state
+                match op {
+                    QueueOp::Enqueue { entry } => {
+                        self.committed_queue.push_back(entry);
+                    }
+                    QueueOp::Dequeue => {
+                        // Now remove from committed_queue during commit
+                        self.committed_queue.pop_front();
+                    }
+                    QueueOp::Clear => {
+                        self.committed_queue.clear();
                     }
                 }
             }
         }
 
         // Clean up transaction data
-        self.tx_dequeued.remove(&tx_id);
-        self.committed_transactions.insert(tx_id);
         self.transaction_start_times.remove(&tx_id);
     }
 
     /// Abort a transaction by discarding all its operations
     pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) {
-        // Restore any dequeued entries back to their queues
-        if let Some(dequeued_by_queue) = self.tx_dequeued.remove(&tx_id) {
-            for (queue_name, entries) in dequeued_by_queue {
-                let base_queue = self.base_queues.entry(queue_name).or_default();
-                // Re-insert at front in reverse order to maintain original order
-                for entry in entries.into_iter().rev() {
-                    base_queue.push_front(entry);
-                }
-            }
-        }
-
-        // Discard all operations
-        self.tx_operations.remove(&tx_id);
+        // Simply discard all pending operations
+        self.pending_operations.remove(&tx_id);
         self.transaction_start_times.remove(&tx_id);
     }
 
-    /// Get a materialized view of a queue for a transaction
-    fn get_queue_view(&self, queue_name: &str, tx_id: HlcTimestamp) -> VecDeque<Arc<QueueEntry>> {
-        // Start with base queue
-        let mut view = self
-            .base_queues
-            .get(queue_name)
-            .cloned()
-            .unwrap_or_default();
+    /// Get a materialized view of the queue for a transaction
+    fn get_queue_view(&self, tx_id: HlcTimestamp) -> VecDeque<Arc<QueueEntry>> {
+        // Start with committed queue
+        let mut view = self.committed_queue.clone();
 
-        // Apply transaction's operations if any
-        if let Some(tx_ops) = self.tx_operations.get(&tx_id)
-            && let Some(ops) = tx_ops.get(queue_name)
-        {
+        // Apply transaction's pending operations if any
+        if let Some(ops) = self.pending_operations.get(&tx_id) {
             for op in ops {
                 match op {
                     QueueOp::Enqueue { entry } => {
@@ -154,26 +145,56 @@ impl MvccStorage {
         view
     }
 
-    /// Get next entry ID for a queue
-    fn get_next_entry_id(&mut self, queue_name: &str) -> u64 {
-        let entry = self
-            .next_entry_ids
-            .entry(queue_name.to_string())
-            .or_insert(1);
-        let id = *entry;
-        *entry += 1;
+    /// Reconstruct queue state at a specific timestamp (for snapshot reads)
+    fn get_queue_at_timestamp(&self, read_timestamp: HlcTimestamp) -> VecDeque<Arc<QueueEntry>> {
+        let mut queue = VecDeque::new();
+
+        // Apply all committed operations up to the read timestamp
+        for committed_op in &self.committed_operations {
+            // Only include operations committed before or at the read timestamp
+            if committed_op.committed_at <= read_timestamp {
+                match &committed_op.op {
+                    QueueOp::Enqueue { entry } => {
+                        queue.push_back(entry.clone());
+                    }
+                    QueueOp::Dequeue => {
+                        queue.pop_front();
+                    }
+                    QueueOp::Clear => {
+                        queue.clear();
+                    }
+                }
+            }
+        }
+
+        queue
+    }
+
+    /// Check if there are pending operations from transactions that would affect a read
+    pub fn has_pending_operations(&self, before_timestamp: HlcTimestamp) -> Vec<HlcTimestamp> {
+        let mut pending_txns = Vec::new();
+
+        for (tx_id, ops) in &self.pending_operations {
+            // Only consider transactions that started before our read timestamp
+            // and have pending operations
+            if *tx_id < before_timestamp && !ops.is_empty() {
+                pending_txns.push(*tx_id);
+            }
+        }
+
+        pending_txns
+    }
+
+    /// Get next entry ID
+    fn get_next_entry_id(&mut self) -> u64 {
+        let id = self.next_entry_id;
+        self.next_entry_id += 1;
         id
     }
 
-    /// Enqueue a value to the back of a queue
-    pub fn enqueue(
-        &mut self,
-        queue_name: String,
-        value: QueueValue,
-        tx_id: HlcTimestamp,
-        timestamp: HlcTimestamp,
-    ) {
-        let entry_id = self.get_next_entry_id(&queue_name);
+    /// Enqueue a value to the back of the queue
+    pub fn enqueue(&mut self, value: QueueValue, tx_id: HlcTimestamp, timestamp: HlcTimestamp) {
+        let entry_id = self.get_next_entry_id();
 
         let entry = Arc::new(QueueEntry {
             value: Arc::new(value),
@@ -183,51 +204,24 @@ impl MvccStorage {
         });
 
         // Record the operation
-        self.tx_operations
+        self.pending_operations
             .entry(tx_id)
-            .or_default()
-            .entry(queue_name)
             .or_default()
             .push(QueueOp::Enqueue { entry });
     }
 
-    /// Dequeue a value from the front of a queue
-    pub fn dequeue(&mut self, queue_name: &str, tx_id: HlcTimestamp) -> Option<QueueValue> {
+    /// Dequeue a value from the front of the queue
+    pub fn dequeue(&mut self, tx_id: HlcTimestamp) -> Option<QueueValue> {
         // Get a view with all operations applied
-        let mut view = self.get_queue_view(queue_name, tx_id);
+        let view = self.get_queue_view(tx_id);
 
         // Check if there's anything to dequeue
-        if let Some(entry) = view.pop_front() {
-            // Determine if this entry came from base or from our transaction
-            let from_base = self
-                .base_queues
-                .get(queue_name)
-                .and_then(|q| q.front())
-                .map(|e| e.entry_id == entry.entry_id)
-                .unwrap_or(false);
-
-            if from_base {
-                // Remove from base queue and record for rollback
-                if let Some(base_queue) = self.base_queues.get_mut(queue_name)
-                    && let Some(base_entry) = base_queue.pop_front()
-                {
-                    self.tx_dequeued
-                        .entry(tx_id)
-                        .or_default()
-                        .entry(queue_name.to_string())
-                        .or_default()
-                        .push(base_entry);
-                }
-            } else {
-                // Only record dequeue operation for items from our own transaction
-                // Base queue items are already removed, so we don't need to record the operation
-                self.tx_operations
-                    .entry(tx_id)
-                    .or_default()
-                    .entry(queue_name.to_string())
-                    .or_default()
-                    .push(QueueOp::Dequeue);
-            }
+        if let Some(entry) = view.front() {
+            // Record dequeue operation
+            self.pending_operations
+                .entry(tx_id)
+                .or_default()
+                .push(QueueOp::Dequeue);
 
             return Some((*entry.value).clone());
         }
@@ -236,76 +230,53 @@ impl MvccStorage {
     }
 
     /// Peek at the front value without removing it
-    pub fn peek(&self, queue_name: &str, tx_id: HlcTimestamp) -> Option<Arc<QueueValue>> {
-        let view = self.get_queue_view(queue_name, tx_id);
+    pub fn peek(&self, tx_id: HlcTimestamp) -> Option<Arc<QueueValue>> {
+        let view = self.get_queue_view(tx_id);
         view.front().map(|entry| entry.value.clone())
     }
 
-    /// Get the size of a queue
-    pub fn size(&self, queue_name: &str, tx_id: HlcTimestamp) -> usize {
-        self.get_queue_view(queue_name, tx_id).len()
+    /// Get the size of the queue
+    pub fn size(&self, tx_id: HlcTimestamp) -> usize {
+        self.get_queue_view(tx_id).len()
     }
 
-    /// Check if a queue is empty
-    pub fn is_empty(&self, queue_name: &str, tx_id: HlcTimestamp) -> bool {
-        self.size(queue_name, tx_id) == 0
+    /// Check if the queue is empty
+    pub fn is_empty(&self, tx_id: HlcTimestamp) -> bool {
+        self.size(tx_id) == 0
     }
 
-    /// Clear all values from a queue
-    pub fn clear(&mut self, queue_name: &str, tx_id: HlcTimestamp) {
-        // For clear, we need to track what was in the base queue for rollback
-        if let Some(base_queue) = self.base_queues.get_mut(queue_name) {
-            // Move all base entries to dequeued for potential rollback
-            let entries: Vec<Arc<QueueEntry>> = base_queue.drain(..).collect();
-            if !entries.is_empty() {
-                self.tx_dequeued
-                    .entry(tx_id)
-                    .or_default()
-                    .entry(queue_name.to_string())
-                    .or_default()
-                    .extend(entries);
-            }
-        }
+    /// Peek at the front value at a specific timestamp (snapshot read)
+    pub fn peek_at_timestamp(&self, read_timestamp: HlcTimestamp) -> Option<Arc<QueueValue>> {
+        let queue = self.get_queue_at_timestamp(read_timestamp);
+        queue.front().map(|entry| entry.value.clone())
+    }
 
-        // Record the clear operation
-        self.tx_operations
+    /// Get the size of the queue at a specific timestamp (snapshot read)
+    pub fn size_at_timestamp(&self, read_timestamp: HlcTimestamp) -> usize {
+        self.get_queue_at_timestamp(read_timestamp).len()
+    }
+
+    /// Check if the queue is empty at a specific timestamp (snapshot read)
+    pub fn is_empty_at_timestamp(&self, read_timestamp: HlcTimestamp) -> bool {
+        self.get_queue_at_timestamp(read_timestamp).is_empty()
+    }
+
+    /// Clear all values from the queue
+    pub fn clear(&mut self, tx_id: HlcTimestamp) {
+        // Just record the clear operation
+        self.pending_operations
             .entry(tx_id)
-            .or_default()
-            .entry(queue_name.to_string())
             .or_default()
             .push(QueueOp::Clear);
     }
 
-    /// Get all queue names visible to a transaction
-    pub fn list_queues(&self, tx_id: HlcTimestamp) -> Vec<String> {
-        let mut queues = HashSet::new();
-
-        // Add base queues
-        for queue_name in self.base_queues.keys() {
-            queues.insert(queue_name.clone());
-        }
-
-        // Add queues modified by this transaction
-        if let Some(tx_ops) = self.tx_operations.get(&tx_id) {
-            for queue_name in tx_ops.keys() {
-                queues.insert(queue_name.clone());
-            }
-        }
-
-        let mut result: Vec<String> = queues.into_iter().collect();
-        result.sort();
-        result
-    }
-
     /// Get statistics about the storage
     pub fn stats(&self) -> StorageStats {
-        let total_queues = self.base_queues.len();
-        let total_entries: usize = self.base_queues.values().map(|q| q.len()).sum();
-        let committed_txns = self.committed_transactions.len();
+        let total_entries = self.committed_queue.len();
+        let committed_txns = self.committed_operations.len();
         let active_txns = self.transaction_start_times.len();
 
         StorageStats {
-            total_queues,
             total_entries,
             committed_txns,
             active_txns,
@@ -314,57 +285,34 @@ impl MvccStorage {
 
     /// Get a compacted view of the storage (only committed state)
     /// Used for creating snapshots when no transactions are active
-    pub fn get_compacted_data(&self) -> HashMap<String, VecDeque<QueueEntry>> {
-        let mut result = HashMap::new();
-
+    pub fn get_compacted_data(&self) -> VecDeque<QueueEntry> {
         // Convert Arc<QueueEntry> back to QueueEntry for serialization
-        for (queue_name, queue) in &self.base_queues {
-            if !queue.is_empty() {
-                let entries: VecDeque<QueueEntry> = queue
-                    .iter()
-                    .map(|arc_entry| QueueEntry {
-                        value: arc_entry.value.clone(),
-                        created_by: arc_entry.created_by,
-                        created_at: arc_entry.created_at,
-                        entry_id: arc_entry.entry_id,
-                    })
-                    .collect();
-                result.insert(queue_name.clone(), entries);
-            }
-        }
-
-        result
+        self.committed_queue
+            .iter()
+            .map(|arc_entry| QueueEntry {
+                value: arc_entry.value.clone(),
+                created_by: arc_entry.created_by,
+                created_at: arc_entry.created_at,
+                entry_id: arc_entry.entry_id,
+            })
+            .collect()
     }
 
     /// Restore from compacted data
     /// Should only be called on a fresh MVCC storage instance
-    pub fn restore_from_compacted(&mut self, data: HashMap<String, VecDeque<QueueEntry>>) {
-        use proven_hlc::NodeId;
-
+    pub fn restore_from_compacted(&mut self, data: VecDeque<QueueEntry>) {
         // Clear any existing data
-        self.base_queues.clear();
-        self.next_entry_ids.clear();
-        self.tx_operations.clear();
-        self.tx_dequeued.clear();
-        self.committed_transactions.clear();
+        self.committed_queue.clear();
+        self.committed_operations.clear();
+        self.pending_operations.clear();
         self.transaction_start_times.clear();
 
-        // Create a special "restore" transaction that's already committed
-        let restore_txn = HlcTimestamp::new(0, 0, NodeId::new(0));
-        self.committed_transactions.insert(restore_txn);
+        // Find the max entry_id to set next_entry_id correctly
+        let max_id = data.iter().map(|e| e.entry_id).max().unwrap_or(0);
+        self.next_entry_id = max_id + 1;
 
-        // Restore all queues
-        for (queue_name, entries) in data {
-            // Find the max entry_id to set next_entry_id correctly
-            let max_id = entries.iter().map(|e| e.entry_id).max().unwrap_or(0);
-            self.next_entry_ids.insert(queue_name.clone(), max_id + 1);
-
-            // Convert QueueEntry to Arc<QueueEntry> for storage
-            let arc_entries: VecDeque<Arc<QueueEntry>> =
-                entries.into_iter().map(Arc::new).collect();
-
-            self.base_queues.insert(queue_name, arc_entries);
-        }
+        // Convert QueueEntry to Arc<QueueEntry> for storage
+        self.committed_queue = data.into_iter().map(Arc::new).collect();
     }
 }
 
@@ -377,7 +325,6 @@ impl Default for MvccStorage {
 /// Statistics about the MVCC storage
 #[derive(Debug, Clone)]
 pub struct StorageStats {
-    pub total_queues: usize,
     pub total_entries: usize,
     pub committed_txns: usize,
     pub active_txns: usize,
@@ -400,14 +347,8 @@ mod tests {
         storage.register_transaction(tx1, tx1);
 
         // Enqueue some values
+        storage.enqueue(QueueValue::String("first".to_string()), tx1, tx1);
         storage.enqueue(
-            "queue1".to_string(),
-            QueueValue::String("first".to_string()),
-            tx1,
-            tx1,
-        );
-        storage.enqueue(
-            "queue1".to_string(),
             QueueValue::String("second".to_string()),
             tx1,
             create_timestamp(101),
@@ -415,20 +356,20 @@ mod tests {
 
         // Should be able to peek without removing
         assert_eq!(
-            storage.peek("queue1", tx1).map(|arc| (*arc).clone()),
+            storage.peek(tx1).map(|arc| (*arc).clone()),
             Some(QueueValue::String("first".to_string()))
         );
 
         // Dequeue should return FIFO order
         assert_eq!(
-            storage.dequeue("queue1", tx1),
+            storage.dequeue(tx1),
             Some(QueueValue::String("first".to_string()))
         );
         assert_eq!(
-            storage.dequeue("queue1", tx1),
+            storage.dequeue(tx1),
             Some(QueueValue::String("second".to_string()))
         );
-        assert_eq!(storage.dequeue("queue1", tx1), None);
+        assert_eq!(storage.dequeue(tx1), None);
     }
 
     #[test]
@@ -441,23 +382,18 @@ mod tests {
         storage.register_transaction(tx2, tx2);
 
         // tx1 enqueues some values
-        storage.enqueue(
-            "queue1".to_string(),
-            QueueValue::String("tx1_value".to_string()),
-            tx1,
-            tx1,
-        );
+        storage.enqueue(QueueValue::String("tx1_value".to_string()), tx1, tx1);
 
         // tx2 shouldn't see uncommitted values
-        assert_eq!(storage.size("queue1", tx2), 0);
-        assert!(storage.is_empty("queue1", tx2));
+        assert_eq!(storage.size(tx2), 0);
+        assert!(storage.is_empty(tx2));
 
         // After commit, tx2 should see the values
         storage.commit_transaction(tx1);
 
-        assert_eq!(storage.size("queue1", tx2), 1);
+        assert_eq!(storage.size(tx2), 1);
         assert_eq!(
-            storage.peek("queue1", tx2).map(|arc| (*arc).clone()),
+            storage.peek(tx2).map(|arc| (*arc).clone()),
             Some(QueueValue::String("tx1_value".to_string()))
         );
     }
@@ -470,23 +406,13 @@ mod tests {
 
         // tx1 creates a queue and commits
         storage.register_transaction(tx1, tx1);
-        storage.enqueue(
-            "queue1".to_string(),
-            QueueValue::String("committed".to_string()),
-            tx1,
-            tx1,
-        );
+        storage.enqueue(QueueValue::String("committed".to_string()), tx1, tx1);
         storage.commit_transaction(tx1);
 
         // tx2 modifies the queue but aborts
         storage.register_transaction(tx2, tx2);
-        storage.enqueue(
-            "queue1".to_string(),
-            QueueValue::String("aborted".to_string()),
-            tx2,
-            tx2,
-        );
-        assert_eq!(storage.size("queue1", tx2), 2);
+        storage.enqueue(QueueValue::String("aborted".to_string()), tx2, tx2);
+        assert_eq!(storage.size(tx2), 2);
 
         // Abort tx2
         storage.abort_transaction(tx2);
@@ -494,9 +420,9 @@ mod tests {
         // New transaction should only see committed value
         let tx3 = create_timestamp(300);
         storage.register_transaction(tx3, tx3);
-        assert_eq!(storage.size("queue1", tx3), 1);
+        assert_eq!(storage.size(tx3), 1);
         assert_eq!(
-            storage.peek("queue1", tx3).map(|arc| (*arc).clone()),
+            storage.peek(tx3).map(|arc| (*arc).clone()),
             Some(QueueValue::String("committed".to_string()))
         );
     }
@@ -511,18 +437,17 @@ mod tests {
         // Add some values
         for i in 0..5 {
             storage.enqueue(
-                "queue1".to_string(),
                 QueueValue::Integer(i),
                 tx1,
                 create_timestamp(100 + i as u64),
             );
         }
 
-        assert_eq!(storage.size("queue1", tx1), 5);
+        assert_eq!(storage.size(tx1), 5);
 
         // Clear the queue
-        storage.clear("queue1", tx1);
-        assert_eq!(storage.size("queue1", tx1), 0);
-        assert!(storage.is_empty("queue1", tx1));
+        storage.clear(tx1);
+        assert_eq!(storage.size(tx1), 0);
+        assert!(storage.is_empty(tx1));
     }
 }

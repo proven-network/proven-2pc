@@ -5,7 +5,6 @@
 use crate::storage::{LockAttemptResult, LockManager, LockMode, MvccStorage};
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
-use std::collections::HashSet;
 
 /// Transaction error types
 #[derive(Debug)]
@@ -28,8 +27,8 @@ pub struct QueueTransaction {
     /// Transaction ID
     pub tx_id: HlcTimestamp,
 
-    /// Locks acquired by this transaction
-    pub acquired_locks: HashSet<String>,
+    /// Whether this transaction has acquired a lock
+    pub has_lock: bool,
 
     /// Whether this transaction has been aborted
     pub aborted: bool,
@@ -40,7 +39,7 @@ impl QueueTransaction {
     pub fn new(tx_id: HlcTimestamp) -> Self {
         Self {
             tx_id,
-            acquired_locks: HashSet::new(),
+            has_lock: false,
             aborted: false,
         }
     }
@@ -98,32 +97,20 @@ impl QueueTransactionManager {
         }
 
         // Determine required lock mode
-        let (queue_name, lock_mode) = match operation {
-            QueueOperation::Enqueue { queue_name, .. } => (queue_name.clone(), LockMode::Append),
-            QueueOperation::Dequeue { queue_name } => (queue_name.clone(), LockMode::Exclusive),
-            QueueOperation::Clear { queue_name } => (queue_name.clone(), LockMode::Exclusive),
-            QueueOperation::Peek { queue_name } => (queue_name.clone(), LockMode::Shared),
-            QueueOperation::Size { queue_name } => (queue_name.clone(), LockMode::Shared),
-            QueueOperation::IsEmpty { queue_name } => (queue_name.clone(), LockMode::Shared),
+        let lock_mode = match operation {
+            QueueOperation::Enqueue { .. } => LockMode::Append,
+            QueueOperation::Dequeue | QueueOperation::Clear => LockMode::Exclusive,
+            QueueOperation::Peek | QueueOperation::Size | QueueOperation::IsEmpty => {
+                LockMode::Shared
+            }
         };
 
         // Try to acquire lock if not already held
-        if !self
-            .transactions
-            .get(&tx_id)
-            .unwrap()
-            .acquired_locks
-            .contains(&queue_name)
-        {
-            match self.lock_manager.check(tx_id, &queue_name, lock_mode) {
+        if !self.transactions.get(&tx_id).unwrap().has_lock {
+            match self.lock_manager.check(tx_id, lock_mode) {
                 LockAttemptResult::WouldGrant => {
-                    self.lock_manager
-                        .grant(tx_id, queue_name.clone(), lock_mode);
-                    self.transactions
-                        .get_mut(&tx_id)
-                        .unwrap()
-                        .acquired_locks
-                        .insert(queue_name.clone());
+                    self.lock_manager.grant(tx_id, lock_mode);
+                    self.transactions.get_mut(&tx_id).unwrap().has_lock = true;
                 }
                 LockAttemptResult::Conflict { holder, mode } => {
                     return Err(TransactionError::LockConflict { holder, mode });
@@ -133,32 +120,28 @@ impl QueueTransactionManager {
 
         // Execute the operation
         match operation {
-            QueueOperation::Enqueue { queue_name, value } => {
-                self.storage
-                    .enqueue(queue_name.clone(), value.clone(), tx_id, timestamp);
+            QueueOperation::Enqueue { value } => {
+                self.storage.enqueue(value.clone(), tx_id, timestamp);
                 Ok(QueueResponse::Enqueued)
             }
-            QueueOperation::Dequeue { queue_name } => {
-                let value = self.storage.dequeue(queue_name, tx_id);
+            QueueOperation::Dequeue => {
+                let value = self.storage.dequeue(tx_id);
                 Ok(QueueResponse::Dequeued(value))
             }
-            QueueOperation::Peek { queue_name } => {
-                let value = self
-                    .storage
-                    .peek(queue_name, tx_id)
-                    .map(|arc| (*arc).clone());
+            QueueOperation::Peek => {
+                let value = self.storage.peek(tx_id).map(|arc| (*arc).clone());
                 Ok(QueueResponse::Peeked(value))
             }
-            QueueOperation::Size { queue_name } => {
-                let size = self.storage.size(queue_name, tx_id);
+            QueueOperation::Size => {
+                let size = self.storage.size(tx_id);
                 Ok(QueueResponse::Size(size))
             }
-            QueueOperation::IsEmpty { queue_name } => {
-                let is_empty = self.storage.is_empty(queue_name, tx_id);
+            QueueOperation::IsEmpty => {
+                let is_empty = self.storage.is_empty(tx_id);
                 Ok(QueueResponse::IsEmpty(is_empty))
             }
-            QueueOperation::Clear { queue_name } => {
-                self.storage.clear(queue_name, tx_id);
+            QueueOperation::Clear => {
+                self.storage.clear(tx_id);
                 Ok(QueueResponse::Cleared)
             }
         }
@@ -179,12 +162,10 @@ impl QueueTransactionManager {
         let held_locks = self.lock_manager.locks_held_by(tx_id);
 
         // Release only the read locks
-        for (queue_name, mode) in held_locks {
-            if mode == LockMode::Shared {
-                self.lock_manager.release(tx_id, &queue_name);
-                // Remove from transaction's acquired locks
-                tx.acquired_locks.remove(&queue_name);
-            }
+        if held_locks.contains(&LockMode::Shared) {
+            self.lock_manager.release(tx_id);
+            // Mark that we no longer hold locks (for shared locks)
+            tx.has_lock = false;
         }
 
         Ok(())
@@ -241,22 +222,39 @@ impl QueueTransactionManager {
     /// Get compacted data for snapshots
     pub fn get_compacted_data(
         &self,
-    ) -> std::collections::HashMap<
-        String,
-        std::collections::VecDeque<crate::storage::mvcc::QueueEntry>,
-    > {
+    ) -> std::collections::VecDeque<crate::storage::mvcc::QueueEntry> {
         self.storage.get_compacted_data()
     }
 
     /// Restore from compacted data
     pub fn restore_from_compacted(
         &mut self,
-        data: std::collections::HashMap<
-            String,
-            std::collections::VecDeque<crate::storage::mvcc::QueueEntry>,
-        >,
+        data: std::collections::VecDeque<crate::storage::mvcc::QueueEntry>,
     ) {
         self.storage.restore_from_compacted(data);
+    }
+
+    /// Get pending operations from transactions before a timestamp
+    pub fn get_pending_operations(&self, before_timestamp: HlcTimestamp) -> Vec<HlcTimestamp> {
+        self.storage.has_pending_operations(before_timestamp)
+    }
+
+    /// Peek at a specific timestamp (snapshot read)
+    pub fn peek_at_timestamp(
+        &self,
+        read_timestamp: HlcTimestamp,
+    ) -> Option<std::sync::Arc<crate::types::QueueValue>> {
+        self.storage.peek_at_timestamp(read_timestamp)
+    }
+
+    /// Get queue size at a specific timestamp (snapshot read)
+    pub fn size_at_timestamp(&self, read_timestamp: HlcTimestamp) -> usize {
+        self.storage.size_at_timestamp(read_timestamp)
+    }
+
+    /// Check if queue is empty at a specific timestamp (snapshot read)
+    pub fn is_empty_at_timestamp(&self, read_timestamp: HlcTimestamp) -> bool {
+        self.storage.is_empty_at_timestamp(read_timestamp)
     }
 }
 
@@ -285,7 +283,6 @@ mod tests {
 
         // Enqueue operation
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "test_queue".to_string(),
             value: QueueValue::String("test_value".to_string()),
         };
 
@@ -293,9 +290,7 @@ mod tests {
         assert!(matches!(result, Ok(QueueResponse::Enqueued)));
 
         // Dequeue operation
-        let dequeue_op = QueueOperation::Dequeue {
-            queue_name: "test_queue".to_string(),
-        };
+        let dequeue_op = QueueOperation::Dequeue;
 
         let result = manager.execute_operation(tx1, &dequeue_op, tx1);
         assert!(matches!(
@@ -318,16 +313,13 @@ mod tests {
 
         // tx1 acquires exclusive lock
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "test_queue".to_string(),
             value: QueueValue::String("value1".to_string()),
         };
 
         assert!(manager.execute_operation(tx1, &enqueue_op, tx1).is_ok());
 
         // tx2 should fail to acquire conflicting lock
-        let dequeue_op = QueueOperation::Dequeue {
-            queue_name: "test_queue".to_string(),
-        };
+        let dequeue_op = QueueOperation::Dequeue;
 
         let result = manager.execute_operation(tx2, &dequeue_op, tx2);
         assert!(matches!(result, Err(TransactionError::LockConflict { .. })));
@@ -343,9 +335,7 @@ mod tests {
         manager.begin_transaction(tx2, tx2);
 
         // Both transactions should be able to acquire shared locks
-        let peek_op = QueueOperation::Peek {
-            queue_name: "test_queue".to_string(),
-        };
+        let peek_op = QueueOperation::Peek;
 
         assert!(manager.execute_operation(tx1, &peek_op, tx1).is_ok());
         assert!(manager.execute_operation(tx2, &peek_op, tx2).is_ok());
@@ -360,7 +350,6 @@ mod tests {
 
         // Execute some operations
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "test_queue".to_string(),
             value: QueueValue::String("value1".to_string()),
         };
 
@@ -373,9 +362,7 @@ mod tests {
         let tx2 = create_timestamp(200);
         manager.begin_transaction(tx2, tx2);
 
-        let size_op = QueueOperation::Size {
-            queue_name: "test_queue".to_string(),
-        };
+        let size_op = QueueOperation::Size;
 
         let result = manager.execute_operation(tx2, &size_op, tx2);
         assert!(matches!(result, Ok(QueueResponse::Size(0))));

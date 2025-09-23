@@ -9,7 +9,7 @@ use crate::stream::transaction::QueueTransactionManager;
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 /// Queue engine that implements the TransactionEngine trait
 pub struct QueueTransactionEngine {
@@ -27,6 +27,87 @@ impl QueueTransactionEngine {
             active_transactions: HashSet::new(),
         }
     }
+
+    /// Execute a peek operation without locking
+    fn execute_peek_without_locking(
+        &self,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<QueueResponse> {
+        // Check for pending operations from earlier transactions
+        let pending_writers = self.manager.get_pending_operations(read_timestamp);
+
+        if !pending_writers.is_empty() {
+            // There are pending operations from earlier transactions
+            // We must wait to see the final queue state
+            let blockers = pending_writers
+                .into_iter()
+                .map(|txn| BlockingInfo {
+                    txn,
+                    retry_on: RetryOn::CommitOrAbort,
+                })
+                .collect();
+
+            return OperationResult::WouldBlock { blockers };
+        }
+
+        // No blocking operations from earlier transactions
+        let value = self.manager.peek_at_timestamp(read_timestamp);
+        OperationResult::Complete(QueueResponse::Peeked(value.map(|arc| (*arc).clone())))
+    }
+
+    /// Execute a size operation without locking
+    fn execute_size_without_locking(
+        &self,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<QueueResponse> {
+        // Check for pending operations from earlier transactions
+        let pending_writers = self.manager.get_pending_operations(read_timestamp);
+
+        if !pending_writers.is_empty() {
+            // There are pending operations from earlier transactions
+            // We must wait to see the final queue state
+            let blockers = pending_writers
+                .into_iter()
+                .map(|txn| BlockingInfo {
+                    txn,
+                    retry_on: RetryOn::CommitOrAbort,
+                })
+                .collect();
+
+            return OperationResult::WouldBlock { blockers };
+        }
+
+        // No blocking operations from earlier transactions
+        let size = self.manager.size_at_timestamp(read_timestamp);
+        OperationResult::Complete(QueueResponse::Size(size))
+    }
+
+    /// Execute an is_empty operation without locking
+    fn execute_is_empty_without_locking(
+        &self,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<QueueResponse> {
+        // Check for pending operations from earlier transactions
+        let pending_writers = self.manager.get_pending_operations(read_timestamp);
+
+        if !pending_writers.is_empty() {
+            // There are pending operations from earlier transactions
+            // We must wait to see the final queue state
+            let blockers = pending_writers
+                .into_iter()
+                .map(|txn| BlockingInfo {
+                    txn,
+                    retry_on: RetryOn::CommitOrAbort,
+                })
+                .collect();
+
+            return OperationResult::WouldBlock { blockers };
+        }
+
+        // No blocking operations from earlier transactions
+        let is_empty = self.manager.is_empty_at_timestamp(read_timestamp);
+        OperationResult::Complete(QueueResponse::IsEmpty(is_empty))
+    }
 }
 
 impl Default for QueueTransactionEngine {
@@ -38,6 +119,19 @@ impl Default for QueueTransactionEngine {
 impl TransactionEngine for QueueTransactionEngine {
     type Operation = QueueOperation;
     type Response = QueueResponse;
+
+    fn read_at_timestamp(
+        &self,
+        operation: Self::Operation,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<Self::Response> {
+        match operation {
+            QueueOperation::Peek => self.execute_peek_without_locking(read_timestamp),
+            QueueOperation::Size => self.execute_size_without_locking(read_timestamp),
+            QueueOperation::IsEmpty => self.execute_is_empty_without_locking(read_timestamp),
+            _ => panic!("Must be read-only operation"),
+        }
+    }
 
     fn begin(&mut self, txn_id: HlcTimestamp) {
         self.manager.begin_transaction(txn_id, txn_id);
@@ -55,12 +149,10 @@ impl TransactionEngine for QueueTransactionEngine {
                 // Check what operation we're trying to do
                 let our_mode = match &operation {
                     QueueOperation::Enqueue { .. } => LockMode::Append,
-                    QueueOperation::Dequeue { .. } | QueueOperation::Clear { .. } => {
-                        LockMode::Exclusive
+                    QueueOperation::Dequeue | QueueOperation::Clear => LockMode::Exclusive,
+                    QueueOperation::Peek | QueueOperation::Size | QueueOperation::IsEmpty => {
+                        LockMode::Shared
                     }
-                    QueueOperation::Peek { .. }
-                    | QueueOperation::Size { .. }
-                    | QueueOperation::IsEmpty { .. } => LockMode::Shared,
                 };
 
                 // Determine retry timing based on conflict type
@@ -123,13 +215,13 @@ impl TransactionEngine for QueueTransactionEngine {
         #[derive(serde::Serialize, serde::Deserialize)]
         struct QueueSnapshot {
             // Compacted queue data - only committed state
-            queues: HashMap<String, VecDeque<QueueEntry>>,
+            entries: VecDeque<QueueEntry>,
         }
 
         // Get compacted data from the transaction manager
-        let compacted = self.manager.get_compacted_data();
+        let entries = self.manager.get_compacted_data();
 
-        let snapshot = QueueSnapshot { queues: compacted };
+        let snapshot = QueueSnapshot { entries };
 
         // Serialize with CBOR
         let mut buf = Vec::new();
@@ -150,7 +242,7 @@ impl TransactionEngine for QueueTransactionEngine {
 
         #[derive(serde::Serialize, serde::Deserialize)]
         struct QueueSnapshot {
-            queues: HashMap<String, VecDeque<QueueEntry>>,
+            entries: VecDeque<QueueEntry>,
         }
 
         // Deserialize snapshot
@@ -159,7 +251,7 @@ impl TransactionEngine for QueueTransactionEngine {
 
         // Create a fresh transaction manager and restore data
         let mut new_manager = QueueTransactionManager::new();
-        new_manager.restore_from_compacted(snapshot.queues);
+        new_manager.restore_from_compacted(snapshot.entries);
 
         // Replace the current manager
         self.manager = new_manager;
@@ -190,7 +282,6 @@ mod tests {
 
         // Test enqueue
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "test_queue".to_string(),
             value: QueueValue::Integer(42),
         };
 
@@ -201,9 +292,7 @@ mod tests {
         ));
 
         // Test peek
-        let peek_op = QueueOperation::Peek {
-            queue_name: "test_queue".to_string(),
-        };
+        let peek_op = QueueOperation::Peek;
 
         let result = engine.apply_operation(peek_op, tx1);
         assert!(matches!(
@@ -226,7 +315,6 @@ mod tests {
 
         // tx1 gets exclusive lock
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "test_queue".to_string(),
             value: QueueValue::String("tx1".to_string()),
         };
 
@@ -234,9 +322,7 @@ mod tests {
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // tx2 should be blocked
-        let dequeue_op = QueueOperation::Dequeue {
-            queue_name: "test_queue".to_string(),
-        };
+        let dequeue_op = QueueOperation::Dequeue;
 
         let result = engine.apply_operation(dequeue_op, tx2);
         assert!(matches!(result, OperationResult::WouldBlock { .. }));
@@ -251,7 +337,6 @@ mod tests {
 
         // Execute operation
         let enqueue_op = QueueOperation::Enqueue {
-            queue_name: "test_queue".to_string(),
             value: QueueValue::Boolean(true),
         };
 

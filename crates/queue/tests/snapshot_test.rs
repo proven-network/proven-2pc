@@ -17,21 +17,18 @@ fn test_queue_snapshot_and_restore() {
 
     // Enqueue some values to different queues
     let op1 = QueueOperation::Enqueue {
-        queue_name: "orders".to_string(),
         value: QueueValue::String("order-123".to_string()),
     };
     let result = engine1.apply_operation(op1, txn1);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     let op2 = QueueOperation::Enqueue {
-        queue_name: "orders".to_string(),
         value: QueueValue::String("order-456".to_string()),
     };
     let result = engine1.apply_operation(op2, txn1);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     let op3 = QueueOperation::Enqueue {
-        queue_name: "notifications".to_string(),
         value: QueueValue::Integer(42),
     };
     let result = engine1.apply_operation(op3, txn1);
@@ -54,9 +51,7 @@ fn test_queue_snapshot_and_restore() {
     engine2.begin(txn2);
 
     // Dequeue from orders queue
-    let dequeue1 = QueueOperation::Dequeue {
-        queue_name: "orders".to_string(),
-    };
+    let dequeue1 = QueueOperation::Dequeue {};
     let result = engine2.apply_operation(dequeue1, txn2);
     if let OperationResult::Complete(response) = result {
         assert_eq!(
@@ -67,22 +62,21 @@ fn test_queue_snapshot_and_restore() {
         panic!("Expected success");
     }
 
-    // Check queue size
-    let size_op = QueueOperation::Size {
-        queue_name: "orders".to_string(),
-    };
+    // Check queue size (3 enqueued - 1 dequeued = 2)
+    let size_op = QueueOperation::Size;
     let result = engine2.apply_operation(size_op, txn2);
     if let OperationResult::Complete(response) = result {
-        assert_eq!(format!("{:?}", response), "Size(1)");
+        assert_eq!(format!("{:?}", response), "Size(2)");
     }
 
-    // Check notifications queue
-    let peek_op = QueueOperation::Peek {
-        queue_name: "notifications".to_string(),
-    };
+    // Peek should show the next item (order-456)
+    let peek_op = QueueOperation::Peek;
     let result = engine2.apply_operation(peek_op, txn2);
     if let OperationResult::Complete(response) = result {
-        assert_eq!(format!("{:?}", response), "Peeked(Some(Integer(42)))");
+        assert_eq!(
+            format!("{:?}", response),
+            r#"Peeked(Some(String("order-456")))"#
+        );
     }
 }
 
@@ -117,13 +111,11 @@ fn test_snapshot_with_empty_queues() {
 
     // Enqueue values
     let op1 = QueueOperation::Enqueue {
-        queue_name: "temp".to_string(),
         value: QueueValue::String("temp1".to_string()),
     };
     engine.apply_operation(op1, txn1);
 
     let op2 = QueueOperation::Enqueue {
-        queue_name: "temp".to_string(),
         value: QueueValue::String("temp2".to_string()),
     };
     engine.apply_operation(op2, txn1);
@@ -135,14 +127,10 @@ fn test_snapshot_with_empty_queues() {
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
     engine.begin(txn2);
 
-    let dequeue1 = QueueOperation::Dequeue {
-        queue_name: "temp".to_string(),
-    };
+    let dequeue1 = QueueOperation::Dequeue;
     engine.apply_operation(dequeue1, txn2);
 
-    let dequeue2 = QueueOperation::Dequeue {
-        queue_name: "temp".to_string(),
-    };
+    let dequeue2 = QueueOperation::Dequeue;
     engine.apply_operation(dequeue2, txn2);
 
     engine.prepare(txn2);
@@ -159,9 +147,7 @@ fn test_snapshot_with_empty_queues() {
     let txn3 = HlcTimestamp::new(3, 0, NodeId::new(1));
     engine2.begin(txn3);
 
-    let is_empty = QueueOperation::IsEmpty {
-        queue_name: "temp".to_string(),
-    };
+    let is_empty = QueueOperation::IsEmpty;
     let result = engine2.apply_operation(is_empty, txn3);
     if let OperationResult::Complete(response) = result {
         assert_eq!(format!("{:?}", response), "IsEmpty(true)");
@@ -178,9 +164,8 @@ fn test_snapshot_compression() {
 
     // Create data with good compression potential
     let long_string = "A".repeat(1000);
-    for i in 0..100 {
+    for _ in 0..100 {
         let op = QueueOperation::Enqueue {
-            queue_name: format!("queue{}", i % 10), // 10 different queues
             value: QueueValue::String(long_string.clone()),
         };
         engine.apply_operation(op, txn);
@@ -195,7 +180,6 @@ fn test_snapshot_compression() {
     // The compressed snapshot should be much smaller than the raw data
     // 100 entries * 1000 chars = 100KB uncompressed
     // With compression, should be much smaller
-    println!("Snapshot size: {} bytes", snapshot.len());
     assert!(snapshot.len() < 50000, "Snapshot should be compressed");
 
     // Verify it can be restored
@@ -206,13 +190,11 @@ fn test_snapshot_compression() {
     let txn2 = HlcTimestamp::new(2, 0, NodeId::new(1));
     engine2.begin(txn2);
 
-    let size_op = QueueOperation::Size {
-        queue_name: "queue0".to_string(),
-    };
+    let size_op = QueueOperation::Size;
     let result = engine2.apply_operation(size_op, txn2);
     if let OperationResult::Complete(response) = result {
-        // queue0 should have 10 entries (i % 10 == 0 for i = 0, 10, 20, ..., 90)
-        assert_eq!(format!("{:?}", response), "Size(10)");
+        // Single queue should have all 100 entries
+        assert_eq!(format!("{:?}", response), "Size(100)");
     }
 }
 
@@ -226,7 +208,6 @@ fn test_queue_ordering_preserved_in_snapshot() {
 
     for i in 1..=5 {
         let op = QueueOperation::Enqueue {
-            queue_name: "ordered".to_string(),
             value: QueueValue::Integer(i),
         };
         engine.apply_operation(op, txn1);
@@ -245,9 +226,7 @@ fn test_queue_ordering_preserved_in_snapshot() {
     engine2.begin(txn2);
 
     for expected in 1..=5 {
-        let dequeue = QueueOperation::Dequeue {
-            queue_name: "ordered".to_string(),
-        };
+        let dequeue = QueueOperation::Dequeue;
         let result = engine2.apply_operation(dequeue, txn2);
         if let OperationResult::Complete(response) = result {
             assert_eq!(
@@ -256,6 +235,4 @@ fn test_queue_ordering_preserved_in_snapshot() {
             );
         }
     }
-
-    println!("Queue ordering preserved across snapshot/restore");
 }

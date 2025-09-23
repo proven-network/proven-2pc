@@ -5,7 +5,6 @@
 
 use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Transaction ID type alias
 pub type TxId = HlcTimestamp;
@@ -58,38 +57,33 @@ pub enum LockAttemptResult {
     },
 }
 
-/// Lock manager for queue-level locking
+/// Lock manager for single queue locking
 pub struct LockManager {
-    /// All currently held locks (queue_name -> lock holders)
-    locks: HashMap<String, Vec<LockInfo>>,
+    /// All currently held locks for this queue
+    locks: Vec<LockInfo>,
 }
 
 impl LockManager {
     /// Create a new lock manager
     pub fn new() -> Self {
-        Self {
-            locks: HashMap::new(),
-        }
+        Self { locks: Vec::new() }
     }
 
     /// Check if a lock can be acquired without modifying state
-    pub fn check(&self, tx_id: TxId, queue_name: &str, mode: LockMode) -> LockAttemptResult {
-        // Check for existing locks on this queue
-        if let Some(holders) = self.locks.get(queue_name) {
-            // Check compatibility with all current holders
-            for holder in holders {
-                // Skip if it's the same transaction (re-entrant locks)
-                if holder.holder == tx_id {
-                    continue;
-                }
+    pub fn check(&self, tx_id: TxId, mode: LockMode) -> LockAttemptResult {
+        // Check compatibility with all current holders
+        for holder in &self.locks {
+            // Skip if it's the same transaction (re-entrant locks)
+            if holder.holder == tx_id {
+                continue;
+            }
 
-                // Check compatibility
-                if !holder.mode.is_compatible_with(mode) {
-                    return LockAttemptResult::Conflict {
-                        holder: holder.holder,
-                        mode: holder.mode,
-                    };
-                }
+            // Check compatibility
+            if !holder.mode.is_compatible_with(mode) {
+                return LockAttemptResult::Conflict {
+                    holder: holder.holder,
+                    mode: holder.mode,
+                };
             }
         }
 
@@ -97,58 +91,38 @@ impl LockManager {
     }
 
     /// Grant a lock that was previously checked
-    pub fn grant(&mut self, tx_id: TxId, queue_name: String, mode: LockMode) {
+    pub fn grant(&mut self, tx_id: TxId, mode: LockMode) {
         let lock_info = LockInfo {
             holder: tx_id,
             mode,
         };
 
-        self.locks.entry(queue_name).or_default().push(lock_info);
+        self.locks.push(lock_info);
     }
 
     /// Release a specific lock held by a transaction
-    pub fn release(&mut self, tx_id: TxId, queue_name: &str) {
-        if let Some(holders) = self.locks.get_mut(queue_name) {
-            holders.retain(|lock| lock.holder != tx_id);
-            if holders.is_empty() {
-                self.locks.remove(queue_name);
-            }
-        }
+    pub fn release(&mut self, tx_id: TxId) {
+        self.locks.retain(|lock| lock.holder != tx_id);
     }
 
     /// Release all locks held by a transaction
     pub fn release_all(&mut self, tx_id: TxId) {
         // Remove all locks held by this transaction
-        self.locks.retain(|_queue, holders| {
-            holders.retain(|lock| lock.holder != tx_id);
-            !holders.is_empty()
-        });
+        self.locks.retain(|lock| lock.holder != tx_id);
     }
 
     /// Get all locks held by a transaction
-    pub fn locks_held_by(&self, tx_id: TxId) -> Vec<(String, LockMode)> {
-        let mut result = Vec::new();
-
-        for (queue, holders) in &self.locks {
-            for holder in holders {
-                if holder.holder == tx_id {
-                    result.push((queue.clone(), holder.mode));
-                }
-            }
-        }
-
-        result.sort_by(|a, b| a.0.cmp(&b.0)); // Sort by queue name for determinism
-        result
+    pub fn locks_held_by(&self, tx_id: TxId) -> Vec<LockMode> {
+        self.locks
+            .iter()
+            .filter(|lock| lock.holder == tx_id)
+            .map(|lock| lock.mode)
+            .collect()
     }
 
     /// Check if a transaction holds any locks
     pub fn has_locks(&self, tx_id: TxId) -> bool {
-        for holders in self.locks.values() {
-            if holders.iter().any(|h| h.holder == tx_id) {
-                return true;
-            }
-        }
-        false
+        self.locks.iter().any(|lock| lock.holder == tx_id)
     }
 }
 
@@ -183,13 +157,13 @@ mod tests {
 
         // First exclusive lock should succeed
         assert_eq!(
-            manager.check(tx1, "queue1", LockMode::Exclusive),
+            manager.check(tx1, LockMode::Exclusive),
             LockAttemptResult::WouldGrant
         );
-        manager.grant(tx1, "queue1".to_string(), LockMode::Exclusive);
+        manager.grant(tx1, LockMode::Exclusive);
 
         // Conflicting lock should report conflict
-        match manager.check(tx2, "queue1", LockMode::Exclusive) {
+        match manager.check(tx2, LockMode::Exclusive) {
             LockAttemptResult::Conflict { holder, mode } => {
                 assert_eq!(holder, tx1);
                 assert_eq!(mode, LockMode::Exclusive);
@@ -207,20 +181,20 @@ mod tests {
 
         // Multiple shared locks should succeed
         assert_eq!(
-            manager.check(tx1, "queue1", LockMode::Shared),
+            manager.check(tx1, LockMode::Shared),
             LockAttemptResult::WouldGrant
         );
-        manager.grant(tx1, "queue1".to_string(), LockMode::Shared);
+        manager.grant(tx1, LockMode::Shared);
 
         assert_eq!(
-            manager.check(tx2, "queue1", LockMode::Shared),
+            manager.check(tx2, LockMode::Shared),
             LockAttemptResult::WouldGrant
         );
-        manager.grant(tx2, "queue1".to_string(), LockMode::Shared);
+        manager.grant(tx2, LockMode::Shared);
 
         // Exclusive lock should conflict
         assert!(matches!(
-            manager.check(tx3, "queue1", LockMode::Exclusive),
+            manager.check(tx3, LockMode::Exclusive),
             LockAttemptResult::Conflict { .. }
         ));
     }
@@ -232,7 +206,7 @@ mod tests {
         let tx2 = create_tx_id(200);
 
         // Acquire and release a lock
-        manager.grant(tx1, "queue1".to_string(), LockMode::Exclusive);
+        manager.grant(tx1, LockMode::Exclusive);
         assert!(manager.has_locks(tx1));
 
         manager.release_all(tx1);
@@ -240,7 +214,7 @@ mod tests {
 
         // New lock should succeed
         assert_eq!(
-            manager.check(tx2, "queue1", LockMode::Exclusive),
+            manager.check(tx2, LockMode::Exclusive),
             LockAttemptResult::WouldGrant
         );
     }

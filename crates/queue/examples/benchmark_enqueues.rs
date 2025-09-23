@@ -47,10 +47,7 @@ fn main() {
             })),
         };
 
-        let enqueue = QueueOperation::Enqueue {
-            queue_name: QUEUE_NAME.to_string(),
-            value,
-        };
+        let enqueue = QueueOperation::Enqueue { value };
 
         // Execute enqueue directly on engine
         match queue_engine.apply_operation(enqueue, txn_id) {
@@ -102,9 +99,7 @@ fn main() {
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
     queue_engine.begin(verify_txn);
 
-    let size_op = QueueOperation::Size {
-        queue_name: QUEUE_NAME.to_string(),
-    };
+    let size_op = QueueOperation::Size;
 
     match queue_engine.apply_operation(size_op, verify_txn) {
         proven_stream::OperationResult::Complete(_response) => {
@@ -124,9 +119,7 @@ fn main() {
         let dequeue_txn = HlcTimestamp::new(10000000000 + sample_idx as u64, 0, NodeId::new(1));
         queue_engine.begin(dequeue_txn);
 
-        let dequeue = QueueOperation::Dequeue {
-            queue_name: QUEUE_NAME.to_string(),
-        };
+        let dequeue = QueueOperation::Dequeue;
 
         match queue_engine.apply_operation(dequeue, dequeue_txn) {
             proven_stream::OperationResult::Complete(_) => {

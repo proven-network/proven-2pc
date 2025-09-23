@@ -22,14 +22,10 @@ impl QueueClient {
     pub async fn enqueue(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
         value: QueueValue,
     ) -> Result<(), QueueError> {
         let stream_name = stream_name.into();
-        let operation = QueueOperation::Enqueue {
-            queue_name: queue_name.into(),
-            value,
-        };
+        let operation = QueueOperation::Enqueue { value };
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -44,21 +40,18 @@ impl QueueClient {
     pub async fn enqueue_bytes(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
         value: Vec<u8>,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, queue_name, QueueValue::Bytes(value))
-            .await
+        self.enqueue(stream_name, QueueValue::Bytes(value)).await
     }
 
     /// Enqueue a string
     pub async fn enqueue_string(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
         value: impl Into<String>,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, queue_name, QueueValue::String(value.into()))
+        self.enqueue(stream_name, QueueValue::String(value.into()))
             .await
     }
 
@@ -66,23 +59,18 @@ impl QueueClient {
     pub async fn enqueue_json(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
         value: serde_json::Value,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, queue_name, QueueValue::Json(value))
-            .await
+        self.enqueue(stream_name, QueueValue::Json(value)).await
     }
 
     /// Dequeue a value
     pub async fn dequeue(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
     ) -> Result<Option<QueueValue>, QueueError> {
         let stream_name = stream_name.into();
-        let operation = QueueOperation::Dequeue {
-            queue_name: queue_name.into(),
-        };
+        let operation = QueueOperation::Dequeue;
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -97,9 +85,8 @@ impl QueueClient {
     pub async fn dequeue_bytes(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
     ) -> Result<Option<Vec<u8>>, QueueError> {
-        match self.dequeue(stream_name, queue_name).await? {
+        match self.dequeue(stream_name).await? {
             Some(QueueValue::Bytes(b)) => Ok(Some(b)),
             Some(_) => Err(QueueError::TypeMismatch),
             None => Ok(None),
@@ -110,9 +97,8 @@ impl QueueClient {
     pub async fn dequeue_string(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
     ) -> Result<Option<String>, QueueError> {
-        match self.dequeue(stream_name, queue_name).await? {
+        match self.dequeue(stream_name).await? {
             Some(QueueValue::String(s)) => Ok(Some(s)),
             Some(_) => Err(QueueError::TypeMismatch),
             None => Ok(None),
@@ -123,12 +109,9 @@ impl QueueClient {
     pub async fn peek(
         &self,
         stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
     ) -> Result<Option<QueueValue>, QueueError> {
         let stream_name = stream_name.into();
-        let operation = QueueOperation::Peek {
-            queue_name: queue_name.into(),
-        };
+        let operation = QueueOperation::Peek;
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -140,15 +123,9 @@ impl QueueClient {
     }
 
     /// Get queue size
-    pub async fn size(
-        &self,
-        stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
-    ) -> Result<usize, QueueError> {
+    pub async fn size(&self, stream_name: impl Into<String>) -> Result<usize, QueueError> {
         let stream_name = stream_name.into();
-        let operation = QueueOperation::Size {
-            queue_name: queue_name.into(),
-        };
+        let operation = QueueOperation::Size;
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -160,15 +137,9 @@ impl QueueClient {
     }
 
     /// Check if queue is empty
-    pub async fn is_empty(
-        &self,
-        stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
-    ) -> Result<bool, QueueError> {
+    pub async fn is_empty(&self, stream_name: impl Into<String>) -> Result<bool, QueueError> {
         let stream_name = stream_name.into();
-        let operation = QueueOperation::IsEmpty {
-            queue_name: queue_name.into(),
-        };
+        let operation = QueueOperation::IsEmpty;
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -180,15 +151,9 @@ impl QueueClient {
     }
 
     /// Clear a queue
-    pub async fn clear(
-        &self,
-        stream_name: impl Into<String>,
-        queue_name: impl Into<String>,
-    ) -> Result<(), QueueError> {
+    pub async fn clear(&self, stream_name: impl Into<String>) -> Result<(), QueueError> {
         let stream_name = stream_name.into();
-        let operation = QueueOperation::Clear {
-            queue_name: queue_name.into(),
-        };
+        let operation = QueueOperation::Clear;
 
         let response = self.execute_operation(stream_name, operation).await?;
 

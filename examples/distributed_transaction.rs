@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n4. Queue Operations:");
     queue
-        .enqueue_bytes("queue_stream", "events", b"welcome:alice".to_vec())
+        .enqueue_bytes("queue_stream", b"welcome:alice".to_vec())
         .await?;
     println!("   ✓ Enqueued welcome event");
 
@@ -153,11 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   ✓ Added sword to inventory");
 
     queue
-        .enqueue_bytes(
-            "queue_stream",
-            "achievements",
-            b"first_purchase:alice".to_vec(),
-        )
+        .enqueue_bytes("queue_stream", b"first_purchase:alice".to_vec())
         .await?;
     println!("   ✓ Enqueued achievement");
 

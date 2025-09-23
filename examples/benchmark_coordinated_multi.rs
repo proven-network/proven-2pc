@@ -484,7 +484,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Check queue size
-    if let Ok(size) = queue_verify.size("queue_stream", "messages").await {
+    if let Ok(size) = queue_verify.size("queue_stream").await {
         println!("✓ Queue contains {} items", size);
     }
 
@@ -527,11 +527,7 @@ async fn execute_simple_transaction(
 
     // 2. Queue Enqueue operation - using message from args
     queue
-        .enqueue(
-            "queue_stream",
-            "messages",
-            QueueValue::String(message.to_string()),
-        )
+        .enqueue("queue_stream", QueueValue::String(message.to_string()))
         .await?;
 
     // 3. Resource Transfer operation - using accounts and amount from args
