@@ -109,7 +109,7 @@ impl TransactionEngine for QueueTransactionEngine {
         self.active_transactions.contains(txn_id)
     }
 
-    fn engine_name(&self) -> &str {
+    fn engine_name(&self) -> &'static str {
         "queue"
     }
 

@@ -71,6 +71,22 @@ mod tests {
         type Operation = TestOperation;
         type Response = TestResponse;
 
+        fn read_at_timestamp(
+            &self,
+            operation: Self::Operation,
+            _read_timestamp: HlcTimestamp,
+        ) -> OperationResult<Self::Response> {
+            match operation {
+                TestOperation::Read { key } => {
+                    let value = self.data.get(&key).cloned();
+                    OperationResult::Complete(TestResponse::Value(value))
+                }
+                TestOperation::Write { .. } => {
+                    panic!("Write operations not supported for read-only operations");
+                }
+            }
+        }
+
         fn apply_operation(
             &mut self,
             operation: Self::Operation,
@@ -108,7 +124,7 @@ mod tests {
             self.active_txns.contains(txn_id)
         }
 
-        fn engine_name(&self) -> &str {
+        fn engine_name(&self) -> &'static str {
             "test-engine"
         }
 

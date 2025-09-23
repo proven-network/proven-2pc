@@ -301,7 +301,7 @@ impl TransactionEngine for SqlTransactionEngine {
         self.active_transactions.contains_key(txn_id)
     }
 
-    fn engine_name(&self) -> &str {
+    fn engine_name(&self) -> &'static str {
         "sql"
     }
 

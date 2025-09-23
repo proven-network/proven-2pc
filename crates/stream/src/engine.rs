@@ -50,6 +50,21 @@ pub trait TransactionEngine: Send + Sync {
     /// The type of responses this engine produces
     type Response: Response;
 
+    /// Read an operation at a specific timestamp (snapshot read)
+    ///
+    /// This is for read-only operations that don't need locks or transaction state.
+    /// Returns the value as it existed at the given timestamp.
+    fn read_at_timestamp(
+        &self,
+        _operation: Self::Operation,
+        _read_timestamp: HlcTimestamp,
+    ) -> OperationResult<Self::Response> {
+        todo!(
+            "read_at_timestamp not implemented for: {}",
+            self.engine_name()
+        )
+    }
+
     /// Apply an operation within a transaction context
     ///
     /// Returns a result indicating success, blocking, or error.
@@ -87,7 +102,7 @@ pub trait TransactionEngine: Send + Sync {
     fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool;
 
     /// Get the name/type of this engine for logging and debugging
-    fn engine_name(&self) -> &str;
+    fn engine_name(&self) -> &'static str;
 
     /// Generate a snapshot of current state
     ///

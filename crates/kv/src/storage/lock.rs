@@ -148,6 +148,17 @@ impl LockManager {
         }
         false
     }
+
+    /// Get all exclusive lock holders for a key (for snapshot read checking)
+    pub fn get_exclusive_holders(&self, key: &str) -> Option<Vec<TxId>> {
+        self.locks.get(key).map(|holders| {
+            holders
+                .iter()
+                .filter(|h| h.mode == LockMode::Exclusive)
+                .map(|h| h.holder)
+                .collect()
+        })
+    }
 }
 
 impl Default for LockManager {

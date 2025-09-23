@@ -321,7 +321,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         self.transactions.contains_key(txn_id)
     }
 
-    fn engine_name(&self) -> &str {
+    fn engine_name(&self) -> &'static str {
         "resource"
     }
 

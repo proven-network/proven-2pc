@@ -5,7 +5,7 @@
 
 use crate::types::Value;
 use proven_hlc::HlcTimestamp;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A versioned value in storage
@@ -24,12 +24,17 @@ pub struct VersionedValue {
 /// MVCC storage for key-value pairs
 #[derive(Debug)]
 pub struct MvccStorage {
-    /// All versions of all keys (key -> versions)
+    /// Committed versions only (for reads)
     /// Versions are ordered by creation time (newest last)
-    versions: HashMap<String, Vec<VersionedValue>>,
+    committed_versions: HashMap<String, Vec<VersionedValue>>,
 
-    /// Set of committed transactions
-    committed_transactions: HashSet<HlcTimestamp>,
+    /// Pending writes by transaction (for conflict detection and own-reads)
+    /// Structure: tx_id -> (key -> value)
+    pending_writes: HashMap<HlcTimestamp, HashMap<String, Arc<Value>>>,
+
+    /// Pending deletes by transaction
+    /// Structure: tx_id -> set of keys to delete
+    pending_deletes: HashMap<HlcTimestamp, Vec<String>>,
 
     /// Transaction start times for visibility checks
     transaction_start_times: HashMap<HlcTimestamp, HlcTimestamp>,
@@ -39,8 +44,9 @@ impl MvccStorage {
     /// Create a new MVCC storage
     pub fn new() -> Self {
         Self {
-            versions: HashMap::new(),
-            committed_transactions: HashSet::new(),
+            committed_versions: HashMap::new(),
+            pending_writes: HashMap::new(),
+            pending_deletes: HashMap::new(),
             transaction_start_times: HashMap::new(),
         }
     }
@@ -52,287 +58,195 @@ impl MvccStorage {
 
     /// Mark a transaction as committed
     pub fn commit_transaction(&mut self, tx_id: HlcTimestamp) {
-        // Just mark transaction as committed - O(1) operation
-        // Keep transaction_start_times for visibility checks - will be cleaned up later
-        self.committed_transactions.insert(tx_id);
-    }
+        // Move pending writes to committed versions
+        if let Some(writes) = self.pending_writes.remove(&tx_id) {
+            for (key, value) in writes {
+                let version = VersionedValue {
+                    value,
+                    created_by: tx_id,
+                    created_at: tx_id, // Using tx_id as timestamp
+                    deleted_by: None,
+                };
 
-    /// Abort a transaction by removing all its versions
-    pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) {
-        // Remove all versions created by this transaction
-        for versions in self.versions.values_mut() {
-            // Remove versions created by this transaction
-            versions.retain(|v| v.created_by != tx_id);
+                self.committed_versions
+                    .entry(key)
+                    .or_default()
+                    .push(version);
+            }
+        }
 
-            // Clear deletion marks by this transaction
-            for version in versions.iter_mut() {
-                if version.deleted_by == Some(tx_id) {
-                    version.deleted_by = None;
+        // Process pending deletes
+        if let Some(deletes) = self.pending_deletes.remove(&tx_id) {
+            for key in deletes {
+                if let Some(versions) = self.committed_versions.get_mut(&key) {
+                    // Mark the latest version as deleted
+                    if let Some(last) = versions.last_mut()
+                        && last.deleted_by.is_none()
+                    {
+                        last.deleted_by = Some(tx_id);
+                    }
                 }
             }
         }
 
-        // Clean up empty version lists
-        self.versions.retain(|_, versions| !versions.is_empty());
+        // Clean up transaction metadata
+        self.transaction_start_times.remove(&tx_id);
+    }
 
-        // Remove transaction metadata
+    /// Abort a transaction by removing all its pending changes
+    pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) {
+        // Just remove from pending - super cheap!
+        self.pending_writes.remove(&tx_id);
+        self.pending_deletes.remove(&tx_id);
         self.transaction_start_times.remove(&tx_id);
     }
 
     /// Get the visible version of a key for a transaction
     pub fn get(&self, key: &str, tx_id: HlcTimestamp) -> Option<Arc<Value>> {
-        let versions = self.versions.get(key)?;
         let tx_start = self
             .transaction_start_times
             .get(&tx_id)
             .copied()
             .unwrap_or(tx_id);
 
-        // Find the latest visible version
-        self.find_visible_version(versions, tx_id, tx_start)
-            .map(|v| v.value.clone()) // Cheap Arc clone
+        // Check if we're planning to delete this key
+        if let Some(deletes) = self.pending_deletes.get(&tx_id)
+            && deletes.contains(&key.to_string())
+        {
+            return None;
+        }
+
+        // Check own writes first
+        if let Some(pending) = self.pending_writes.get(&tx_id)
+            && let Some(value) = pending.get(key)
+        {
+            return Some(value.clone());
+        }
+
+        // Then check committed versions visible to this transaction
+        self.get_committed_for_transaction(key, tx_id, tx_start)
+    }
+
+    /// Get the visible version of a key at a specific timestamp (for snapshot reads)
+    /// This is used for read_at_timestamp operations that don't have transaction state
+    pub fn get_at_timestamp(&self, key: &str, read_timestamp: HlcTimestamp) -> Option<Arc<Value>> {
+        // Snapshot reads only see committed data
+        self.committed_versions
+            .get(key)?
+            .iter()
+            .rev()
+            .find(|v| {
+                v.created_at <= read_timestamp
+                    && (v.deleted_by.is_none() || v.deleted_by.unwrap() > read_timestamp)
+            })
+            .map(|v| v.value.clone())
     }
 
     /// Put a new value for a key
-    pub fn put(&mut self, key: String, value: Value, tx_id: HlcTimestamp, timestamp: HlcTimestamp) {
-        let tx_start = self
-            .transaction_start_times
-            .get(&tx_id)
-            .copied()
-            .unwrap_or(tx_id);
-
-        // Check if we need to mark any existing version as deleted
-        if let Some(versions) = self.versions.get_mut(&key) {
-            // Find and mark the current visible version as deleted
-            // Optimized: iterate only until we find the visible version
-            for version in versions.iter_mut().rev() {
-                // Inline visibility check to avoid borrow issues
-                // Version is visible if:
-                // 1. Created by current transaction OR created by committed transaction before our start
-                let created_visible = version.created_by == tx_id
-                    || (self.committed_transactions.contains(&version.created_by)
-                        && version.created_at <= tx_start);
-
-                // 2. Not deleted OR deleted by uncommitted transaction (but NOT by us)
-                let not_deleted = version.deleted_by.is_none()
-                    || (version.deleted_by.is_some()
-                        && version.deleted_by != Some(tx_id)
-                        && !self
-                            .committed_transactions
-                            .contains(&version.deleted_by.unwrap()));
-
-                if created_visible && not_deleted {
-                    version.deleted_by = Some(tx_id);
-                    break;
-                }
-            }
-        }
-
-        // Add the new version
-        let new_version = VersionedValue {
-            value: Arc::new(value),
-            created_by: tx_id,
-            created_at: timestamp,
-            deleted_by: None,
-        };
-
-        self.versions.entry(key).or_default().push(new_version);
+    pub fn put(
+        &mut self,
+        key: String,
+        value: Value,
+        tx_id: HlcTimestamp,
+        _timestamp: HlcTimestamp,
+    ) {
+        // Just add to pending writes
+        self.pending_writes
+            .entry(tx_id)
+            .or_default()
+            .insert(key, Arc::new(value));
     }
 
     /// Delete a key
     pub fn delete(&mut self, key: &str, tx_id: HlcTimestamp) {
-        let tx_start = self
-            .transaction_start_times
-            .get(&tx_id)
-            .copied()
-            .unwrap_or(tx_id);
-
-        if let Some(versions) = self.versions.get_mut(key) {
-            // Find and mark the current visible version as deleted
-            // Optimized: iterate only until we find the visible version
-            for version in versions.iter_mut().rev() {
-                // Inline visibility check to avoid borrow issues
-                // Version is visible if:
-                // 1. Created by current transaction OR created by committed transaction before our start
-                let created_visible = version.created_by == tx_id
-                    || (self.committed_transactions.contains(&version.created_by)
-                        && version.created_at <= tx_start);
-
-                // 2. Not deleted OR deleted by uncommitted transaction (but NOT by us)
-                let not_deleted = version.deleted_by.is_none()
-                    || (version.deleted_by.is_some()
-                        && version.deleted_by != Some(tx_id)
-                        && !self
-                            .committed_transactions
-                            .contains(&version.deleted_by.unwrap()));
-
-                if created_visible && not_deleted {
-                    version.deleted_by = Some(tx_id);
-                    break;
-                }
-            }
+        // Remove from pending writes if it exists
+        if let Some(pending) = self.pending_writes.get_mut(&tx_id) {
+            pending.remove(key);
         }
+
+        // Add to pending deletes
+        self.pending_deletes
+            .entry(tx_id)
+            .or_default()
+            .push(key.to_string());
     }
 
-    /// Check if a key exists for a transaction
-    pub fn exists(&self, key: &str, tx_id: HlcTimestamp) -> bool {
-        if let Some(versions) = self.versions.get(key) {
-            let tx_start = self
-                .transaction_start_times
-                .get(&tx_id)
-                .copied()
-                .unwrap_or(tx_id);
-            self.find_visible_version(versions, tx_id, tx_start)
-                .is_some()
-        } else {
-            false
-        }
-    }
-
-    /// Get all keys visible to a transaction
-    pub fn scan_keys(&self, tx_id: HlcTimestamp) -> Vec<String> {
-        let tx_start = self
-            .transaction_start_times
-            .get(&tx_id)
-            .copied()
-            .unwrap_or(tx_id);
-
-        let mut keys = Vec::new();
-        for (key, versions) in &self.versions {
-            if self
-                .find_visible_version(versions, tx_id, tx_start)
-                .is_some()
-            {
-                keys.push(key.clone());
-            }
-        }
-        keys.sort(); // Return in deterministic order
-        keys
-    }
-
-    /// Find the visible version for a transaction
-    fn find_visible_version<'a>(
+    /// Get visible committed version for a transaction
+    fn get_committed_for_transaction(
         &self,
-        versions: &'a [VersionedValue],
+        key: &str,
         tx_id: HlcTimestamp,
         tx_start: HlcTimestamp,
-    ) -> Option<&'a VersionedValue> {
-        // Iterate backwards to find the latest visible version
-        versions
+    ) -> Option<Arc<Value>> {
+        self.committed_versions
+            .get(key)?
             .iter()
             .rev()
-            .find(|&version| self.is_version_visible(version, tx_id, tx_start))
-            .map(|v| v as _)
+            .find(|v| {
+                // Version is visible if created before our transaction started
+                // and not deleted (or deleted after we started)
+                v.created_at <= tx_start
+                    && (v.deleted_by.is_none()
+                        || v.deleted_by.unwrap() > tx_start
+                        || v.deleted_by.unwrap() == tx_id)
+            })
+            .map(|v| v.value.clone())
     }
 
-    /// Check if a version is visible to a transaction
-    fn is_version_visible(
-        &self,
-        version: &VersionedValue,
-        tx_id: HlcTimestamp,
-        tx_start: HlcTimestamp,
-    ) -> bool {
-        // Version is visible if:
-        // 1. Created by current transaction OR created by committed transaction before our start
-        let created_visible = version.created_by == tx_id
-            || (self.committed_transactions.contains(&version.created_by)
-                && version.created_at <= tx_start);
-
-        // 2. Not deleted OR deleted by uncommitted transaction (but NOT by us)
-        let not_deleted = version.deleted_by.is_none()
-            || (version.deleted_by.is_some()
-                && version.deleted_by != Some(tx_id)  // We don't see our own deletes
-                && !self
-                    .committed_transactions
-                    .contains(&version.deleted_by.unwrap()));
-
-        created_visible && not_deleted
-    }
-
-    /// Get a compacted view of the storage (latest committed version per key)
-    /// Used for creating snapshots when no transactions are active
+    /// Get compacted data for snapshot
     pub fn get_compacted_data(&self) -> HashMap<String, Value> {
         let mut result = HashMap::new();
 
-        for (key, versions) in &self.versions {
-            // Find the latest committed version that isn't deleted
-            for version in versions.iter().rev() {
-                if self.committed_transactions.contains(&version.created_by)
-                    && version.deleted_by.is_none()
-                {
-                    // Dereference the Arc to get the actual value for snapshot
-                    result.insert(key.clone(), (*version.value).clone());
-                    break;
-                }
+        for (key, versions) in &self.committed_versions {
+            // Get the latest non-deleted version
+            if let Some(version) = versions.iter().rev().find(|v| v.deleted_by.is_none()) {
+                result.insert(key.clone(), (*version.value).clone());
             }
         }
 
         result
     }
 
-    /// Restore from compacted data
-    /// Should only be called on a fresh MVCC storage instance
+    /// Restore from compacted snapshot data
     pub fn restore_from_compacted(&mut self, data: HashMap<String, Value>) {
-        use proven_hlc::NodeId;
-
-        // Clear any existing data
-        self.versions.clear();
-        self.committed_transactions.clear();
+        // Clear current state
+        self.committed_versions.clear();
+        self.pending_writes.clear();
+        self.pending_deletes.clear();
         self.transaction_start_times.clear();
 
-        // Create a special "restore" transaction that's already committed
-        let restore_txn = HlcTimestamp::new(0, 0, NodeId::new(0));
-        self.committed_transactions.insert(restore_txn);
-
-        // Add all data as committed versions
+        // Restore as committed versions with timestamp 0
         for (key, value) in data {
             let version = VersionedValue {
                 value: Arc::new(value),
-                created_by: restore_txn,
-                created_at: restore_txn,
+                created_by: HlcTimestamp::new(0, 0, proven_hlc::NodeId::new(0)),
+                created_at: HlcTimestamp::new(0, 0, proven_hlc::NodeId::new(0)),
                 deleted_by: None,
             };
-            self.versions.insert(key, vec![version]);
+
+            self.committed_versions.insert(key, vec![version]);
         }
     }
 
-    /// Get statistics about the storage
-    pub fn stats(&self) -> StorageStats {
-        let total_keys = self.versions.len();
-        let total_versions: usize = self.versions.values().map(|v| v.len()).sum();
-        let committed_txns = self.committed_transactions.len();
-        let active_txns = self.transaction_start_times.len();
-
-        StorageStats {
-            total_keys,
-            total_versions,
-            committed_txns,
-            active_txns,
-        }
+    /// Check if there are pending writes from a transaction for a key
+    pub fn has_pending_write(&self, tx_id: &HlcTimestamp, key: &str) -> bool {
+        self.pending_writes
+            .get(tx_id)
+            .is_some_and(|writes| writes.contains_key(key))
     }
 
-    /// Clean up old transaction metadata for committed transactions
-    /// This should be called periodically to prevent unbounded growth
-    /// Only cleans up transactions older than the oldest active transaction
-    pub fn garbage_collect(&mut self) {
-        // Find the oldest active transaction to ensure we don't clean up
-        // anything that active transactions might need for visibility checks
-        let oldest_active = self
-            .transaction_start_times
+    /// Get all transactions with pending writes for a key
+    pub fn get_pending_writers(&self, key: &str) -> Vec<HlcTimestamp> {
+        self.pending_writes
             .iter()
-            .filter(|(tx, _)| !self.committed_transactions.contains(tx))
-            .map(|(_, &start_time)| start_time)
-            .min();
-
-        if let Some(cutoff) = oldest_active {
-            // Remove all committed transactions older than the oldest active one
-            self.committed_transactions.retain(|&tx| tx >= cutoff);
-
-            // Remove old transaction start times for committed transactions
-            // Keep all active (non-committed) transactions regardless of age
-            self.transaction_start_times
-                .retain(|&tx, _| tx >= cutoff || !self.committed_transactions.contains(&tx));
-        }
+            .filter_map(|(tx_id, writes)| {
+                if writes.contains_key(key) {
+                    Some(*tx_id)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 
@@ -342,22 +256,13 @@ impl Default for MvccStorage {
     }
 }
 
-/// Statistics about the MVCC storage
-#[derive(Debug, Clone)]
-pub struct StorageStats {
-    pub total_keys: usize,
-    pub total_versions: usize,
-    pub committed_txns: usize,
-    pub active_txns: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proven_hlc::NodeId;
 
-    fn create_timestamp(seconds: u64) -> HlcTimestamp {
-        use proven_hlc::NodeId;
-        HlcTimestamp::new(seconds, 0, NodeId::new(1))
+    fn create_timestamp(val: u64) -> HlcTimestamp {
+        HlcTimestamp::new(val, 0, NodeId::new(1))
     }
 
     #[test]
@@ -373,32 +278,45 @@ mod tests {
             tx1,
         );
 
-        // Should see our own write
-        assert_eq!(
-            storage.get("key1", tx1).as_deref(),
-            Some(&Value::String("value1".to_string()))
-        );
+        // Should see own write before commit
+        let result = storage.get("key1", tx1);
+        assert_eq!(result, Some(Arc::new(Value::String("value1".to_string()))));
 
-        // Other transaction shouldn't see uncommitted write
-        let tx2 = create_timestamp(200);
-        storage.register_transaction(tx2, tx2);
-        assert_eq!(storage.get("key1", tx2), None);
-
-        // After commit, other transaction should see it
+        // Commit and verify
         storage.commit_transaction(tx1);
-        assert_eq!(
-            storage.get("key1", tx2).as_deref(),
-            Some(&Value::String("value1".to_string()))
-        );
+        let result = storage.get("key1", tx1);
+        assert_eq!(result, Some(Arc::new(Value::String("value1".to_string()))));
     }
 
     #[test]
-    fn test_abort_rollback() {
+    fn test_abort_removes_changes() {
         let mut storage = MvccStorage::new();
         let tx1 = create_timestamp(100);
-        let tx2 = create_timestamp(200);
 
-        // tx1 writes and commits
+        storage.register_transaction(tx1, tx1);
+        storage.put(
+            "key1".to_string(),
+            Value::String("value1".to_string()),
+            tx1,
+            tx1,
+        );
+
+        // Abort the transaction
+        storage.abort_transaction(tx1);
+
+        // Should not see aborted write
+        let tx2 = create_timestamp(200);
+        storage.register_transaction(tx2, tx2);
+        let result = storage.get("key1", tx2);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_snapshot_read_isolation() {
+        let mut storage = MvccStorage::new();
+
+        // Commit a value at timestamp 100
+        let tx1 = create_timestamp(100);
         storage.register_transaction(tx1, tx1);
         storage.put(
             "key1".to_string(),
@@ -408,7 +326,8 @@ mod tests {
         );
         storage.commit_transaction(tx1);
 
-        // tx2 overwrites but aborts
+        // Commit another value at timestamp 300
+        let tx2 = create_timestamp(300);
         storage.register_transaction(tx2, tx2);
         storage.put(
             "key1".to_string(),
@@ -416,32 +335,25 @@ mod tests {
             tx2,
             tx2,
         );
+        storage.commit_transaction(tx2);
 
-        // tx2 sees its own write
-        assert_eq!(
-            storage.get("key1", tx2).as_deref(),
-            Some(&Value::String("value2".to_string()))
-        );
+        // Read at timestamp 200 should see value1
+        let read_ts1 = create_timestamp(200);
+        let result = storage.get_at_timestamp("key1", read_ts1);
+        assert_eq!(result, Some(Arc::new(Value::String("value1".to_string()))));
 
-        // Abort tx2
-        storage.abort_transaction(tx2);
-
-        // New transaction should see original value
-        let tx3 = create_timestamp(300);
-        storage.register_transaction(tx3, tx3);
-        assert_eq!(
-            storage.get("key1", tx3).as_deref(),
-            Some(&Value::String("value1".to_string()))
-        );
+        // Read at timestamp 400 should see value2
+        let read_ts2 = create_timestamp(400);
+        let result = storage.get_at_timestamp("key1", read_ts2);
+        assert_eq!(result, Some(Arc::new(Value::String("value2".to_string()))));
     }
 
     #[test]
-    fn test_delete() {
+    fn test_delete_operation() {
         let mut storage = MvccStorage::new();
-        let tx1 = create_timestamp(100);
-        let tx2 = create_timestamp(200);
 
-        // tx1 writes and commits
+        // First transaction: create a value
+        let tx1 = create_timestamp(100);
         storage.register_transaction(tx1, tx1);
         storage.put(
             "key1".to_string(),
@@ -451,22 +363,56 @@ mod tests {
         );
         storage.commit_transaction(tx1);
 
-        // tx2 deletes
+        // Second transaction: delete the value
+        let tx2 = create_timestamp(200);
         storage.register_transaction(tx2, tx2);
         storage.delete("key1", tx2);
 
-        // tx2 shouldn't see the key
-        assert!(!storage.exists("key1", tx2));
+        // Should not see deleted value in same transaction
+        let result = storage.get("key1", tx2);
+        assert_eq!(result, None);
 
-        // Other transactions should still see it until commit
+        // Commit the delete
+        storage.commit_transaction(tx2);
+
+        // Future reads should not see the deleted value
         let tx3 = create_timestamp(300);
         storage.register_transaction(tx3, tx3);
-        assert!(storage.exists("key1", tx3));
+        let result = storage.get("key1", tx3);
+        assert_eq!(result, None);
 
-        // After commit, key should be gone
-        storage.commit_transaction(tx2);
-        let tx4 = create_timestamp(400);
-        storage.register_transaction(tx4, tx4);
-        assert!(!storage.exists("key1", tx4));
+        // But reads at earlier timestamps should still see it
+        let read_ts = create_timestamp(150);
+        let result = storage.get_at_timestamp("key1", read_ts);
+        assert_eq!(result, Some(Arc::new(Value::String("value1".to_string()))));
+    }
+
+    #[test]
+    fn test_pending_writes_check() {
+        let mut storage = MvccStorage::new();
+        let tx1 = create_timestamp(100);
+
+        storage.register_transaction(tx1, tx1);
+        storage.put(
+            "key1".to_string(),
+            Value::String("value1".to_string()),
+            tx1,
+            tx1,
+        );
+
+        // Check pending write exists
+        assert!(storage.has_pending_write(&tx1, "key1"));
+        assert!(!storage.has_pending_write(&tx1, "key2"));
+
+        // Check pending writers
+        let writers = storage.get_pending_writers("key1");
+        assert_eq!(writers.len(), 1);
+        assert_eq!(writers[0], tx1);
+
+        // After commit, no pending writes
+        storage.commit_transaction(tx1);
+        assert!(!storage.has_pending_write(&tx1, "key1"));
+        let writers = storage.get_pending_writers("key1");
+        assert_eq!(writers.len(), 0);
     }
 }

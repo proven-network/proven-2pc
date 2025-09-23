@@ -71,6 +71,21 @@ mod tests {
         type Operation = TestOp;
         type Response = TestResponse;
 
+        fn read_at_timestamp(
+            &self,
+            operation: Self::Operation,
+            _read_timestamp: HlcTimestamp,
+        ) -> OperationResult<Self::Response> {
+            match operation {
+                TestOp::Lock { .. } => {
+                    panic!("Lock operations not supported for read-only operations");
+                }
+                TestOp::Read { resource } => OperationResult::Complete(TestResponse::Value {
+                    data: format!("Data from {}", resource),
+                }),
+            }
+        }
+
         fn apply_operation(
             &mut self,
             operation: Self::Operation,
@@ -120,7 +135,7 @@ mod tests {
             true // For test purposes, always consider transactions active
         }
 
-        fn engine_name(&self) -> &str {
+        fn engine_name(&self) -> &'static str {
             "test"
         }
     }

@@ -39,6 +39,43 @@ impl KvTransactionEngine {
         }
     }
 
+    /// Execute a get operation without locking
+    fn execute_get_without_locking(
+        &self,
+        key: &str,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<KvResponse> {
+        // Check for pending writes from EARLIER transactions using the new MVCC method
+        // These are writes that should be visible to us once they commit
+        let pending_writers = self.storage.get_pending_writers(key);
+        let earlier_writers: Vec<HlcTimestamp> = pending_writers
+            .into_iter()
+            .filter(|&tx_id| tx_id < read_timestamp)
+            .collect();
+
+        if !earlier_writers.is_empty() {
+            // There's a pending write from an earlier transaction
+            // We must wait to see if it commits (so we can read its value)
+            let blockers = earlier_writers
+                .into_iter()
+                .map(|txn| BlockingInfo {
+                    txn,
+                    retry_on: RetryOn::CommitOrAbort,
+                })
+                .collect();
+
+            return OperationResult::WouldBlock { blockers };
+        }
+
+        // No blocking writes from earlier transactions
+        // Use the snapshot read method for proper visibility checks
+        let value = self.storage.get_at_timestamp(key, read_timestamp);
+        OperationResult::Complete(KvResponse::GetResult {
+            key: key.to_string(),
+            value: value.map(|arc| (*arc).clone()),
+        })
+    }
+
     /// Execute a get operation
     fn execute_get(&mut self, key: &str, txn_id: HlcTimestamp) -> OperationResult<KvResponse> {
         // Check if we can acquire the lock
@@ -209,6 +246,17 @@ impl TransactionEngine for KvTransactionEngine {
     type Operation = KvOperation;
     type Response = KvResponse;
 
+    fn read_at_timestamp(
+        &self,
+        operation: Self::Operation,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<Self::Response> {
+        match operation {
+            KvOperation::Get { ref key } => self.execute_get_without_locking(key, read_timestamp),
+            _ => panic!("Must be read-only operation"),
+        }
+    }
+
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
@@ -324,7 +372,7 @@ impl TransactionEngine for KvTransactionEngine {
         self.active_transactions.contains_key(txn_id)
     }
 
-    fn engine_name(&self) -> &str {
+    fn engine_name(&self) -> &'static str {
         "kv"
     }
 

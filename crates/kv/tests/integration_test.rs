@@ -610,3 +610,271 @@ fn test_mixed_locks_partial_release() {
         if blockers.iter().any(|b| b.retry_on == RetryOn::CommitOrAbort)
     ));
 }
+
+// ============================================================================
+// Snapshot Read Tests (read_at_timestamp)
+// ============================================================================
+
+#[test]
+fn test_snapshot_read_doesnt_block_write() {
+    let mut engine = KvTransactionEngine::new();
+    let read_ts = timestamp(2);
+    let write_tx = timestamp(3);
+
+    // Begin write transaction
+    engine.begin(write_tx);
+
+    // Write to key1
+    let result = engine.apply_operation(
+        KvOperation::Put {
+            key: "key1".to_string(),
+            value: Value::String("write_value".to_string()),
+        },
+        write_tx,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Snapshot read at earlier timestamp - should NOT be blocked
+    // (write is from timestamp 3, read is at timestamp 2)
+    let result = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts,
+    );
+
+    match result {
+        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+            // Should see no value since write hasn't committed and is from a later timestamp
+            assert_eq!(value, None);
+        }
+        _ => panic!("Expected Complete, got {:?}", result),
+    }
+}
+
+#[test]
+fn test_snapshot_read_blocks_on_earlier_write() {
+    let mut engine = KvTransactionEngine::new();
+    let write_tx = timestamp(1);
+    let read_ts = timestamp(2);
+
+    // Begin write transaction at earlier timestamp
+    engine.begin(write_tx);
+
+    // Write to key1
+    let result = engine.apply_operation(
+        KvOperation::Put {
+            key: "key1".to_string(),
+            value: Value::String("write_value".to_string()),
+        },
+        write_tx,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Snapshot read at later timestamp - SHOULD be blocked
+    // (write is from timestamp 1, read is at timestamp 2)
+    // The read needs to wait to see if the write commits
+    let result = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts,
+    );
+
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, write_tx);
+            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
+        }
+        _ => panic!("Expected WouldBlock, got {:?}", result),
+    }
+
+    // Commit the write
+    engine.commit(write_tx);
+
+    // Retry the snapshot read - should now succeed and see the written value
+    let result = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts,
+    );
+
+    match result {
+        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+            assert_eq!(value, Some(Value::String("write_value".to_string())));
+        }
+        _ => panic!("Expected Complete, got {:?}", result),
+    }
+}
+
+#[test]
+fn test_snapshot_read_doesnt_take_locks() {
+    let mut engine = KvTransactionEngine::new();
+    let read_ts = timestamp(1);
+    let write_tx = timestamp(2);
+
+    // Perform a snapshot read first
+    let result = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Begin write transaction
+    engine.begin(write_tx);
+
+    // Write to the same key - should NOT be blocked by the snapshot read
+    // (snapshot reads don't take locks)
+    let result = engine.apply_operation(
+        KvOperation::Put {
+            key: "key1".to_string(),
+            value: Value::String("write_value".to_string()),
+        },
+        write_tx,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+}
+
+#[test]
+fn test_multiple_snapshot_reads_concurrent() {
+    let mut engine = KvTransactionEngine::new();
+    let read_ts1 = timestamp(1);
+    let read_ts2 = timestamp(2);
+    let read_ts3 = timestamp(3);
+
+    // Set up initial data
+    let setup_tx = timestamp(0);
+    engine.begin(setup_tx);
+    engine.apply_operation(
+        KvOperation::Put {
+            key: "key1".to_string(),
+            value: Value::String("initial_value".to_string()),
+        },
+        setup_tx,
+    );
+    engine.commit(setup_tx);
+
+    // Multiple snapshot reads at different timestamps - all should succeed
+    // without blocking each other
+    let result1 = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts1,
+    );
+    let result2 = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts2,
+    );
+    let result3 = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts3,
+    );
+
+    // All should complete successfully
+    assert!(matches!(result1, OperationResult::Complete(_)));
+    assert!(matches!(result2, OperationResult::Complete(_)));
+    assert!(matches!(result3, OperationResult::Complete(_)));
+}
+
+#[test]
+fn test_snapshot_read_sees_committed_writes() {
+    let mut engine = KvTransactionEngine::new();
+
+    // Write and commit at timestamp 1
+    let write_tx1 = timestamp(1);
+    engine.begin(write_tx1);
+    engine.apply_operation(
+        KvOperation::Put {
+            key: "key1".to_string(),
+            value: Value::String("value1".to_string()),
+        },
+        write_tx1,
+    );
+    engine.commit(write_tx1);
+
+    // Write and commit at timestamp 3
+    let write_tx2 = timestamp(3);
+    engine.begin(write_tx2);
+    engine.apply_operation(
+        KvOperation::Put {
+            key: "key1".to_string(),
+            value: Value::String("value2".to_string()),
+        },
+        write_tx2,
+    );
+    engine.commit(write_tx2);
+
+    // Snapshot read at timestamp 2 should see value1 (not value2)
+    let read_ts = timestamp(2);
+    let result = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts,
+    );
+
+    match result {
+        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+            assert_eq!(value, Some(Value::String("value1".to_string())));
+        }
+        _ => panic!("Expected Complete, got {:?}", result),
+    }
+
+    // Snapshot read at timestamp 4 should see value2
+    let read_ts2 = timestamp(4);
+    let result = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts2,
+    );
+
+    match result {
+        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+            assert_eq!(value, Some(Value::String("value2".to_string())));
+        }
+        _ => panic!("Expected Complete, got {:?}", result),
+    }
+}
+
+#[test]
+fn test_snapshot_read_ignores_aborted_writes() {
+    let mut engine = KvTransactionEngine::new();
+
+    // Write at timestamp 1 but abort
+    let write_tx1 = timestamp(1);
+    engine.begin(write_tx1);
+    engine.apply_operation(
+        KvOperation::Put {
+            key: "key1".to_string(),
+            value: Value::String("aborted_value".to_string()),
+        },
+        write_tx1,
+    );
+    engine.abort(write_tx1);
+
+    // Snapshot read at timestamp 2 should NOT see the aborted write
+    let read_ts = timestamp(2);
+    let result = engine.read_at_timestamp(
+        KvOperation::Get {
+            key: "key1".to_string(),
+        },
+        read_ts,
+    );
+
+    match result {
+        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+            assert_eq!(value, None);
+        }
+        _ => panic!("Expected Complete, got {:?}", result),
+    }
+}
