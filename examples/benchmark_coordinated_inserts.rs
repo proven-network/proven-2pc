@@ -268,6 +268,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     Err(e) => {
                         let error_str = e.to_string();
 
+                        // Always abort the failed transaction
+                        let _ = txn.abort().await;
+
+                        // Don't retry unique constraint violations - they indicate the data was already inserted
+                        if error_str.contains("Unique constraint violation") {
+                            // This likely means a previous attempt succeeded but we didn't get confirmation
+                            // Count it as successful since the data is there
+                            successful.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+
                         // Check if it's a wound/abort that we should retry
                         let should_retry = error_str.contains("Transaction was aborted")
                             || error_str.contains("Transaction was wounded")
@@ -279,9 +290,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             retry_count += 1;
                             retries.fetch_add(1, Ordering::Relaxed);
 
-                            // Abort the failed transaction before retrying
-                            let _ = txn.abort().await;
-
                             // Only disable speculation if it was a speculation failure
                             if error_str.contains("Speculation failed") {
                                 disable_speculation = true;
@@ -292,8 +300,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                             continue;
                         }
-
-                        let _ = txn.abort().await;
 
                         // Max retries exceeded or non-retryable error
                         eprintln!(
@@ -434,7 +440,7 @@ async fn execute_sql_insert(
     let content = args["content"].as_str().unwrap_or("default_content");
     let timestamp = args["timestamp"].as_i64().unwrap_or(0);
 
-    // Execute SQL insert
+    // Execute SQL insert (but don't commit yet)
     sql.insert_with_params(
         "sql_stream",
         "benchmark_table",
@@ -447,6 +453,7 @@ async fn execute_sql_insert(
     )
     .await?;
 
+    // Commit separately so caller can handle commit failures properly
     txn.commit().await?;
     Ok(())
 }

@@ -4,6 +4,9 @@
 mod common;
 
 use common::setup_test;
+use proven_sql::SqlResponse;
+
+use crate::common::TestContext;
 
 /// Setup tables for unique constraint tests
 fn setup_unique_tables(ctx: &mut common::TestContext) {
@@ -312,5 +315,151 @@ fn test_update_all_to_same_unique_value() {
         "Unique constraint violation on index 'id'",
     );
 
+    ctx.commit();
+}
+
+#[test]
+fn test_unique_constraint_cleaned_on_abort() {
+    let mut ctx = TestContext::new();
+
+    // Create a table with a unique constraint
+    ctx.begin();
+    ctx.exec(
+        "CREATE TABLE test_unique (
+        id VARCHAR PRIMARY KEY,
+        unique_field VARCHAR UNIQUE,
+        data VARCHAR
+    )",
+    );
+    ctx.commit();
+
+    // First transaction: Insert a record with unique value
+    ctx.begin();
+    ctx.exec("INSERT INTO test_unique (id, unique_field, data) VALUES ('record_001', 'unique_value_1', 'First attempt')");
+
+    // Abort the transaction
+    ctx.abort();
+
+    // Second transaction: Try to insert the same unique value (should succeed after abort)
+    ctx.begin();
+    let response = ctx.exec_response("INSERT INTO test_unique (id, unique_field, data) VALUES ('record_001', 'unique_value_1', 'Second attempt')");
+
+    match response {
+        SqlResponse::Error(e) => {
+            panic!(
+                "Insert after abort failed: {}. This indicates the unique index wasn't properly cleaned up!",
+                e
+            );
+        }
+        _ => {
+            // Success - the insert worked after abort
+        }
+    }
+    ctx.commit();
+
+    // Third transaction: Try to insert duplicate (should fail due to unique constraint)
+    ctx.begin();
+    let error = ctx.exec_error("INSERT INTO test_unique (id, unique_field, data) VALUES ('record_002', 'unique_value_1', 'Should fail')");
+    assert!(
+        error.contains("Unique constraint violation"),
+        "Expected unique constraint violation, got: {}",
+        error
+    );
+    ctx.abort();
+}
+
+#[test]
+fn test_multiple_abort_retry_unique_constraint() {
+    let mut ctx = TestContext::new();
+
+    // Create a table with a unique constraint
+    ctx.begin();
+    ctx.exec(
+        "CREATE TABLE test_retry (
+        id VARCHAR PRIMARY KEY,
+        unique_field VARCHAR UNIQUE
+    )",
+    );
+    ctx.commit();
+
+    // Simulate multiple abort/retry cycles with the same unique value
+    for attempt in 1..=5 {
+        ctx.begin();
+
+        let sql = format!(
+            "INSERT INTO test_retry (id, unique_field) VALUES ('record_{:03}', 'same_unique_value')",
+            attempt
+        );
+
+        if attempt < 5 {
+            // Execute and abort the first 4 attempts
+            ctx.exec(&sql);
+            ctx.abort();
+            println!("Attempt {}: Aborted transaction", attempt);
+        } else {
+            // Commit the last attempt
+            let response = ctx.exec_response(&sql);
+            match response {
+                SqlResponse::Error(e) => {
+                    panic!(
+                        "Final attempt failed: {}. This suggests index cleanup issues after multiple aborts!",
+                        e
+                    );
+                }
+                _ => {
+                    ctx.commit();
+                    println!("Attempt {}: Successfully committed", attempt);
+                }
+            }
+        }
+    }
+
+    // Verify the data was inserted correctly
+    ctx.begin();
+    ctx.assert_row_count(
+        "SELECT * FROM test_retry WHERE unique_field = 'same_unique_value'",
+        1,
+    );
+    ctx.commit();
+}
+
+#[test]
+fn test_concurrent_unique_constraint_violations() {
+    let mut ctx = TestContext::new();
+
+    // Create a table with unique constraint
+    ctx.begin();
+    ctx.exec(
+        "CREATE TABLE test_concurrent (
+        id VARCHAR PRIMARY KEY,
+        unique_field VARCHAR UNIQUE
+    )",
+    );
+    ctx.commit();
+
+    // First transaction: Insert and commit
+    ctx.begin();
+    ctx.exec("INSERT INTO test_concurrent (id, unique_field) VALUES ('record_001', 'unique_1')");
+    ctx.commit();
+
+    // Second transaction: Try to insert duplicate, then abort
+    ctx.begin();
+    ctx.assert_error_contains(
+        "INSERT INTO test_concurrent (id, unique_field) VALUES ('record_002', 'unique_1')",
+        "Unique constraint violation",
+    );
+    ctx.abort();
+
+    // Third transaction: Should still not be able to insert duplicate
+    ctx.begin();
+    ctx.assert_error_contains(
+        "INSERT INTO test_concurrent (id, unique_field) VALUES ('record_003', 'unique_1')",
+        "Unique constraint violation",
+    );
+    ctx.abort();
+
+    // Verify only one row exists
+    ctx.begin();
+    ctx.assert_row_count("SELECT * FROM test_concurrent", 1);
     ctx.commit();
 }

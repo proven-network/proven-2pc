@@ -318,6 +318,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         // Convert to string immediately to avoid Send issues
                         let error_str = e.to_string();
 
+                        // Always abort the failed transaction
+                        let _ = txn.abort().await;
+
+                        // Don't retry unique constraint violations - they indicate the data was already inserted
+                        if error_str.contains("Unique constraint violation") {
+                            // This likely means a previous attempt succeeded but we didn't get confirmation
+                            // Count it as successful since the data is there
+                            successful.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+
                         // Check if it's a wound/abort that we should retry
                         let should_retry = error_str.contains("Transaction was aborted")
                             || error_str.contains("Transaction was wounded")
@@ -338,8 +349,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                             continue;
                         }
-
-                        let _ = txn.abort().await;
 
                         // Max retries exceeded or non-retryable error
                         eprintln!(

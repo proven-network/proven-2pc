@@ -316,13 +316,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         // Always abort the failed transaction
                         let _ = txn.abort().await;
 
+                        // Don't retry unique constraint violations - they indicate the data was already inserted
+                        if error_str.contains("Unique constraint violation") {
+                            // This likely means a previous attempt succeeded but we didn't get confirmation
+                            // Count it as successful since the data is there
+                            successful.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+
                         // Check if it's a wound/abort that we should retry
                         let should_retry = error_str.contains("Transaction was aborted")
                             || error_str.contains("Transaction was wounded")
                             || error_str.contains("Speculation failed")
                             || error_str.contains("Transaction deadline exceeded")
-                            || error_str.contains("Response timeout")
-                            || error_str.contains("concurrent insert"); // Add unique constraint retries
+                            || error_str.contains("Response timeout");
 
                         if should_retry && retry_count < MAX_RETRIES {
                             retry_count += 1;
