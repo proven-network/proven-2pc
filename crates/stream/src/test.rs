@@ -72,7 +72,7 @@ mod tests {
         type Response = TestResponse;
 
         fn read_at_timestamp(
-            &self,
+            &mut self,
             operation: Self::Operation,
             _read_timestamp: HlcTimestamp,
         ) -> OperationResult<Self::Response> {

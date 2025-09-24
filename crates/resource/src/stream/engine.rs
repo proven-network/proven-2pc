@@ -370,7 +370,7 @@ impl TransactionEngine for ResourceTransactionEngine {
     type Response = ResourceResponse;
 
     fn read_at_timestamp(
-        &self,
+        &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
     ) -> OperationResult<Self::Response> {

@@ -116,8 +116,6 @@ pub struct VersionedTable {
     pub next_id: u64,
     /// Track committed transactions
     pub committed_transactions: HashSet<HlcTimestamp>,
-    /// Transaction start times for visibility checks
-    pub transaction_start_times: HashMap<HlcTimestamp, HlcTimestamp>,
 }
 
 impl VersionedTable {
@@ -163,13 +161,7 @@ impl VersionedTable {
             unique_indexes,
             next_id: 1,
             committed_transactions: HashSet::new(),
-            transaction_start_times: HashMap::new(),
         }
-    }
-
-    /// Register a transaction's start time
-    pub fn register_transaction(&mut self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
-        self.transaction_start_times.insert(txn_id, start_time);
     }
 
     /// Remove all versions created by an aborted transaction
@@ -723,6 +715,7 @@ impl VersionedTable {
         }
 
         // Must have been created before this transaction started
+        // Note: For snapshot reads, txn_id == txn_timestamp
         if version.created_at > txn_timestamp {
             return false;
         }
@@ -730,17 +723,15 @@ impl VersionedTable {
         // Check if deleted
         if let Some(deleter_id) = version.deleted_by {
             // Deleted version is visible if:
-            // 1. Deleter is not committed, OR
-            // 2. Deleter started after this transaction
+            // 1. Deleter is not committed (uncommitted delete), OR
+            // 2. Deleter started after this transaction (delete happened later)
             if !self.committed_transactions.contains(&deleter_id) {
                 return true; // See undeleted version
             }
 
-            let deleter_start = self.transaction_start_times.get(&deleter_id).copied();
-
-            if let Some(deleter_time) = deleter_start {
-                return deleter_time > txn_timestamp; // Deletion happened after we started
-            }
+            // The deleter_id IS the timestamp when the delete transaction started
+            // If it's after our start time, we don't see the deletion
+            return deleter_id > txn_timestamp;
         }
 
         true
@@ -775,8 +766,7 @@ impl VersionedTable {
             }
         }
 
-        // Clean up tracking
-        self.transaction_start_times.remove(&txn_id);
+        // No transaction-specific tracking to clean up
 
         Ok(())
     }
@@ -1224,11 +1214,23 @@ impl VersionedTable {
                         entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
                     } else if self.committed_transactions.contains(&entry.added_by) {
                         // See committed additions if not removed
-                        entry.removed_by.is_none()
-                            || (entry.removed_by != Some(txn_id)
-                                && !self
-                                    .committed_transactions
-                                    .contains(&entry.removed_by.unwrap_or(txn_id)))
+                        // For committed entries, check if removal is visible
+                        if let Some(removed_by) = entry.removed_by {
+                            // If removed by us, not visible
+                            if removed_by == txn_id {
+                                false
+                            } else if !self.committed_transactions.contains(&removed_by) {
+                                // Uncommitted removal - ignore it, entry is visible
+                                true
+                            } else {
+                                // Committed removal - check if it happened after we started
+                                // removed_by IS the timestamp when removal happened
+                                removed_by > txn_timestamp
+                            }
+                        } else {
+                            // Not removed
+                            true
+                        }
                     } else {
                         false
                     };
@@ -1313,11 +1315,23 @@ impl VersionedTable {
                     let is_visible = if entry.added_by == txn_id {
                         entry.removed_by.is_none() || entry.removed_by != Some(txn_id)
                     } else if self.committed_transactions.contains(&entry.added_by) {
-                        entry.removed_by.is_none()
-                            || (entry.removed_by != Some(txn_id)
-                                && !self
-                                    .committed_transactions
-                                    .contains(&entry.removed_by.unwrap_or(txn_id)))
+                        // For committed entries, check if removal is visible
+                        if let Some(removed_by) = entry.removed_by {
+                            // If removed by us, not visible
+                            if removed_by == txn_id {
+                                false
+                            } else if !self.committed_transactions.contains(&removed_by) {
+                                // Uncommitted removal - ignore it, entry is visible
+                                true
+                            } else {
+                                // Committed removal - check if it happened after we started
+                                // removed_by IS the timestamp when removal happened
+                                removed_by > txn_timestamp
+                            }
+                        } else {
+                            // Not removed
+                            true
+                        }
                     } else {
                         false
                     };
@@ -1381,58 +1395,6 @@ impl VersionedTable {
         }
 
         result
-    }
-
-    /// Garbage collection: remove old committed versions that no active transaction can see
-    pub fn garbage_collect(&mut self, active_transactions: &[HlcTimestamp]) -> usize {
-        if active_transactions.is_empty() {
-            return 0; // No GC when no active transactions
-        }
-
-        let mut removed_count = 0;
-
-        // Find the oldest active transaction
-        let oldest_txn = active_transactions
-            .iter()
-            .filter_map(|txn_id| self.transaction_start_times.get(txn_id).copied())
-            .min();
-
-        if let Some(oldest_timestamp) = oldest_txn {
-            for versions in self.versions.values_mut() {
-                // Keep only versions that might be visible to active transactions
-                let before_count = versions.len();
-
-                // Keep the newest committed version before oldest_timestamp
-                // and all versions after oldest_timestamp
-                let mut keep_indices = HashSet::new();
-                let mut newest_committed_before = None;
-
-                for (i, version) in versions.iter().enumerate() {
-                    if version.created_at >= oldest_timestamp {
-                        keep_indices.insert(i);
-                    } else if self.committed_transactions.contains(&version.created_by) {
-                        newest_committed_before = Some(i);
-                    }
-                }
-
-                if let Some(idx) = newest_committed_before {
-                    keep_indices.insert(idx);
-                }
-
-                // Keep only the marked versions
-                let mut new_versions = Vec::new();
-                for (i, version) in versions.iter().enumerate() {
-                    if keep_indices.contains(&i) {
-                        new_versions.push(version.clone());
-                    }
-                }
-
-                removed_count += before_count - new_versions.len();
-                *versions = new_versions;
-            }
-        }
-
-        removed_count
     }
 }
 
@@ -1557,8 +1519,6 @@ pub struct MvccStorage {
     pub index_metadata: HashMap<String, IndexMetadata>,
     /// Track all committed transactions globally
     pub global_committed: HashSet<HlcTimestamp>,
-    /// Track active transactions for GC
-    pub active_transactions: HashSet<HlcTimestamp>,
 }
 
 impl MvccStorage {
@@ -1567,7 +1527,6 @@ impl MvccStorage {
             tables: HashMap::new(),
             index_metadata: HashMap::new(),
             global_committed: HashSet::new(),
-            active_transactions: HashSet::new(),
         }
     }
 
@@ -1830,16 +1789,6 @@ impl MvccStorage {
         db_stats
     }
 
-    /// Register a new transaction
-    pub fn register_transaction(&mut self, txn_id: HlcTimestamp, start_time: HlcTimestamp) {
-        self.active_transactions.insert(txn_id);
-
-        // Register with all tables
-        for table in self.tables.values_mut() {
-            table.register_transaction(txn_id, start_time);
-        }
-    }
-
     /// Commit a transaction across all tables
     pub fn commit_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
         // Mark as committed globally
@@ -1849,9 +1798,6 @@ impl MvccStorage {
         for table in self.tables.values_mut() {
             table.commit_transaction(txn_id)?;
         }
-
-        // Remove from active set
-        self.active_transactions.remove(&txn_id);
 
         Ok(())
     }
@@ -1863,22 +1809,7 @@ impl MvccStorage {
             table.abort_transaction(txn_id)?;
         }
 
-        // Remove from active set
-        self.active_transactions.remove(&txn_id);
-
         Ok(())
-    }
-
-    /// Run garbage collection across all tables
-    pub fn garbage_collect(&mut self) -> usize {
-        let active: Vec<HlcTimestamp> = self.active_transactions.iter().copied().collect();
-
-        let mut total_removed = 0;
-        for table in self.tables.values_mut() {
-            total_removed += table.garbage_collect(&active);
-        }
-
-        total_removed
     }
 
     /// Get a compacted view of storage for snapshots
@@ -1931,7 +1862,6 @@ impl MvccStorage {
         self.tables.clear();
         self.index_metadata.clear();
         self.global_committed.clear();
-        self.active_transactions.clear();
 
         // Create a special "restore" transaction that's already committed
         let restore_txn = HlcTimestamp::new(0, 0, NodeId::new(0));
@@ -2056,8 +1986,7 @@ mod tests {
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
-        // Register and insert
-        table.register_transaction(txn1, timestamp1);
+        // Insert
         let row_id = table
             .insert(
                 txn1,
@@ -2071,7 +2000,6 @@ mod tests {
 
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
         assert!(table.read(txn2, timestamp2, row_id).is_none());
 
         // After commit, txn2 can see it
@@ -2086,7 +2014,6 @@ mod tests {
         // Transaction 1: Insert and commit
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         let row_id = table
             .insert(
@@ -2100,7 +2027,6 @@ mod tests {
         // Transaction 2: Update but don't commit yet
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         table
             .update(
@@ -2114,7 +2040,6 @@ mod tests {
         // Transaction 3: Should still see old version
         let txn3 = create_txn_id(300);
         let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
-        table.register_transaction(txn3, timestamp3);
 
         let row = table.read(txn3, timestamp3, row_id).unwrap();
         assert_eq!(row.values[1], Value::string("Alice".to_string()));
@@ -2131,7 +2056,6 @@ mod tests {
         // Insert and commit a row
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         let row_id = table
             .insert(
@@ -2145,7 +2069,6 @@ mod tests {
         // Start a transaction, update, then abort
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         table
             .update(
@@ -2162,7 +2085,6 @@ mod tests {
         // New transaction should still see original value
         let txn3 = create_txn_id(300);
         let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
-        table.register_transaction(txn3, timestamp3);
 
         let row = table.read(txn3, timestamp3, row_id).unwrap();
         assert_eq!(row.values[1], Value::string("Alice".to_string()));
@@ -2185,7 +2107,6 @@ mod tests {
         // Insert some committed data
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         table
             .insert(
@@ -2230,7 +2151,6 @@ mod tests {
         // Verify we can look up by index
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         let results = table.index_lookup(
             "email",
@@ -2259,7 +2179,6 @@ mod tests {
         // Transaction 1: Insert a product
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         table
             .insert(
@@ -2276,7 +2195,6 @@ mod tests {
         // Transaction 2: Should not see uncommitted data
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         let results = table.index_lookup(
             "name",
@@ -2324,7 +2242,6 @@ mod tests {
         // Insert and commit initial data
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         let row_id = table
             .insert(
@@ -2339,7 +2256,6 @@ mod tests {
         // Update the category
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         table
             .update(
@@ -2362,7 +2278,6 @@ mod tests {
         // Transaction 3 still sees old value
         let txn3 = create_txn_id(300);
         let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
-        table.register_transaction(txn3, timestamp3);
 
         let results = table.index_lookup(
             "category",
@@ -2397,7 +2312,6 @@ mod tests {
         // Insert and commit data
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         let row_id = table
             .insert(
@@ -2412,7 +2326,6 @@ mod tests {
         // Delete the row
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         table.delete(txn2, timestamp2, row_id).unwrap();
 
@@ -2428,7 +2341,6 @@ mod tests {
         // Transaction 3 should still see it (delete not committed)
         let txn3 = create_txn_id(300);
         let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
-        table.register_transaction(txn3, timestamp3);
 
         let results = table.index_lookup(
             "status",
@@ -2448,7 +2360,6 @@ mod tests {
         // New transaction should not see deleted row
         let txn4 = create_txn_id(400);
         let timestamp4 = HlcTimestamp::new(400, 0, NodeId::new(1));
-        table.register_transaction(txn4, timestamp4);
 
         let results = table.index_lookup(
             "status",
@@ -2475,7 +2386,6 @@ mod tests {
         // Transaction 1: Insert and abort
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         table
             .insert(
@@ -2500,7 +2410,6 @@ mod tests {
         // New transaction should not see aborted data
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         let results = table.index_lookup(
             "value",
@@ -2527,7 +2436,6 @@ mod tests {
         // Insert first user
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         table
             .insert(
@@ -2545,7 +2453,6 @@ mod tests {
         // Try to insert duplicate email
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         let result = table.insert(
             txn2,
@@ -2581,7 +2488,6 @@ mod tests {
         // Insert test data
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         for i in 1..=10 {
             table
@@ -2601,7 +2507,7 @@ mod tests {
         // Test range lookup
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
+        // table.register_transaction(txn2, timestamp2);
 
         // Range: score >= 30 AND score <= 70
         let results = table.index_range_lookup(
@@ -2650,7 +2556,6 @@ mod tests {
         // Insert some test data
         let txn1 = create_txn_id(100);
         let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
-        table.register_transaction(txn1, timestamp1);
 
         // Customer 1 orders
         table
@@ -2730,7 +2635,6 @@ mod tests {
         // Test exact composite key lookup
         let txn2 = create_txn_id(200);
         let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        table.register_transaction(txn2, timestamp2);
 
         let results = table.index_lookup(
             "idx_customer_status",
@@ -2785,7 +2689,6 @@ mod tests {
 
         let txn3 = create_txn_id(300);
         let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
-        unique_table.register_transaction(txn3, timestamp3);
 
         unique_table
             .insert(
@@ -2823,7 +2726,6 @@ mod tests {
         // Try to insert duplicate composite key
         let txn4 = create_txn_id(400);
         let timestamp4 = HlcTimestamp::new(400, 0, NodeId::new(1));
-        unique_table.register_transaction(txn4, timestamp4);
 
         // This should fail due to unique constraint
         unique_table.index_columns.insert(

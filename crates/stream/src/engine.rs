@@ -53,17 +53,16 @@ pub trait TransactionEngine: Send + Sync {
     /// Read an operation at a specific timestamp (snapshot read)
     ///
     /// This is for read-only operations that don't need locks or transaction state.
+    ///
+    /// Though state mutations are possible for updating caches, etc. - actual data
+    /// changes must not be allowed.
+    ///
     /// Returns the value as it existed at the given timestamp.
     fn read_at_timestamp(
-        &self,
+        &mut self,
         _operation: Self::Operation,
         _read_timestamp: HlcTimestamp,
-    ) -> OperationResult<Self::Response> {
-        todo!(
-            "read_at_timestamp not implemented for: {}",
-            self.engine_name()
-        )
-    }
+    ) -> OperationResult<Self::Response>;
 
     /// Apply an operation within a transaction context
     ///

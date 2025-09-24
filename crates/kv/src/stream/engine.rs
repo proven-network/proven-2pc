@@ -247,7 +247,7 @@ impl TransactionEngine for KvTransactionEngine {
     type Response = KvResponse;
 
     fn read_at_timestamp(
-        &self,
+        &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
     ) -> OperationResult<Self::Response> {

@@ -67,6 +67,116 @@ impl SqlTransactionEngine {
         }
     }
 
+    /// Execute SQL snapshot read (read-only, no mutations)
+    fn execute_sql_snapshot(
+        &mut self,
+        sql: &str,
+        params: Option<Vec<crate::types::value::Value>>,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<SqlResponse> {
+        // Parse SQL with caching
+        let statement = match self.parser.parse(sql) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Parse error: {:?}",
+                    e
+                )));
+            }
+        };
+
+        // Get parameter types if provided
+        let param_types = params
+            .as_ref()
+            .map(|p| p.iter().map(|v| v.data_type()).collect())
+            .unwrap_or_default();
+
+        // Semantic analysis
+        let analyzed = match self.analyzer.analyze(statement, param_types) {
+            Ok(a) => a,
+            Err(e) => {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Semantic error: {:?}",
+                    e
+                )));
+            }
+        };
+
+        // Check parameter count
+        if let Some(ref param_values) = params {
+            let expected_count = analyzed.parameter_count();
+            if param_values.len() != expected_count {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Expected {} parameters, got {}",
+                    expected_count,
+                    param_values.len()
+                )));
+            }
+        }
+
+        // Extract predicates
+        let query_predicates = if let Some(ref param_values) = params {
+            analyzed.extract_predicates(param_values)
+        } else {
+            analyzed.extract_predicates(&[])
+        };
+
+        // Check for conflicts with earlier transactions only
+        let mut blockers = Vec::new();
+        let potential_conflicts = self
+            .predicate_index
+            .find_potential_conflicts(read_timestamp, &query_predicates);
+
+        for candidate_tx_id in potential_conflicts {
+            // Only consider EARLIER transactions as blockers
+            if candidate_tx_id >= read_timestamp {
+                continue;
+            }
+
+            if let Some(other_tx) = self.active_transactions.get(&candidate_tx_id)
+                && query_predicates
+                    .conflicts_with(&other_tx.predicates)
+                    .is_some()
+            {
+                blockers.push(BlockingInfo {
+                    txn: candidate_tx_id,
+                    retry_on: RetryOn::CommitOrAbort,
+                });
+            }
+        }
+
+        if !blockers.is_empty() {
+            blockers.sort_by_key(|b| b.txn);
+            return OperationResult::WouldBlock { blockers };
+        }
+
+        // Plan the statement
+        let plan = match self.planner.plan(analyzed.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return OperationResult::Complete(SqlResponse::Error(format!(
+                    "Planning error: {:?}",
+                    e
+                )));
+            }
+        };
+
+        // Execute with a temporary context (snapshot reads are stateless)
+        let mut temp_ctx = TransactionContext::new(read_timestamp);
+
+        match execution::execute_with_params(
+            (*plan).clone(),
+            &mut self.storage,
+            &mut temp_ctx,
+            params.as_ref(),
+        ) {
+            Ok(result) => OperationResult::Complete(convert_execution_result(result)),
+            Err(e) => {
+                OperationResult::Complete(SqlResponse::Error(format!("Execution error: {:?}", e)))
+            }
+        }
+    }
+
     /// Execute SQL with predicate-based conflict detection
     fn execute_sql(
         &mut self,
@@ -225,6 +335,20 @@ impl TransactionEngine for SqlTransactionEngine {
     type Operation = SqlOperation;
     type Response = SqlResponse;
 
+    fn read_at_timestamp(
+        &mut self,
+        operation: Self::Operation,
+        read_timestamp: HlcTimestamp,
+    ) -> OperationResult<Self::Response> {
+        match operation {
+            SqlOperation::Query { sql, params } => {
+                // Execute as a snapshot read using the read_timestamp as txn_id
+                self.execute_sql_snapshot(&sql, params, read_timestamp)
+            }
+            _ => panic!("Must be read-only operation"),
+        }
+    }
+
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
@@ -289,9 +413,6 @@ impl TransactionEngine for SqlTransactionEngine {
     }
 
     fn begin(&mut self, txn_id: HlcTimestamp) {
-        // Register transaction with storage
-        self.storage.register_transaction(txn_id, txn_id);
-
         // Create transaction context
         self.active_transactions
             .insert(txn_id, TransactionContext::new(txn_id));
