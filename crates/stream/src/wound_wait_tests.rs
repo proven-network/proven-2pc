@@ -131,10 +131,6 @@ mod tests {
 
         fn begin(&mut self, _txn_id: HlcTimestamp) {}
 
-        fn is_transaction_active(&self, _txn_id: &HlcTimestamp) -> bool {
-            true // For test purposes, always consider transactions active
-        }
-
         fn engine_name(&self) -> &'static str {
             "test"
         }

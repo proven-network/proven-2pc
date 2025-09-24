@@ -183,12 +183,7 @@ impl VersionedTable {
     }
 
     /// Insert a new row (creates a new version)
-    pub fn insert(
-        &mut self,
-        txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
-        values: Vec<Value>,
-    ) -> Result<u64> {
+    pub fn insert(&mut self, txn_id: HlcTimestamp, values: Vec<Value>) -> Result<u64> {
         // Validate against schema
         self.schema.validate_row(&values)?;
 
@@ -239,9 +234,7 @@ impl VersionedTable {
                             if is_visible {
                                 // Verify the row still exists and is visible
                                 if let Some(versions) = self.versions.get(&entry.row_id)
-                                    && self
-                                        .find_visible_version(versions, txn_id, txn_timestamp)
-                                        .is_some()
+                                    && self.find_visible_version(versions, txn_id).is_some()
                                 {
                                     return Err(Error::InvalidValue(format!(
                                         "Unique constraint violation on index '{}'",
@@ -321,7 +314,7 @@ impl VersionedTable {
         let version = VersionedValue {
             row: Arc::new(Row::new(row_id, values)),
             created_by: txn_id,
-            created_at: txn_timestamp,
+            created_at: txn_id,
             deleted_by: None,
         };
 
@@ -330,19 +323,13 @@ impl VersionedTable {
     }
 
     /// Update a row (marks old version as deleted, creates new version)
-    pub fn update(
-        &mut self,
-        txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
-        row_id: u64,
-        values: Vec<Value>,
-    ) -> Result<()> {
+    pub fn update(&mut self, txn_id: HlcTimestamp, row_id: u64, values: Vec<Value>) -> Result<()> {
         // Validate against schema
         self.schema.validate_row(&values)?;
 
         // Get old values for index updates
         let old_values = self
-            .get_visible_version(txn_id, txn_timestamp, row_id)
+            .get_visible_version(txn_id, row_id)
             .ok_or_else(|| Error::InvalidValue(format!("Row {} not found", row_id)))?
             .row
             .values
@@ -412,9 +399,7 @@ impl VersionedTable {
 
                             if is_visible
                                 && let Some(versions) = self.versions.get(&entry.row_id)
-                                && self
-                                    .find_visible_version(versions, txn_id, txn_timestamp)
-                                    .is_some()
+                                && self.find_visible_version(versions, txn_id).is_some()
                             {
                                 return Err(Error::InvalidValue(format!(
                                     "Unique constraint violation on index '{}'",
@@ -513,9 +498,7 @@ impl VersionedTable {
 
         // Check if we need to update in place or create new version
         let needs_new_version = {
-            let visible_version = self
-                .get_visible_version(txn_id, txn_timestamp, row_id)
-                .unwrap();
+            let visible_version = self.get_visible_version(txn_id, row_id).unwrap();
 
             // If this transaction created the visible version, we can update in place
             visible_version.created_by != txn_id
@@ -545,7 +528,7 @@ impl VersionedTable {
                 version.deleted_by.is_none()
             } else {
                 let is_committed = self.committed_transactions.contains(&version.created_by);
-                is_committed && version.created_at <= txn_timestamp && version.deleted_by.is_none()
+                is_committed && version.created_at <= txn_id && version.deleted_by.is_none()
             };
 
             if is_visible {
@@ -558,7 +541,7 @@ impl VersionedTable {
         let new_version = VersionedValue {
             row: Arc::new(Row::new(row_id, values)),
             created_by: txn_id,
-            created_at: txn_timestamp,
+            created_at: txn_id,
             deleted_by: None,
         };
 
@@ -567,12 +550,7 @@ impl VersionedTable {
     }
 
     /// Delete a row (marks version as deleted and updates indexes)
-    pub fn delete(
-        &mut self,
-        txn_id: HlcTimestamp,
-        _txn_timestamp: HlcTimestamp,
-        row_id: u64,
-    ) -> Result<()> {
+    pub fn delete(&mut self, txn_id: HlcTimestamp, row_id: u64) -> Result<()> {
         // First get the visible version to extract values for index removal
         let visible_version = self
             .versions
@@ -581,7 +559,7 @@ impl VersionedTable {
                 versions
                     .iter()
                     .rev()
-                    .find(|v| self.is_version_visible_to(v, txn_id, _txn_timestamp))
+                    .find(|v| self.is_version_visible_to(v, txn_id))
             })
             .ok_or_else(|| {
                 Error::InvalidValue(format!("Row {} not found or not visible", row_id))
@@ -636,7 +614,7 @@ impl VersionedTable {
                 version.deleted_by.is_none()
             } else {
                 let is_committed = self.committed_transactions.contains(&version.created_by);
-                is_committed && version.created_at <= _txn_timestamp && version.deleted_by.is_none()
+                is_committed && version.created_at <= txn_id && version.deleted_by.is_none()
             };
 
             if is_visible {
@@ -649,22 +627,17 @@ impl VersionedTable {
     }
 
     /// Read a specific row
-    pub fn read(
-        &self,
-        txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
-        row_id: u64,
-    ) -> Option<Arc<Row>> {
-        self.get_visible_version(txn_id, txn_timestamp, row_id)
+    pub fn read(&self, txn_id: HlcTimestamp, row_id: u64) -> Option<Arc<Row>> {
+        self.get_visible_version(txn_id, row_id)
             .map(|v| v.row.clone())
     }
 
     /// Scan all visible rows for a transaction
-    pub fn scan(&self, txn_id: HlcTimestamp, txn_timestamp: HlcTimestamp) -> Vec<(u64, Arc<Row>)> {
+    pub fn scan(&self, txn_id: HlcTimestamp) -> Vec<(u64, Arc<Row>)> {
         let mut result = Vec::new();
 
         for (&row_id, versions) in &self.versions {
-            if let Some(version) = self.find_visible_version(versions, txn_id, txn_timestamp) {
+            if let Some(version) = self.find_visible_version(versions, txn_id) {
                 result.push((row_id, version.row.clone()));
             }
         }
@@ -673,14 +646,9 @@ impl VersionedTable {
     }
 
     /// Get the visible version of a row for a transaction
-    fn get_visible_version(
-        &self,
-        txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
-        row_id: u64,
-    ) -> Option<&VersionedValue> {
+    fn get_visible_version(&self, txn_id: HlcTimestamp, row_id: u64) -> Option<&VersionedValue> {
         let versions = self.versions.get(&row_id)?;
-        self.find_visible_version(versions, txn_id, txn_timestamp)
+        self.find_visible_version(versions, txn_id)
     }
 
     /// Find the visible version in a list of versions
@@ -688,22 +656,16 @@ impl VersionedTable {
         &self,
         versions: &'a [VersionedValue],
         txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
     ) -> Option<&'a VersionedValue> {
         // Search backwards (newest first) for visible version
         versions
             .iter()
             .rev()
-            .find(|v| self.is_version_visible_to(v, txn_id, txn_timestamp))
+            .find(|v| self.is_version_visible_to(v, txn_id))
     }
 
     /// Check if a version is visible to a transaction
-    fn is_version_visible_to(
-        &self,
-        version: &VersionedValue,
-        txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
-    ) -> bool {
+    fn is_version_visible_to(&self, version: &VersionedValue, txn_id: HlcTimestamp) -> bool {
         // Transaction sees its own writes
         if version.created_by == txn_id {
             return version.deleted_by.is_none() || version.deleted_by != Some(txn_id);
@@ -715,8 +677,7 @@ impl VersionedTable {
         }
 
         // Must have been created before this transaction started
-        // Note: For snapshot reads, txn_id == txn_timestamp
-        if version.created_at > txn_timestamp {
+        if version.created_at > txn_id {
             return false;
         }
 
@@ -731,7 +692,7 @@ impl VersionedTable {
 
             // The deleter_id IS the timestamp when the delete transaction started
             // If it's after our start time, we don't see the deletion
-            return deleter_id > txn_timestamp;
+            return deleter_id > txn_id;
         }
 
         true
@@ -1199,7 +1160,6 @@ impl VersionedTable {
         index_name: &str,
         values: Vec<Value>,
         txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
     ) -> Vec<Arc<Row>> {
         let mut result = Vec::new();
         let mut seen_rows = HashSet::new();
@@ -1225,7 +1185,7 @@ impl VersionedTable {
                             } else {
                                 // Committed removal - check if it happened after we started
                                 // removed_by IS the timestamp when removal happened
-                                removed_by > txn_timestamp
+                                removed_by > txn_id
                             }
                         } else {
                             // Not removed
@@ -1237,7 +1197,7 @@ impl VersionedTable {
 
                     if is_visible && !seen_rows.contains(&entry.row_id) {
                         seen_rows.insert(entry.row_id);
-                        if let Some(row) = self.read(txn_id, txn_timestamp, entry.row_id) {
+                        if let Some(row) = self.read(txn_id, entry.row_id) {
                             result.push(row);
                         }
                     }
@@ -1259,7 +1219,6 @@ impl VersionedTable {
         end_inclusive: bool,
         reverse: bool,
         txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
     ) -> Vec<Arc<Row>> {
         let mut result = Vec::new();
         let mut seen_rows = HashSet::new();
@@ -1326,7 +1285,7 @@ impl VersionedTable {
                             } else {
                                 // Committed removal - check if it happened after we started
                                 // removed_by IS the timestamp when removal happened
-                                removed_by > txn_timestamp
+                                removed_by > txn_id
                             }
                         } else {
                             // Not removed
@@ -1338,7 +1297,7 @@ impl VersionedTable {
 
                     if is_visible && !seen_rows.contains(&entry.row_id) {
                         seen_rows.insert(entry.row_id);
-                        if let Some(row) = self.read(txn_id, txn_timestamp, entry.row_id) {
+                        if let Some(row) = self.read(txn_id, entry.row_id) {
                             result.push(row);
                         }
                     }
@@ -1360,7 +1319,6 @@ impl VersionedTable {
         index_name: &str,
         prefix_values: Vec<Value>,
         txn_id: HlcTimestamp,
-        txn_timestamp: HlcTimestamp,
     ) -> Vec<Arc<Row>> {
         let mut result = Vec::new();
         let mut seen_rows = HashSet::new();
@@ -1385,7 +1343,7 @@ impl VersionedTable {
 
                         if is_visible && !seen_rows.contains(&entry.row_id) {
                             seen_rows.insert(entry.row_id);
-                            if let Some(row) = self.read(txn_id, txn_timestamp, entry.row_id) {
+                            if let Some(row) = self.read(txn_id, entry.row_id) {
                                 result.push(row);
                             }
                         }
@@ -1402,16 +1360,14 @@ impl VersionedTable {
 pub struct MvccRowIterator<'a> {
     table: &'a VersionedTable,
     tx_id: HlcTimestamp,
-    tx_timestamp: HlcTimestamp,
     position: std::collections::btree_map::Iter<'a, u64, Vec<VersionedValue>>,
 }
 
 impl<'a> MvccRowIterator<'a> {
-    fn new(table: &'a VersionedTable, tx_id: HlcTimestamp, tx_timestamp: HlcTimestamp) -> Self {
+    fn new(table: &'a VersionedTable, tx_id: HlcTimestamp) -> Self {
         Self {
             table,
             tx_id,
-            tx_timestamp,
             position: table.versions.iter(),
         }
     }
@@ -1422,10 +1378,7 @@ impl<'a> Iterator for MvccRowIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         for (_, versions) in self.position.by_ref() {
-            if let Some(visible_version) =
-                self.table
-                    .find_visible_version(versions, self.tx_id, self.tx_timestamp)
-            {
+            if let Some(visible_version) = self.table.find_visible_version(versions, self.tx_id) {
                 return Some(Arc::new(visible_version.row.values.clone()));
             }
         }
@@ -1437,16 +1390,14 @@ impl<'a> Iterator for MvccRowIterator<'a> {
 pub struct MvccRowWithIdIterator<'a> {
     table: &'a VersionedTable,
     tx_id: HlcTimestamp,
-    tx_timestamp: HlcTimestamp,
     position: std::collections::btree_map::Iter<'a, u64, Vec<VersionedValue>>,
 }
 
 impl<'a> MvccRowWithIdIterator<'a> {
-    fn new(table: &'a VersionedTable, tx_id: HlcTimestamp, tx_timestamp: HlcTimestamp) -> Self {
+    fn new(table: &'a VersionedTable, tx_id: HlcTimestamp) -> Self {
         Self {
             table,
             tx_id,
-            tx_timestamp,
             position: table.versions.iter(),
         }
     }
@@ -1457,10 +1408,7 @@ impl<'a> Iterator for MvccRowWithIdIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         for (&row_id, versions) in self.position.by_ref() {
-            if let Some(visible_version) =
-                self.table
-                    .find_visible_version(versions, self.tx_id, self.tx_timestamp)
-            {
+            if let Some(visible_version) = self.table.find_visible_version(versions, self.tx_id) {
                 return Some((row_id, Arc::new(visible_version.row.values.clone())));
             }
         }
@@ -1470,21 +1418,13 @@ impl<'a> Iterator for MvccRowWithIdIterator<'a> {
 
 impl VersionedTable {
     /// Create an iterator over visible rows for a transaction
-    pub fn iter<'a>(
-        &'a self,
-        tx_id: HlcTimestamp,
-        tx_timestamp: HlcTimestamp,
-    ) -> MvccRowIterator<'a> {
-        MvccRowIterator::new(self, tx_id, tx_timestamp)
+    pub fn iter<'a>(&'a self, tx_id: HlcTimestamp) -> MvccRowIterator<'a> {
+        MvccRowIterator::new(self, tx_id)
     }
 
     /// Create an iterator that includes row IDs
-    pub fn iter_with_ids<'a>(
-        &'a self,
-        tx_id: HlcTimestamp,
-        tx_timestamp: HlcTimestamp,
-    ) -> MvccRowWithIdIterator<'a> {
-        MvccRowWithIdIterator::new(self, tx_id, tx_timestamp)
+    pub fn iter_with_ids<'a>(&'a self, tx_id: HlcTimestamp) -> MvccRowWithIdIterator<'a> {
+        MvccRowWithIdIterator::new(self, tx_id)
     }
 }
 
@@ -1984,27 +1924,24 @@ mod tests {
     fn test_basic_insert_commit() {
         let mut table = VersionedTable::new("test".to_string(), create_test_schema());
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         // Insert
         let row_id = table
             .insert(
                 txn1,
-                timestamp1,
                 vec![Value::integer(1), Value::string("Alice".to_string())],
             )
             .unwrap();
 
         // Before commit, only txn1 can see the row
-        assert!(table.read(txn1, timestamp1, row_id).is_some());
+        assert!(table.read(txn1, row_id).is_some());
 
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
-        assert!(table.read(txn2, timestamp2, row_id).is_none());
+        assert!(table.read(txn2, row_id).is_none());
 
         // After commit, txn2 can see it
         table.commit_transaction(txn1).unwrap();
-        assert!(table.read(txn2, timestamp2, row_id).is_some());
+        assert!(table.read(txn2, row_id).is_some());
     }
 
     #[test]
@@ -2013,12 +1950,10 @@ mod tests {
 
         // Transaction 1: Insert and commit
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         let row_id = table
             .insert(
                 txn1,
-                timestamp1,
                 vec![Value::integer(1), Value::string("Alice".to_string())],
             )
             .unwrap();
@@ -2026,12 +1961,10 @@ mod tests {
 
         // Transaction 2: Update but don't commit yet
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
         table
             .update(
                 txn2,
-                timestamp2,
                 row_id,
                 vec![Value::integer(1), Value::string("Bob".to_string())],
             )
@@ -2039,13 +1972,12 @@ mod tests {
 
         // Transaction 3: Should still see old version
         let txn3 = create_txn_id(300);
-        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
 
-        let row = table.read(txn3, timestamp3, row_id).unwrap();
+        let row = table.read(txn3, row_id).unwrap();
         assert_eq!(row.values[1], Value::string("Alice".to_string()));
 
         // But txn2 sees its own update
-        let row = table.read(txn2, timestamp2, row_id).unwrap();
+        let row = table.read(txn2, row_id).unwrap();
         assert_eq!(row.values[1], Value::string("Bob".to_string()));
     }
 
@@ -2055,12 +1987,10 @@ mod tests {
 
         // Insert and commit a row
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         let row_id = table
             .insert(
                 txn1,
-                timestamp1,
                 vec![Value::integer(1), Value::string("Alice".to_string())],
             )
             .unwrap();
@@ -2068,12 +1998,10 @@ mod tests {
 
         // Start a transaction, update, then abort
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
         table
             .update(
                 txn2,
-                timestamp2,
                 row_id,
                 vec![Value::integer(1), Value::string("Bob".to_string())],
             )
@@ -2084,9 +2012,8 @@ mod tests {
 
         // New transaction should still see original value
         let txn3 = create_txn_id(300);
-        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
 
-        let row = table.read(txn3, timestamp3, row_id).unwrap();
+        let row = table.read(txn3, row_id).unwrap();
         assert_eq!(row.values[1], Value::string("Alice".to_string()));
     }
 
@@ -2106,12 +2033,10 @@ mod tests {
 
         // Insert some committed data
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(1),
                     Value::string("alice@example.com".to_string()),
@@ -2123,7 +2048,6 @@ mod tests {
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(2),
                     Value::string("bob@example.com".to_string()),
@@ -2150,13 +2074,11 @@ mod tests {
 
         // Verify we can look up by index
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
         let results = table.index_lookup(
             "email",
             vec![Value::string("alice@example.com".to_string())],
             txn2,
-            timestamp2,
         );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].values[0], Value::integer(1));
@@ -2178,12 +2100,10 @@ mod tests {
 
         // Transaction 1: Insert a product
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(1),
                     Value::string("Laptop".to_string()),
@@ -2194,35 +2114,19 @@ mod tests {
 
         // Transaction 2: Should not see uncommitted data
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
-        let results = table.index_lookup(
-            "name",
-            vec![Value::string("Laptop".to_string())],
-            txn2,
-            timestamp2,
-        );
+        let results = table.index_lookup("name", vec![Value::string("Laptop".to_string())], txn2);
         assert_eq!(results.len(), 0, "Should not see uncommitted data");
 
         // Transaction 1 can see its own data
-        let results = table.index_lookup(
-            "name",
-            vec![Value::string("Laptop".to_string())],
-            txn1,
-            timestamp1,
-        );
+        let results = table.index_lookup("name", vec![Value::string("Laptop".to_string())], txn1);
         assert_eq!(results.len(), 1, "Should see own uncommitted data");
 
         // Commit transaction 1
         table.commit_transaction(txn1).unwrap();
 
         // Now transaction 2 can see it
-        let results = table.index_lookup(
-            "name",
-            vec![Value::string("Laptop".to_string())],
-            txn2,
-            timestamp2,
-        );
+        let results = table.index_lookup("name", vec![Value::string("Laptop".to_string())], txn2);
         assert_eq!(results.len(), 1, "Should see committed data");
     }
 
@@ -2241,12 +2145,10 @@ mod tests {
 
         // Insert and commit initial data
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         let row_id = table
             .insert(
                 txn1,
-                timestamp1,
                 vec![Value::integer(1), Value::string("Electronics".to_string())],
             )
             .unwrap();
@@ -2255,12 +2157,10 @@ mod tests {
 
         // Update the category
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
         table
             .update(
                 txn2,
-                timestamp2,
                 row_id,
                 vec![Value::integer(1), Value::string("Computers".to_string())],
             )
@@ -2271,19 +2171,16 @@ mod tests {
             "category",
             vec![Value::string("Computers".to_string())],
             txn2,
-            timestamp2,
         );
         assert_eq!(results.len(), 1);
 
         // Transaction 3 still sees old value
         let txn3 = create_txn_id(300);
-        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
 
         let results = table.index_lookup(
             "category",
             vec![Value::string("Electronics".to_string())],
             txn3,
-            timestamp3,
         );
         assert_eq!(results.len(), 1);
 
@@ -2291,7 +2188,6 @@ mod tests {
             "category",
             vec![Value::string("Computers".to_string())],
             txn3,
-            timestamp3,
         );
         assert_eq!(results.len(), 0);
     }
@@ -2311,12 +2207,10 @@ mod tests {
 
         // Insert and commit data
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         let row_id = table
             .insert(
                 txn1,
-                timestamp1,
                 vec![Value::integer(1), Value::string("active".to_string())],
             )
             .unwrap();
@@ -2325,29 +2219,17 @@ mod tests {
 
         // Delete the row
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
-        table.delete(txn2, timestamp2, row_id).unwrap();
+        table.delete(txn2, row_id).unwrap();
 
         // Transaction 2 should not see the deleted row in index
-        let results = table.index_lookup(
-            "status",
-            vec![Value::string("active".to_string())],
-            txn2,
-            timestamp2,
-        );
+        let results = table.index_lookup("status", vec![Value::string("active".to_string())], txn2);
         assert_eq!(results.len(), 0, "Deleted row should not be visible");
 
         // Transaction 3 should still see it (delete not committed)
         let txn3 = create_txn_id(300);
-        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
 
-        let results = table.index_lookup(
-            "status",
-            vec![Value::string("active".to_string())],
-            txn3,
-            timestamp3,
-        );
+        let results = table.index_lookup("status", vec![Value::string("active".to_string())], txn3);
         assert_eq!(
             results.len(),
             1,
@@ -2359,14 +2241,8 @@ mod tests {
 
         // New transaction should not see deleted row
         let txn4 = create_txn_id(400);
-        let timestamp4 = HlcTimestamp::new(400, 0, NodeId::new(1));
 
-        let results = table.index_lookup(
-            "status",
-            vec![Value::string("active".to_string())],
-            txn4,
-            timestamp4,
-        );
+        let results = table.index_lookup("status", vec![Value::string("active".to_string())], txn4);
         assert_eq!(results.len(), 0, "Committed delete should be visible");
     }
 
@@ -2385,23 +2261,17 @@ mod tests {
 
         // Transaction 1: Insert and abort
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![Value::integer(1), Value::string("test_value".to_string())],
             )
             .unwrap();
 
         // Verify txn1 can see via index
-        let results = table.index_lookup(
-            "value",
-            vec![Value::string("test_value".to_string())],
-            txn1,
-            timestamp1,
-        );
+        let results =
+            table.index_lookup("value", vec![Value::string("test_value".to_string())], txn1);
         assert_eq!(results.len(), 1);
 
         // Abort
@@ -2409,14 +2279,9 @@ mod tests {
 
         // New transaction should not see aborted data
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
-        let results = table.index_lookup(
-            "value",
-            vec![Value::string("test_value".to_string())],
-            txn2,
-            timestamp2,
-        );
+        let results =
+            table.index_lookup("value", vec![Value::string("test_value".to_string())], txn2);
         assert_eq!(results.len(), 0, "Aborted insert should not be visible");
     }
 
@@ -2435,12 +2300,10 @@ mod tests {
 
         // Insert first user
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(1),
                     Value::string("user@example.com".to_string()),
@@ -2452,11 +2315,9 @@ mod tests {
 
         // Try to insert duplicate email
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
         let result = table.insert(
             txn2,
-            timestamp2,
             vec![
                 Value::integer(2),
                 Value::string("user@example.com".to_string()),
@@ -2487,13 +2348,11 @@ mod tests {
 
         // Insert test data
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         for i in 1..=10 {
             table
                 .insert(
                     txn1,
-                    timestamp1,
                     vec![
                         Value::integer(i),
                         Value::integer(i * 10), // scores: 10, 20, 30, ..., 100
@@ -2506,7 +2365,6 @@ mod tests {
 
         // Test range lookup
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
         // table.register_transaction(txn2, timestamp2);
 
         // Range: score >= 30 AND score <= 70
@@ -2518,7 +2376,6 @@ mod tests {
             true,  // inclusive
             false, // not reversed
             txn2,
-            timestamp2,
         );
 
         assert_eq!(results.len(), 5); // Should get scores 30, 40, 50, 60, 70
@@ -2532,7 +2389,6 @@ mod tests {
             false,
             false, // not reversed
             txn2,
-            timestamp2,
         );
 
         assert_eq!(results.len(), 5); // Should get scores 60, 70, 80, 90, 100
@@ -2555,13 +2411,11 @@ mod tests {
 
         // Insert some test data
         let txn1 = create_txn_id(100);
-        let timestamp1 = HlcTimestamp::new(100, 0, NodeId::new(1));
 
         // Customer 1 orders
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(1),
                     Value::integer(1),
@@ -2574,7 +2428,6 @@ mod tests {
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(2),
                     Value::integer(1),
@@ -2588,7 +2441,6 @@ mod tests {
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(3),
                     Value::integer(2),
@@ -2601,7 +2453,6 @@ mod tests {
         table
             .insert(
                 txn1,
-                timestamp1,
                 vec![
                     Value::integer(4),
                     Value::integer(2),
@@ -2634,24 +2485,18 @@ mod tests {
 
         // Test exact composite key lookup
         let txn2 = create_txn_id(200);
-        let timestamp2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
         let results = table.index_lookup(
             "idx_customer_status",
             vec![Value::integer(1), Value::string("pending".to_string())],
             txn2,
-            timestamp2,
         );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].values[0], Value::integer(1)); // Order ID 1
 
         // Test prefix lookup (customer_id = 2)
-        let results = table.index_prefix_lookup(
-            "idx_customer_status",
-            vec![Value::integer(2)],
-            txn2,
-            timestamp2,
-        );
+        let results =
+            table.index_prefix_lookup("idx_customer_status", vec![Value::integer(2)], txn2);
         assert_eq!(results.len(), 2); // Both orders for customer 2
 
         // Test composite range lookup
@@ -2669,7 +2514,6 @@ mod tests {
             true,
             false, // not reversed
             txn2,
-            timestamp2,
         );
         assert_eq!(results.len(), 3); // Orders 1, 2, 3
 
@@ -2688,12 +2532,10 @@ mod tests {
         );
 
         let txn3 = create_txn_id(300);
-        let timestamp3 = HlcTimestamp::new(300, 0, NodeId::new(1));
 
         unique_table
             .insert(
                 txn3,
-                timestamp3,
                 vec![
                     Value::integer(1),
                     Value::string("a".to_string()),
@@ -2725,7 +2567,6 @@ mod tests {
 
         // Try to insert duplicate composite key
         let txn4 = create_txn_id(400);
-        let timestamp4 = HlcTimestamp::new(400, 0, NodeId::new(1));
 
         // This should fail due to unique constraint
         unique_table.index_columns.insert(
@@ -2739,7 +2580,6 @@ mod tests {
 
         let result = unique_table.insert(
             txn4,
-            timestamp4,
             vec![
                 Value::integer(2),
                 Value::string("a".to_string()),

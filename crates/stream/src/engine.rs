@@ -97,9 +97,6 @@ pub trait TransactionEngine: Send + Sync {
     /// This is an infallible operation - safe to call even if transaction doesn't exist.
     fn abort(&mut self, txn_id: HlcTimestamp);
 
-    /// Check if a transaction is currently active
-    fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool;
-
     /// Get the name/type of this engine for logging and debugging
     fn engine_name(&self) -> &'static str;
 

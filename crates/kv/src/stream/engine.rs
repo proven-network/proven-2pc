@@ -13,7 +13,6 @@ use crate::types::Value;
 
 use super::operation::KvOperation;
 use super::response::KvResponse;
-use super::transaction::TransactionContext;
 
 use std::collections::HashMap;
 
@@ -24,9 +23,6 @@ pub struct KvTransactionEngine {
 
     /// Lock manager for pessimistic concurrency control
     lock_manager: LockManager,
-
-    /// Active transaction contexts
-    active_transactions: HashMap<HlcTimestamp, TransactionContext>,
 }
 
 impl KvTransactionEngine {
@@ -35,7 +31,6 @@ impl KvTransactionEngine {
         Self {
             storage: MvccStorage::new(),
             lock_manager: LockManager::new(),
-            active_transactions: HashMap::new(),
         }
     }
 
@@ -88,25 +83,12 @@ impl KvTransactionEngine {
                 // Perform the read
                 let value = self.storage.get(key, txn_id);
 
-                // Track lock in transaction context
-                if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-                    tx_ctx.locks_held.push((key.to_string(), LockMode::Shared));
-                }
-
                 OperationResult::Complete(KvResponse::GetResult {
                     key: key.to_string(),
                     value: value.map(|arc| (*arc).clone()),
                 })
             }
             LockAttemptResult::Conflict { holders } => {
-                // Debug: log the blocking situation
-                let blocker_list: Vec<String> =
-                    holders.iter().map(|(h, _)| h.to_string()).collect();
-                println!(
-                    "[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (get)",
-                    txn_id, blocker_list
-                );
-
                 // For reads blocked by writes, we always need to wait for commit/abort
                 let blockers = holders
                     .into_iter()
@@ -141,13 +123,6 @@ impl KvTransactionEngine {
                 // Write to storage
                 self.storage
                     .put(key.to_string(), value.clone(), txn_id, txn_id);
-
-                // Track lock in transaction context
-                if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-                    tx_ctx
-                        .locks_held
-                        .push((key.to_string(), LockMode::Exclusive));
-                }
 
                 OperationResult::Complete(KvResponse::PutResult {
                     key: key.to_string(),
@@ -198,13 +173,6 @@ impl KvTransactionEngine {
                 // Delete from storage
                 if existed {
                     self.storage.delete(key, txn_id);
-                }
-
-                // Track lock in transaction context
-                if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-                    tx_ctx
-                        .locks_held
-                        .push((key.to_string(), LockMode::Exclusive));
                 }
 
                 OperationResult::Complete(KvResponse::DeleteResult {
@@ -269,61 +237,28 @@ impl TransactionEngine for KvTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) {
-        // Get transaction context
-        let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) else {
-            // If transaction doesn't exist, that's fine - it may have been aborted already
-            return;
-        };
+    fn begin(&mut self, _txn_id: HlcTimestamp) {
+        // Nothing to do - processor tracks active transactions
+    }
 
-        // Try to prepare the transaction
-        if !tx_ctx.prepare() {
-            // Transaction cannot be prepared (may be wounded or aborted) - that's fine
-            return;
-        }
+    fn prepare(&mut self, txn_id: HlcTimestamp) {
+        // Get locks held by this transaction from lock manager
+        let locks = self.lock_manager.locks_held_by(txn_id);
 
         // Release read locks (keep write locks)
-        let locks_to_release: Vec<String> = tx_ctx
-            .locks_held
-            .iter()
-            .filter_map(|(key, mode)| {
-                if *mode == LockMode::Shared {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Release the read locks from lock manager
-        for key in locks_to_release {
-            self.lock_manager.release(txn_id, &key);
-
-            // Remove from transaction's held locks
-            tx_ctx
-                .locks_held
-                .retain(|(k, m)| !(k == &key && *m == LockMode::Shared));
+        for (key, mode) in locks {
+            if mode == LockMode::Shared {
+                self.lock_manager.release(txn_id, &key);
+            }
         }
     }
 
     fn commit(&mut self, txn_id: HlcTimestamp) {
-        // Remove transaction context
-        let Some(tx_ctx) = self.active_transactions.remove(&txn_id) else {
-            // If transaction doesn't exist, that's fine - may have been committed already
-            return;
-        };
+        // Commit to storage
+        self.storage.commit_transaction(txn_id);
 
-        // For auto-commit, we don't require prepare
-        // (The transaction is active and can be directly committed)
-        // For 2PC, it should be prepared
-        if tx_ctx.is_active() || tx_ctx.is_prepared() {
-            // Commit to storage
-            self.storage.commit_transaction(txn_id);
-
-            // Release all locks held by this transaction
-            self.lock_manager.release_all(txn_id);
-        }
-        // If not committable, just clean up - validation happened in apply_operation
+        // Release all locks held by this transaction
+        self.lock_manager.release_all(txn_id);
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) {
@@ -336,9 +271,6 @@ impl TransactionEngine for KvTransactionEngine {
                 txn_id
             );
         }
-
-        // Remove transaction context
-        self.active_transactions.remove(&txn_id);
 
         // Abort in storage
         self.storage.abort_transaction(txn_id);
@@ -357,27 +289,12 @@ impl TransactionEngine for KvTransactionEngine {
         }
     }
 
-    fn begin(&mut self, txn_id: HlcTimestamp) {
-        // Create new transaction context
-        let tx_ctx = TransactionContext::new(txn_id);
-
-        // Store context
-        self.active_transactions.insert(txn_id, tx_ctx);
-    }
-
-    fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
-        self.active_transactions.contains_key(txn_id)
-    }
-
     fn engine_name(&self) -> &'static str {
         "kv"
     }
 
     fn snapshot(&self) -> Result<Vec<u8>, String> {
-        // Only snapshot when no active transactions
-        if !self.active_transactions.is_empty() {
-            return Err("Cannot snapshot with active transactions".to_string());
-        }
+        // The processor ensures no active transactions before calling snapshot
 
         // Define the snapshot structure
         #[derive(serde::Serialize, serde::Deserialize)]
@@ -420,7 +337,6 @@ impl TransactionEngine for KvTransactionEngine {
         // Clear existing state
         self.storage = MvccStorage::new();
         self.lock_manager = LockManager::new();
-        self.active_transactions.clear();
 
         // Restore compacted data
         self.storage.restore_from_compacted(snapshot.data);

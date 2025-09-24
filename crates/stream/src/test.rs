@@ -120,10 +120,6 @@ mod tests {
             self.active_txns.push(txn_id);
         }
 
-        fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
-            self.active_txns.contains(txn_id)
-        }
-
         fn engine_name(&self) -> &'static str {
             "test-engine"
         }

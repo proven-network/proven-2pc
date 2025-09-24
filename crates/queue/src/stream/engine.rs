@@ -3,28 +3,27 @@
 //! Integrates with the proven-stream processor to handle distributed
 //! queue operations with MVCC and eager locking.
 
-use crate::storage::lock::LockMode;
-use crate::storage::mvcc::QueueEntry;
-use crate::stream::transaction::QueueTransactionManager;
+use crate::storage::{LockAttemptResult, LockManager, LockMode, MvccStorage, QueueEntry};
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 /// Queue engine that implements the TransactionEngine trait
 pub struct QueueTransactionEngine {
-    /// Transaction manager handles MVCC and locking
-    manager: QueueTransactionManager,
-    /// Track active transactions
-    active_transactions: HashSet<HlcTimestamp>,
+    /// MVCC storage for queue data
+    storage: MvccStorage,
+
+    /// Lock manager for concurrency control
+    lock_manager: LockManager,
 }
 
 impl QueueTransactionEngine {
     /// Create a new queue engine
     pub fn new() -> Self {
         Self {
-            manager: QueueTransactionManager::new(),
-            active_transactions: HashSet::new(),
+            storage: MvccStorage::new(),
+            lock_manager: LockManager::new(),
         }
     }
 
@@ -34,7 +33,7 @@ impl QueueTransactionEngine {
         read_timestamp: HlcTimestamp,
     ) -> OperationResult<QueueResponse> {
         // Check for pending operations from earlier transactions
-        let pending_writers = self.manager.get_pending_operations(read_timestamp);
+        let pending_writers = self.storage.has_pending_operations(read_timestamp);
 
         if !pending_writers.is_empty() {
             // There are pending operations from earlier transactions
@@ -51,7 +50,7 @@ impl QueueTransactionEngine {
         }
 
         // No blocking operations from earlier transactions
-        let value = self.manager.peek_at_timestamp(read_timestamp);
+        let value = self.storage.peek_at_timestamp(read_timestamp);
         OperationResult::Complete(QueueResponse::Peeked(value.map(|arc| (*arc).clone())))
     }
 
@@ -61,7 +60,7 @@ impl QueueTransactionEngine {
         read_timestamp: HlcTimestamp,
     ) -> OperationResult<QueueResponse> {
         // Check for pending operations from earlier transactions
-        let pending_writers = self.manager.get_pending_operations(read_timestamp);
+        let pending_writers = self.storage.has_pending_operations(read_timestamp);
 
         if !pending_writers.is_empty() {
             // There are pending operations from earlier transactions
@@ -78,7 +77,7 @@ impl QueueTransactionEngine {
         }
 
         // No blocking operations from earlier transactions
-        let size = self.manager.size_at_timestamp(read_timestamp);
+        let size = self.storage.size_at_timestamp(read_timestamp);
         OperationResult::Complete(QueueResponse::Size(size))
     }
 
@@ -88,7 +87,7 @@ impl QueueTransactionEngine {
         read_timestamp: HlcTimestamp,
     ) -> OperationResult<QueueResponse> {
         // Check for pending operations from earlier transactions
-        let pending_writers = self.manager.get_pending_operations(read_timestamp);
+        let pending_writers = self.storage.has_pending_operations(read_timestamp);
 
         if !pending_writers.is_empty() {
             // There are pending operations from earlier transactions
@@ -105,7 +104,7 @@ impl QueueTransactionEngine {
         }
 
         // No blocking operations from earlier transactions
-        let is_empty = self.manager.is_empty_at_timestamp(read_timestamp);
+        let is_empty = self.storage.is_empty_at_timestamp(read_timestamp);
         OperationResult::Complete(QueueResponse::IsEmpty(is_empty))
     }
 }
@@ -134,8 +133,7 @@ impl TransactionEngine for QueueTransactionEngine {
     }
 
     fn begin(&mut self, txn_id: HlcTimestamp) {
-        self.manager.begin_transaction(txn_id, txn_id);
-        self.active_transactions.insert(txn_id);
+        self.storage.begin_transaction(txn_id);
     }
 
     fn apply_operation(
@@ -143,62 +141,96 @@ impl TransactionEngine for QueueTransactionEngine {
         operation: Self::Operation,
         txn_id: HlcTimestamp,
     ) -> OperationResult<Self::Response> {
-        match self.manager.execute_operation(txn_id, &operation, txn_id) {
-            Ok(response) => OperationResult::Complete(response),
-            Err(crate::stream::transaction::TransactionError::LockConflict { holder, mode }) => {
-                // Check what operation we're trying to do
-                let our_mode = match &operation {
-                    QueueOperation::Enqueue { .. } => LockMode::Append,
-                    QueueOperation::Dequeue | QueueOperation::Clear => LockMode::Exclusive,
-                    QueueOperation::Peek | QueueOperation::Size | QueueOperation::IsEmpty => {
-                        LockMode::Shared
-                    }
-                };
+        // Determine required lock mode
+        let lock_mode = match &operation {
+            QueueOperation::Enqueue { .. } => LockMode::Append,
+            QueueOperation::Dequeue | QueueOperation::Clear => LockMode::Exclusive,
+            QueueOperation::Peek | QueueOperation::Size | QueueOperation::IsEmpty => {
+                LockMode::Shared
+            }
+        };
 
-                // Determine retry timing based on conflict type
-                let retry_on = match (our_mode, mode) {
-                    // Exclusive blocked by read - can retry after prepare
-                    (LockMode::Exclusive, LockMode::Shared) => RetryOn::Prepare,
-                    // Append blocked by read - can continue (they're compatible!)
-                    // This shouldn't happen due to compatibility check
-                    (LockMode::Append, LockMode::Shared) => RetryOn::Prepare,
-                    // All other conflicts need commit/abort
-                    _ => RetryOn::CommitOrAbort,
-                };
+        // Try to acquire lock if not already held
+        if !self.lock_manager.has_locks(txn_id) {
+            match self.lock_manager.check(txn_id, lock_mode) {
+                LockAttemptResult::WouldGrant => {
+                    self.lock_manager.grant(txn_id, lock_mode);
+                }
+                LockAttemptResult::Conflict { holder, mode } => {
+                    // Determine retry timing based on conflict type
+                    let retry_on = match (lock_mode, mode) {
+                        // Exclusive blocked by read - can retry after prepare
+                        (LockMode::Exclusive, LockMode::Shared) => RetryOn::Prepare,
+                        // Append blocked by read - can continue (they're compatible!)
+                        // This shouldn't happen due to compatibility check
+                        (LockMode::Append, LockMode::Shared) => RetryOn::Prepare,
+                        // All other conflicts need commit/abort
+                        _ => RetryOn::CommitOrAbort,
+                    };
 
-                OperationResult::WouldBlock {
-                    blockers: vec![BlockingInfo {
-                        txn: holder,
-                        retry_on,
-                    }],
+                    return OperationResult::WouldBlock {
+                        blockers: vec![BlockingInfo {
+                            txn: holder,
+                            retry_on,
+                        }],
+                    };
                 }
             }
-            Err(err) => OperationResult::Complete(QueueResponse::Error(format!("{:?}", err))),
+        }
+
+        // Execute the operation
+        match operation {
+            QueueOperation::Enqueue { value } => {
+                self.storage.enqueue(value, txn_id, txn_id);
+                OperationResult::Complete(QueueResponse::Enqueued)
+            }
+            QueueOperation::Dequeue => {
+                let value = self.storage.dequeue(txn_id);
+                OperationResult::Complete(QueueResponse::Dequeued(value))
+            }
+            QueueOperation::Peek => {
+                let value = self.storage.peek(txn_id).map(|arc| (*arc).clone());
+                OperationResult::Complete(QueueResponse::Peeked(value))
+            }
+            QueueOperation::Size => {
+                let size = self.storage.size(txn_id);
+                OperationResult::Complete(QueueResponse::Size(size))
+            }
+            QueueOperation::IsEmpty => {
+                let is_empty = self.storage.is_empty(txn_id);
+                OperationResult::Complete(QueueResponse::IsEmpty(is_empty))
+            }
+            QueueOperation::Clear => {
+                self.storage.clear(txn_id);
+                OperationResult::Complete(QueueResponse::Cleared)
+            }
         }
     }
 
     fn prepare(&mut self, txn_id: HlcTimestamp) {
-        if !self.is_transaction_active(&txn_id) {
-            // If transaction doesn't exist, that's fine - it may have been aborted already
-            return;
-        }
+        // Get all locks held by this transaction
+        let held_locks = self.lock_manager.locks_held_by(txn_id);
 
-        // Release read locks on prepare (ignore errors - best effort)
-        let _ = self.manager.prepare_transaction(txn_id);
+        // Release only the read locks
+        if held_locks.contains(&LockMode::Shared) {
+            self.lock_manager.release(txn_id);
+        }
     }
 
     fn commit(&mut self, txn_id: HlcTimestamp) {
-        let _ = self.manager.commit_transaction(txn_id);
-        self.active_transactions.remove(&txn_id);
+        // Release all locks
+        self.lock_manager.release_all(txn_id);
+
+        // Commit storage changes
+        self.storage.commit_transaction(txn_id);
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) {
-        let _ = self.manager.abort_transaction(txn_id);
-        self.active_transactions.remove(&txn_id);
-    }
+        // Release all locks
+        self.lock_manager.release_all(txn_id);
 
-    fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
-        self.active_transactions.contains(txn_id)
+        // Rollback storage changes
+        self.storage.abort_transaction(txn_id);
     }
 
     fn engine_name(&self) -> &'static str {
@@ -206,10 +238,7 @@ impl TransactionEngine for QueueTransactionEngine {
     }
 
     fn snapshot(&self) -> Result<Vec<u8>, String> {
-        // Only snapshot when no active transactions
-        if !self.active_transactions.is_empty() {
-            return Err("Cannot snapshot with active transactions".to_string());
-        }
+        // The processor ensures no active transactions before calling snapshot
 
         // Define the snapshot structure
         #[derive(serde::Serialize, serde::Deserialize)]
@@ -218,8 +247,8 @@ impl TransactionEngine for QueueTransactionEngine {
             entries: VecDeque<QueueEntry>,
         }
 
-        // Get compacted data from the transaction manager
-        let entries = self.manager.get_compacted_data();
+        // Get compacted data from storage
+        let entries = self.storage.get_compacted_data();
 
         let snapshot = QueueSnapshot { entries };
 
@@ -249,15 +278,12 @@ impl TransactionEngine for QueueTransactionEngine {
         let snapshot: QueueSnapshot = ciborium::from_reader(&decompressed[..])
             .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
 
-        // Create a fresh transaction manager and restore data
-        let mut new_manager = QueueTransactionManager::new();
-        new_manager.restore_from_compacted(snapshot.entries);
+        // Clear existing state
+        self.storage = MvccStorage::new();
+        self.lock_manager = LockManager::new();
 
-        // Replace the current manager
-        self.manager = new_manager;
-
-        // Clear active transactions
-        self.active_transactions.clear();
+        // Restore compacted data
+        self.storage.restore_from_compacted(snapshot.entries);
 
         Ok(())
     }
@@ -341,10 +367,8 @@ mod tests {
         };
 
         engine.apply_operation(enqueue_op, tx1);
-        assert!(engine.is_transaction_active(&tx1));
 
         // Abort
         engine.abort(tx1);
-        assert!(!engine.is_transaction_active(&tx1));
     }
 }

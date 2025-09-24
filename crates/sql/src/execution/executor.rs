@@ -152,12 +152,8 @@ pub fn execute_node_read<'a>(
                 // Check if this index exists
                 if versioned_table.index_columns.contains_key(&index_name) {
                     // Use index lookup for O(log n) performance
-                    let rows = versioned_table.index_lookup(
-                        &index_name,
-                        filter_values.clone(),
-                        tx_ctx.id,
-                        tx_ctx.timestamp,
-                    );
+                    let rows =
+                        versioned_table.index_lookup(&index_name, filter_values.clone(), tx_ctx.id);
 
                     // Convert to iterator format
                     let iter = rows.into_iter().map(|row| Ok(Arc::new(row.values.clone())));
@@ -261,7 +257,6 @@ pub fn execute_node_read<'a>(
                     end_inclusive,
                     reverse,
                     tx_ctx.id,
-                    tx_ctx.timestamp,
                 );
 
                 // Convert to iterator format

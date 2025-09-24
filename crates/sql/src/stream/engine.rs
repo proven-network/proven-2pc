@@ -418,10 +418,6 @@ impl TransactionEngine for SqlTransactionEngine {
             .insert(txn_id, TransactionContext::new(txn_id));
     }
 
-    fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
-        self.active_transactions.contains_key(txn_id)
-    }
-
     fn engine_name(&self) -> &'static str {
         "sql"
     }

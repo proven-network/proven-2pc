@@ -25,7 +25,7 @@ pub fn insert(
         .tables
         .get_mut(table)
         .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
-    let row_id = table_mut.insert(tx_ctx.id, tx_ctx.timestamp, values)?;
+    let row_id = table_mut.insert(tx_ctx.id, values)?;
 
     Ok(row_id)
 }
@@ -48,7 +48,7 @@ pub fn update(
         .tables
         .get_mut(table)
         .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
-    table_mut.update(tx_ctx.id, tx_ctx.timestamp, row_id, values)?;
+    table_mut.update(tx_ctx.id, row_id, values)?;
 
     Ok(())
 }
@@ -70,7 +70,7 @@ pub fn delete(
         .tables
         .get_mut(table)
         .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
-    table_mut.delete(tx_ctx.id, tx_ctx.timestamp, row_id)?;
+    table_mut.delete(tx_ctx.id, row_id)?;
 
     Ok(())
 }

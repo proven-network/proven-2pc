@@ -81,27 +81,6 @@ fn test_queue_snapshot_and_restore() {
 }
 
 #[test]
-fn test_snapshot_with_active_transaction_fails() {
-    let mut engine = QueueTransactionEngine::new();
-
-    // Begin a transaction
-    let txn = HlcTimestamp::new(1, 0, NodeId::new(1));
-    engine.begin(txn);
-
-    // Try to snapshot with active transaction
-    let result = engine.snapshot();
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("active transactions"));
-
-    // Commit the transaction
-    engine.commit(txn);
-
-    // Now snapshot should succeed
-    let result = engine.snapshot();
-    assert!(result.is_ok());
-}
-
-#[test]
 fn test_snapshot_with_empty_queues() {
     let mut engine = QueueTransactionEngine::new();
 

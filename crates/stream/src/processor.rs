@@ -15,6 +15,7 @@ use proven_hlc::HlcTimestamp;
 use proven_snapshot::SnapshotStore;
 use serde_json;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -68,6 +69,9 @@ pub struct StreamProcessor<E: TransactionEngine> {
 
     /// Track transaction participants (txn_id -> (participant -> offset))
     transaction_participants: HashMap<HlcTimestamp, HashMap<String, u64>>,
+
+    /// Track which transactions have been begun in the engine
+    begun_transactions: std::collections::HashSet<HlcTimestamp>,
 
     /// Recovery manager for handling coordinator failures
     recovery_manager: RecoveryManager<E>,
@@ -143,6 +147,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             wounded_transactions: HashMap::new(),
             transaction_deadlines: HashMap::new(),
             transaction_participants: HashMap::new(),
+            begun_transactions: std::collections::HashSet::new(),
             recovery_manager: RecoveryManager::new(client.clone(), stream_name.clone()),
             client,
             stream_name: stream_name.clone(),
@@ -244,6 +249,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     self.transaction_coordinators.remove(&txn_id);
                     self.transaction_deadlines.remove(&txn_id);
                     self.transaction_participants.remove(&txn_id);
+                    self.begun_transactions.remove(&txn_id);
                     self.commits_since_snapshot += 1;
                 }
                 "abort" => {
@@ -252,6 +258,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     self.transaction_deadlines.remove(&txn_id);
                     self.transaction_participants.remove(&txn_id);
                     self.wounded_transactions.remove(&txn_id);
+                    self.begun_transactions.remove(&txn_id);
                 }
                 _ => {}
             }
@@ -373,12 +380,10 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
 
         let request_id = message.request_id().map(|s| s.to_string());
 
-        // Ensure transaction exists and has a deadline
-        if !self.engine.is_transaction_active(&txn_id) {
-            // For new transactions, deadline must be present
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                self.transaction_deadlines.entry(txn_id)
-            {
+        // Check if this is the first time we're seeing this transaction on THIS stream
+        if !self.begun_transactions.contains(&txn_id) {
+            // Ensure we have a deadline for this transaction
+            if let Entry::Vacant(e) = self.transaction_deadlines.entry(txn_id) {
                 // Try to extract deadline from message
                 if let Some(deadline_str) = message.txn_deadline() {
                     if let Ok(deadline) = HlcTimestamp::parse(deadline_str) {
@@ -404,7 +409,10 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     return Ok(());
                 }
             }
+
+            // Call begin on the engine for this transaction
             self.engine.begin(txn_id);
+            self.begun_transactions.insert(txn_id);
         }
 
         // Store coordinator ID for this transaction
@@ -541,7 +549,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         }
 
         // Check if transaction exists before preparing
-        if !self.engine.is_transaction_active(&txn_id) {
+        if !self.begun_transactions.contains(&txn_id) {
             println!(
                 "[{}] ERROR: Cannot prepare - transaction {} does not exist",
                 self.stream_name, txn_id
@@ -623,7 +631,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         }
 
         // Check if transaction exists before preparing
-        if !self.engine.is_transaction_active(&txn_id) {
+        if !self.begun_transactions.contains(&txn_id) {
             println!(
                 "[{}] ERROR: Cannot prepare_and_commit - transaction {} does not exist",
                 self.stream_name, txn_id
@@ -732,6 +740,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     self.transaction_coordinators.remove(&txn_id);
                     self.transaction_deadlines.remove(&txn_id);
                     self.transaction_participants.remove(&txn_id);
+                    self.begun_transactions.remove(&txn_id);
                 }
                 TransactionDecision::Abort => {
                     // Apply abort locally (infallible)
@@ -741,6 +750,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     self.transaction_deadlines.remove(&txn_id);
                     self.transaction_participants.remove(&txn_id);
                     self.wounded_transactions.remove(&txn_id);
+                    self.begun_transactions.remove(&txn_id);
                 }
                 TransactionDecision::Unknown => {
                     // No decision could be made, leave for future recovery
@@ -772,6 +782,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
 
         // Remove victim from coordinator tracking
         self.transaction_coordinators.remove(&victim);
+        self.begun_transactions.remove(&victim);
     }
 
     /// Retry operations that were deferred waiting on this transaction to commit/abort

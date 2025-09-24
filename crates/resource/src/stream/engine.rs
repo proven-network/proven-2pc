@@ -1,12 +1,11 @@
 //! Resource engine implementation
 
 use crate::storage::{CompactedResourceData, ReservationManager, ReservationType, ResourceStorage};
-use crate::stream::{ResourceOperation, ResourceResponse, TransactionContext};
+use crate::stream::{ResourceOperation, ResourceResponse};
 use crate::types::Amount;
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::BlockingInfo;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
-use std::collections::HashMap;
 
 /// Resource engine for processing resource operations
 pub struct ResourceTransactionEngine {
@@ -15,9 +14,6 @@ pub struct ResourceTransactionEngine {
 
     /// Reservation manager for conflict detection
     reservations: ReservationManager,
-
-    /// Active transaction contexts
-    transactions: HashMap<HlcTimestamp, TransactionContext>,
 }
 
 impl ResourceTransactionEngine {
@@ -25,7 +21,6 @@ impl ResourceTransactionEngine {
         Self {
             storage: ResourceStorage::new(),
             reservations: ReservationManager::new(),
-            transactions: HashMap::new(),
         }
     }
 
@@ -149,11 +144,6 @@ impl ResourceTransactionEngine {
         operation: &ResourceOperation,
         transaction_id: HlcTimestamp,
     ) -> Result<ResourceResponse, String> {
-        let tx_ctx = self
-            .transactions
-            .get_mut(&transaction_id)
-            .ok_or_else(|| "Transaction not found".to_string())?;
-
         match operation {
             ResourceOperation::Initialize {
                 name,
@@ -174,8 +164,7 @@ impl ResourceTransactionEngine {
 
                 // Reserve metadata
                 self.reservations.reserve_metadata(transaction_id)?;
-                tx_ctx.add_reservation("".to_string(), ReservationType::MetadataUpdate);
-                tx_ctx.set_modifies_metadata();
+                // ReservationManager already tracks this
 
                 // Initialize in storage
                 self.storage
@@ -203,8 +192,7 @@ impl ResourceTransactionEngine {
 
                 // Reserve metadata
                 self.reservations.reserve_metadata(transaction_id)?;
-                tx_ctx.add_reservation("".to_string(), ReservationType::MetadataUpdate);
-                tx_ctx.set_modifies_metadata();
+                // ReservationManager already tracks this
 
                 // Update in storage
                 self.storage
@@ -220,9 +208,7 @@ impl ResourceTransactionEngine {
                 // Reserve credit for the recipient
                 self.reservations
                     .reserve_credit(transaction_id, to, *amount)?;
-                tx_ctx.add_reservation(to.clone(), ReservationType::Credit(*amount));
-                tx_ctx.add_modified_account(to.clone());
-                tx_ctx.set_modifies_supply();
+                // ReservationManager already tracks this
 
                 // Update pending balance
                 let current_balance = self.storage.get_pending_balance(to, transaction_id);
@@ -259,9 +245,7 @@ impl ResourceTransactionEngine {
                 // Reserve debit
                 self.reservations
                     .reserve_debit(transaction_id, from, *amount, current_balance)?;
-                tx_ctx.add_reservation(from.clone(), ReservationType::Debit(*amount));
-                tx_ctx.add_modified_account(from.clone());
-                tx_ctx.set_modifies_supply();
+                // ReservationManager already tracks this
 
                 // Check balance
                 if current_balance < *amount {
@@ -310,10 +294,7 @@ impl ResourceTransactionEngine {
                 self.reservations
                     .reserve_credit(transaction_id, to, *amount)?;
 
-                tx_ctx.add_reservation(from.clone(), ReservationType::Debit(*amount));
-                tx_ctx.add_reservation(to.clone(), ReservationType::Credit(*amount));
-                tx_ctx.add_modified_account(from.clone());
-                tx_ctx.add_modified_account(to.clone());
+                // ReservationManager already tracks both reservations
 
                 // Check balance
                 if from_balance < *amount {
@@ -379,8 +360,7 @@ impl TransactionEngine for ResourceTransactionEngine {
 
     fn begin(&mut self, txn_id: HlcTimestamp) {
         self.storage.begin_transaction(txn_id);
-        self.transactions
-            .insert(txn_id, TransactionContext::new(txn_id));
+        // ReservationManager will track everything when operations are performed
     }
 
     fn apply_operation(
@@ -410,13 +390,9 @@ impl TransactionEngine for ResourceTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) {
-        if let Some(tx_ctx) = self.transactions.get_mut(&txn_id) {
-            tx_ctx.mark_prepared();
-            // In the reservation model, we keep reservations until commit
-            // This ensures consistency
-        }
-        // If transaction doesn't exist, that's fine - it may have been aborted already
+    fn prepare(&mut self, _txn_id: HlcTimestamp) {
+        // In the reservation model, we keep reservations until commit
+        // This ensures consistency - nothing to do here
     }
 
     fn commit(&mut self, txn_id: HlcTimestamp) {
@@ -425,9 +401,6 @@ impl TransactionEngine for ResourceTransactionEngine {
 
         // Release reservations
         self.reservations.release_transaction(txn_id);
-
-        // Remove transaction context
-        self.transactions.remove(&txn_id);
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) {
@@ -436,13 +409,6 @@ impl TransactionEngine for ResourceTransactionEngine {
 
         // Release reservations
         self.reservations.release_transaction(txn_id);
-
-        // Remove transaction context
-        self.transactions.remove(&txn_id);
-    }
-
-    fn is_transaction_active(&self, txn_id: &HlcTimestamp) -> bool {
-        self.transactions.contains_key(txn_id)
     }
 
     fn engine_name(&self) -> &'static str {
@@ -450,10 +416,7 @@ impl TransactionEngine for ResourceTransactionEngine {
     }
 
     fn snapshot(&self) -> Result<Vec<u8>, String> {
-        // Only snapshot when no active transactions
-        if !self.transactions.is_empty() {
-            return Err("Cannot snapshot with active transactions".to_string());
-        }
+        // The processor ensures no active transactions before calling snapshot
 
         // Get compacted data from storage
         let compacted = self.storage.get_compacted_data();
@@ -482,7 +445,6 @@ impl TransactionEngine for ResourceTransactionEngine {
         // Clear existing state
         self.storage = ResourceStorage::new();
         self.reservations = ReservationManager::new();
-        self.transactions.clear();
 
         // Restore storage from compacted data
         self.storage.restore_from_compacted(compacted);

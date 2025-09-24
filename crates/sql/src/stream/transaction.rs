@@ -24,8 +24,6 @@ pub enum TransactionState {
 pub struct TransactionContext {
     /// Transaction ID (HLC timestamp provides total ordering across the distributed system)
     pub id: HlcTimestamp,
-    /// Timestamp for this transaction (same as ID)
-    pub timestamp: HlcTimestamp,
     /// Current state of the transaction
     pub state: TransactionState,
     /// Predicates for conflict detection
@@ -39,7 +37,6 @@ impl TransactionContext {
     pub fn new(hlc_timestamp: HlcTimestamp) -> Self {
         Self {
             id: hlc_timestamp,
-            timestamp: hlc_timestamp,
             state: TransactionState::Active,
             predicates: QueryPredicates::new(),
             uuid_sequence: std::sync::atomic::AtomicU64::new(0),
@@ -65,7 +62,7 @@ impl TransactionContext {
 
     /// Get the timestamp for deterministic SQL functions
     pub fn timestamp(&self) -> &HlcTimestamp {
-        &self.timestamp
+        &self.id
     }
 
     /// Generate a deterministic UUID based on transaction ID and an auto-incrementing sequence
@@ -101,7 +98,6 @@ impl Clone for TransactionContext {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
-            timestamp: self.timestamp,
             state: self.state,
             predicates: self.predicates.clone(),
             // Create a new AtomicU64 with the current value

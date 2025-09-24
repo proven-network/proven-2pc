@@ -25,7 +25,7 @@ pub fn scan_iter<'a>(
         .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
     // Return the MVCC iterator directly - true zero-copy streaming!
-    Ok(table_ref.iter(tx_ctx.id, tx_ctx.timestamp))
+    Ok(table_ref.iter(tx_ctx.id))
 }
 
 /// Scan with row IDs for UPDATE/DELETE operations
@@ -46,5 +46,5 @@ pub fn scan_iter_with_ids<'a>(
         .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
     // Return the MVCC iterator with IDs
-    Ok(table_ref.iter_with_ids(tx_ctx.id, tx_ctx.timestamp))
+    Ok(table_ref.iter_with_ids(tx_ctx.id))
 }
