@@ -57,9 +57,6 @@ pub struct MvccStorage {
     /// Pending operations by transaction (not yet committed)
     /// Maps transaction ID -> list of operations
     pending_operations: HashMap<HlcTimestamp, Vec<QueueOp>>,
-
-    /// Transaction start times for visibility checks
-    transaction_start_times: HashMap<HlcTimestamp, HlcTimestamp>,
 }
 
 impl MvccStorage {
@@ -70,13 +67,11 @@ impl MvccStorage {
             committed_queue: VecDeque::new(),
             next_entry_id: 1,
             pending_operations: HashMap::new(),
-            transaction_start_times: HashMap::new(),
         }
     }
 
-    /// Register a new transaction
-    pub fn register_transaction(&mut self, tx_id: HlcTimestamp, start_time: HlcTimestamp) {
-        self.transaction_start_times.insert(tx_id, start_time);
+    /// Begin a new transaction
+    pub fn begin_transaction(&mut self, tx_id: HlcTimestamp) {
         self.pending_operations.insert(tx_id, Vec::new());
     }
 
@@ -109,14 +104,12 @@ impl MvccStorage {
         }
 
         // Clean up transaction data
-        self.transaction_start_times.remove(&tx_id);
     }
 
     /// Abort a transaction by discarding all its operations
     pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) {
         // Simply discard all pending operations
         self.pending_operations.remove(&tx_id);
-        self.transaction_start_times.remove(&tx_id);
     }
 
     /// Get a materialized view of the queue for a transaction
@@ -274,7 +267,7 @@ impl MvccStorage {
     pub fn stats(&self) -> StorageStats {
         let total_entries = self.committed_queue.len();
         let committed_txns = self.committed_operations.len();
-        let active_txns = self.transaction_start_times.len();
+        let active_txns = self.pending_operations.len();
 
         StorageStats {
             total_entries,
@@ -305,7 +298,6 @@ impl MvccStorage {
         self.committed_queue.clear();
         self.committed_operations.clear();
         self.pending_operations.clear();
-        self.transaction_start_times.clear();
 
         // Find the max entry_id to set next_entry_id correctly
         let max_id = data.iter().map(|e| e.entry_id).max().unwrap_or(0);
@@ -344,7 +336,7 @@ mod tests {
         let mut storage = MvccStorage::new();
         let tx1 = create_timestamp(100);
 
-        storage.register_transaction(tx1, tx1);
+        storage.begin_transaction(tx1);
 
         // Enqueue some values
         storage.enqueue(QueueValue::String("first".to_string()), tx1, tx1);
@@ -378,8 +370,8 @@ mod tests {
         let tx1 = create_timestamp(100);
         let tx2 = create_timestamp(200);
 
-        storage.register_transaction(tx1, tx1);
-        storage.register_transaction(tx2, tx2);
+        storage.begin_transaction(tx1);
+        storage.begin_transaction(tx2);
 
         // tx1 enqueues some values
         storage.enqueue(QueueValue::String("tx1_value".to_string()), tx1, tx1);
@@ -405,12 +397,12 @@ mod tests {
         let tx2 = create_timestamp(200);
 
         // tx1 creates a queue and commits
-        storage.register_transaction(tx1, tx1);
+        storage.begin_transaction(tx1);
         storage.enqueue(QueueValue::String("committed".to_string()), tx1, tx1);
         storage.commit_transaction(tx1);
 
         // tx2 modifies the queue but aborts
-        storage.register_transaction(tx2, tx2);
+        storage.begin_transaction(tx2);
         storage.enqueue(QueueValue::String("aborted".to_string()), tx2, tx2);
         assert_eq!(storage.size(tx2), 2);
 
@@ -419,7 +411,7 @@ mod tests {
 
         // New transaction should only see committed value
         let tx3 = create_timestamp(300);
-        storage.register_transaction(tx3, tx3);
+        storage.begin_transaction(tx3);
         assert_eq!(storage.size(tx3), 1);
         assert_eq!(
             storage.peek(tx3).map(|arc| (*arc).clone()),
@@ -432,7 +424,7 @@ mod tests {
         let mut storage = MvccStorage::new();
         let tx1 = create_timestamp(100);
 
-        storage.register_transaction(tx1, tx1);
+        storage.begin_transaction(tx1);
 
         // Add some values
         for i in 0..5 {

@@ -68,8 +68,8 @@ impl KvTransactionEngine {
         }
 
         // No blocking writes from earlier transactions
-        // Use the snapshot read method for proper visibility checks
-        let value = self.storage.get_at_timestamp(key, read_timestamp);
+        // Use the unified get method (tx_id and timestamp are the same)
+        let value = self.storage.get(key, read_timestamp);
         OperationResult::Complete(KvResponse::GetResult {
             key: key.to_string(),
             value: value.map(|arc| (*arc).clone()),
@@ -360,9 +360,6 @@ impl TransactionEngine for KvTransactionEngine {
     fn begin(&mut self, txn_id: HlcTimestamp) {
         // Create new transaction context
         let tx_ctx = TransactionContext::new(txn_id);
-
-        // Register with storage
-        self.storage.register_transaction(txn_id, txn_id);
 
         // Store context
         self.active_transactions.insert(txn_id, tx_ctx);

@@ -60,9 +60,6 @@ pub struct ResourceStorage {
     /// Pending balance changes per transaction
     /// Map<transaction_id, Map<account, pending_balance>>
     pending_balances: BTreeMap<HlcTimestamp, BTreeMap<String, Amount>>,
-
-    /// Transaction start times for visibility checks
-    transaction_start_times: BTreeMap<HlcTimestamp, HlcTimestamp>,
 }
 
 impl ResourceStorage {
@@ -88,7 +85,6 @@ impl ResourceStorage {
             pending_metadata: BTreeMap::new(),
             pending_supply: BTreeMap::new(),
             pending_balances: BTreeMap::new(),
-            transaction_start_times: BTreeMap::new(),
         }
     }
 
@@ -253,17 +249,10 @@ impl ResourceStorage {
             return amount;
         }
 
-        // Get transaction start time or use transaction_id as fallback
-        let tx_start = self
-            .transaction_start_times
-            .get(&transaction_id)
-            .copied()
-            .unwrap_or(transaction_id);
-
-        // Return committed balance visible at transaction start
+        // Return committed balance visible at transaction start (tx_id IS the start time)
         if let Some(versions) = self.balance_versions.get(account) {
             for version in versions.iter().rev() {
-                if version.timestamp <= tx_start {
+                if version.timestamp <= transaction_id {
                     return version.amount;
                 }
             }
@@ -274,8 +263,6 @@ impl ResourceStorage {
 
     /// Begin tracking changes for a transaction
     pub fn begin_transaction(&mut self, transaction_id: HlcTimestamp) {
-        self.transaction_start_times
-            .insert(transaction_id, transaction_id);
         self.pending_balances
             .insert(transaction_id, BTreeMap::new());
     }
@@ -359,7 +346,6 @@ impl ResourceStorage {
         }
 
         // Clean up transaction metadata
-        self.transaction_start_times.remove(&transaction_id);
 
         Ok(())
     }
@@ -370,7 +356,6 @@ impl ResourceStorage {
         self.pending_metadata.remove(&transaction_id);
         self.pending_supply.remove(&transaction_id);
         self.pending_balances.remove(&transaction_id);
-        self.transaction_start_times.remove(&transaction_id);
     }
 
     /// Get a compacted view of the storage for snapshots
@@ -443,7 +428,6 @@ impl ResourceStorage {
         self.pending_metadata.clear();
         self.pending_supply.clear();
         self.pending_balances.clear();
-        self.transaction_start_times.clear();
 
         // Create a special "restore" timestamp
         let restore_timestamp = HlcTimestamp::new(0, 0, NodeId::new(0));

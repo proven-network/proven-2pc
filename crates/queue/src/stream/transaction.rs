@@ -73,8 +73,8 @@ impl QueueTransactionManager {
     }
 
     /// Begin a new transaction
-    pub fn begin_transaction(&mut self, tx_id: HlcTimestamp, start_time: HlcTimestamp) {
-        self.storage.register_transaction(tx_id, start_time);
+    pub fn begin_transaction(&mut self, tx_id: HlcTimestamp, _start_time: HlcTimestamp) {
+        self.storage.begin_transaction(tx_id);
         self.transactions
             .insert(tx_id, QueueTransaction::new(tx_id));
     }

@@ -35,9 +35,6 @@ pub struct MvccStorage {
     /// Pending deletes by transaction
     /// Structure: tx_id -> set of keys to delete
     pending_deletes: HashMap<HlcTimestamp, Vec<String>>,
-
-    /// Transaction start times for visibility checks
-    transaction_start_times: HashMap<HlcTimestamp, HlcTimestamp>,
 }
 
 impl MvccStorage {
@@ -47,13 +44,7 @@ impl MvccStorage {
             committed_versions: HashMap::new(),
             pending_writes: HashMap::new(),
             pending_deletes: HashMap::new(),
-            transaction_start_times: HashMap::new(),
         }
-    }
-
-    /// Register a new transaction
-    pub fn register_transaction(&mut self, tx_id: HlcTimestamp, start_time: HlcTimestamp) {
-        self.transaction_start_times.insert(tx_id, start_time);
     }
 
     /// Mark a transaction as committed
@@ -88,9 +79,6 @@ impl MvccStorage {
                 }
             }
         }
-
-        // Clean up transaction metadata
-        self.transaction_start_times.remove(&tx_id);
     }
 
     /// Abort a transaction by removing all its pending changes
@@ -98,17 +86,10 @@ impl MvccStorage {
         // Just remove from pending - super cheap!
         self.pending_writes.remove(&tx_id);
         self.pending_deletes.remove(&tx_id);
-        self.transaction_start_times.remove(&tx_id);
     }
 
     /// Get the visible version of a key for a transaction
     pub fn get(&self, key: &str, tx_id: HlcTimestamp) -> Option<Arc<Value>> {
-        let tx_start = self
-            .transaction_start_times
-            .get(&tx_id)
-            .copied()
-            .unwrap_or(tx_id);
-
         // Check if we're planning to delete this key
         if let Some(deletes) = self.pending_deletes.get(&tx_id)
             && deletes.contains(&key.to_string())
@@ -124,22 +105,7 @@ impl MvccStorage {
         }
 
         // Then check committed versions visible to this transaction
-        self.get_committed_for_transaction(key, tx_id, tx_start)
-    }
-
-    /// Get the visible version of a key at a specific timestamp (for snapshot reads)
-    /// This is used for read_at_timestamp operations that don't have transaction state
-    pub fn get_at_timestamp(&self, key: &str, read_timestamp: HlcTimestamp) -> Option<Arc<Value>> {
-        // Snapshot reads only see committed data
-        self.committed_versions
-            .get(key)?
-            .iter()
-            .rev()
-            .find(|v| {
-                v.created_at <= read_timestamp
-                    && (v.deleted_by.is_none() || v.deleted_by.unwrap() > read_timestamp)
-            })
-            .map(|v| v.value.clone())
+        self.get_committed_for_transaction(key, tx_id)
     }
 
     /// Put a new value for a key
@@ -172,22 +138,17 @@ impl MvccStorage {
     }
 
     /// Get visible committed version for a transaction
-    fn get_committed_for_transaction(
-        &self,
-        key: &str,
-        tx_id: HlcTimestamp,
-        tx_start: HlcTimestamp,
-    ) -> Option<Arc<Value>> {
+    fn get_committed_for_transaction(&self, key: &str, tx_id: HlcTimestamp) -> Option<Arc<Value>> {
         self.committed_versions
             .get(key)?
             .iter()
             .rev()
             .find(|v| {
-                // Version is visible if created before our transaction started
+                // Version is visible if created before our transaction started (tx_id IS the start time)
                 // and not deleted (or deleted after we started)
-                v.created_at <= tx_start
+                v.created_at <= tx_id
                     && (v.deleted_by.is_none()
-                        || v.deleted_by.unwrap() > tx_start
+                        || v.deleted_by.unwrap() > tx_id
                         || v.deleted_by.unwrap() == tx_id)
             })
             .map(|v| v.value.clone())
@@ -213,7 +174,6 @@ impl MvccStorage {
         self.committed_versions.clear();
         self.pending_writes.clear();
         self.pending_deletes.clear();
-        self.transaction_start_times.clear();
 
         // Restore as committed versions with timestamp 0
         for (key, value) in data {
@@ -270,7 +230,6 @@ mod tests {
         let mut storage = MvccStorage::new();
         let tx1 = create_timestamp(100);
 
-        storage.register_transaction(tx1, tx1);
         storage.put(
             "key1".to_string(),
             Value::String("value1".to_string()),
@@ -293,7 +252,6 @@ mod tests {
         let mut storage = MvccStorage::new();
         let tx1 = create_timestamp(100);
 
-        storage.register_transaction(tx1, tx1);
         storage.put(
             "key1".to_string(),
             Value::String("value1".to_string()),
@@ -306,7 +264,6 @@ mod tests {
 
         // Should not see aborted write
         let tx2 = create_timestamp(200);
-        storage.register_transaction(tx2, tx2);
         let result = storage.get("key1", tx2);
         assert_eq!(result, None);
     }
@@ -317,7 +274,6 @@ mod tests {
 
         // Commit a value at timestamp 100
         let tx1 = create_timestamp(100);
-        storage.register_transaction(tx1, tx1);
         storage.put(
             "key1".to_string(),
             Value::String("value1".to_string()),
@@ -328,7 +284,6 @@ mod tests {
 
         // Commit another value at timestamp 300
         let tx2 = create_timestamp(300);
-        storage.register_transaction(tx2, tx2);
         storage.put(
             "key1".to_string(),
             Value::String("value2".to_string()),
@@ -339,12 +294,12 @@ mod tests {
 
         // Read at timestamp 200 should see value1
         let read_ts1 = create_timestamp(200);
-        let result = storage.get_at_timestamp("key1", read_ts1);
+        let result = storage.get("key1", read_ts1);
         assert_eq!(result, Some(Arc::new(Value::String("value1".to_string()))));
 
         // Read at timestamp 400 should see value2
         let read_ts2 = create_timestamp(400);
-        let result = storage.get_at_timestamp("key1", read_ts2);
+        let result = storage.get("key1", read_ts2);
         assert_eq!(result, Some(Arc::new(Value::String("value2".to_string()))));
     }
 
@@ -354,7 +309,6 @@ mod tests {
 
         // First transaction: create a value
         let tx1 = create_timestamp(100);
-        storage.register_transaction(tx1, tx1);
         storage.put(
             "key1".to_string(),
             Value::String("value1".to_string()),
@@ -365,7 +319,6 @@ mod tests {
 
         // Second transaction: delete the value
         let tx2 = create_timestamp(200);
-        storage.register_transaction(tx2, tx2);
         storage.delete("key1", tx2);
 
         // Should not see deleted value in same transaction
@@ -377,13 +330,12 @@ mod tests {
 
         // Future reads should not see the deleted value
         let tx3 = create_timestamp(300);
-        storage.register_transaction(tx3, tx3);
         let result = storage.get("key1", tx3);
         assert_eq!(result, None);
 
         // But reads at earlier timestamps should still see it
         let read_ts = create_timestamp(150);
-        let result = storage.get_at_timestamp("key1", read_ts);
+        let result = storage.get("key1", read_ts);
         assert_eq!(result, Some(Arc::new(Value::String("value1".to_string()))));
     }
 
@@ -392,7 +344,6 @@ mod tests {
         let mut storage = MvccStorage::new();
         let tx1 = create_timestamp(100);
 
-        storage.register_transaction(tx1, tx1);
         storage.put(
             "key1".to_string(),
             Value::String("value1".to_string()),
