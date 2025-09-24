@@ -626,10 +626,14 @@ impl<E: TransactionEngine> MessageRouter<E> {
                 TransactionDecision::Commit => {
                     self.engine.commit(txn_id);
                     self.context.cleanup_committed(&txn_id);
+                    // Retry deferred operations
+                    self.retry_deferred_operations(txn_id).await;
                 }
                 TransactionDecision::Abort => {
                     self.engine.abort(txn_id);
                     self.context.cleanup_aborted(&txn_id);
+                    // Retry deferred operations that were waiting on this transaction
+                    self.retry_deferred_operations(txn_id).await;
                 }
                 TransactionDecision::Unknown => {
                     // Leave for future recovery

@@ -130,14 +130,6 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holders } => {
-                // Debug: log the blocking situation
-                let blocker_list: Vec<String> =
-                    holders.iter().map(|(h, _)| h.to_string()).collect();
-                println!(
-                    "[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (put)",
-                    txn_id, blocker_list
-                );
-
                 // Map each blocker to appropriate retry condition
                 let blockers = holders
                     .into_iter()
@@ -181,14 +173,6 @@ impl KvTransactionEngine {
                 })
             }
             LockAttemptResult::Conflict { holders } => {
-                // Debug: log the blocking situation
-                let blocker_list: Vec<String> =
-                    holders.iter().map(|(h, _)| h.to_string()).collect();
-                println!(
-                    "[kv_stream] DEFERRED: WouldBlock for txn {}: {:?} (delete)",
-                    txn_id, blocker_list
-                );
-
                 // Map each blocker to appropriate retry condition
                 let blockers = holders
                     .into_iter()
@@ -262,31 +246,11 @@ impl TransactionEngine for KvTransactionEngine {
     }
 
     fn abort(&mut self, txn_id: HlcTimestamp) {
-        // Debug: check what locks are being held before release
-        let locks_before = self.lock_manager.locks_held_by(txn_id);
-        if !locks_before.is_empty() {
-            println!(
-                "[kv] ABORT: Releasing {} locks for txn {}",
-                locks_before.len(),
-                txn_id
-            );
-        }
-
         // Abort in storage
         self.storage.abort_transaction(txn_id);
 
         // Release all locks
         self.lock_manager.release_all(txn_id);
-
-        // Debug: verify locks are released
-        let locks_after = self.lock_manager.locks_held_by(txn_id);
-        if !locks_after.is_empty() {
-            println!(
-                "[kv] ERROR: {} locks still held after abort for txn {}",
-                locks_after.len(),
-                txn_id
-            );
-        }
     }
 
     fn engine_name(&self) -> &'static str {

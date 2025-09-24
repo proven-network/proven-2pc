@@ -363,7 +363,18 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                     break;
                 }
                 Err(_) => {
-                    // Timeout - check for snapshot
+                    // Timeout - check for recovery and snapshots
+
+                    // Run recovery check for expired transactions
+                    if let Err(e) = self
+                        .router
+                        .run_recovery_check(self.last_log_timestamp)
+                        .await
+                    {
+                        tracing::warn!("Failed to run recovery check: {:?}", e);
+                    }
+
+                    // Check for snapshot
                     if let Err(e) = self.try_snapshot().await {
                         tracing::warn!("Failed to create snapshot: {:?}", e);
                     }

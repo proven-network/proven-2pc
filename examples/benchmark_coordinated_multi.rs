@@ -335,7 +335,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         let should_retry = error_str.contains("Transaction was aborted")
                             || error_str.contains("Transaction was wounded")
                             || error_str.contains("Speculation failed")
-                            || error_str.contains("Response timeout");
+                            || error_str.contains("Response timeout")
+                            || error_str.contains("Prepare phase timed out");
 
                         if should_retry && retry_count < MAX_RETRIES {
                             retry_count += 1;

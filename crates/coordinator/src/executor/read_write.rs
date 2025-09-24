@@ -313,7 +313,7 @@ impl ReadWriteExecutor {
             Ok(resp) => resp,
             Err(e) => {
                 // On error (e.g., timeout), abort the transaction
-                *self.state.lock() = TransactionState::Aborted;
+                let _ = self.abort().await;
                 return Err(e);
             }
         };
@@ -324,7 +324,7 @@ impl ReadWriteExecutor {
             *self.state.lock() = TransactionState::Committed;
             Ok(())
         } else {
-            *self.state.lock() = TransactionState::Aborted;
+            let _ = self.abort().await;
             Err(CoordinatorError::TransactionAborted)
         }
     }
@@ -355,7 +355,11 @@ impl ReadWriteExecutor {
         }
 
         // Send all prepare messages
-        self.infra.send_messages_batch(prepare_messages).await?;
+        if let Err(e) = self.infra.send_messages_batch(prepare_messages).await {
+            // Failed to send prepare messages - abort the transaction
+            let _ = self.abort().await;
+            return Err(e);
+        }
 
         // Collect votes
         let all_prepared = match self.collect_prepare_votes(participants, &request_id).await {
