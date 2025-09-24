@@ -138,12 +138,9 @@ async fn create_kv_processor(
     stream: String,
     client: Arc<MockClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
-) -> Result<
-    proven_stream::processor::StreamProcessor<proven_kv::KvTransactionEngine>,
-    crate::RunnerError,
-> {
+) -> Result<proven_stream::StreamProcessor<proven_kv::KvTransactionEngine>, crate::RunnerError> {
     let engine = proven_kv::KvTransactionEngine::new();
-    Ok(proven_stream::processor::StreamProcessor::new(
+    Ok(proven_stream::StreamProcessor::new(
         engine,
         client,
         stream,
@@ -156,12 +153,9 @@ async fn create_sql_processor(
     stream: String,
     client: Arc<MockClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
-) -> Result<
-    proven_stream::processor::StreamProcessor<proven_sql::SqlTransactionEngine>,
-    crate::RunnerError,
-> {
+) -> Result<proven_stream::StreamProcessor<proven_sql::SqlTransactionEngine>, crate::RunnerError> {
     let engine = proven_sql::SqlTransactionEngine::new();
-    Ok(proven_stream::processor::StreamProcessor::new(
+    Ok(proven_stream::StreamProcessor::new(
         engine,
         client,
         stream,
@@ -174,12 +168,10 @@ async fn create_queue_processor(
     stream: String,
     client: Arc<MockClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
-) -> Result<
-    proven_stream::processor::StreamProcessor<proven_queue::QueueTransactionEngine>,
-    crate::RunnerError,
-> {
+) -> Result<proven_stream::StreamProcessor<proven_queue::QueueTransactionEngine>, crate::RunnerError>
+{
     let engine = proven_queue::QueueTransactionEngine::new();
-    Ok(proven_stream::processor::StreamProcessor::new(
+    Ok(proven_stream::StreamProcessor::new(
         engine,
         client,
         stream,
@@ -193,11 +185,11 @@ async fn create_resource_processor(
     client: Arc<MockClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<
-    proven_stream::processor::StreamProcessor<proven_resource::ResourceTransactionEngine>,
+    proven_stream::StreamProcessor<proven_resource::ResourceTransactionEngine>,
     crate::RunnerError,
 > {
     let engine = proven_resource::ResourceTransactionEngine::new();
-    Ok(proven_stream::processor::StreamProcessor::new(
+    Ok(proven_stream::StreamProcessor::new(
         engine,
         client,
         stream,

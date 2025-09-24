@@ -116,13 +116,23 @@ impl ReadWriteExecutor {
             }
         };
 
+        // Track all streams that we're sending speculative operations to
+        let mut initial_participants = Vec::new();
+        let mut initial_streams_with_deadline = HashSet::new();
+        for pred_op in prediction_context.predictions() {
+            if !initial_participants.contains(&pred_op.stream) {
+                initial_participants.push(pred_op.stream.clone());
+                initial_streams_with_deadline.insert(pred_op.stream.clone());
+            }
+        }
+
         Self {
             txn_id,
             deadline,
             state: Arc::new(Mutex::new(TransactionState::Active)),
             prepare_votes: Arc::new(Mutex::new(HashMap::new())),
-            participants: Arc::new(Mutex::new(Vec::new())),
-            streams_with_deadline: Arc::new(Mutex::new(HashSet::new())),
+            participants: Arc::new(Mutex::new(initial_participants)),
+            streams_with_deadline: Arc::new(Mutex::new(initial_streams_with_deadline)),
             participant_awareness: Arc::new(Mutex::new(HashMap::new())),
             infra,
             prediction_context: Arc::new(AsyncMutex::new(prediction_context)),
@@ -295,10 +305,18 @@ impl ReadWriteExecutor {
 
         let timeout = common::calculate_timeout(self.deadline)?;
 
-        let response = self
+        let response = match self
             .infra
             .send_and_wait(participant, headers, Vec::new(), timeout)
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                // On error (e.g., timeout), abort the transaction
+                *self.state.lock() = TransactionState::Aborted;
+                return Err(e);
+            }
+        };
 
         let vote = self.parse_prepare_vote(&response);
 
@@ -340,9 +358,14 @@ impl ReadWriteExecutor {
         self.infra.send_messages_batch(prepare_messages).await?;
 
         // Collect votes
-        let all_prepared = self
-            .collect_prepare_votes(participants, &request_id)
-            .await?;
+        let all_prepared = match self.collect_prepare_votes(participants, &request_id).await {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                // On error (e.g., timeout), abort the transaction
+                let _ = self.abort().await;
+                return Err(e);
+            }
+        };
 
         if all_prepared {
             *self.state.lock() = TransactionState::Prepared;
@@ -358,6 +381,7 @@ impl ReadWriteExecutor {
         // Check if we need to prepare first
         let state = self.state.lock().clone();
         if state == TransactionState::Active {
+            // If prepare fails, the transaction is already aborted
             self.prepare().await?;
         }
 
@@ -538,7 +562,11 @@ impl ExecutorTrait for ReadWriteExecutor {
                     "Speculation failed, transaction aborted".to_string(),
                 ))
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                // On any error, abort the transaction to avoid leaving it in an inconsistent state
+                let _ = self.abort().await;
+                Err(e)
+            }
         }
     }
 
@@ -557,12 +585,20 @@ impl ExecutorTrait for ReadWriteExecutor {
         }
 
         // Commit transaction
-        self.commit().await?;
-
-        // Report success to prediction context
-        self.report_outcome(true).await;
-
-        Ok(())
+        match self.commit().await {
+            Ok(()) => {
+                // Report success to prediction context
+                self.report_outcome(true).await;
+                Ok(())
+            }
+            Err(e) => {
+                // If commit fails, abort to clean up
+                let _ = self.abort().await;
+                // Report failure to prediction context
+                self.report_outcome(false).await;
+                Err(e)
+            }
+        }
     }
 
     async fn cancel(&self) -> Result<()> {

@@ -19,20 +19,37 @@
 //! - Lock management
 //! - Transaction isolation
 //! - Persistence
+//!
+//! ## Execution Modes
+//!
+//! The processor supports three execution modes:
+//! - **Read-Only**: Snapshot isolation reads without locking
+//! - **Ad-Hoc**: Auto-commit operations without explicit transactions
+//! - **Read-Write**: Full ACID transactions with 2PC support
 
-pub mod deferred;
 pub mod engine;
 pub mod error;
+pub mod execution;
 pub mod processor;
-pub mod recovery;
+pub mod router;
+pub mod transaction;
 
 #[cfg(test)]
 mod test;
 #[cfg(test)]
 mod wound_wait_tests;
 
-pub use deferred::DeferredOperationsManager;
-pub use engine::{OperationResult, RetryOn, TransactionEngine};
+// Re-export from engine module
+pub use engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine, TransactionMode};
+
+// Re-export from error module
 pub use error::{ProcessorError, Result};
+
+// Re-export from processor module
 pub use processor::{ProcessorPhase, SnapshotConfig, StreamProcessor};
-pub use recovery::{RecoveryManager, RecoveryState, TransactionDecision};
+
+// Re-export from transaction module (including recovery)
+pub use transaction::{
+    DeferredOperationsManager, RecoveryManager, RecoveryState, TransactionContext,
+    TransactionDecision, TransactionState,
+};

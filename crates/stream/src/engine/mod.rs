@@ -38,6 +38,17 @@ pub enum OperationResult<R> {
     },
 }
 
+/// Transaction mode for execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionMode {
+    /// Read-only transaction using snapshot isolation
+    ReadOnly,
+    /// Ad-hoc operation with auto-commit
+    AdHoc,
+    /// Full read-write transaction with 2PC
+    ReadWrite,
+}
+
 /// Transaction engine that handles the actual storage operations
 ///
 /// Note: All methods are synchronous since stream processing must be
@@ -98,21 +109,21 @@ pub trait TransactionEngine: Send + Sync {
     fn abort(&mut self, txn_id: HlcTimestamp);
 
     /// Get the name/type of this engine for logging and debugging
-    fn engine_name(&self) -> &'static str;
+    fn engine_name(&self) -> &str;
 
-    /// Generate a snapshot of current state
+    /// Create a snapshot of the current state
     ///
-    /// This should only be called when no transactions are active.
-    /// Returns serialized bytes representing the complete state.
+    /// Returns a serialized representation that can be restored later.
+    /// Returns an error if snapshot cannot be created.
     fn snapshot(&self) -> Result<Vec<u8>, String> {
-        Err("Snapshots not supported by this engine".to_string())
+        Err("Snapshots not supported".to_string())
     }
 
-    /// Restore state from a snapshot
+    /// Restore from a checkpoint (optional)
     ///
-    /// This should completely replace the current state with the snapshot.
-    /// Should only be called on a fresh engine instance.
+    /// Restores the engine state from a previously created checkpoint.
+    /// Not all engines need to support this.
     fn restore_from_snapshot(&mut self, _data: &[u8]) -> Result<(), String> {
-        Err("Snapshot restoration not supported by this engine".to_string())
+        Err("Snapshots not supported".to_string())
     }
 }
