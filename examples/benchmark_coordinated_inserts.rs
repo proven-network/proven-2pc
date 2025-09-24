@@ -3,7 +3,7 @@
 //! This benchmark measures the throughput of SQL inserts using distributed
 //! transactions through the coordinator with parallel execution.
 
-use proven_coordinator::{Coordinator, Transaction};
+use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_runner::Runner;
 use proven_snapshot_memory::MemorySnapshotStore;
@@ -59,11 +59,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Setup phase - create the table
     println!("\n=== Setup Phase ===");
-    let setup_txn = coordinator
-        .begin(Duration::from_secs(10), vec![], "setup".to_string())
+    let setup_executor = coordinator
+        .begin_read_write(Duration::from_secs(10), vec![], "setup".to_string())
         .await?;
 
-    let sql_setup = SqlClient::new(setup_txn.clone());
+    let setup_executor = Arc::new(setup_executor);
+    let sql_setup = SqlClient::new(setup_executor.clone());
 
     // Create SQL table with simple schema
     sql_setup
@@ -75,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     println!("✓ Created SQL table");
 
-    setup_txn.commit().await?;
+    setup_executor.finish().await?;
 
     // Benchmark configuration
     println!("\n=== Benchmark Configuration ===");
@@ -113,15 +114,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "timestamp": i as i64
             })];
 
-            let txn = match coordinator
-                .begin(
+            let executor = match coordinator
+                .begin_read_write(
                     Duration::from_secs(5),
                     args.clone(),
                     "sql_insert".to_string(),
                 )
                 .await
             {
-                Ok(t) => t,
+                Ok(t) => Arc::new(t),
                 Err(e) => {
                     eprintln!("Failed to begin warmup transaction {}: {:?}", i, e);
                     failed.fetch_add(1, Ordering::Relaxed);
@@ -129,9 +130,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             };
 
-            if let Err(e) = execute_sql_insert(i, &args[0], txn.clone()).await {
+            if let Err(e) = execute_sql_insert(i, &args[0], executor.clone()).await {
                 eprintln!("Failed to execute warmup transaction {}: {:?}", i, e);
-                let _ = txn.abort().await;
+                let _ = executor.cancel().await;
                 failed.fetch_add(1, Ordering::Relaxed);
             } else {
                 successful.fetch_add(1, Ordering::Relaxed);
@@ -228,9 +229,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             loop {
                 // Begin with speculation enabled unless we had a speculation failure
-                let txn = match if disable_speculation {
+                let executor = match if disable_speculation {
                     coordinator
-                        .begin_without_speculation(
+                        .begin_read_write_without_speculation(
                             Duration::from_secs(5),
                             args.clone(),
                             "sql_insert".to_string(),
@@ -238,14 +239,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         .await
                 } else {
                     coordinator
-                        .begin(
+                        .begin_read_write(
                             Duration::from_secs(5),
                             args.clone(),
                             "sql_insert".to_string(),
                         )
                         .await
                 } {
-                    Ok(t) => t,
+                    Ok(t) => Arc::new(t),
                     Err(e) => {
                         eprintln!("Failed to begin transaction {}: {:?}", i, e);
                         failed.fetch_add(1, Ordering::Relaxed);
@@ -255,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 // Execute the transaction
                 let result =
-                    execute_sql_insert(i + WARMUP_TRANSACTIONS, &args[0], txn.clone()).await;
+                    execute_sql_insert(i + WARMUP_TRANSACTIONS, &args[0], executor.clone()).await;
 
                 match result {
                     Ok(_) => {
@@ -268,8 +269,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     Err(e) => {
                         let error_str = e.to_string();
 
-                        // Always abort the failed transaction
-                        let _ = txn.abort().await;
+                        // Always cancel the failed transaction
+                        let _ = executor.cancel().await;
 
                         // Don't retry unique constraint violations - they indicate the data was already inserted
                         if error_str.contains("Unique constraint violation") {
@@ -404,10 +405,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Verification phase
     println!("\n=== Verification Phase ===");
-    let verify_txn = coordinator
-        .begin(Duration::from_secs(10), vec![], "verification".to_string())
-        .await?;
-    let sql_verify = SqlClient::new(verify_txn.clone());
+    let verify_executor = Arc::new(
+        coordinator
+            .begin_read_only(vec![], "verification".to_string())
+            .await?,
+    );
+    let sql_verify = SqlClient::new(verify_executor.clone());
 
     // Check SQL count
     let count_result = sql_verify
@@ -421,19 +424,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
-    verify_txn.commit().await?;
+    verify_executor.finish().await?;
 
     println!("\n✓ Benchmark complete!");
     Ok(())
 }
 
 /// Execute a SQL insert transaction
-async fn execute_sql_insert(
+async fn execute_sql_insert<E>(
     _index: usize,
     args: &serde_json::Value,
-    txn: Transaction,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let sql = SqlClient::new(txn.clone());
+    executor: Arc<E>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    E: proven_coordinator::Executor + Send + Sync + 'static,
+{
+    let sql = SqlClient::new(executor.clone());
 
     // Extract values from args
     let id = args["id"].as_str().unwrap_or("default_id");
@@ -454,6 +460,6 @@ async fn execute_sql_insert(
     .await?;
 
     // Commit separately so caller can handle commit failures properly
-    txn.commit().await?;
+    executor.finish().await?;
     Ok(())
 }

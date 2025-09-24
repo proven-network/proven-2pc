@@ -3,24 +3,17 @@
 //! This module provides a stateful context that validates operations against
 //! predicted sequences and provides speculated responses when operations match.
 
-use crate::error::Result;
-use crate::executor::Executor;
 use crate::speculation::learning::Learner;
 use crate::speculation::predictor::{PredictedOperation, PredictionResult};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::oneshot;
-
-/// Type alias for response receivers map
-type ResponseReceivers = Arc<Mutex<HashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>>;
 
 /// Result of checking an operation against predictions
 #[derive(Debug)]
 pub enum CheckResult {
-    /// Operation matches prediction - here's the speculated response
-    Match { response: Vec<u8>, is_write: bool },
+    /// Operation matches prediction - use response at this index
+    Match { index: usize, is_write: bool },
 
     /// No more predictions (transaction continues beyond speculation)
     NoPrediction,
@@ -31,17 +24,13 @@ pub enum CheckResult {
         actual: String,
         position: usize,
     },
-
-    /// Operation matched prediction but speculative execution failed
-    /// The operation needs to be executed normally
-    SpeculativeExecutionFailed { position: usize, reason: String },
 }
 
 /// Tracks the state of speculation during transaction execution
 #[derive(Clone)]
 pub struct PredictionContext {
     /// The predicted sequence
-    pub(crate) predictions: Vec<PredictedOperation>,
+    predictions: Vec<PredictedOperation>,
 
     /// Current position in the sequence
     current_position: usize,
@@ -63,10 +52,6 @@ pub struct PredictionContext {
 
     /// Operations that were actually executed (stream_name, operation, is_write)
     executed_operations: Vec<(String, Value, bool)>,
-
-    /// Response receivers for async execution
-    /// We store them in an Arc<Mutex> to allow cloning and concurrent access
-    response_receivers: ResponseReceivers,
 }
 
 impl PredictionContext {
@@ -85,7 +70,6 @@ impl PredictionContext {
             failure_point: None,
             learner,
             executed_operations: Vec::new(),
-            response_receivers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -100,12 +84,11 @@ impl PredictionContext {
             failure_point: None,
             learner,
             executed_operations: Vec::new(),
-            response_receivers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Check if an operation matches the next predicted operation
-    pub async fn check(&mut self, stream: &str, operation: &Value, is_write: bool) -> CheckResult {
+    pub fn check(&mut self, stream: &str, operation: &Value, is_write: bool) -> CheckResult {
         // Record this operation for learning
         self.executed_operations
             .push((stream.to_string(), operation.clone(), is_write));
@@ -119,51 +102,13 @@ impl PredictionContext {
 
         // Check if operation matches prediction
         if self.operations_match(predicted, stream, operation, is_write) {
-            // Match! Try to get the response from the receiver
+            // Match! Return the index for the executor to look up
             let position = self.current_position;
             self.current_position += 1;
 
-            // Try to get and await the receiver for this position
-            let receiver_opt = self.response_receivers.lock().remove(&position);
-
-            if let Some(receiver) = receiver_opt {
-                // Await the response
-                match receiver.await {
-                    Ok(Ok(response)) => {
-                        // Got successful response
-                        CheckResult::Match { response, is_write }
-                    }
-                    Ok(Err(err)) => {
-                        // Execution failed
-                        tracing::warn!(
-                            "Speculated execution failed for position {}: {}",
-                            position,
-                            err
-                        );
-                        CheckResult::SpeculativeExecutionFailed {
-                            position,
-                            reason: format!("Execution error: {}", err),
-                        }
-                    }
-                    Err(_) => {
-                        // Channel was dropped (shouldn't happen)
-                        tracing::warn!("Response channel dropped for position {}", position);
-                        CheckResult::SpeculativeExecutionFailed {
-                            position,
-                            reason: "Response channel was dropped".to_string(),
-                        }
-                    }
-                }
-            } else {
-                // No receiver available - speculation execution likely didn't run
-                tracing::warn!(
-                    "Matched operation at position {} but no response available",
-                    position
-                );
-                CheckResult::SpeculativeExecutionFailed {
-                    position,
-                    reason: "No speculative response available".to_string(),
-                }
+            CheckResult::Match {
+                index: position,
+                is_write,
             }
         } else {
             // Mismatch - speculation failed
@@ -284,64 +229,9 @@ impl PredictionContext {
     }
 
     /// Set a test response receiver (for testing only)
-    #[cfg(test)]
-    pub fn set_test_receiver(
-        &mut self,
-        position: usize,
-        receiver: oneshot::Receiver<Result<Vec<u8>>>,
-    ) {
-        self.response_receivers.lock().insert(position, receiver);
-    }
-
-    /// Execute all predicted operations speculatively using the executor
-    ///
-    /// This groups operations by stream and executes them in parallel batches,
-    /// ensuring operations for the same stream are sent together in order.
-    pub async fn execute_predictions(&mut self, executor: Arc<Executor>) -> Result<()> {
-        if self.predictions.is_empty() {
-            return Ok(());
-        }
-
-        // Group operations by stream while maintaining order
-        let mut stream_operations: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
-        let mut position_map: HashMap<(String, usize), usize> = HashMap::new();
-
-        for (i, pred_op) in self.predictions.iter().enumerate() {
-            // Convert the operation Value to bytes for execution
-            let operation_bytes = serde_json::to_vec(&pred_op.operation)
-                .map_err(crate::error::CoordinatorError::SerializationError)?;
-
-            let stream = pred_op.stream.clone();
-            let op_index = stream_operations.entry(stream.clone()).or_default().len();
-            stream_operations
-                .get_mut(&stream)
-                .unwrap()
-                .push(operation_bytes);
-
-            // Map (stream, op_index) to original position
-            position_map.insert((stream, op_index), i);
-        }
-
-        // Execute all streams in a single batch (amortizes network latency)
-        match executor.execute_multi_stream_batch(stream_operations).await {
-            Ok(receivers_map) => {
-                // Map receivers back to their original positions
-                let mut all_receivers = HashMap::new();
-                for ((stream, op_idx), receiver) in receivers_map {
-                    if let Some(&pos) = position_map.get(&(stream, op_idx)) {
-                        all_receivers.insert(pos, receiver);
-                    }
-                }
-                // Store all receivers
-                *self.response_receivers.lock() = all_receivers;
-            }
-            Err(e) => {
-                // Log but don't fail - speculation is best-effort
-                tracing::debug!("Failed to execute multi-stream batch: {}", e);
-            }
-        }
-
-        Ok(())
+    /// Get the predictions for execution
+    pub fn predictions(&self) -> &[PredictedOperation] {
+        &self.predictions
     }
 }
 
@@ -353,8 +243,8 @@ mod tests {
     use crate::speculation::predictor::Predictor;
     use serde_json::json;
 
-    #[tokio::test]
-    async fn test_prediction_context_matching() {
+    #[test]
+    fn test_prediction_context_matching() {
         let config = SpeculationConfig {
             min_occurrences: 1,
             min_confidence_read: 0.0,
@@ -388,41 +278,23 @@ mod tests {
         let learner_arc = Arc::new(RwLock::new(learner));
         let mut context = PredictionContext::new(prediction, new_args.clone(), learner_arc.clone());
 
-        // Simulate speculation execution by creating fake receivers
-        {
-            let (tx0, rx0) = oneshot::channel();
-            let (tx1, rx1) = oneshot::channel();
-
-            // Send fake responses
-            let _ = tx0.send(Ok(b"fake_response_1".to_vec()));
-            let _ = tx1.send(Ok(b"fake_response_2".to_vec()));
-
-            // Store receivers
-            context.set_test_receiver(0, rx0);
-            context.set_test_receiver(1, rx1);
-        }
-
-        // Check matching operations
-        let result1 = context
-            .check("kv", &json!({"Get": {"key": "user:bob"}}), false)
-            .await;
+        // Check matching operations (no longer need receivers since they're in executors)
+        let result1 = context.check("kv", &json!({"Get": {"key": "user:bob"}}), false);
         assert!(matches!(result1, CheckResult::Match { .. }));
 
-        let result2 = context
-            .check(
-                "kv",
-                &json!({"Put": {"key": "user:bob", "value": 100}}),
-                true,
-            )
-            .await;
+        let result2 = context.check(
+            "kv",
+            &json!({"Put": {"key": "user:bob", "value": 100}}),
+            true,
+        );
         assert!(matches!(result2, CheckResult::Match { .. }));
 
         // All predictions used
         assert!(context.all_predictions_used());
     }
 
-    #[tokio::test]
-    async fn test_speculation_failure() {
+    #[test]
+    fn test_speculation_failure() {
         let config = SpeculationConfig {
             min_occurrences: 1,
             min_confidence_read: 0.0,
@@ -456,27 +328,16 @@ mod tests {
         let learner_arc = Arc::new(RwLock::new(learner));
         let mut context = PredictionContext::new(prediction, new_args.clone(), learner_arc.clone());
 
-        // Simulate speculation execution for first operation only
-        {
-            let (tx0, rx0) = oneshot::channel();
-            let _ = tx0.send(Ok(b"fake_response".to_vec()));
-            context.set_test_receiver(0, rx0);
-        }
-
         // First operation matches
-        let result1 = context
-            .check("kv", &json!({"Get": {"key": "user:bob"}}), false)
-            .await;
+        let result1 = context.check("kv", &json!({"Get": {"key": "user:bob"}}), false);
         assert!(matches!(result1, CheckResult::Match { .. }));
 
         // Second operation doesn't match (different value)
-        let result2 = context
-            .check(
-                "kv",
-                &json!({"Put": {"key": "user:bob", "value": 200}}),
-                true,
-            )
-            .await;
+        let result2 = context.check(
+            "kv",
+            &json!({"Put": {"key": "user:bob", "value": 200}}),
+            true,
+        );
         assert!(matches!(result2, CheckResult::SpeculationMismatch { .. }));
 
         assert!(context.has_failed());

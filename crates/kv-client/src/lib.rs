@@ -1,19 +1,19 @@
 //! KV client for coordinator-based transactions
 
-use proven_coordinator::Transaction;
+use proven_coordinator::Executor;
 use proven_kv::{stream::operation::KvOperation, stream::response::KvResponse, types::Value};
+use std::sync::Arc;
 
-/// KV client that works with coordinator transactions
-#[derive(Clone)]
-pub struct KvClient {
-    /// The transaction this client is associated with
-    transaction: Transaction,
+/// KV client that works with coordinator executors
+pub struct KvClient<E: Executor> {
+    /// The executor this client is associated with
+    executor: Arc<E>,
 }
 
-impl KvClient {
-    /// Create a new KV client for a transaction
-    pub fn new(transaction: Transaction) -> Self {
-        Self { transaction }
+impl<E: Executor> KvClient<E> {
+    /// Create a new KV client for an executor
+    pub fn new(executor: Arc<E>) -> Self {
+        Self { executor }
     }
 
     /// Get a value by key
@@ -153,9 +153,9 @@ impl KvClient {
         stream_name: String,
         operation: KvOperation,
     ) -> Result<KvResponse, KvError> {
-        // Execute through the transaction with the operation object
+        // Execute through the executor with the operation object
         let response_bytes = self
-            .transaction
+            .executor
             .execute(stream_name, &operation)
             .await
             .map_err(|e| KvError::CoordinatorError(e.to_string()))?;

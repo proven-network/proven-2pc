@@ -3,7 +3,7 @@
 //! This benchmark executes transactions with a consistent pattern of 4 operations
 //! across different storage types, using predictable values that can be speculated.
 
-use proven_coordinator::{Coordinator, Transaction};
+use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::types::Value;
 use proven_kv_client::KvClient;
@@ -79,12 +79,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Setup phase
     println!("\n=== Setup Phase ===");
-    let setup_txn = coordinator
-        .begin(Duration::from_secs(10), vec![], "setup".to_string())
-        .await?;
+    let setup_executor = Arc::new(
+        coordinator
+            .begin_read_write(Duration::from_secs(10), vec![], "setup".to_string())
+            .await?,
+    );
 
-    let sql_setup = SqlClient::new(setup_txn.clone());
-    let resource_setup = ResourceClient::new(setup_txn.clone());
+    let sql_setup = SqlClient::new(setup_executor.clone());
+    let resource_setup = ResourceClient::new(setup_executor.clone());
 
     // Create SQL table with simple schema
     sql_setup
@@ -98,10 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Initialize resource system with treasury
     resource_setup
-        .mint_integer("resource_stream", "treasury", 1_000_000_000)
+        .mint_integer("resource_stream", "treasury", 10_000_000_000)
         .await?;
 
-    // Create initial accounts
+    // Create initial accounts with much higher balance
     const NUM_ACCOUNTS: usize = 100;
     for i in 0..NUM_ACCOUNTS {
         resource_setup
@@ -109,13 +111,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "resource_stream",
                 "treasury",
                 &format!("account_{}", i),
-                10_000,
+                1_000_000, // 100x more than before
             )
             .await?;
     }
     println!("✓ Created {} accounts with initial balances", NUM_ACCOUNTS);
 
-    setup_txn.commit().await?;
+    setup_executor.finish().await?;
 
     // Benchmark configuration
     println!("\n=== Benchmark Configuration ===");
@@ -157,15 +159,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "amount": 10
             })];
 
-            let txn = match coordinator
-                .begin_without_speculation(
+            let executor = match coordinator
+                .begin_read_write_without_speculation(
                     Duration::from_secs(5),
                     args.clone(),
                     "simple_transaction".to_string(),
                 )
                 .await
             {
-                Ok(t) => t,
+                Ok(t) => Arc::new(t),
                 Err(e) => {
                     eprintln!("Failed to begin warmup transaction {}: {:?}", i, e);
                     failed.fetch_add(1, Ordering::Relaxed);
@@ -173,9 +175,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             };
 
-            if let Err(e) = execute_simple_transaction(i, &args[0], txn.clone()).await {
+            if let Err(e) = execute_simple_transaction(i, &args[0], executor.clone()).await {
                 eprintln!("Failed to execute warmup transaction {}: {:?}", i, e);
-                let _ = txn.abort().await;
+                let _ = executor.cancel().await;
                 failed.fetch_add(1, Ordering::Relaxed);
             } else {
                 successful.fetch_add(1, Ordering::Relaxed);
@@ -276,9 +278,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             loop {
                 // Begin with speculation enabled unless we had a speculation failure
-                let txn = match if disable_speculation {
+                let executor = match if disable_speculation {
                     coordinator
-                        .begin_without_speculation(
+                        .begin_read_write_without_speculation(
                             Duration::from_secs(5),
                             args.clone(),
                             "simple_transaction".to_string(),
@@ -286,14 +288,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         .await
                 } else {
                     coordinator
-                        .begin(
+                        .begin_read_write(
                             Duration::from_secs(5),
                             args.clone(),
                             "simple_transaction".to_string(),
                         )
                         .await
                 } {
-                    Ok(t) => t,
+                    Ok(t) => Arc::new(t),
                     Err(e) => {
                         eprintln!("Failed to begin transaction {}: {:?}", i, e);
                         failed.fetch_add(1, Ordering::Relaxed);
@@ -303,7 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 // Execute the transaction and convert error immediately
                 let result =
-                    execute_simple_transaction(i + WARMUP_TRANSACTIONS, &args[0], txn.clone())
+                    execute_simple_transaction(i + WARMUP_TRANSACTIONS, &args[0], executor.clone())
                         .await;
 
                 match result {
@@ -319,7 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         let error_str = e.to_string();
 
                         // Always abort the failed transaction
-                        let _ = txn.abort().await;
+                        let _ = executor.cancel().await;
 
                         // Don't retry unique constraint violations - they indicate the data was already inserted
                         if error_str.contains("Unique constraint violation") {
@@ -456,12 +458,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Verification phase - use the same coordinator
     println!("\n=== Verification Phase ===");
-    let verify_txn = coordinator
-        .begin(Duration::from_secs(10), vec![], "verification".to_string())
-        .await?;
-    let kv_verify = KvClient::new(verify_txn.clone());
-    let queue_verify = QueueClient::new(verify_txn.clone());
-    let sql_verify = SqlClient::new(verify_txn.clone());
+    let verify_executor = Arc::new(
+        coordinator
+            .begin_read_only(vec![], "verification".to_string())
+            .await?,
+    );
+    let kv_verify = KvClient::new(verify_executor.clone());
+    let queue_verify = QueueClient::new(verify_executor.clone());
+    let sql_verify = SqlClient::new(verify_executor.clone());
 
     // Check KV count by checking a sample of keys
     let mut kv_count = 0;
@@ -496,22 +500,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("✓ SQL table contains {} rows", count);
     }
 
-    verify_txn.commit().await?;
+    verify_executor.finish().await?;
 
     println!("\n✓ Benchmark complete!");
     Ok(())
 }
 
 /// Execute a simple transaction with 4 predictable operations
-async fn execute_simple_transaction(
+async fn execute_simple_transaction<E>(
     _index: usize,
     args: &serde_json::Value,
-    txn: Transaction,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let kv = KvClient::new(txn.clone());
-    let queue = QueueClient::new(txn.clone());
-    let resource = ResourceClient::new(txn.clone());
-    let sql = SqlClient::new(txn.clone());
+    executor: Arc<E>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    E: proven_coordinator::Executor + Send + Sync + 'static,
+{
+    let kv = KvClient::new(executor.clone());
+    let queue = QueueClient::new(executor.clone());
+    let resource = ResourceClient::new(executor.clone());
+    let sql = SqlClient::new(executor.clone());
 
     // Extract values from args - these should match what speculation predicts
     let key = args["key"].as_str().unwrap_or("default_key");
@@ -547,6 +554,6 @@ async fn execute_simple_transaction(
     )
     .await?;
 
-    txn.commit().await?;
+    executor.finish().await?;
     Ok(())
 }

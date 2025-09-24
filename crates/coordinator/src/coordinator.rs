@@ -1,10 +1,10 @@
 //! Core coordinator implementation
 
 use crate::error::Result;
-use crate::executor::Executor;
+use crate::executor::common::ExecutorInfra;
+use crate::executor::{AdHocExecutor, ReadOnlyExecutor, ReadWriteExecutor};
 use crate::responses::ResponseCollector;
 use crate::speculation::{SpeculationConfig, SpeculationContext};
-use crate::transaction::Transaction;
 use proven_engine::MockClient;
 use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
 use proven_runner::Runner;
@@ -63,18 +63,14 @@ impl Coordinator {
         }
     }
 
-    /// Begin a new distributed transaction with speculation
-    ///
-    /// This will attempt to predict and pre-execute operations based on learned patterns.
-    /// If speculation fails during execution, the client should retry with `begin_without_speculation`.
-    pub async fn begin(
+    /// Create a read-write executor with full 2PC and speculation
+    pub async fn begin_read_write(
         &self,
         timeout: Duration,
         transaction_args: Vec<Value>,
         speculative_category: String,
-    ) -> Result<Transaction> {
+    ) -> Result<ReadWriteExecutor> {
         let timestamp = self.hlc.now();
-        let txn_id = timestamp.to_string();
 
         // Calculate deadline
         let timeout_us = timeout.as_micros() as u64;
@@ -84,11 +80,8 @@ impl Coordinator {
             timestamp.node_id,
         );
 
-        // Create transaction-scoped executor with all context
-        let executor = Arc::new(Executor::new(
-            txn_id,
-            timestamp,
-            deadline,
+        // Create shared infrastructure
+        let infra = Arc::new(ExecutorInfra::new(
             self.coordinator_id.clone(),
             self.client.clone(),
             self.response_collector.clone(),
@@ -96,49 +89,27 @@ impl Coordinator {
         ));
 
         // Create prediction context for this transaction
-        let mut prediction_context = self
+        let prediction_context = self
             .speculative_context
             .create_prediction_context(&speculative_category, &transaction_args);
 
-        // Execute predictions speculatively using the same executor
-        // This is best-effort - if it fails, we continue without predictions
-        if let Err(e) = prediction_context
-            .execute_predictions(executor.clone())
-            .await
-        {
-            tracing::debug!("Failed to execute speculative predictions: {}", e);
-        }
+        // Create the executor (predictions are executed in new())
+        let executor = ReadWriteExecutor::new(timestamp, deadline, infra, prediction_context).await;
 
-        // Create transaction with executor and predictions
-        Ok(Transaction::new(executor, prediction_context))
+        Ok(executor)
     }
 
-    /// Begin a new distributed transaction without speculation
+    /// Create a read-write executor without speculation (for retries after speculation failures)
     ///
     /// This is typically used for retrying after a speculation failure.
     /// Operations are still tracked for learning, but no predictions are made.
-    ///
-    /// ## Usage Pattern
-    /// ```ignore
-    /// // First attempt with speculation
-    /// let txn = coordinator.begin(timeout, args.clone(), "transfer").await?;
-    /// match txn.execute(stream, &op).await {
-    ///     Err(CoordinatorError::SpeculationFailed(_)) => {
-    ///         // Retry without speculation
-    ///         let txn = coordinator.begin_without_speculation(timeout, args, "transfer").await?;
-    ///         // Re-execute operations...
-    ///     }
-    ///     // ... handle other cases
-    /// }
-    /// ```
-    pub async fn begin_without_speculation(
+    pub async fn begin_read_write_without_speculation(
         &self,
         timeout: Duration,
         transaction_args: Vec<Value>,
         speculative_category: String,
-    ) -> Result<Transaction> {
+    ) -> Result<ReadWriteExecutor> {
         let timestamp = self.hlc.now();
-        let txn_id = timestamp.to_string();
 
         // Calculate deadline
         let timeout_us = timeout.as_micros() as u64;
@@ -148,11 +119,8 @@ impl Coordinator {
             timestamp.node_id,
         );
 
-        // Create transaction-scoped executor with all context
-        let executor = Arc::new(Executor::new(
-            txn_id,
-            timestamp,
-            deadline,
+        // Create shared infrastructure
+        let infra = Arc::new(ExecutorInfra::new(
             self.coordinator_id.clone(),
             self.client.clone(),
             self.response_collector.clone(),
@@ -160,13 +128,52 @@ impl Coordinator {
         ));
 
         // Create an empty prediction context for learning without speculation
-        // This ensures we still track operations for improving patterns
         let prediction_context = self
             .speculative_context
             .create_empty_context(&speculative_category, &transaction_args);
 
-        // Create transaction without any speculative execution
-        Ok(Transaction::new(executor, prediction_context))
+        // Create the executor without predictions
+        let executor = ReadWriteExecutor::new(timestamp, deadline, infra, prediction_context).await;
+
+        Ok(executor)
+    }
+
+    /// Create a read-only executor with snapshot isolation and speculation
+    pub async fn begin_read_only(
+        &self,
+        transaction_args: Vec<Value>,
+        speculative_category: String,
+    ) -> Result<ReadOnlyExecutor> {
+        let read_timestamp = self.hlc.now();
+
+        // Create shared infrastructure
+        let infra = Arc::new(ExecutorInfra::new(
+            self.coordinator_id.clone(),
+            self.client.clone(),
+            self.response_collector.clone(),
+            self.runner.clone(),
+        ));
+
+        // Create prediction context for learning
+        let prediction_context = self
+            .speculative_context
+            .create_prediction_context(&speculative_category, &transaction_args);
+
+        // Create the executor (predictions are executed in new())
+        Ok(ReadOnlyExecutor::new(read_timestamp, infra, prediction_context).await)
+    }
+
+    /// Create an ad-hoc executor for auto-commit operations
+    pub fn adhoc(&self) -> AdHocExecutor {
+        // Create shared infrastructure
+        let infra = Arc::new(ExecutorInfra::new(
+            self.coordinator_id.clone(),
+            self.client.clone(),
+            self.response_collector.clone(),
+            self.runner.clone(),
+        ));
+
+        AdHocExecutor::new(self.hlc.clone(), infra)
     }
 
     /// Stop the coordinator (cleanup)

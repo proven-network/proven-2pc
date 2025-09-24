@@ -6,7 +6,7 @@
 //! - Executing a distributed transaction across multiple storage types
 //! - Proper two-phase commit with real stream processors
 
-use proven_coordinator::Coordinator;
+use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::types::Value;
 use proven_kv_client::KvClient;
@@ -64,20 +64,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Created coordinator with runner integration\n");
 
     // Begin a distributed transaction
-    let transaction = coordinator
-        .begin(
-            Duration::from_secs(60),
-            vec![],
-            "distributed_transaction".to_string(),
-        )
-        .await?;
-    println!("📝 Started transaction: {}\n", transaction.id());
+    let executor = Arc::new(
+        coordinator
+            .begin_read_write(
+                Duration::from_secs(60),
+                vec![],
+                "distributed_transaction".to_string(),
+            )
+            .await?,
+    );
 
     // Create storage-specific clients for this transaction
-    let sql = SqlClient::new(transaction.clone());
-    let kv = KvClient::new(transaction.clone());
-    let queue = QueueClient::new(transaction.clone());
-    let resource = ResourceClient::new(transaction.clone());
+    let sql = SqlClient::new(executor.clone());
+    let kv = KvClient::new(executor.clone());
+    let queue = QueueClient::new(executor.clone());
+    let resource = ResourceClient::new(executor.clone());
 
     // Execute real operations through the processors
     println!("Executing distributed operations:");
@@ -157,12 +158,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("   ✓ Enqueued achievement");
 
-    // Show transaction state
-    println!("\nTransaction state: {:?}", transaction.state());
-
     // Commit the distributed transaction
     println!("\nCommitting distributed transaction...");
-    transaction.commit().await?;
+    executor.finish().await?;
     println!("✅ Transaction committed successfully!");
 
     // Give processors time to complete
@@ -170,16 +168,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify the changes (in a new transaction)
     println!("\n--- Verification ---");
-    let verify_txn = coordinator
-        .begin(
-            Duration::from_secs(60),
-            vec![],
-            "distributed_transaction_verification".to_string(),
-        )
-        .await?;
-    let sql_verify = SqlClient::new(verify_txn.clone());
-    let kv_verify = KvClient::new(verify_txn.clone());
-    let resource_verify = ResourceClient::new(verify_txn.clone());
+    let verify_executor = Arc::new(
+        coordinator
+            .begin_read_only(vec![], "distributed_transaction_verification".to_string())
+            .await?,
+    );
+    let sql_verify = SqlClient::new(verify_executor.clone());
+    let kv_verify = KvClient::new(verify_executor.clone());
+    let resource_verify = ResourceClient::new(verify_executor.clone());
 
     // Check stored values
     let sql_result = sql_verify
@@ -206,18 +202,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Inventory item: {}", item);
     }
 
-    verify_txn.commit().await?;
+    verify_executor.finish().await?;
 
     // Demonstrate abort scenario
     println!("\n--- Abort Scenario ---");
-    let abort_txn = coordinator
-        .begin(
-            Duration::from_secs(60),
-            vec![],
-            "distributed_transaction_abort".to_string(),
-        )
-        .await?;
-    let kv_abort = KvClient::new(abort_txn.clone());
+    let abort_executor = Arc::new(
+        coordinator
+            .begin_read_write(
+                Duration::from_secs(60),
+                vec![],
+                "distributed_transaction_abort".to_string(),
+            )
+            .await?,
+    );
+    let kv_abort = KvClient::new(abort_executor.clone());
 
     kv_abort
         .put_string("kv_stream", "temp:data", "will_be_aborted")
@@ -225,26 +223,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Put temporary data");
 
     println!("  Aborting transaction...");
-    abort_txn.abort().await?;
+    abort_executor.cancel().await?;
     println!("  ✓ Transaction aborted");
 
     // Verify the aborted data is not visible
     println!("\n--- Verify Aborted Data Not Visible ---");
-    let check_txn = coordinator
-        .begin(
-            Duration::from_secs(60),
-            vec![],
-            "distributed_transaction_check".to_string(),
-        )
-        .await?;
-    let kv_check = KvClient::new(check_txn.clone());
+    let check_executor = Arc::new(
+        coordinator
+            .begin_read_only(vec![], "distributed_transaction_check".to_string())
+            .await?,
+    );
+    let kv_check = KvClient::new(check_executor.clone());
 
     match kv_check.get("kv_stream", "temp:data").await? {
         None => println!("  ✓ Aborted data not visible (temp:data = None)"),
         Some(value) => println!("  ❌ Unexpected: Found aborted data: {:?}", value),
     }
 
-    check_txn.commit().await?;
+    check_executor.finish().await?;
 
     // Clean up
     println!("\n--- Cleanup ---");

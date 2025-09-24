@@ -1,21 +1,21 @@
 //! Queue client for coordinator-based transactions
 
-use proven_coordinator::Transaction;
+use proven_coordinator::Executor;
 use proven_queue::stream::operation::QueueOperation;
 use proven_queue::stream::response::QueueResponse;
 use proven_queue::types::QueueValue;
+use std::sync::Arc;
 
-/// Queue client that works with coordinator transactions
-#[derive(Clone)]
-pub struct QueueClient {
-    /// The transaction this client is associated with
-    transaction: Transaction,
+/// Queue client that works with coordinator executors
+pub struct QueueClient<E: Executor> {
+    /// The executor this client is associated with
+    executor: Arc<E>,
 }
 
-impl QueueClient {
-    /// Create a new Queue client for a transaction
-    pub fn new(transaction: Transaction) -> Self {
-        Self { transaction }
+impl<E: Executor> QueueClient<E> {
+    /// Create a new Queue client for an executor
+    pub fn new(executor: Arc<E>) -> Self {
+        Self { executor }
     }
 
     /// Enqueue a value
@@ -170,9 +170,9 @@ impl QueueClient {
         stream_name: String,
         operation: QueueOperation,
     ) -> Result<QueueResponse, QueueError> {
-        // Execute through the transaction with the operation object
+        // Execute through the executor with the operation object
         let response_bytes = self
-            .transaction
+            .executor
             .execute(stream_name, &operation)
             .await
             .map_err(|e| QueueError::CoordinatorError(e.to_string()))?;

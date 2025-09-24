@@ -1,19 +1,19 @@
 //! SQL client for coordinator-based transactions
 
-use proven_coordinator::Transaction;
+use proven_coordinator::Executor;
 use proven_sql::{SqlOperation, SqlResponse, Value};
+use std::sync::Arc;
 
-/// SQL client that works with coordinator transactions
-#[derive(Clone)]
-pub struct SqlClient {
-    /// The transaction this client is associated with
-    transaction: Transaction,
+/// SQL client that works with coordinator executors
+pub struct SqlClient<E: Executor> {
+    /// The executor this client is associated with
+    executor: Arc<E>,
 }
 
-impl SqlClient {
-    /// Create a new SQL client for a transaction
-    pub fn new(transaction: Transaction) -> Self {
-        Self { transaction }
+impl<E: Executor> SqlClient<E> {
+    /// Create a new SQL client for an executor
+    pub fn new(executor: Arc<E>) -> Self {
+        Self { executor }
     }
 
     /// Execute a SQL query and return results
@@ -329,9 +329,9 @@ impl SqlClient {
         stream_name: String,
         operation: SqlOperation,
     ) -> Result<SqlResponse, SqlError> {
-        // Execute through the transaction with the operation object
+        // Execute through the executor with the operation object
         let response_bytes = self
-            .transaction
+            .executor
             .execute(stream_name, &operation)
             .await
             .map_err(|e| SqlError::CoordinatorError(e.to_string()))?;

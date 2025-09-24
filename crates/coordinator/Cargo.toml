@@ -4,9 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-base64 = "0.21"
-crossbeam-queue = "0.3"
-dashmap = "6.1.0"
+async-trait.workspace = true
+dashmap.workspace = true
 parking_lot.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true
@@ -17,3 +16,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true

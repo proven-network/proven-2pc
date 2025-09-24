@@ -8,10 +8,8 @@ mod error;
 mod executor;
 mod responses;
 mod speculation;
-mod transaction;
 
 pub use coordinator::Coordinator;
 pub use error::{CoordinatorError, Result};
-pub use executor::Executor;
+pub use executor::{AdHocExecutor, Executor, ReadOnlyExecutor, ReadWriteExecutor};
 pub use responses::{ResponseCollector, ResponseMessage};
-pub use transaction::{PrepareVote, Transaction, TransactionState};
