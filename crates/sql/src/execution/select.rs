@@ -13,7 +13,7 @@ use crate::types::value::Value;
 /// Execute a SELECT query using immutable storage reference
 pub fn execute_select(
     node: Node,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {

@@ -18,7 +18,7 @@ fn validate_foreign_keys_on_update(
     row: &Row,
     _old_row: &Row,
     schema: &Table,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<Vec<UpdateCascadeOp>> {
     // Check each foreign key constraint on this table
@@ -121,7 +121,7 @@ enum UpdateCascadeOp {
 
 /// Helper function to update a single column value
 fn update_column_value(
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     table: &str,
     row_id: u64,
@@ -158,7 +158,7 @@ fn check_and_collect_update_cascades(
     old_row: &Row,
     new_row: &Row,
     schema: &Table,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<Vec<UpdateCascadeOp>> {
     let mut cascade_ops = Vec::new();
@@ -250,7 +250,7 @@ pub fn execute_update(
     table: String,
     assignments: Vec<(usize, Expression)>,
     source: Node,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {

@@ -24,7 +24,7 @@ use std::collections::HashMap;
 /// SQL transaction engine with predicate-based conflict detection
 pub struct SqlTransactionEngine {
     /// Storage engine with persistence
-    pub storage: Storage,
+    storage: Storage,
 
     /// Active transactions with their predicates
     active_transactions: HashMap<HlcTimestamp, TransactionContext>,
@@ -170,7 +170,7 @@ impl SqlTransactionEngine {
 
         let result = execution::execute_with_params(
             (*plan).clone(),
-            &self.storage,
+            &mut self.storage,
             &mut temp_ctx,
             params.as_ref(),
         );
@@ -311,7 +311,7 @@ impl SqlTransactionEngine {
         // Step 7: Execute with parameters
         match execution::execute_with_params(
             (*plan).clone(),
-            &self.storage,
+            &mut self.storage,
             tx_ctx,
             params.as_ref(),
         ) {

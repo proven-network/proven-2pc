@@ -15,7 +15,7 @@ use crate::types::value::{Row, Value};
 fn validate_foreign_keys(
     row: &Row,
     schema: &Table,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<()> {
     // Check each foreign key constraint
@@ -96,7 +96,7 @@ pub fn execute_insert(
     table: String,
     columns: Option<Vec<usize>>,
     source: Node,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
@@ -108,9 +108,7 @@ pub fn execute_insert(
 
     // Phase 1: Read all source rows (immutable borrow)
     let rows_to_insert = {
-        // Use immutable reference for reading
-        let storage_ref = storage;
-        let rows = super::executor::execute_node_read(source, storage_ref, tx_ctx, params)?;
+        let rows = super::executor::execute_node_read(source, storage, tx_ctx, params)?;
         rows.collect::<Result<Vec<_>>>()?
     }; // Immutable borrow ends here
 

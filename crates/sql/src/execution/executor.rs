@@ -30,7 +30,7 @@ pub enum ExecutionResult {
 /// Execute a query plan with parameters
 pub fn execute_with_params(
     plan: Plan,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {

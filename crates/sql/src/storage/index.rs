@@ -7,7 +7,6 @@ use crate::storage::types::{FjallIterator, Row, RowId};
 use crate::storage::uncommitted_index::{IndexOp, UncommittedIndexStore};
 use crate::types::value::Value;
 use fjall::{Batch, Partition, PartitionCreateOptions};
-use parking_lot::RwLockReadGuard;
 use proven_hlc::HlcTimestamp;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -556,22 +555,19 @@ pub enum IndexUpdate {
     },
 }
 
-/// Streaming iterator for index lookups that properly holds locks
+/// Streaming iterator for index lookups
 pub struct IndexLookupIterator<'a> {
-    // Hold the index manager lock for the lifetime of the iterator
-    _index_guard: RwLockReadGuard<'a, IndexManager>,
-
     // The underlying fjall iterator
     iter: FjallIterator<'a>,
 }
 
 impl<'a> IndexLookupIterator<'a> {
     pub fn new(
-        index_guard: RwLockReadGuard<'a, IndexManager>,
+        index_manager: &'a IndexManager,
         index_name: &str,
         values: Vec<Value>,
     ) -> Result<Self> {
-        let partition = index_guard
+        let partition = index_manager
             .partitions
             .get(index_name)
             .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
@@ -588,10 +584,7 @@ impl<'a> IndexLookupIterator<'a> {
             })
         }));
 
-        Ok(Self {
-            _index_guard: index_guard,
-            iter,
-        })
+        Ok(Self { iter })
     }
 }
 
@@ -607,23 +600,20 @@ impl<'a> Iterator for IndexLookupIterator<'a> {
     }
 }
 
-/// Streaming iterator for index range scans that properly holds locks
+/// Streaming iterator for index range scans
 pub struct IndexRangeScanIterator<'a> {
-    // Hold the index manager lock for the lifetime of the iterator
-    _index_guard: RwLockReadGuard<'a, IndexManager>,
-
     // The underlying fjall iterator
     iter: FjallIterator<'a>,
 }
 
 impl<'a> IndexRangeScanIterator<'a> {
     pub fn new(
-        index_guard: RwLockReadGuard<'a, IndexManager>,
+        index_manager: &'a IndexManager,
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
     ) -> Result<Self> {
-        let partition = index_guard
+        let partition = index_manager
             .partitions
             .get(index_name)
             .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
@@ -664,10 +654,7 @@ impl<'a> IndexRangeScanIterator<'a> {
             })),
         };
 
-        Ok(Self {
-            _index_guard: index_guard,
-            iter,
-        })
+        Ok(Self { iter })
     }
 }
 

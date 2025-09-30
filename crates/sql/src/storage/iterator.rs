@@ -6,7 +6,7 @@ use crate::storage::encoding::{decode_row_key, deserialize};
 use crate::storage::engine::TableMetadata;
 use crate::storage::types::{FjallIterator, Row, RowId, WriteOp};
 use crate::storage::uncommitted_data::{TableActiveData, UncommittedDataStore};
-use parking_lot::RwLockReadGuard;
+
 use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -35,21 +35,18 @@ pub struct TableIterator<'a> {
 
     // Track which rows we've already returned
     seen_rows: HashSet<RowId>,
-
-    // Hold the table lock for the lifetime of the iterator
-    _tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
 }
 
 impl<'a> TableIterator<'a> {
     pub(crate) fn new(
         txn_id: HlcTimestamp,
-        tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
+        tables: &'a HashMap<String, Arc<TableMetadata>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
         table_name: &str,
     ) -> Result<Self> {
         // Get the table metadata
-        let table_meta = tables_guard
+        let table_meta = tables
             .get(table_name)
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
@@ -83,7 +80,6 @@ impl<'a> TableIterator<'a> {
             data_iter,
             seen_rows: HashSet::new(),
             buffered_fjall: None,
-            _tables_guard: tables_guard,
         })
     }
 
@@ -254,19 +250,13 @@ pub struct TableIteratorWithIds<'a> {
 impl<'a> TableIteratorWithIds<'a> {
     pub fn new(
         txn_id: HlcTimestamp,
-        tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
+        tables: &'a HashMap<String, Arc<TableMetadata>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
         table_name: &str,
     ) -> Result<Self> {
         Ok(Self {
-            inner: TableIterator::new(
-                txn_id,
-                tables_guard,
-                uncommitted_data,
-                data_history,
-                table_name,
-            )?,
+            inner: TableIterator::new(txn_id, tables, uncommitted_data, data_history, table_name)?,
         })
     }
 }
@@ -307,21 +297,18 @@ pub struct TableIteratorReverse<'a> {
 
     // Track which rows we've already returned
     seen_rows: HashSet<RowId>,
-
-    // Hold the table lock for the lifetime of the iterator
-    _tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
 }
 
 impl<'a> TableIteratorReverse<'a> {
     pub fn new(
         txn_id: HlcTimestamp,
-        tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
+        tables: &'a HashMap<String, Arc<TableMetadata>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
         table_name: &str,
     ) -> Result<Self> {
         // Get the table metadata
-        let table_meta = tables_guard
+        let table_meta = tables
             .get(table_name)
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
@@ -368,7 +355,6 @@ impl<'a> TableIteratorReverse<'a> {
             data_iter,
             history_ops,
             seen_rows: HashSet::new(),
-            _tables_guard: tables_guard,
         })
     }
 

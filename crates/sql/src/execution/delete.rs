@@ -33,7 +33,7 @@ enum CascadeOp {
 
 /// Helper function to update a single column value
 fn update_column_value(
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     table: &str,
     row_id: u64,
@@ -70,7 +70,7 @@ fn check_and_collect_cascade_ops(
     _row_id: u64,
     row: &Row,
     table_name: &str,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<Vec<CascadeOp>> {
     let mut cascade_ops = Vec::new();
@@ -154,7 +154,7 @@ fn check_and_collect_cascade_ops(
 pub fn execute_delete(
     table: String,
     source: Node,
-    storage: &Storage,
+    storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
@@ -167,11 +167,15 @@ pub fn execute_delete(
             let (row_id, row) = result?;
             let row_arc = std::sync::Arc::new(row.values.clone());
             let matches = match &source {
-                Node::Filter { predicate, .. } => {
-                    expression::evaluate_with_arc(predicate, Some(&row_arc), tx_ctx, params)?
-                        .to_bool()
-                        .unwrap_or(false)
-                }
+                Node::Filter { predicate, .. } => expression::evaluate_with_storage(
+                    predicate,
+                    Some(&row_arc),
+                    tx_ctx,
+                    params,
+                    Some(storage),
+                )?
+                .to_bool()
+                .unwrap_or(false),
                 Node::Scan { .. } => true,
                 _ => true,
             };
