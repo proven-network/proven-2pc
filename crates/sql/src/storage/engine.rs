@@ -55,6 +55,9 @@ pub struct Storage {
     // Invalidated on DDL operations (create_index, drop_index, drop_table)
     table_indexes_cache: HashMap<String, Vec<(String, IndexMetadata)>>,
 
+    // Last cleanup timestamp - used to throttle cleanup operations
+    last_cleanup: Option<HlcTimestamp>,
+
     // Configuration
     config: StorageConfig,
 }
@@ -184,6 +187,7 @@ impl Storage {
             data_history,
             index_history,
             table_indexes_cache: HashMap::new(),
+            last_cleanup: None,
             config,
         })
     }
@@ -1191,11 +1195,30 @@ impl Storage {
                 .add_committed_ops_to_batch(&mut batch, txn_id, index_ops)?;
         }
 
+        // Cleanup old operations if enough time has passed
+        // Run cleanup every ~30 seconds (1/10th of 5-minute retention) to avoid performance impact
+        let should_cleanup = match self.last_cleanup {
+            None => true,
+            Some(last) => {
+                let cleanup_interval_micros = 30_000_000; // 30 seconds
+                txn_id.physical.saturating_sub(last.physical) >= cleanup_interval_micros
+            }
+        };
+
+        if should_cleanup {
+            self.data_history
+                .cleanup_old_operations(&mut batch, txn_id)?;
+            self.index_history
+                .cleanup_old_operations(&mut batch, txn_id)?;
+
+            self.last_cleanup = Some(txn_id);
+        }
+
         // Remove from uncommitted stores (this is fast, no disk I/O)
         self.uncommitted_data
             .remove_transaction(&mut batch, txn_id)?;
 
-        // Commit single atomic batch (includes data, indexes, and history)
+        // Commit single atomic batch (includes data, indexes, history, and cleanup)
         batch.commit()?;
 
         // Persist to disk once
@@ -1209,12 +1232,34 @@ impl Storage {
         // Create batch for atomic commit (even if no writes, we might have index ops)
         let mut batch = self.keyspace.batch();
 
+        // Cleanup old operations if enough time has passed (same as commit)
+        // Run cleanup every ~30 seconds (1/10th of 5-minute retention) to avoid performance impact
+        let should_cleanup = match self.last_cleanup {
+            None => true,
+            Some(last) => {
+                let cleanup_interval_micros = 30_000_000; // 30 seconds
+                txn_id.physical.saturating_sub(last.physical) >= cleanup_interval_micros
+            }
+        };
+
+        if should_cleanup {
+            self.data_history
+                .cleanup_old_operations(&mut batch, txn_id)?;
+            self.index_history
+                .cleanup_old_operations(&mut batch, txn_id)?;
+
+            self.last_cleanup = Some(txn_id);
+        }
+
         // Remove from uncommitted data
         self.uncommitted_data
             .remove_transaction(&mut batch, txn_id)?;
 
         // Abort index operations
         self.index_manager.abort_transaction(txn_id)?;
+
+        // Commit the batch (includes cleanup if it ran)
+        batch.commit()?;
 
         Ok(())
     }

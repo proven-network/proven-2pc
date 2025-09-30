@@ -115,15 +115,16 @@ impl IndexHistoryStore {
     }
 
     /// Cleanup old operations (older than retention window)
-    pub fn cleanup_old_operations(&self, current_time: HlcTimestamp) -> Result<()> {
+    pub fn cleanup_old_operations(
+        &self,
+        batch: &mut fjall::Batch,
+        current_time: HlcTimestamp,
+    ) -> Result<()> {
         // Calculate the cutoff time (retention window ago)
         // Note: HlcTimestamp's physical component is in microseconds
         let retention_micros = self.retention_window.as_micros() as u64;
         let cutoff_physical = current_time.physical.saturating_sub(retention_micros);
         let cutoff = HlcTimestamp::new(cutoff_physical, 0, current_time.node_id);
-
-        let mut batch = self.keyspace.batch();
-        let mut removed_count = 0;
 
         // Key format: {index_name_len(4)}{index_name}{commit_time(20)}{row_id(8)}{seq(8)}
         for result in self.partition.iter() {
@@ -148,13 +149,8 @@ impl IndexHistoryStore {
                 && commit_time < cutoff
             {
                 batch.remove(&self.partition, key);
-                removed_count += 1;
             }
             // Note: We can't break early since keys are ordered by index name first, not time
-        }
-
-        if removed_count > 0 {
-            batch.commit()?;
         }
 
         Ok(())
