@@ -1434,9 +1434,12 @@ impl Storage {
         // Phase 2: All constraints passed - now apply the changes
         for (index_name, _index_meta, old_values, new_values) in updates {
             // Remove old entry
-            &mut self
-                .index_manager
-                .remove_entry(&index_name, &old_values, old_row.id, txn_id)?;
+            let _ = &mut self.index_manager.remove_entry(
+                &index_name,
+                &old_values,
+                old_row.id,
+                txn_id,
+            )?;
 
             // Add new entry
             self.index_manager
@@ -1472,9 +1475,12 @@ impl Storage {
 
             if index_values.len() == column_indices.len() {
                 // Remove from index
-                &mut self
-                    .index_manager
-                    .remove_entry(&index_name, &index_values, row.id, txn_id)?;
+                let _ = &mut self.index_manager.remove_entry(
+                    &index_name,
+                    &index_values,
+                    row.id,
+                    txn_id,
+                )?;
             }
         }
 

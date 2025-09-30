@@ -460,45 +460,6 @@ impl IndexManager {
         Ok(iter)
     }
 
-    /// Batch update indexes - much more efficient than individual updates
-    pub fn batch_update<F>(
-        &self,
-        batch: &mut Batch,
-        updates: Vec<IndexUpdate>,
-        get_partition: F,
-    ) -> Result<()>
-    where
-        F: Fn(&str) -> Option<&Partition>,
-    {
-        for update in updates {
-            match update {
-                IndexUpdate::Add {
-                    index_name,
-                    values,
-                    row_id,
-                    txn_id: _,
-                } => {
-                    if let Some(partition) = get_partition(&index_name) {
-                        let key = encode_index_key(&values, row_id);
-                        // Store empty value - key contains all needed info
-                        batch.insert(partition, key, []);
-                    }
-                }
-                IndexUpdate::Remove {
-                    index_name,
-                    values,
-                    row_id,
-                } => {
-                    if let Some(partition) = get_partition(&index_name) {
-                        let key = encode_index_key(&values, row_id);
-                        batch.remove(partition, key);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Commit index operations for a transaction
     pub fn commit_transaction(&mut self, batch: &mut Batch, txn_id: HlcTimestamp) -> Result<()> {
         for op in self.index_versions.get_transaction_ops(txn_id) {
@@ -538,21 +499,6 @@ impl IndexManager {
         self.index_versions.clear_transaction(txn_id)?;
         Ok(())
     }
-}
-
-/// Index update operation for batching
-pub enum IndexUpdate {
-    Add {
-        index_name: String,
-        values: Vec<Value>,
-        row_id: RowId,
-        txn_id: HlcTimestamp,
-    },
-    Remove {
-        index_name: String,
-        values: Vec<Value>,
-        row_id: RowId,
-    },
 }
 
 /// Streaming iterator for index lookups
