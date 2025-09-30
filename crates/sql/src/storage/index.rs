@@ -489,14 +489,18 @@ impl IndexManager {
             }
         }
         // Clear the transaction's operations from UncommittedIndexStore
-        self.index_versions.clear_transaction(txn_id)?;
+        self.index_versions.clear_transaction(batch, txn_id)?;
         Ok(())
     }
 
     /// Abort index operations for a transaction
-    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn abort_transaction(
+        &mut self,
+        batch: &mut fjall::Batch,
+        txn_id: HlcTimestamp,
+    ) -> Result<()> {
         // Clear the transaction's operations from UncommittedIndexStore
-        self.index_versions.clear_transaction(txn_id)?;
+        self.index_versions.clear_transaction(batch, txn_id)?;
         Ok(())
     }
 }
@@ -651,7 +655,6 @@ mod tests {
             .unwrap();
         Arc::new(IndexHistoryStore::new(
             partition,
-            keyspace.clone(),
             std::time::Duration::from_secs(300),
         ))
     }

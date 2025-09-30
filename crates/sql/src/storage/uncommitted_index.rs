@@ -175,7 +175,7 @@ impl UncommittedIndexStore {
     }
 
     /// Clear all operations for a transaction (used on commit or abort)
-    pub fn clear_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn clear_transaction(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
         let prefix = Self::encode_tx_prefix(txn_id);
 
         // Collect all keys with this prefix
@@ -185,9 +185,9 @@ impl UncommittedIndexStore {
             .filter_map(|result| result.ok().map(|(key, _)| key.to_vec()))
             .collect();
 
-        // Remove all keys
+        // Remove all keys using the batch
         for key in keys_to_remove {
-            self.partition.remove(key)?;
+            batch.remove(&self.partition, key);
         }
 
         Ok(())

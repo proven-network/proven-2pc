@@ -3,7 +3,7 @@
 use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::types::{RowId, WriteOp};
-use fjall::{Keyspace, Partition};
+use fjall::Partition;
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -12,16 +12,14 @@ use std::time::Duration;
 /// Maintains a sliding window of operations for time-travel queries
 pub struct DataHistoryStore {
     partition: Partition,
-    keyspace: Keyspace,
     retention_window: Duration,
 }
 
 impl DataHistoryStore {
     /// Create a new data history store
-    pub fn new(partition: Partition, keyspace: Keyspace, retention_window: Duration) -> Self {
+    pub fn new(partition: Partition, retention_window: Duration) -> Self {
         Self {
             partition,
-            keyspace,
             retention_window,
         }
     }
@@ -166,26 +164,6 @@ impl DataHistoryStore {
             // Note: We can't break early since keys are ordered by table name first, not time
         }
 
-        Ok(())
-    }
-
-    /// Remove all operations for a specific table (used when dropping a table)
-    pub fn remove_table(&self, table_name: &str) -> Result<()> {
-        let mut batch = self.keyspace.batch();
-
-        // Scan all entries and remove those matching the table
-        for result in self.partition.iter() {
-            let (key, value) = result?;
-
-            // Deserialize the operation to check the table
-            if let Ok(op) = deserialize::<WriteOp>(&value)
-                && op.table_name() == Some(table_name)
-            {
-                batch.remove(&self.partition, key);
-            }
-        }
-
-        batch.commit()?;
         Ok(())
     }
 }

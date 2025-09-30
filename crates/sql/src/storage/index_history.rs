@@ -11,16 +11,14 @@ use std::time::Duration;
 /// Maintains a sliding window of operations for time-travel queries on indexes
 pub struct IndexHistoryStore {
     partition: Partition,
-    keyspace: Keyspace,
     retention_window: Duration,
 }
 
 impl IndexHistoryStore {
     /// Create a new index history store
-    pub fn new(partition: Partition, keyspace: Keyspace, retention_window: Duration) -> Self {
+    pub fn new(partition: Partition, retention_window: Duration) -> Self {
         Self {
             partition,
-            keyspace,
             retention_window,
         }
     }

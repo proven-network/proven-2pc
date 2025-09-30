@@ -107,7 +107,6 @@ impl Storage {
         )?;
         let data_history = Arc::new(DataHistoryStore::new(
             data_history_partition,
-            keyspace.clone(),
             std::time::Duration::from_secs(300), // 5 minutes retention
         ));
 
@@ -132,7 +131,6 @@ impl Storage {
         )?;
         let index_history = Arc::new(IndexHistoryStore::new(
             index_history_partition,
-            keyspace.clone(),
             std::time::Duration::from_secs(300), // 5 minutes retention
         ));
 
@@ -1255,10 +1253,10 @@ impl Storage {
         self.uncommitted_data
             .remove_transaction(&mut batch, txn_id)?;
 
-        // Abort index operations
-        self.index_manager.abort_transaction(txn_id)?;
+        // Abort index operations (uses batch now)
+        self.index_manager.abort_transaction(&mut batch, txn_id)?;
 
-        // Commit the batch (includes cleanup if it ran)
+        // Commit the batch (includes cleanup, uncommitted data removal, and index abort)
         batch.commit()?;
 
         Ok(())
