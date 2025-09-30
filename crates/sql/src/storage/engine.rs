@@ -117,10 +117,7 @@ impl Storage {
                 .block_size(4 * 1024)
                 .compression(fjall::CompressionType::None),
         )?;
-        let index_versions = Arc::new(UncommittedIndexStore::new(
-            index_versions_partition,
-            keyspace.clone(),
-        ));
+        let index_versions = Arc::new(UncommittedIndexStore::new(index_versions_partition));
 
         // Open index history partition (for committed index operations within retention window)
         let index_history_partition = keyspace.open_partition(
@@ -462,54 +459,6 @@ impl Storage {
         }
 
         Ok(results)
-    }
-
-    /// Check if values would violate a unique constraint
-    pub fn check_unique_constraint(
-        &self,
-        index_name: &str,
-        values: &[Value],
-        txn_id: HlcTimestamp,
-    ) -> Result<bool> {
-        self.index_manager.check_unique(index_name, values, txn_id)
-    }
-
-    /// Insert a row
-    pub fn insert(
-        &mut self,
-        txn_id: HlcTimestamp,
-        table: &str,
-        values: Vec<crate::types::value::Value>,
-    ) -> Result<RowId> {
-        // Get table metadata
-        let table_meta = self
-            .tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?
-            .clone();
-
-        // Validate values against schema
-        table_meta.schema.validate_row(&values)?;
-
-        // Generate row ID
-        let row_id = table_meta.next_row_id.fetch_add(1, Ordering::SeqCst);
-
-        // Create row
-        let row = Arc::new(Row::new(row_id, values));
-
-        // Add to uncommitted data
-        let write_op = WriteOp::Insert {
-            table: table.to_string(),
-            row_id,
-            row: row.clone(),
-        };
-
-        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
-
-        // Update indexes for this table
-        self.update_indexes_on_insert(table, &row, &table_meta, txn_id)?;
-
-        Ok(row_id)
     }
 
     /// Insert multiple rows atomically - all validation checks are done before any inserts

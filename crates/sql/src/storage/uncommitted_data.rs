@@ -172,31 +172,6 @@ impl UncommittedDataStore {
         Ok(())
     }
 
-    /// Clean up operations before a given timestamp
-    pub fn cleanup_before(&self, timestamp: HlcTimestamp) -> Result<()> {
-        let mut batch = self.keyspace.batch();
-        let mut removed_count = 0;
-
-        // Iterate through all entries
-        for result in self.partition.iter() {
-            let (key, _) = result?;
-
-            // Try to decode the txn_id from the key
-            if let Ok(txn_id) = bincode::deserialize::<HlcTimestamp>(&key[..key.len().min(24)])
-                && txn_id < timestamp
-            {
-                batch.remove(&self.partition, key);
-                removed_count += 1;
-            }
-        }
-
-        if removed_count > 0 {
-            batch.commit()?;
-        }
-
-        Ok(())
-    }
-
     /// Remove all operations for a specific table (used when dropping a table)
     pub fn remove_table(&self, table_name: &str) -> Result<()> {
         let mut batch = self.keyspace.batch();

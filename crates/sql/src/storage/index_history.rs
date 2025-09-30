@@ -3,7 +3,7 @@
 use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::uncommitted_index::IndexOp;
-use fjall::{Keyspace, Partition};
+use fjall::Partition;
 use proven_hlc::HlcTimestamp;
 use std::time::Duration;
 

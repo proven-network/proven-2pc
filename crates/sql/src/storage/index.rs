@@ -643,7 +643,7 @@ mod tests {
         let partition = keyspace
             .open_partition("_index_versions_test", PartitionCreateOptions::default())
             .unwrap();
-        Arc::new(UncommittedIndexStore::new(partition, keyspace.clone()))
+        Arc::new(UncommittedIndexStore::new(partition))
     }
 
     fn create_recent_index_versions(keyspace: &Keyspace) -> Arc<IndexHistoryStore> {

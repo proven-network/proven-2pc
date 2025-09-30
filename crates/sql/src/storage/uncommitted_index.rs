@@ -7,10 +7,9 @@ use crate::error::Result;
 use crate::storage::encoding::serialize;
 use crate::storage::types::RowId;
 use crate::types::value::Value;
-use fjall::{Keyspace, Partition};
+use fjall::Partition;
 use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Index operation type
@@ -54,7 +53,6 @@ impl IndexOp {
 /// Fjall-based store for uncommitted index operations
 pub struct UncommittedIndexStore {
     partition: Partition,
-    keyspace: Keyspace,
     /// Counter for operation sequence numbers per transaction
     /// Note: This is in-memory only, resets on restart (which is fine for active transactions)
     next_seq: AtomicU64,
@@ -62,10 +60,9 @@ pub struct UncommittedIndexStore {
 
 impl UncommittedIndexStore {
     /// Create a new index version store with the given partition
-    pub fn new(partition: Partition, keyspace: Keyspace) -> Self {
+    pub fn new(partition: Partition) -> Self {
         Self {
             partition,
-            keyspace,
             next_seq: AtomicU64::new(0),
         }
     }
@@ -146,34 +143,6 @@ impl UncommittedIndexStore {
             .collect()
     }
 
-    /// Get index lookups for a transaction (for unique constraint checking)
-    /// Returns a map of (index_name, values) -> row_ids
-    pub fn get_index_lookups(
-        &self,
-        txn_id: HlcTimestamp,
-        index_name: &str,
-    ) -> HashMap<Vec<Value>, HashSet<RowId>> {
-        let mut lookups: HashMap<Vec<Value>, HashSet<RowId>> = HashMap::new();
-
-        for op in self.get_index_ops(txn_id, index_name) {
-            match op {
-                IndexOp::Insert { values, row_id, .. } => {
-                    lookups.entry(values).or_default().insert(row_id);
-                }
-                IndexOp::Delete { values, row_id, .. } => {
-                    if let Some(set) = lookups.get_mut(&values) {
-                        set.remove(&row_id);
-                        if set.is_empty() {
-                            lookups.remove(&values);
-                        }
-                    }
-                }
-            }
-        }
-
-        lookups
-    }
-
     /// Clear all operations for a transaction (used on commit or abort)
     pub fn clear_transaction(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
         let prefix = Self::encode_tx_prefix(txn_id);
@@ -190,18 +159,6 @@ impl UncommittedIndexStore {
             batch.remove(&self.partition, key);
         }
 
-        Ok(())
-    }
-
-    /// Check if there are any operations for a transaction
-    pub fn has_transaction_ops(&self, txn_id: HlcTimestamp) -> bool {
-        let prefix = Self::encode_tx_prefix(txn_id);
-        self.partition.prefix(prefix).next().is_some()
-    }
-
-    /// Persist the store (flush to disk)
-    pub fn persist(&self) -> Result<()> {
-        self.keyspace.persist(fjall::PersistMode::SyncAll)?;
         Ok(())
     }
 }

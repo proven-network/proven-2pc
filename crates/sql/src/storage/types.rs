@@ -26,11 +26,6 @@ impl Row {
             deleted: false,
         }
     }
-
-    pub fn with_deleted(mut self, deleted: bool) -> Self {
-        self.deleted = deleted;
-        self
-    }
 }
 
 /// Write operation for transaction tracking
