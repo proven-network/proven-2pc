@@ -70,13 +70,13 @@ impl UncommittedIndexStore {
         }
     }
 
-    /// Encode key for index operation: {tx_id}{index_name}{seq}
-    fn encode_key(tx_id: HlcTimestamp, index_name: &str, seq: u64) -> Vec<u8> {
+    /// Encode key for index operation: {txn_id}{index_name}{seq}
+    fn encode_key(txn_id: HlcTimestamp, index_name: &str, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
 
-        // Serialize tx_id first for efficient prefix scans by transaction
+        // Serialize txn_id first for efficient prefix scans by transaction
         // Use lexicographic encoding to ensure byte-wise ordering matches logical ordering
-        let tx_bytes = tx_id.to_lexicographic_bytes();
+        let tx_bytes = txn_id.to_lexicographic_bytes();
         key.extend_from_slice(&tx_bytes);
 
         // Add index name
@@ -89,16 +89,16 @@ impl UncommittedIndexStore {
     }
 
     /// Encode prefix for transaction operations
-    fn encode_tx_prefix(tx_id: HlcTimestamp) -> Vec<u8> {
-        tx_id.to_lexicographic_bytes().to_vec()
+    fn encode_tx_prefix(txn_id: HlcTimestamp) -> Vec<u8> {
+        txn_id.to_lexicographic_bytes().to_vec()
     }
 
     /// Encode prefix for transaction + index operations
-    fn encode_tx_index_prefix(tx_id: HlcTimestamp, index_name: &str) -> Vec<u8> {
+    fn encode_tx_index_prefix(txn_id: HlcTimestamp, index_name: &str) -> Vec<u8> {
         let mut key = Vec::new();
 
-        // Serialize tx_id first
-        let tx_bytes = tx_id.to_lexicographic_bytes();
+        // Serialize txn_id first
+        let tx_bytes = txn_id.to_lexicographic_bytes();
         key.extend_from_slice(&tx_bytes);
 
         // Add index name
@@ -109,9 +109,9 @@ impl UncommittedIndexStore {
     }
 
     /// Add an index operation for a transaction
-    pub fn add_operation(&self, tx_id: HlcTimestamp, op: IndexOp) -> Result<()> {
+    pub fn add_operation(&self, txn_id: HlcTimestamp, op: IndexOp) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let key = Self::encode_key(tx_id, op.index_name(), seq);
+        let key = Self::encode_key(txn_id, op.index_name(), seq);
         let value = serialize(&op)?;
 
         self.partition.insert(key, value)?;
@@ -119,8 +119,8 @@ impl UncommittedIndexStore {
     }
 
     /// Get all index operations for a transaction
-    pub fn get_transaction_ops(&self, tx_id: HlcTimestamp) -> Vec<IndexOp> {
-        let prefix = Self::encode_tx_prefix(tx_id);
+    pub fn get_transaction_ops(&self, txn_id: HlcTimestamp) -> Vec<IndexOp> {
+        let prefix = Self::encode_tx_prefix(txn_id);
 
         self.partition
             .prefix(prefix)
@@ -133,8 +133,8 @@ impl UncommittedIndexStore {
     }
 
     /// Get index operations for a specific index in a transaction
-    pub fn get_index_ops(&self, tx_id: HlcTimestamp, index_name: &str) -> Vec<IndexOp> {
-        let prefix = Self::encode_tx_index_prefix(tx_id, index_name);
+    pub fn get_index_ops(&self, txn_id: HlcTimestamp, index_name: &str) -> Vec<IndexOp> {
+        let prefix = Self::encode_tx_index_prefix(txn_id, index_name);
 
         self.partition
             .prefix(prefix)
@@ -150,12 +150,12 @@ impl UncommittedIndexStore {
     /// Returns a map of (index_name, values) -> row_ids
     pub fn get_index_lookups(
         &self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         index_name: &str,
     ) -> HashMap<Vec<Value>, HashSet<RowId>> {
         let mut lookups: HashMap<Vec<Value>, HashSet<RowId>> = HashMap::new();
 
-        for op in self.get_index_ops(tx_id, index_name) {
+        for op in self.get_index_ops(txn_id, index_name) {
             match op {
                 IndexOp::Insert { values, row_id, .. } => {
                     lookups.entry(values).or_default().insert(row_id);
@@ -175,8 +175,8 @@ impl UncommittedIndexStore {
     }
 
     /// Clear all operations for a transaction (used on commit or abort)
-    pub fn clear_transaction(&self, tx_id: HlcTimestamp) -> Result<()> {
-        let prefix = Self::encode_tx_prefix(tx_id);
+    pub fn clear_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
+        let prefix = Self::encode_tx_prefix(txn_id);
 
         // Collect all keys with this prefix
         let keys_to_remove: Vec<_> = self
@@ -194,8 +194,8 @@ impl UncommittedIndexStore {
     }
 
     /// Check if there are any operations for a transaction
-    pub fn has_transaction_ops(&self, tx_id: HlcTimestamp) -> bool {
-        let prefix = Self::encode_tx_prefix(tx_id);
+    pub fn has_transaction_ops(&self, txn_id: HlcTimestamp) -> bool {
+        let prefix = Self::encode_tx_prefix(txn_id);
         self.partition.prefix(prefix).next().is_some()
     }
 

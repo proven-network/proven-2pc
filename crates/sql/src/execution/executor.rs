@@ -269,9 +269,7 @@ pub fn execute_node_read<'a>(
                 let rows = storage.index_range_lookup_rows(
                     &index_name,
                     start_values,
-                    start_inclusive,
                     end_values,
-                    end_inclusive,
                     reverse,
                     tx_ctx.id,
                 )?;

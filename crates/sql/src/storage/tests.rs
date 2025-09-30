@@ -33,7 +33,7 @@ mod integration_tests {
         .unwrap()
     }
 
-    fn create_tx_id(ts: u64) -> HlcTimestamp {
+    fn create_txn_id(ts: u64) -> HlcTimestamp {
         HlcTimestamp::new(ts, 0, NodeId::new(1))
     }
 
@@ -69,8 +69,8 @@ mod integration_tests {
             .create_table("users".to_string(), create_test_schema())
             .unwrap();
 
-        // let tx1 = create_tx_id(100);
-        let tx1 = create_tx_id(1);
+        // let tx1 = create_txn_id(100);
+        let tx1 = create_txn_id(1);
 
         // Insert row
         let values = vec![
@@ -88,8 +88,8 @@ mod integration_tests {
         assert_eq!(row.values, values);
 
         // Another transaction shouldn't see uncommitted
-        // let tx2 = create_tx_id(200);
-        let tx2 = create_tx_id(2);
+        // let tx2 = create_txn_id(200);
+        let tx2 = create_txn_id(2);
         let row = engine.read(tx2, "users", row_id).unwrap();
         assert!(row.is_none());
 
@@ -109,8 +109,8 @@ mod integration_tests {
             .create_table("users".to_string(), create_test_schema())
             .unwrap();
 
-        // let tx1 = create_tx_id(100);
-        let tx1 = create_tx_id(1);
+        // let tx1 = create_txn_id(100);
+        let tx1 = create_txn_id(1);
 
         // Insert and commit
         let values = vec![
@@ -123,8 +123,8 @@ mod integration_tests {
         engine.commit_transaction(tx1).unwrap();
 
         // Update in new transaction
-        // let tx2 = create_tx_id(200);
-        let tx2 = create_tx_id(2);
+        // let tx2 = create_txn_id(200);
+        let tx2 = create_txn_id(2);
 
         let new_values = vec![
             Value::I64(1),
@@ -142,8 +142,8 @@ mod integration_tests {
         assert_eq!(row.values[3], Value::I64(31));
 
         // Other transactions still see old value
-        // let tx3 = create_tx_id(300);
-        let tx3 = create_tx_id(3);
+        // let tx3 = create_txn_id(300);
+        let tx3 = create_txn_id(3);
         let row = engine.read(tx3, "users", row_id).unwrap().unwrap();
         assert_eq!(row.values[1], Value::Str("Alice".to_string()));
         assert_eq!(row.values[3], Value::I64(30));
@@ -162,8 +162,8 @@ mod integration_tests {
             .create_table("users".to_string(), create_test_schema())
             .unwrap();
 
-        // let tx1 = create_tx_id(100);
-        let tx1 = create_tx_id(1);
+        // let tx1 = create_txn_id(100);
+        let tx1 = create_txn_id(1);
 
         // Insert and commit
         let values = vec![
@@ -176,8 +176,8 @@ mod integration_tests {
         engine.commit_transaction(tx1).unwrap();
 
         // Delete in new transaction
-        // let tx2 = create_tx_id(200);
-        let tx2 = create_tx_id(2);
+        // let tx2 = create_txn_id(200);
+        let tx2 = create_txn_id(2);
         engine.delete(tx2, "users", row_id).unwrap();
 
         // tx2 doesn't see deleted row
@@ -185,8 +185,8 @@ mod integration_tests {
         assert!(row.is_none());
 
         // Other transactions still see it
-        // let tx3 = create_tx_id(300);
-        let tx3 = create_tx_id(3);
+        // let tx3 = create_txn_id(300);
+        let tx3 = create_txn_id(3);
         let row = engine.read(tx3, "users", row_id).unwrap();
         assert!(row.is_some());
 
@@ -203,8 +203,8 @@ mod integration_tests {
             .create_table("users".to_string(), create_test_schema())
             .unwrap();
 
-        // let tx1 = create_tx_id(100);
-        let tx1 = create_tx_id(1);
+        // let tx1 = create_txn_id(100);
+        let tx1 = create_txn_id(1);
 
         // Insert multiple rows
         for i in 1..=5 {
@@ -222,8 +222,8 @@ mod integration_tests {
         assert_eq!(rows.len(), 5);
 
         // Other transaction sees nothing
-        // let tx2 = create_tx_id(200);
-        let tx2 = create_tx_id(2);
+        // let tx2 = create_txn_id(200);
+        let tx2 = create_txn_id(2);
         let rows = engine.scan(tx2, "users").unwrap();
         assert_eq!(rows.len(), 0);
 
@@ -240,8 +240,8 @@ mod integration_tests {
             .create_table("users".to_string(), create_test_schema())
             .unwrap();
 
-        // let tx1 = create_tx_id(100);
-        let tx1 = create_tx_id(1);
+        // let tx1 = create_txn_id(100);
+        let tx1 = create_txn_id(1);
 
         // Insert row
         let values = vec![
@@ -256,8 +256,8 @@ mod integration_tests {
         engine.abort_transaction(tx1).unwrap();
 
         // Row should not be visible even to same transaction
-        // let tx2 = create_tx_id(200);
-        let tx2 = create_tx_id(2);
+        // let tx2 = create_txn_id(200);
+        let tx2 = create_txn_id(2);
         let row = engine.read(tx2, "users", row_id).unwrap();
         assert!(row.is_none());
 
@@ -281,7 +281,7 @@ mod integration_tests {
                 .create_table("users".to_string(), create_test_schema())
                 .unwrap();
 
-            let tx = create_tx_id(100);
+            let tx = create_txn_id(100);
 
             let values = vec![
                 Value::I64(1),
@@ -308,7 +308,7 @@ mod integration_tests {
             );
 
             // Use a later transaction ID to read the committed data
-            let tx = create_tx_id(200);
+            let tx = create_txn_id(200);
 
             let rows = engine.scan(tx, "users").unwrap();
             assert_eq!(rows.len(), 1, "Expected 1 row, found {}", rows.len());
@@ -324,13 +324,13 @@ mod integration_tests {
             .unwrap();
 
         // Start multiple transactions
-        // let tx1 = create_tx_id(100);
-        // let tx2 = create_tx_id(200);
-        // let tx3 = create_tx_id(300);
+        // let tx1 = create_txn_id(100);
+        // let tx2 = create_txn_id(200);
+        // let tx3 = create_txn_id(300);
 
-        let tx1 = create_tx_id(1);
-        let tx2 = create_tx_id(2);
-        let tx3 = create_tx_id(3);
+        let tx1 = create_txn_id(1);
+        let tx2 = create_txn_id(2);
+        let tx3 = create_txn_id(3);
 
         // Each inserts different rows
         let values1 = vec![
@@ -376,7 +376,7 @@ mod integration_tests {
         engine.create_table("users".to_string(), schema).unwrap();
 
         // Insert some data
-        let tx1 = create_tx_id(1);
+        let tx1 = create_txn_id(1);
         engine
             .insert(
                 tx1,
@@ -404,7 +404,7 @@ mod integration_tests {
         engine.commit_transaction(tx1).unwrap();
 
         // Create non-unique index on age
-        let idx_tx1 = create_tx_id(10);
+        let idx_tx1 = create_txn_id(10);
         engine
             .create_index(
                 idx_tx1,
@@ -417,7 +417,7 @@ mod integration_tests {
         engine.commit_transaction(idx_tx1).unwrap();
 
         // Create unique index on email
-        let idx_tx2 = create_tx_id(11);
+        let idx_tx2 = create_txn_id(11);
         engine
             .create_index(
                 idx_tx2,
@@ -430,7 +430,7 @@ mod integration_tests {
         engine.commit_transaction(idx_tx2).unwrap();
 
         // Verify index works with lookup
-        let tx2 = create_tx_id(20);
+        let tx2 = create_txn_id(20);
         let results = engine
             .index_lookup("idx_age", vec![Value::I64(30)], tx2)
             .unwrap();
@@ -465,7 +465,7 @@ mod integration_tests {
         engine.create_table("users".to_string(), schema).unwrap();
 
         // Insert test data
-        let tx1 = create_tx_id(1);
+        let tx1 = create_txn_id(1);
         for i in 1..=5 {
             engine
                 .insert(
@@ -483,7 +483,7 @@ mod integration_tests {
         engine.commit_transaction(tx1).unwrap();
 
         // Create index on age
-        let idx_tx = create_tx_id(15);
+        let idx_tx = create_txn_id(15);
         engine
             .create_index(
                 idx_tx,
@@ -495,7 +495,7 @@ mod integration_tests {
             .unwrap();
         engine.commit_transaction(idx_tx).unwrap();
 
-        let tx2 = create_tx_id(20);
+        let tx2 = create_txn_id(20);
 
         // Test exact lookup
         let results = engine
@@ -537,7 +537,7 @@ mod integration_tests {
         engine.create_table("users".to_string(), schema).unwrap();
 
         // Create unique index on email
-        let idx_tx = create_tx_id(20);
+        let idx_tx = create_txn_id(20);
         engine
             .create_index(
                 idx_tx,
@@ -550,7 +550,7 @@ mod integration_tests {
         engine.commit_transaction(idx_tx).unwrap();
 
         // Insert first user
-        let tx1 = create_tx_id(1);
+        let tx1 = create_txn_id(1);
         engine
             .insert(
                 tx1,
@@ -566,7 +566,7 @@ mod integration_tests {
         engine.commit_transaction(tx1).unwrap();
 
         // Check that email already exists
-        let tx2 = create_tx_id(2);
+        let tx2 = create_txn_id(2);
         assert!(
             engine
                 .check_unique_constraint(
@@ -579,7 +579,7 @@ mod integration_tests {
         engine.abort_transaction(tx2).unwrap();
 
         // Check that different email doesn't exist
-        let tx3 = create_tx_id(3);
+        let tx3 = create_txn_id(3);
         assert!(
             !engine
                 .check_unique_constraint(
@@ -601,7 +601,7 @@ mod integration_tests {
         engine.create_table("users".to_string(), schema).unwrap();
 
         // Insert a large number of rows
-        let tx1 = create_tx_id(1);
+        let tx1 = create_txn_id(1);
         for i in 1..=1000 {
             engine
                 .insert(
@@ -619,7 +619,7 @@ mod integration_tests {
         engine.commit_transaction(tx1).unwrap();
 
         // Create index on age
-        let idx_tx = create_tx_id(25);
+        let idx_tx = create_txn_id(25);
         engine
             .create_index(
                 idx_tx,
@@ -653,7 +653,7 @@ mod integration_tests {
         assert_eq!(count, 10);
 
         // Compare with Vec-based approach that loads everything
-        let tx2 = create_tx_id(30);
+        let tx2 = create_txn_id(30);
         let all_results = engine
             .index_range_scan(
                 "idx_age",
@@ -687,7 +687,7 @@ mod integration_tests {
         engine.create_table("orders".to_string(), schema).unwrap();
 
         // Insert test data
-        let tx1 = create_tx_id(1);
+        let tx1 = create_txn_id(1);
         engine
             .insert(
                 tx1,
@@ -730,7 +730,7 @@ mod integration_tests {
         engine.commit_transaction(tx1).unwrap();
 
         // Create composite index on (customer_id, product_id)
-        let idx_tx = create_tx_id(30);
+        let idx_tx = create_txn_id(30);
         engine
             .create_index(
                 idx_tx,
@@ -743,7 +743,7 @@ mod integration_tests {
         engine.commit_transaction(idx_tx).unwrap();
 
         // Lookup by composite key
-        let tx2 = create_tx_id(40);
+        let tx2 = create_txn_id(40);
         let results = engine
             .index_lookup(
                 "idx_customer_product",

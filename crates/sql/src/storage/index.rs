@@ -121,7 +121,7 @@ impl IndexManager {
         index_name: &str,
         values: Vec<Value>,
         row_id: RowId,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Track the operation in UncommittedIndexStore
         let op = IndexOp::Insert {
@@ -129,7 +129,7 @@ impl IndexManager {
             values,
             row_id,
         };
-        self.index_versions.add_operation(tx_id, op)?;
+        self.index_versions.add_operation(txn_id, op)?;
         Ok(())
     }
 
@@ -139,7 +139,7 @@ impl IndexManager {
         index_name: &str,
         values: &[Value],
         row_id: RowId,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Track the delete operation in UncommittedIndexStore
         let op = IndexOp::Delete {
@@ -147,7 +147,7 @@ impl IndexManager {
             values: values.to_vec(),
             row_id,
         };
-        self.index_versions.add_operation(tx_id, op)?;
+        self.index_versions.add_operation(txn_id, op)?;
         Ok(())
     }
 
@@ -157,7 +157,7 @@ impl IndexManager {
         index_name: &str,
         values: &[Value],
         row_id: RowId,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Track the delete operation in UncommittedIndexStore
         let op = IndexOp::Delete {
@@ -165,17 +165,17 @@ impl IndexManager {
             values: values.to_vec(),
             row_id,
         };
-        self.index_versions.add_operation(tx_id, op)?;
+        self.index_versions.add_operation(txn_id, op)?;
         Ok(())
     }
 
     /// Lookup entries by exact value
-    /// For snapshot reads, pass the snapshot transaction ID as `tx_id`.
+    /// For snapshot reads, pass the snapshot transaction ID as `txn_id`.
     pub fn lookup(
         &self,
         index_name: &str,
         values: Vec<Value>,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<Vec<RowId>> {
         let partition = self
             .partitions
@@ -194,11 +194,11 @@ impl IndexManager {
         }
 
         // Apply MVCC: hide commits that happened after this transaction
-        // Get all index operations committed after tx_id and reverse their effects
+        // Get all index operations committed after txn_id and reverse their effects
         //
         // OPTIMIZATION: Only query history if it might contain relevant operations
         if !self.index_history.is_empty() {
-            let recent_ops = self.index_history.get_index_ops_after(tx_id, index_name)?;
+            let recent_ops = self.index_history.get_index_ops_after(txn_id, index_name)?;
 
             for op in recent_ops {
                 if op.values() == values {
@@ -217,7 +217,7 @@ impl IndexManager {
         }
 
         // Then, apply uncommitted operations for the current transaction
-        let ops = self.index_versions.get_index_ops(tx_id, index_name);
+        let ops = self.index_versions.get_index_ops(txn_id, index_name);
         for op in ops {
             if op.values() == values {
                 match op {
@@ -240,7 +240,7 @@ impl IndexManager {
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<Vec<RowId>> {
         let partition = self
             .partitions
@@ -277,7 +277,7 @@ impl IndexManager {
         }
 
         // Apply MVCC: hide commits that happened after this transaction
-        let recent_ops = self.index_history.get_index_ops_after(tx_id, index_name)?;
+        let recent_ops = self.index_history.get_index_ops_after(txn_id, index_name)?;
 
         for op in recent_ops {
             let values = op.values();
@@ -303,7 +303,7 @@ impl IndexManager {
         }
 
         // Then, apply uncommitted operations for the current transaction
-        for op in self.index_versions.get_index_ops(tx_id, index_name) {
+        for op in self.index_versions.get_index_ops(txn_id, index_name) {
             match op {
                 IndexOp::Insert {
                     values: idx_values,
@@ -348,7 +348,7 @@ impl IndexManager {
         &self,
         index_name: &str,
         values: &[Value],
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<bool> {
         let metadata = self
             .indexes
@@ -366,7 +366,7 @@ impl IndexManager {
         }
 
         // Check both committed and uncommitted entries including our own transaction
-        let existing = self.lookup(index_name, values.to_vec(), tx_id)?;
+        let existing = self.lookup(index_name, values.to_vec(), txn_id)?;
 
         Ok(!existing.is_empty())
     }
@@ -377,7 +377,7 @@ impl IndexManager {
         index_name: &str,
         rows: &[(RowId, Arc<Row>)],
         column_indices: &[usize],
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         for (row_id, row) in rows {
             // Extract values for index columns
@@ -387,7 +387,7 @@ impl IndexManager {
                 .collect();
 
             if values.len() == column_indices.len() {
-                self.add_entry(index_name, values, *row_id, tx_id)?;
+                self.add_entry(index_name, values, *row_id, txn_id)?;
             }
         }
 
@@ -477,7 +477,7 @@ impl IndexManager {
                     index_name,
                     values,
                     row_id,
-                    tx_id: _,
+                    txn_id: _,
                 } => {
                     if let Some(partition) = get_partition(&index_name) {
                         let key = encode_index_key(&values, row_id);
@@ -501,8 +501,8 @@ impl IndexManager {
     }
 
     /// Commit index operations for a transaction
-    pub fn commit_transaction(&mut self, batch: &mut Batch, tx_id: HlcTimestamp) -> Result<()> {
-        for op in self.index_versions.get_transaction_ops(tx_id) {
+    pub fn commit_transaction(&mut self, batch: &mut Batch, txn_id: HlcTimestamp) -> Result<()> {
+        for op in self.index_versions.get_transaction_ops(txn_id) {
             match op {
                 IndexOp::Insert {
                     index_name,
@@ -529,14 +529,14 @@ impl IndexManager {
             }
         }
         // Clear the transaction's operations from UncommittedIndexStore
-        self.index_versions.clear_transaction(tx_id)?;
+        self.index_versions.clear_transaction(txn_id)?;
         Ok(())
     }
 
     /// Abort index operations for a transaction
-    pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) -> Result<()> {
+    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
         // Clear the transaction's operations from UncommittedIndexStore
-        self.index_versions.clear_transaction(tx_id)?;
+        self.index_versions.clear_transaction(txn_id)?;
         Ok(())
     }
 }
@@ -547,7 +547,7 @@ pub enum IndexUpdate {
         index_name: String,
         values: Vec<Value>,
         row_id: RowId,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     },
     Remove {
         index_name: String,
@@ -698,7 +698,7 @@ mod tests {
         fjall::Config::new(&path).open().unwrap()
     }
 
-    fn create_tx_id(ts: u64) -> HlcTimestamp {
+    fn create_txn_id(ts: u64) -> HlcTimestamp {
         HlcTimestamp::new(ts, 0, NodeId::new(1))
     }
 
@@ -764,7 +764,7 @@ mod tests {
         let index_versions = create_index_versions(&keyspace);
         let recent_index_versions = create_recent_index_versions(&keyspace);
         let mut manager = IndexManager::new(index_versions, recent_index_versions);
-        let tx_id = create_tx_id(100);
+        let txn_id = create_txn_id(100);
 
         // Create index
         manager
@@ -779,18 +779,18 @@ mod tests {
 
         // Add entries
         manager
-            .add_entry("idx_age", vec![Value::I64(25)], 1, tx_id)
+            .add_entry("idx_age", vec![Value::I64(25)], 1, txn_id)
             .unwrap();
         manager
-            .add_entry("idx_age", vec![Value::I64(30)], 2, tx_id)
+            .add_entry("idx_age", vec![Value::I64(30)], 2, txn_id)
             .unwrap();
         manager
-            .add_entry("idx_age", vec![Value::I64(25)], 3, tx_id)
+            .add_entry("idx_age", vec![Value::I64(25)], 3, txn_id)
             .unwrap();
 
         // Lookup
         let results = manager
-            .lookup("idx_age", vec![Value::I64(25)], tx_id)
+            .lookup("idx_age", vec![Value::I64(25)], txn_id)
             .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&1));
@@ -802,7 +802,7 @@ mod tests {
                 "idx_age",
                 Some(vec![Value::I64(20)]),
                 Some(vec![Value::I64(30)]),
-                tx_id,
+                txn_id,
             )
             .unwrap();
         assert_eq!(results.len(), 3);
@@ -814,7 +814,7 @@ mod tests {
         let index_versions = create_index_versions(&keyspace);
         let recent_index_versions = create_recent_index_versions(&keyspace);
         let mut manager = IndexManager::new(index_versions, recent_index_versions);
-        let tx_id = create_tx_id(100);
+        let txn_id = create_txn_id(100);
 
         // Create unique index
         manager
@@ -830,14 +830,18 @@ mod tests {
         // Add entry
         let email = Value::Str("alice@example.com".to_string());
         manager
-            .add_entry("idx_email", vec![email.clone()], 1, tx_id)
+            .add_entry("idx_email", vec![email.clone()], 1, txn_id)
             .unwrap();
 
         // Check uniqueness
-        assert!(manager.check_unique("idx_email", &[email], tx_id).unwrap());
+        assert!(manager.check_unique("idx_email", &[email], txn_id).unwrap());
 
         // Different email should be fine
         let email2 = Value::Str("bob@example.com".to_string());
-        assert!(!manager.check_unique("idx_email", &[email2], tx_id).unwrap());
+        assert!(
+            !manager
+                .check_unique("idx_email", &[email2], txn_id)
+                .unwrap()
+        );
     }
 }

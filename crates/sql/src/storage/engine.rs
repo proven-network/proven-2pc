@@ -266,7 +266,7 @@ impl Storage {
     /// Create an index on a table
     pub fn create_index(
         &self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         index_name: String,
         table_name: String,
         columns: Vec<String>,
@@ -312,7 +312,7 @@ impl Storage {
         // Build index from existing data
         // Collect all existing rows
         let mut rows_to_index = Vec::new();
-        for row_result in self.iter(tx_id, &table_name)? {
+        for row_result in self.iter(txn_id, &table_name)? {
             let row = row_result?;
             rows_to_index.push((row.id, row));
         }
@@ -322,7 +322,7 @@ impl Storage {
             &index_name,
             &rows_to_index,
             &column_indices,
-            tx_id,
+            txn_id,
         )?;
 
         // Persist metadata about the index
@@ -364,7 +364,7 @@ impl Storage {
         &self,
         index_name: &str,
         values: Vec<Value>,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<Vec<Arc<Row>>> {
         // Cache metadata lookup outside the loop
         let index_meta_key = format!("index:{}", index_name);
@@ -379,12 +379,12 @@ impl Storage {
         let row_ids = self
             .index_manager
             .read()
-            .lookup(index_name, values, tx_id)?;
+            .lookup(index_name, values, txn_id)?;
 
         // Read actual rows (checking MVCC visibility)
         let mut results = Vec::new();
         for row_id in row_ids {
-            if let Some(row) = self.read(tx_id, &table_name, row_id)? {
+            if let Some(row) = self.read(txn_id, &table_name, row_id)? {
                 results.push(row);
             }
         }
@@ -424,7 +424,7 @@ impl Storage {
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<Vec<Arc<Row>>> {
         // Cache metadata lookup outside the loop
         let index_meta_key = format!("index:{}", index_name);
@@ -439,12 +439,12 @@ impl Storage {
         let row_ids =
             self.index_manager
                 .read()
-                .range_scan(index_name, start_values, end_values, tx_id)?;
+                .range_scan(index_name, start_values, end_values, txn_id)?;
 
         // Read actual rows (checking MVCC visibility)
         let mut results = Vec::new();
         for row_id in row_ids {
-            if let Some(row) = self.read(tx_id, &table_name, row_id)? {
+            if let Some(row) = self.read(txn_id, &table_name, row_id)? {
                 results.push(row);
             }
         }
@@ -457,17 +457,17 @@ impl Storage {
         &self,
         index_name: &str,
         values: &[Value],
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<bool> {
         self.index_manager
             .read()
-            .check_unique(index_name, values, tx_id)
+            .check_unique(index_name, values, txn_id)
     }
 
     /// Insert a row
     pub fn insert(
         &self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
         values: Vec<crate::types::value::Value>,
     ) -> Result<RowId> {
@@ -493,10 +493,10 @@ impl Storage {
             row: row.clone(),
         };
 
-        self.uncommitted_data.add_write(tx_id, write_op.clone())?;
+        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
 
         // Update indexes for this table
-        self.update_indexes_on_insert(table, &row, table_meta, tx_id)?;
+        self.update_indexes_on_insert(table, &row, table_meta, txn_id)?;
 
         Ok(row_id)
     }
@@ -504,7 +504,7 @@ impl Storage {
     /// Insert multiple rows atomically - all validation checks are done before any inserts
     pub fn insert_batch(
         &self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
         values_batch: Vec<Vec<crate::types::value::Value>>,
     ) -> Result<Vec<RowId>> {
@@ -589,7 +589,7 @@ impl Storage {
                     if self
                         .index_manager
                         .read()
-                        .check_unique(index_name, &index_values, tx_id)?
+                        .check_unique(index_name, &index_values, txn_id)?
                     {
                         return Err(Error::UniqueConstraintViolation(format!(
                             "Duplicate value for unique index {}",
@@ -610,10 +610,10 @@ impl Storage {
                 row: row.clone(),
             };
 
-            self.uncommitted_data.add_write(tx_id, write_op.clone())?;
+            self.uncommitted_data.add_write(txn_id, write_op.clone())?;
 
             // Update indexes for this table
-            self.update_indexes_on_insert_unchecked(table, &row, table_meta, tx_id)?;
+            self.update_indexes_on_insert_unchecked(table, &row, table_meta, txn_id)?;
 
             inserted_row_ids.push(row_id);
         }
@@ -624,7 +624,7 @@ impl Storage {
     /// Update a row
     pub fn update(
         &self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
         row_id: RowId,
         values: Vec<crate::types::value::Value>,
@@ -640,7 +640,7 @@ impl Storage {
 
         // Read current row
         let old_row = self
-            .read(tx_id, table, row_id)?
+            .read(txn_id, table, row_id)?
             .ok_or(Error::RowNotFound(row_id))?;
 
         // Create new row
@@ -654,19 +654,19 @@ impl Storage {
             new_row: new_row.clone(),
         };
 
-        self.uncommitted_data.add_write(tx_id, write_op.clone())?;
+        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
 
         // Update indexes for this table (remove old, add new)
-        self.update_indexes_on_update(table, &old_row, &new_row, table_meta, tx_id)?;
+        self.update_indexes_on_update(table, &old_row, &new_row, table_meta, txn_id)?;
 
         Ok(())
     }
 
     /// Delete a row
-    pub fn delete(&self, tx_id: HlcTimestamp, table: &str, row_id: RowId) -> Result<()> {
+    pub fn delete(&self, txn_id: HlcTimestamp, table: &str, row_id: RowId) -> Result<()> {
         // Read current row
         let row = self
-            .read(tx_id, table, row_id)?
+            .read(txn_id, table, row_id)?
             .ok_or(Error::RowNotFound(row_id))?;
 
         // Mark as deleted
@@ -683,12 +683,12 @@ impl Storage {
             row: deleted_row.clone(),
         };
 
-        self.uncommitted_data.add_write(tx_id, write_op.clone())?;
+        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
 
         // Update indexes for this table (remove entries)
         let tables = self.tables.read();
         if let Some(table_meta) = tables.get(table) {
-            self.update_indexes_on_delete(table, &row, table_meta, tx_id)?;
+            self.update_indexes_on_delete(table, &row, table_meta, txn_id)?;
         }
 
         Ok(())
@@ -697,12 +697,12 @@ impl Storage {
     /// Read a row
     pub fn read(
         &self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
         row_id: RowId,
     ) -> Result<Option<Arc<Row>>> {
         // L1: Check active transaction writes
-        match self.uncommitted_data.get_row(tx_id, table, row_id) {
+        match self.uncommitted_data.get_row(txn_id, table, row_id) {
             Some(Some(row)) => {
                 // Row exists in active transaction
                 if !row.deleted {
@@ -735,7 +735,7 @@ impl Storage {
             // If not, it's visible (committed > 5 minutes ago)
             if !self.data_history.is_empty() {
                 // Get all recent ops for this table and filter by row_id
-                let table_ops = self.data_history.get_table_ops_after(tx_id, table)?;
+                let table_ops = self.data_history.get_table_ops_after(txn_id, table)?;
 
                 if let Some(ops_for_row) = table_ops.get(&row_id) {
                     let mut historical_row = row.clone();
@@ -776,9 +776,9 @@ impl Storage {
     }
 
     /// Scan all rows in a table (backwards compatible Vec-based version)
-    pub fn scan(&self, tx_id: HlcTimestamp, table: &str) -> Result<Vec<Arc<Row>>> {
+    pub fn scan(&self, txn_id: HlcTimestamp, table: &str) -> Result<Vec<Arc<Row>>> {
         // Use the new streaming iterator and collect results
-        let iterator = self.iter(tx_id, table)?;
+        let iterator = self.iter(txn_id, table)?;
         let mut results = Vec::new();
 
         for row_result in iterator {
@@ -792,7 +792,7 @@ impl Storage {
     /// The iterator holds necessary locks for its lifetime
     pub fn iter<'a>(
         &'a self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
     ) -> Result<crate::storage::iterator::TableIterator<'a>> {
         let tables_guard = self.tables.read();
@@ -800,7 +800,7 @@ impl Storage {
         let recent_versions_clone = self.data_history.clone();
 
         crate::storage::iterator::TableIterator::new(
-            tx_id,
+            txn_id,
             tables_guard,
             active_versions_clone,
             recent_versions_clone,
@@ -811,7 +811,7 @@ impl Storage {
     /// Get an iterator with row IDs (for UPDATE/DELETE operations)
     pub fn iter_with_ids<'a>(
         &'a self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
     ) -> Result<crate::storage::iterator::TableIteratorWithIds<'a>> {
         let tables_guard = self.tables.read();
@@ -819,7 +819,7 @@ impl Storage {
         let recent_versions_clone = self.data_history.clone();
 
         crate::storage::iterator::TableIteratorWithIds::new(
-            tx_id,
+            txn_id,
             tables_guard,
             active_versions_clone,
             recent_versions_clone,
@@ -830,7 +830,7 @@ impl Storage {
     /// Get a reverse iterator (scanning backwards)
     pub fn iter_reverse<'a>(
         &'a self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
     ) -> Result<crate::storage::iterator::TableIteratorReverse<'a>> {
         let tables_guard = self.tables.read();
@@ -838,7 +838,7 @@ impl Storage {
         let recent_versions_clone = self.data_history.clone();
 
         crate::storage::iterator::TableIteratorReverse::new(
-            tx_id,
+            txn_id,
             tables_guard,
             active_versions_clone,
             recent_versions_clone,
@@ -901,17 +901,17 @@ impl Storage {
         &self,
         index_name: &str,
         values: Vec<Value>,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<Vec<Arc<Row>>> {
         // Try the direct index name first
-        match self.index_lookup(index_name, values.clone(), tx_id) {
+        match self.index_lookup(index_name, values.clone(), txn_id) {
             Ok(rows) if !rows.is_empty() => Ok(rows),
             _ => {
                 // If not found or empty, try the primary key index name
                 // Get table name from index metadata
                 if let Some(meta) = self.index_manager.read().get_index_metadata(index_name) {
                     let pk_index_name = format!("{}_{}_pkey", meta.table, index_name);
-                    self.index_lookup(&pk_index_name, values, tx_id)
+                    self.index_lookup(&pk_index_name, values, txn_id)
                 } else {
                     // Try to infer table name from the pattern
                     // This is a fallback for when column name is used as index_name
@@ -919,7 +919,7 @@ impl Storage {
                     let all_indexes = self.index_manager.read().get_all_metadata();
                     for (idx_name, idx_meta) in all_indexes {
                         if idx_meta.columns.contains(&index_name.to_string()) {
-                            return self.index_lookup(&idx_name, values, tx_id);
+                            return self.index_lookup(&idx_name, values, txn_id);
                         }
                     }
                     Ok(vec![])
@@ -929,16 +929,13 @@ impl Storage {
     }
 
     /// Perform index range lookup
-    #[allow(clippy::too_many_arguments)]
     pub fn index_range_lookup_rows(
         &self,
         index_name: &str,
         start_values: Option<Vec<Value>>,
-        _start_inclusive: bool,
         end_values: Option<Vec<Value>>,
-        _end_inclusive: bool,
         reverse: bool,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<Vec<Arc<Row>>> {
         // Get index metadata
         let index_meta = self
@@ -955,7 +952,7 @@ impl Storage {
             index_name,
             start_values.clone(),
             end_values.clone(),
-            tx_id,
+            txn_id,
         )?;
 
         // Apply reverse if needed
@@ -966,7 +963,7 @@ impl Storage {
         // Read actual rows (checking MVCC visibility)
         let mut results = Vec::new();
         for row_id in row_ids {
-            if let Some(row) = self.read(tx_id, &index_meta.table, row_id)? {
+            if let Some(row) = self.read(txn_id, &index_meta.table, row_id)? {
                 results.push(row);
             }
         }
@@ -978,7 +975,7 @@ impl Storage {
     pub fn execute_ddl(
         &self,
         plan: &crate::planning::plan::Plan,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<String> {
         use crate::planning::plan::Plan;
 
@@ -1001,7 +998,7 @@ impl Storage {
                             let index_name = format!("{}_{}_pkey", name, pk_column.name);
                             // Create a unique index for the primary key
                             self.create_index(
-                                tx_id,
+                                txn_id,
                                 index_name,
                                 name.clone(),
                                 vec![pk_column.name.clone()],
@@ -1020,7 +1017,7 @@ impl Storage {
                             if column.unique {
                                 let index_name = format!("{}_{}_unique", name, column.name);
                                 self.create_index(
-                                    tx_id,
+                                    txn_id,
                                     index_name,
                                     name.clone(),
                                     vec![column.name.clone()],
@@ -1030,7 +1027,7 @@ impl Storage {
                                 // Create regular (non-unique) index if column has INDEX constraint
                                 let index_name = format!("{}_{}_idx", name, column.name);
                                 self.create_index(
-                                    tx_id,
+                                    txn_id,
                                     index_name,
                                     name.clone(),
                                     vec![column.name.clone()],
@@ -1139,9 +1136,9 @@ impl Storage {
     }
 
     /// Commit a transaction
-    pub fn commit_transaction(&self, tx_id: HlcTimestamp) -> Result<()> {
+    pub fn commit_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
         // Get writes for this transaction
-        let writes = self.uncommitted_data.get_transaction_writes(tx_id);
+        let writes = self.uncommitted_data.get_transaction_writes(txn_id);
 
         // Create batch for atomic commit (even if no writes, we might have index ops)
         let mut batch = self.keyspace.batch();
@@ -1153,7 +1150,7 @@ impl Storage {
             for write in &writes {
                 match write {
                     WriteOp::Insert { table, row_id, row } => {
-                        self.persist_insert(&mut batch, table, *row_id, row.clone(), tx_id)?;
+                        self.persist_insert(&mut batch, table, *row_id, row.clone())?;
                         data_ops.push(write.clone());
                     }
                     WriteOp::Update {
@@ -1162,11 +1159,11 @@ impl Storage {
                         new_row,
                         ..
                     } => {
-                        self.persist_update(&mut batch, table, *row_id, new_row.clone(), tx_id)?;
+                        self.persist_update(&mut batch, table, *row_id, new_row.clone())?;
                         data_ops.push(write.clone());
                     }
                     WriteOp::Delete { table, row_id, .. } => {
-                        self.persist_delete(&mut batch, table, *row_id, tx_id)?;
+                        self.persist_delete(&mut batch, table, *row_id)?;
                         data_ops.push(write.clone());
                     }
                 }
@@ -1174,30 +1171,30 @@ impl Storage {
         }
 
         // Get index operations before committing (so we can move to index_history)
-        let index_ops = self.index_versions.get_transaction_ops(tx_id);
+        let index_ops = self.index_versions.get_transaction_ops(txn_id);
 
         // Commit index operations to the batch
         self.index_manager
             .write()
-            .commit_transaction(&mut batch, tx_id)?;
+            .commit_transaction(&mut batch, txn_id)?;
 
         // Add data operations to data_history (in the same batch)
         // OPTIMIZED: Uses commit_time-first key design for efficient range queries
         if !writes.is_empty() {
             self.data_history
-                .add_committed_ops_to_batch(&mut batch, tx_id, writes)?;
+                .add_committed_ops_to_batch(&mut batch, txn_id, writes)?;
         }
 
         // Add index operations to index_history (in the same batch)
         // OPTIMIZED: Uses commit_time-first key design for efficient range queries
         if !index_ops.is_empty() {
             self.index_history
-                .add_committed_ops_to_batch(&mut batch, tx_id, index_ops)?;
+                .add_committed_ops_to_batch(&mut batch, txn_id, index_ops)?;
         }
 
         // Remove from uncommitted stores (this is fast, no disk I/O)
         self.uncommitted_data
-            .remove_transaction(&mut batch, tx_id)?;
+            .remove_transaction(&mut batch, txn_id)?;
 
         // Commit single atomic batch (includes data, indexes, and history)
         batch.commit()?;
@@ -1209,16 +1206,16 @@ impl Storage {
     }
 
     /// Abort a transaction
-    pub fn abort_transaction(&self, tx_id: HlcTimestamp) -> Result<()> {
+    pub fn abort_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
         // Create batch for atomic commit (even if no writes, we might have index ops)
         let mut batch = self.keyspace.batch();
 
         // Remove from active versions
         self.uncommitted_data
-            .remove_transaction(&mut batch, tx_id)?;
+            .remove_transaction(&mut batch, txn_id)?;
 
         // Abort index operations
-        self.index_manager.write().abort_transaction(tx_id)?;
+        self.index_manager.write().abort_transaction(txn_id)?;
 
         Ok(())
     }
@@ -1231,7 +1228,6 @@ impl Storage {
         table: &str,
         row_id: RowId,
         row: Arc<Row>,
-        _tx_id: HlcTimestamp,
     ) -> Result<()> {
         let tables = self.tables.read();
         let table_meta = tables
@@ -1251,7 +1247,6 @@ impl Storage {
         table: &str,
         row_id: RowId,
         row: Arc<Row>,
-        _tx_id: HlcTimestamp,
     ) -> Result<()> {
         let tables = self.tables.read();
         let table_meta = tables
@@ -1265,13 +1260,7 @@ impl Storage {
         Ok(())
     }
 
-    fn persist_delete(
-        &self,
-        batch: &mut Batch,
-        table: &str,
-        row_id: RowId,
-        _tx_id: HlcTimestamp,
-    ) -> Result<()> {
+    fn persist_delete(&self, batch: &mut Batch, table: &str, row_id: RowId) -> Result<()> {
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
@@ -1305,7 +1294,7 @@ impl Storage {
         table_name: &str,
         row: &Arc<Row>,
         table_meta: &TableMetadata,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
@@ -1330,7 +1319,7 @@ impl Storage {
                     && self
                         .index_manager
                         .read()
-                        .check_unique(&index_name, &index_values, tx_id)?
+                        .check_unique(&index_name, &index_values, txn_id)?
                 {
                     return Err(Error::UniqueConstraintViolation(format!(
                         "Duplicate value for unique index {}",
@@ -1341,7 +1330,7 @@ impl Storage {
                 // Add to index
                 self.index_manager
                     .write()
-                    .add_entry(&index_name, index_values, row.id, tx_id)?;
+                    .add_entry(&index_name, index_values, row.id, txn_id)?;
             }
         }
 
@@ -1354,7 +1343,7 @@ impl Storage {
         table_name: &str,
         row: &Arc<Row>,
         table_meta: &TableMetadata,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
@@ -1377,7 +1366,7 @@ impl Storage {
                 // Skip unique constraint checking - add to index directly
                 self.index_manager
                     .write()
-                    .add_entry(&index_name, index_values, row.id, tx_id)?;
+                    .add_entry(&index_name, index_values, row.id, txn_id)?;
             }
         }
 
@@ -1390,7 +1379,7 @@ impl Storage {
         old_row: &Arc<Row>,
         new_row: &Arc<Row>,
         table_meta: &TableMetadata,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
@@ -1438,7 +1427,7 @@ impl Storage {
                 && self
                     .index_manager
                     .read()
-                    .check_unique(index_name, new_values, tx_id)?
+                    .check_unique(index_name, new_values, txn_id)?
             {
                 return Err(Error::UniqueConstraintViolation(format!(
                     "Duplicate value for unique index {}",
@@ -1450,14 +1439,17 @@ impl Storage {
         // Phase 2: All constraints passed - now apply the changes
         for (index_name, _index_meta, old_values, new_values) in updates {
             // Remove old entry
-            self.index_manager
-                .write()
-                .remove_entry(&index_name, &old_values, old_row.id, tx_id)?;
+            self.index_manager.write().remove_entry(
+                &index_name,
+                &old_values,
+                old_row.id,
+                txn_id,
+            )?;
 
             // Add new entry
             self.index_manager
                 .write()
-                .add_entry(&index_name, new_values, new_row.id, tx_id)?;
+                .add_entry(&index_name, new_values, new_row.id, txn_id)?;
         }
 
         Ok(())
@@ -1468,7 +1460,7 @@ impl Storage {
         table_name: &str,
         row: &Arc<Row>,
         table_meta: &TableMetadata,
-        _tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
@@ -1493,7 +1485,7 @@ impl Storage {
                     &index_name,
                     &index_values,
                     row.id,
-                    _tx_id,
+                    txn_id,
                 )?;
             }
         }

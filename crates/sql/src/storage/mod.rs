@@ -13,7 +13,7 @@
 //! - Stores UNCOMMITTED data operations (Insert/Update/Delete) for active transactions
 //! - Used for "read-your-own-writes" semantics
 //! - Cleared when transaction commits or aborts
-//! - Key format: `{tx_id}{table}{row_id}{seq}`
+//! - Key format: `{txn_id}{table}{row_id}{seq}`
 //!
 //! **2. `data_history` (DataHistoryStore)**
 //! - Stores COMMITTED data operations from the last ~5 minutes
@@ -25,7 +25,7 @@
 //! - Stores UNCOMMITTED index operations (Insert/Delete) for active transactions
 //! - Used for "read-your-own-writes" semantics on index lookups
 //! - Cleared when transaction commits or aborts
-//! - Key format: `{tx_id}{index_name}{seq}`
+//! - Key format: `{txn_id}{index_name}{seq}`
 //!
 //! **4. `index_history` (IndexHistoryStore)**
 //! - Stores COMMITTED index operations from the last ~5 minutes

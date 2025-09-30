@@ -37,13 +37,13 @@ impl UncommittedDataStore {
         }
     }
 
-    /// Encode key for active version: {tx_id}{table}{row_id}{seq}
+    /// Encode key for active version: {txn_id}{table}{row_id}{seq}
     /// seq: sequence number to maintain operation order
-    fn encode_key(tx_id: HlcTimestamp, op: &WriteOp, seq: u64) -> Vec<u8> {
+    fn encode_key(txn_id: HlcTimestamp, op: &WriteOp, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
-        // Serialize tx_id first for efficient prefix scans by transaction
+        // Serialize txn_id first for efficient prefix scans by transaction
         // Use lexicographic encoding to ensure byte-wise ordering matches logical ordering
-        let tx_bytes = tx_id.to_lexicographic_bytes();
+        let tx_bytes = txn_id.to_lexicographic_bytes();
         key.extend_from_slice(&tx_bytes);
 
         // Add table name
@@ -60,14 +60,14 @@ impl UncommittedDataStore {
     }
 
     /// Encode prefix for transaction operations
-    fn encode_tx_prefix(tx_id: HlcTimestamp) -> Vec<u8> {
-        tx_id.to_lexicographic_bytes().to_vec()
+    fn encode_tx_prefix(txn_id: HlcTimestamp) -> Vec<u8> {
+        txn_id.to_lexicographic_bytes().to_vec()
     }
 
     /// Add a write operation for a transaction
-    pub fn add_write(&self, tx_id: HlcTimestamp, op: WriteOp) -> Result<()> {
+    pub fn add_write(&self, txn_id: HlcTimestamp, op: WriteOp) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let key = Self::encode_key(tx_id, &op, seq);
+        let key = Self::encode_key(txn_id, &op, seq);
         let value = serialize(&op)?;
 
         self.partition.insert(key, value)?;
@@ -81,13 +81,13 @@ impl UncommittedDataStore {
     /// - None if no operations for this row
     pub fn get_row(
         &self,
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         table: &str,
         row_id: RowId,
     ) -> Option<Option<Arc<Row>>> {
         // We need to scan for the specific data operation
         // Collect all operations for this row and return the last one
-        let prefix = Self::encode_tx_prefix(tx_id);
+        let prefix = Self::encode_tx_prefix(txn_id);
         let mut last_op: Option<WriteOp> = None;
 
         for result in self.partition.prefix(prefix) {
@@ -112,8 +112,8 @@ impl UncommittedDataStore {
     }
 
     /// Get all write operations for a transaction
-    pub fn get_transaction_writes(&self, tx_id: HlcTimestamp) -> Vec<WriteOp> {
-        let prefix = Self::encode_tx_prefix(tx_id);
+    pub fn get_transaction_writes(&self, txn_id: HlcTimestamp) -> Vec<WriteOp> {
+        let prefix = Self::encode_tx_prefix(txn_id);
 
         self.partition
             .prefix(prefix)
@@ -127,12 +127,12 @@ impl UncommittedDataStore {
 
     /// Get table-specific active data for efficient iteration
     /// This scans active_versions once and returns pre-built structures
-    pub fn get_table_active_data(&self, tx_id: HlcTimestamp, table_name: &str) -> TableActiveData {
+    pub fn get_table_active_data(&self, txn_id: HlcTimestamp, table_name: &str) -> TableActiveData {
         let mut writes = BTreeMap::new();
         let mut deletes = HashSet::new();
 
         // Single scan through transaction's operations
-        let prefix = Self::encode_tx_prefix(tx_id);
+        let prefix = Self::encode_tx_prefix(txn_id);
         for result in self.partition.prefix(prefix) {
             if let Ok((_, value)) = result
                 && let Ok(op) = deserialize::<WriteOp>(&value)
@@ -159,8 +159,8 @@ impl UncommittedDataStore {
     }
 
     /// Remove all operations for a transaction (on commit or abort)
-    pub fn remove_transaction(&self, batch: &mut fjall::Batch, tx_id: HlcTimestamp) -> Result<()> {
-        let prefix = Self::encode_tx_prefix(tx_id);
+    pub fn remove_transaction(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
+        let prefix = Self::encode_tx_prefix(txn_id);
 
         for result in self.partition.prefix(prefix) {
             let (key, _) = result?;
@@ -179,9 +179,9 @@ impl UncommittedDataStore {
         for result in self.partition.iter() {
             let (key, _) = result?;
 
-            // Try to decode the tx_id from the key
-            if let Ok(tx_id) = bincode::deserialize::<HlcTimestamp>(&key[..key.len().min(24)])
-                && tx_id < timestamp
+            // Try to decode the txn_id from the key
+            if let Ok(txn_id) = bincode::deserialize::<HlcTimestamp>(&key[..key.len().min(24)])
+                && txn_id < timestamp
             {
                 batch.remove(&self.partition, key);
                 removed_count += 1;

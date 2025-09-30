@@ -42,7 +42,7 @@ pub struct TableIterator<'a> {
 
 impl<'a> TableIterator<'a> {
     pub(crate) fn new(
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
@@ -56,7 +56,7 @@ impl<'a> TableIterator<'a> {
         let data_partition = &table_meta.data_partition;
 
         // Get active data for this table (single scan of uncommitted_data)
-        let active_data = uncommitted_data.get_table_active_data(tx_id, table_name);
+        let active_data = uncommitted_data.get_table_active_data(txn_id, table_name);
 
         // Load all recent operations for this table ONCE
         // This avoids repeated queries during iteration
@@ -64,7 +64,7 @@ impl<'a> TableIterator<'a> {
         let recent_ops = if data_history.is_empty() {
             HashMap::new()
         } else {
-            data_history.get_table_ops_after(tx_id, table_name)?
+            data_history.get_table_ops_after(txn_id, table_name)?
         };
 
         // Create fjall iterator - convert Slice to Box<[u8]>
@@ -253,7 +253,7 @@ pub struct TableIteratorWithIds<'a> {
 
 impl<'a> TableIteratorWithIds<'a> {
     pub fn new(
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
@@ -261,7 +261,7 @@ impl<'a> TableIteratorWithIds<'a> {
     ) -> Result<Self> {
         Ok(Self {
             inner: TableIterator::new(
-                tx_id,
+                txn_id,
                 tables_guard,
                 uncommitted_data,
                 data_history,
@@ -314,7 +314,7 @@ pub struct TableIteratorReverse<'a> {
 
 impl<'a> TableIteratorReverse<'a> {
     pub fn new(
-        tx_id: HlcTimestamp,
+        txn_id: HlcTimestamp,
         tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
@@ -328,7 +328,7 @@ impl<'a> TableIteratorReverse<'a> {
         let data_partition = &table_meta.data_partition;
 
         // Get active data for this table (single scan of uncommitted_data)
-        let active_data = uncommitted_data.get_table_active_data(tx_id, table_name);
+        let active_data = uncommitted_data.get_table_active_data(txn_id, table_name);
 
         // Convert writes to Vec and reverse for reverse iteration
         let mut active_writes_vec: Vec<_> = active_data
@@ -343,7 +343,7 @@ impl<'a> TableIteratorReverse<'a> {
         let recent_ops = if data_history.is_empty() {
             HashMap::new()
         } else {
-            data_history.get_table_ops_after(tx_id, table_name)?
+            data_history.get_table_ops_after(txn_id, table_name)?
         };
 
         // Create reverse fjall iterator - convert Slice to Box<[u8]>
