@@ -115,6 +115,53 @@ impl HlcTimestamp {
 
         Ok(Self::new(physical, logical, node_id))
     }
+
+    /// Encode to lexicographically-ordered bytes for use in database keys.
+    ///
+    /// This uses big-endian encoding to ensure that byte-wise comparison
+    /// matches the logical ordering (physical > logical > node_id).
+    ///
+    /// Returns a 20-byte array:
+    /// - 8 bytes: physical time (big-endian u64)
+    /// - 4 bytes: logical counter (big-endian u32)
+    /// - 8 bytes: node ID (big-endian u64)
+    pub fn to_lexicographic_bytes(&self) -> [u8; 20] {
+        let mut bytes = [0u8; 20];
+        bytes[0..8].copy_from_slice(&self.physical.to_be_bytes());
+        bytes[8..12].copy_from_slice(&self.logical.to_be_bytes());
+        bytes[12..20].copy_from_slice(&self.node_id.0.to_be_bytes());
+        bytes
+    }
+
+    /// Decode from lexicographically-ordered bytes.
+    ///
+    /// The inverse of `to_lexicographic_bytes`.
+    pub fn from_lexicographic_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() != 20 {
+            return Err(format!(
+                "Invalid byte array length: {} (expected 20)",
+                bytes.len()
+            ));
+        }
+
+        let physical = u64::from_be_bytes(
+            bytes[0..8]
+                .try_into()
+                .map_err(|_| "Failed to parse physical time")?,
+        );
+        let logical = u32::from_be_bytes(
+            bytes[8..12]
+                .try_into()
+                .map_err(|_| "Failed to parse logical counter")?,
+        );
+        let node_id = NodeId(u64::from_be_bytes(
+            bytes[12..20]
+                .try_into()
+                .map_err(|_| "Failed to parse node ID")?,
+        ));
+
+        Ok(Self::new(physical, logical, node_id))
+    }
 }
 
 impl PartialOrd for HlcTimestamp {
@@ -291,5 +338,69 @@ mod tests {
 
         assert!(older.is_older_than(&younger));
         assert!(!younger.is_older_than(&older));
+    }
+
+    #[test]
+    fn test_lexicographic_encoding() {
+        let node1 = NodeId::new(1);
+        let node2 = NodeId::new(2);
+
+        // Test timestamps with different orderings
+        let ts1 = HlcTimestamp::new(100, 0, node1);
+        let ts2 = HlcTimestamp::new(1000, 0, node1);
+        let ts3 = HlcTimestamp::new(256, 0, node1);
+        let ts4 = HlcTimestamp::new(100, 5, node1);
+        let ts5 = HlcTimestamp::new(100, 0, node2);
+
+        // Encode to bytes
+        let bytes1 = ts1.to_lexicographic_bytes();
+        let bytes2 = ts2.to_lexicographic_bytes();
+        let bytes3 = ts3.to_lexicographic_bytes();
+        let bytes4 = ts4.to_lexicographic_bytes();
+        let bytes5 = ts5.to_lexicographic_bytes();
+
+        // Verify lexicographic ordering matches Ord ordering
+        assert!(ts1 < ts2);
+        assert!(bytes1 < bytes2);
+
+        assert!(ts1 < ts3);
+        assert!(bytes1 < bytes3);
+
+        assert!(ts3 < ts2);
+        assert!(bytes3 < bytes2);
+
+        assert!(ts1 < ts4);
+        assert!(bytes1 < bytes4);
+
+        assert_ne!(ts1.cmp(&ts5), std::cmp::Ordering::Equal);
+        assert_ne!(bytes1.cmp(&bytes5), std::cmp::Ordering::Equal);
+
+        // Test roundtrip
+        let decoded1 = HlcTimestamp::from_lexicographic_bytes(&bytes1).unwrap();
+        assert_eq!(ts1, decoded1);
+
+        let decoded2 = HlcTimestamp::from_lexicographic_bytes(&bytes2).unwrap();
+        assert_eq!(ts2, decoded2);
+    }
+
+    #[test]
+    fn test_lexicographic_encoding_edge_cases() {
+        let node = NodeId::new(u64::MAX);
+
+        // Test with max values
+        let ts_max = HlcTimestamp::new(u64::MAX, u32::MAX, node);
+        let bytes_max = ts_max.to_lexicographic_bytes();
+        let decoded_max = HlcTimestamp::from_lexicographic_bytes(&bytes_max).unwrap();
+        assert_eq!(ts_max, decoded_max);
+
+        // Test with zero values
+        let ts_zero = HlcTimestamp::new(0, 0, NodeId::new(0));
+        let bytes_zero = ts_zero.to_lexicographic_bytes();
+        let decoded_zero = HlcTimestamp::from_lexicographic_bytes(&bytes_zero).unwrap();
+        assert_eq!(ts_zero, decoded_zero);
+
+        // Zero should be less than max
+        assert!(ts_zero < ts_max);
+        assert!(bytes_zero < bytes_max);
     }
 }

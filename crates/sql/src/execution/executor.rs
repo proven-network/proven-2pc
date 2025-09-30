@@ -7,7 +7,7 @@ use super::{aggregator::Aggregator, expression, join};
 use crate::error::{Error, Result};
 use crate::operators;
 use crate::planning::plan::{Node, Plan};
-use crate::storage::{MvccStorage, read_ops};
+use crate::storage::Storage;
 use crate::stream::TransactionContext;
 use crate::types::query::Rows;
 use crate::types::value::Value;
@@ -30,7 +30,7 @@ pub enum ExecutionResult {
 /// Execute a query plan with parameters
 pub fn execute_with_params(
     plan: Plan,
-    storage: &mut MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
@@ -123,14 +123,16 @@ pub fn execute_with_params(
 /// Execute a plan node for reading with immutable storage reference
 pub fn execute_node_read<'a>(
     node: Node,
-    storage: &'a MvccStorage,
+    storage: &'a Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<Rows<'a>> {
     match node {
         Node::Scan { table, .. } => {
             // True streaming with immutable storage!
-            let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
+            let iter = storage
+                .iter(tx_ctx.id, &table)?
+                .map(|result| result.map(|row| row.values.clone().into()));
 
             Ok(Box::new(iter))
         }
@@ -148,17 +150,27 @@ pub fn execute_node_read<'a>(
             }
 
             // Try to use index lookup first
-            if let Some(versioned_table) = storage.tables.get(&table) {
-                // Check if this index exists
-                if versioned_table.index_columns.contains_key(&index_name) {
-                    // Use index lookup for O(log n) performance
-                    let rows =
-                        versioned_table.index_lookup(&index_name, filter_values.clone(), tx_ctx.id);
-
-                    // Convert to iterator format
-                    let iter = rows.into_iter().map(|row| Ok(Arc::new(row.values.clone())));
-                    return Ok(Box::new(iter));
+            if storage.has_index(&table, &index_name) {
+                // Type-coerce filter values based on column schema
+                let schemas = storage.get_schemas();
+                let mut coerced_values = filter_values.clone();
+                if let Some(schema) = schemas.get(&table)
+                    && let Some(column) = schema.columns.iter().find(|c| c.name == *index_name)
+                {
+                    for (i, value) in filter_values.iter().enumerate() {
+                        if i < coerced_values.len() {
+                            coerced_values[i] =
+                                crate::coercion::coerce_value(value.clone(), &column.datatype)?;
+                        }
+                    }
                 }
+
+                // Use index lookup for O(log n) performance
+                let rows = storage.index_lookup_rows(&index_name, coerced_values, tx_ctx.id)?;
+
+                // Convert to iterator format
+                let iter = rows.into_iter().map(|row| Ok(row.values.clone().into()));
+                return Ok(Box::new(iter));
             }
 
             // Fall back to filtered table scan if no index exists
@@ -168,17 +180,15 @@ pub fn execute_node_read<'a>(
                 .get(&table)
                 .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
-            // Check if we can get column info from the versioned table's index_columns
-            let column_names = if let Some(versioned_table) = storage.tables.get(&table) {
-                versioned_table.index_columns.get(&index_name).cloned()
-            } else {
+            // Check if we can get column info from the index metadata
+            let column_names = storage.get_index_columns(&table, &index_name).or_else(|| {
                 // Fallback: assume index_name is a column name for backward compatibility
                 if schema.columns.iter().any(|c| c.name == index_name) {
                     Some(vec![index_name.clone()])
                 } else {
                     None
                 }
-            };
+            });
 
             if let Some(columns) = column_names {
                 // Get column indices
@@ -188,29 +198,38 @@ pub fn execute_node_read<'a>(
                         col_indices.push(idx);
                     } else {
                         // Column not found, can't filter
-                        let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
+                        let iter = storage
+                            .iter(tx_ctx.id, &table)?
+                            .map(|result| result.map(|row| row.values.clone().into()));
                         return Ok(Box::new(iter));
                     }
                 }
 
                 // Filter by checking all column values match
                 if col_indices.len() == filter_values.len() {
-                    let iter =
-                        read_ops::scan_iter(storage, tx_ctx, &table)?.filter_map(move |row| {
-                            // Check if all indexed columns match the filter values
-                            for (idx, expected_val) in col_indices.iter().zip(&filter_values) {
-                                if row.get(*idx) != Some(expected_val) {
-                                    return None;
+                    let iter = storage.iter(tx_ctx.id, &table)?.filter_map(move |result| {
+                        match result {
+                            Ok(row) => {
+                                let values: Arc<Vec<Value>> = row.values.clone().into();
+                                // Check if all indexed columns match the filter values
+                                for (idx, expected_val) in col_indices.iter().zip(&filter_values) {
+                                    if values.get(*idx) != Some(expected_val) {
+                                        return None;
+                                    }
                                 }
+                                Some(Ok(values))
                             }
-                            Some(Ok(row))
-                        });
+                            Err(e) => Some(Err(e)),
+                        }
+                    });
                     return Ok(Box::new(iter));
                 }
             }
 
             // Can't determine columns, fall back to full scan
-            let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
+            let iter = storage
+                .iter(tx_ctx.id, &table)?
+                .map(|result| result.map(|row| row.values.clone().into()));
             Ok(Box::new(iter))
         }
 
@@ -245,11 +264,9 @@ pub fn execute_node_read<'a>(
                 .transpose()?;
 
             // Try to use index range lookup
-            if let Some(versioned_table) = storage.tables.get(&table)
-                && versioned_table.index_columns.contains_key(&index_name)
-            {
+            if storage.has_index(&table, &index_name) {
                 // Use index range lookup for O(log n) performance
-                let rows = versioned_table.index_range_lookup(
+                let rows = storage.index_range_lookup_rows(
                     &index_name,
                     start_values,
                     start_inclusive,
@@ -257,10 +274,10 @@ pub fn execute_node_read<'a>(
                     end_inclusive,
                     reverse,
                     tx_ctx.id,
-                );
+                )?;
 
                 // Convert to iterator format
-                let iter = rows.into_iter().map(|row| Ok(Arc::new(row.values.clone())));
+                let iter = rows.into_iter().map(|row| Ok(row.values.clone().into()));
                 return Ok(Box::new(iter));
             }
 
@@ -270,17 +287,15 @@ pub fn execute_node_read<'a>(
                 .get(&table)
                 .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
-            // Get column info from the versioned table's index_columns
-            let column_names = if let Some(versioned_table) = storage.tables.get(&table) {
-                versioned_table.index_columns.get(&index_name).cloned()
-            } else {
+            // Get column info from the index metadata
+            let column_names = storage.get_index_columns(&table, &index_name).or_else(|| {
                 // Fallback: assume index_name is a column name
                 if schema.columns.iter().any(|c| c.name == index_name) {
                     Some(vec![index_name.clone()])
                 } else {
                     None
                 }
-            };
+            });
 
             if let Some(columns) = column_names {
                 // Get column indices
@@ -290,7 +305,9 @@ pub fn execute_node_read<'a>(
                         col_indices.push(idx);
                     } else {
                         // Column not found, can't filter
-                        let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
+                        let iter = storage
+                            .iter(tx_ctx.id, &table)?
+                            .map(|result| result.map(|row| row.values.clone().into()));
                         return Ok(Box::new(iter));
                     }
                 }
@@ -301,42 +318,50 @@ pub fn execute_node_read<'a>(
                 let start_incl = start_inclusive;
                 let end_incl = end_inclusive;
 
-                let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.filter_map(move |row| {
-                    // Extract values for the indexed columns
-                    let mut row_values = Vec::new();
-                    for &idx in &col_indices {
-                        if let Some(val) = row.get(idx) {
-                            row_values.push(val.clone());
-                        } else {
-                            return None; // NULL in key, skip
-                        }
-                    }
+                let iter = storage.iter(tx_ctx.id, &table)?.filter_map(move |result| {
+                    match result {
+                        Ok(row) => {
+                            let values: Arc<Vec<Value>> = row.values.clone().into();
+                            // Extract values for the indexed columns
+                            let mut row_values = Vec::new();
+                            for &idx in &col_indices {
+                                if let Some(val) = values.get(idx) {
+                                    row_values.push(val.clone());
+                                } else {
+                                    return None; // NULL in key, skip
+                                }
+                            }
 
-                    // Check start bound
-                    if let Some(ref start) = start_vals {
-                        match operators::compare_composite(&row_values, start).ok() {
-                            Some(std::cmp::Ordering::Less) => return None,
-                            Some(std::cmp::Ordering::Equal) if !start_incl => return None,
-                            _ => {}
-                        }
-                    }
+                            // Check start bound
+                            if let Some(ref start) = start_vals {
+                                match operators::compare_composite(&row_values, start).ok() {
+                                    Some(std::cmp::Ordering::Less) => return None,
+                                    Some(std::cmp::Ordering::Equal) if !start_incl => return None,
+                                    _ => {}
+                                }
+                            }
 
-                    // Check end bound
-                    if let Some(ref end) = end_vals {
-                        match operators::compare_composite(&row_values, end).ok() {
-                            Some(std::cmp::Ordering::Greater) => return None,
-                            Some(std::cmp::Ordering::Equal) if !end_incl => return None,
-                            _ => {}
-                        }
-                    }
+                            // Check end bound
+                            if let Some(ref end) = end_vals {
+                                match operators::compare_composite(&row_values, end).ok() {
+                                    Some(std::cmp::Ordering::Greater) => return None,
+                                    Some(std::cmp::Ordering::Equal) if !end_incl => return None,
+                                    _ => {}
+                                }
+                            }
 
-                    Some(Ok(row))
+                            Some(Ok(values))
+                        }
+                        Err(e) => Some(Err(e)),
+                    }
                 });
                 return Ok(Box::new(iter));
             }
 
             // Can't determine columns, fall back to full scan
-            let iter = read_ops::scan_iter(storage, tx_ctx, &table)?.map(Ok);
+            let iter = storage
+                .iter(tx_ctx.id, &table)?
+                .map(|result| result.map(|row| row.values.clone().into()));
             Ok(Box::new(iter))
         }
 
@@ -348,7 +373,7 @@ pub fn execute_node_read<'a>(
             let params_clone = params.cloned();
             // We need storage for subquery evaluation - capture a raw pointer
             // SAFETY: We know storage lives for the entire query execution
-            let storage_ptr = storage as *const MvccStorage;
+            let storage_ptr = storage as *const Storage;
 
             let filtered = source_rows.filter_map(move |row| match row {
                 Ok(row) => {

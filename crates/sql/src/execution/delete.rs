@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, expression};
 use crate::parsing::ast::ddl::ReferentialAction;
 use crate::planning::plan::Node;
-use crate::storage::{MvccStorage, read_ops, write_ops};
+use crate::storage::Storage;
 use crate::stream::TransactionContext;
 use crate::types::value::{Row, Value};
 
@@ -33,7 +33,7 @@ enum CascadeOp {
 
 /// Helper function to update a single column value
 fn update_column_value(
-    storage: &mut MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
     table: &str,
     row_id: u64,
@@ -42,11 +42,12 @@ fn update_column_value(
 ) -> Result<()> {
     // Get the current row
     let current_row = {
-        let iter = read_ops::scan_iter_with_ids(storage, tx_ctx, table)?;
+        let iter = storage.iter_with_ids(tx_ctx.id, table)?;
         let mut found_row = None;
-        for (rid, row) in iter {
+        for result in iter {
+            let (rid, row) = result?;
             if rid == row_id {
-                found_row = Some(row.to_vec());
+                found_row = Some(row.values.clone());
                 break;
             }
         }
@@ -60,7 +61,7 @@ fn update_column_value(
     updated_row[col_idx] = new_value;
 
     // Write the updated row
-    write_ops::update(storage, tx_ctx, table, row_id, updated_row)?;
+    storage.update(tx_ctx.id, table, row_id, updated_row)?;
     Ok(())
 }
 
@@ -69,7 +70,7 @@ fn check_and_collect_cascade_ops(
     _row_id: u64,
     row: &Row,
     table_name: &str,
-    storage: &MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<Vec<CascadeOp>> {
     let mut cascade_ops = Vec::new();
@@ -97,9 +98,12 @@ fn check_and_collect_cascade_ops(
                     .0;
 
                 // Find all rows in the referencing table that point to this row
-                let ref_iter = read_ops::scan_iter_with_ids(storage, tx_ctx, other_table_name)?;
-                for (ref_row_id, ref_row) in ref_iter {
-                    if &ref_row[fk_col_idx] == pk_value && !ref_row[fk_col_idx].is_null() {
+                let ref_iter = storage.iter_with_ids(tx_ctx.id, other_table_name)?;
+                for result in ref_iter {
+                    let (ref_row_id, ref_row) = result?;
+                    if &ref_row.values[fk_col_idx] == pk_value
+                        && !ref_row.values[fk_col_idx].is_null()
+                    {
                         // Found a referencing row - apply the referential action
                         match fk.on_delete {
                             ReferentialAction::Restrict | ReferentialAction::NoAction => {
@@ -150,19 +154,21 @@ fn check_and_collect_cascade_ops(
 pub fn execute_delete(
     table: String,
     source: Node,
-    storage: &mut MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Phase 1: Read rows with IDs that match the WHERE clause
     let rows_to_delete = {
-        let iter = read_ops::scan_iter_with_ids(storage, tx_ctx, &table)?;
+        let iter = storage.iter_with_ids(tx_ctx.id, &table)?;
         let mut to_delete = Vec::new();
 
-        for (row_id, row) in iter {
+        for result in iter {
+            let (row_id, row) = result?;
+            let row_arc = std::sync::Arc::new(row.values.clone());
             let matches = match &source {
                 Node::Filter { predicate, .. } => {
-                    expression::evaluate_with_arc(predicate, Some(&row), tx_ctx, params)?
+                    expression::evaluate_with_arc(predicate, Some(&row_arc), tx_ctx, params)?
                         .to_bool()
                         .unwrap_or(false)
                 }
@@ -171,7 +177,7 @@ pub fn execute_delete(
             };
 
             if matches {
-                to_delete.push((row_id, row));
+                to_delete.push((row_id, row_arc));
             }
         }
         to_delete
@@ -197,11 +203,12 @@ pub fn execute_delete(
                 // Recursively handle cascading deletes
                 // Get the row data first for potential further cascades
                 let cascade_row = {
-                    let iter = read_ops::scan_iter_with_ids(storage, tx_ctx, &cascade_table)?;
+                    let iter = storage.iter_with_ids(tx_ctx.id, &cascade_table)?;
                     let mut found_row = None;
-                    for (rid, r) in iter {
+                    for result in iter {
+                        let (rid, r) = result?;
                         if rid == cascade_row_id {
-                            found_row = Some(r);
+                            found_row = Some(r.values.clone());
                             break;
                         }
                     }
@@ -224,7 +231,7 @@ pub fn execute_delete(
                                 table: t,
                                 row_id: r,
                             } => {
-                                write_ops::delete(storage, tx_ctx, &t, r)?;
+                                storage.delete(tx_ctx.id, &t, r)?;
                             }
                             CascadeOp::SetNull {
                                 table: t,
@@ -244,7 +251,7 @@ pub fn execute_delete(
                         }
                     }
                     // Now delete the cascaded row
-                    write_ops::delete(storage, tx_ctx, &cascade_table, cascade_row_id)?;
+                    storage.delete(tx_ctx.id, &cascade_table, cascade_row_id)?;
                 }
             }
             CascadeOp::SetNull {
@@ -281,7 +288,7 @@ pub fn execute_delete(
 
     // Phase 4: Delete the original rows
     for (row_id, _) in rows_to_delete {
-        write_ops::delete(storage, tx_ctx, &table, row_id)?;
+        storage.delete(tx_ctx.id, &table, row_id)?;
         count += 1;
     }
 

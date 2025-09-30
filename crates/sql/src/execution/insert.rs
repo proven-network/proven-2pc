@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
-use crate::storage::{MvccStorage, read_ops, write_ops};
+use crate::storage::Storage;
 use crate::stream::TransactionContext;
 use crate::types::schema::Table;
 use crate::types::value::{Row, Value};
@@ -15,7 +15,7 @@ use crate::types::value::{Row, Value};
 fn validate_foreign_keys(
     row: &Row,
     schema: &Table,
-    storage: &MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<()> {
     // Check each foreign key constraint
@@ -54,15 +54,16 @@ fn validate_foreign_keys(
 
         // Scan the referenced table to check if the value exists
         let mut found = false;
-        let ref_iter = read_ops::scan_iter(storage, tx_ctx, &fk.referenced_table)?;
+        let ref_iter = storage.iter(tx_ctx.id, &fk.referenced_table)?;
 
-        for ref_row in ref_iter {
-            let ref_row = ref_row.as_ref();
+        for ref_row_result in ref_iter {
+            let ref_row = ref_row_result?;
+            let ref_values = &ref_row.values;
 
             // Check if all referenced columns match
             let mut all_match = true;
             for (i, &ref_idx) in ref_indices.iter().enumerate() {
-                if &ref_row[ref_idx] != fk_values[i] {
+                if &ref_values[ref_idx] != fk_values[i] {
                     all_match = false;
                     break;
                 }
@@ -95,7 +96,7 @@ pub fn execute_insert(
     table: String,
     columns: Option<Vec<usize>>,
     source: Node,
-    storage: &mut MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
@@ -108,13 +109,18 @@ pub fn execute_insert(
     // Phase 1: Read all source rows (immutable borrow)
     let rows_to_insert = {
         // Use immutable reference for reading
-        let storage_ref = &*storage;
+        let storage_ref = storage;
         let rows = super::executor::execute_node_read(source, storage_ref, tx_ctx, params)?;
         rows.collect::<Result<Vec<_>>>()?
     }; // Immutable borrow ends here
 
-    // Phase 2: Write rows (mutable borrow)
-    let mut count = 0;
+    // Phase 2: Use batch insert for atomic operation
+    if rows_to_insert.is_empty() {
+        return Ok(ExecutionResult::Modified(0));
+    }
+
+    // Prepare all rows for batch insert
+    let mut final_rows = Vec::new();
     for row in rows_to_insert {
         // Reorder columns if specified
         let final_row = if let Some(ref col_indices) = columns {
@@ -177,9 +183,11 @@ pub fn execute_insert(
         // Validate foreign key constraints before insertion
         validate_foreign_keys(&coerced_row, schema, storage, tx_ctx)?;
 
-        write_ops::insert(storage, tx_ctx, &table, coerced_row)?;
-        count += 1;
+        final_rows.push(coerced_row);
     }
 
-    Ok(ExecutionResult::Modified(count))
+    // Perform atomic batch insert
+    let inserted_row_ids = storage.insert_batch(tx_ctx.id, &table, final_rows)?;
+
+    Ok(ExecutionResult::Modified(inserted_row_ids.len()))
 }

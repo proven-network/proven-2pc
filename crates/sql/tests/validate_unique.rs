@@ -161,7 +161,7 @@ fn test_insert_duplicate_unique_value_error() {
     // Try to insert duplicate id
     ctx.assert_error_contains(
         "INSERT INTO TestA VALUES (2, 2)",
-        "Unique constraint violation on index 'id'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -175,7 +175,7 @@ fn test_insert_duplicate_in_same_statement() {
     // Try to insert duplicate id in the same statement
     ctx.assert_error_contains(
         "INSERT INTO TestA VALUES (4, 4), (4, 5)",
-        "Unique constraint violation on index 'id'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -193,7 +193,7 @@ fn test_update_to_duplicate_unique_value() {
     // Try to update to duplicate id
     ctx.assert_error_contains(
         "UPDATE TestA SET id = 2 WHERE id = 1",
-        "Unique constraint violation on index 'id'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -211,7 +211,7 @@ fn test_insert_duplicate_unique_id_in_multiple_unique_table() {
     // Try to insert duplicate id (1 is duplicate, 4 is new)
     ctx.assert_error_contains(
         "INSERT INTO TestB VALUES (1, 4)",
-        "Unique constraint violation on index",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -229,7 +229,7 @@ fn test_insert_duplicate_unique_num_in_multiple_unique_table() {
     // Try to insert duplicate num
     ctx.assert_error_contains(
         "INSERT INTO TestB VALUES (4, 2)",
-        "Unique constraint violation on index 'num'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -243,7 +243,7 @@ fn test_insert_multiple_values_with_duplicate_unique() {
     // Try to insert duplicate num in the same statement
     ctx.assert_error_contains(
         "INSERT INTO TestB VALUES (5, 5), (6, 5)",
-        "Unique constraint violation on index 'num'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -261,7 +261,7 @@ fn test_update_to_duplicate_num_in_multiple_unique_table() {
     // Try to update to duplicate num
     ctx.assert_error_contains(
         "UPDATE TestB SET num = 2 WHERE id = 1",
-        "Unique constraint violation on index 'num'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -279,7 +279,7 @@ fn test_insert_duplicate_non_null_unique_value() {
     // Try to insert duplicate non-null id
     ctx.assert_error_contains(
         "INSERT INTO TestC VALUES (2, 4)",
-        "Unique constraint violation on index 'id'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -293,7 +293,7 @@ fn test_insert_duplicate_with_null_and_non_null() {
     // Try to insert with duplicate non-null value in the same statement
     ctx.assert_error_contains(
         "INSERT INTO TestC VALUES (NULL, 5), (3, 5), (3, 6)",
-        "Unique constraint violation on index 'id'",
+        "UniqueConstraintViolation",
     );
 
     ctx.commit();
@@ -310,10 +310,7 @@ fn test_update_all_to_same_unique_value() {
     ctx.exec("UPDATE TestC SET id = 1 WHERE num = 1");
 
     // Try to update all rows to the same value (would create duplicates)
-    ctx.assert_error_contains(
-        "UPDATE TestC SET id = 1",
-        "Unique constraint violation on index 'id'",
-    );
+    ctx.assert_error_contains("UPDATE TestC SET id = 1", "UniqueConstraintViolation");
 
     ctx.commit();
 }
@@ -361,7 +358,7 @@ fn test_unique_constraint_cleaned_on_abort() {
     ctx.begin();
     let error = ctx.exec_error("INSERT INTO test_unique (id, unique_field, data) VALUES ('record_002', 'unique_value_1', 'Should fail')");
     assert!(
-        error.contains("Unique constraint violation"),
+        error.contains("UniqueConstraintViolation"),
         "Expected unique constraint violation, got: {}",
         error
     );
@@ -446,7 +443,7 @@ fn test_concurrent_unique_constraint_violations() {
     ctx.begin();
     ctx.assert_error_contains(
         "INSERT INTO test_concurrent (id, unique_field) VALUES ('record_002', 'unique_1')",
-        "Unique constraint violation",
+        "UniqueConstraintViolation",
     );
     ctx.abort();
 
@@ -454,7 +451,7 @@ fn test_concurrent_unique_constraint_violations() {
     ctx.begin();
     ctx.assert_error_contains(
         "INSERT INTO test_concurrent (id, unique_field) VALUES ('record_003', 'unique_1')",
-        "Unique constraint violation",
+        "UniqueConstraintViolation",
     );
     ctx.abort();
 

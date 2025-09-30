@@ -11,7 +11,7 @@ use crate::execution;
 use crate::parsing::CachingParser;
 use crate::planning::caching_planner::CachingPlanner;
 use crate::semantic::CachingSemanticAnalyzer;
-use crate::storage::mvcc::MvccStorage;
+use crate::storage::Storage;
 use crate::stream::{
     operation::SqlOperation,
     predicate_index::PredicateIndex,
@@ -23,8 +23,8 @@ use std::collections::HashMap;
 
 /// SQL transaction engine with predicate-based conflict detection
 pub struct SqlTransactionEngine {
-    /// MVCC storage for versioned data
-    pub storage: MvccStorage,
+    /// Storage engine with persistence
+    pub storage: Storage,
 
     /// Active transactions with their predicates
     active_transactions: HashMap<HlcTimestamp, TransactionContext>,
@@ -48,8 +48,12 @@ pub struct SqlTransactionEngine {
 impl SqlTransactionEngine {
     /// Create a new SQL transaction engine
     pub fn new() -> Self {
-        let storage = MvccStorage::new();
+        // Create storage with default config
+        let config = crate::storage::StorageConfig::default();
+        let storage = Storage::new(config).expect("Failed to create storage");
         let schemas = storage.get_schemas();
+
+        // Get index metadata directly from new storage
         let indexes = storage.get_index_metadata();
 
         let parser = CachingParser::new();
@@ -164,12 +168,17 @@ impl SqlTransactionEngine {
         // Execute with a temporary context (snapshot reads are stateless)
         let mut temp_ctx = TransactionContext::new(read_timestamp);
 
-        match execution::execute_with_params(
+        let result = execution::execute_with_params(
             (*plan).clone(),
-            &mut self.storage,
+            &self.storage,
             &mut temp_ctx,
             params.as_ref(),
-        ) {
+        );
+
+        // Clean up the temporary transaction
+        let _ = self.storage.abort_transaction(read_timestamp);
+
+        match result {
             Ok(result) => OperationResult::Complete(convert_execution_result(result)),
             Err(e) => {
                 OperationResult::Complete(SqlResponse::Error(format!("Execution error: {:?}", e)))
@@ -302,7 +311,7 @@ impl SqlTransactionEngine {
         // Step 7: Execute with parameters
         match execution::execute_with_params(
             (*plan).clone(),
-            &mut self.storage,
+            &self.storage,
             tx_ctx,
             params.as_ref(),
         ) {
@@ -312,6 +321,8 @@ impl SqlTransactionEngine {
                     // Schema updates are handled internally by storage
                     // Update all caches with new schemas
                     let schemas = self.storage.get_schemas();
+
+                    // Get index metadata directly from new storage
                     let indexes = self.storage.get_index_metadata();
 
                     // Clear parser cache on schema change
@@ -420,57 +431,6 @@ impl TransactionEngine for SqlTransactionEngine {
 
     fn engine_name(&self) -> &'static str {
         "sql"
-    }
-
-    fn snapshot(&self) -> std::result::Result<Vec<u8>, String> {
-        // Only snapshot when no active transactions
-        if !self.active_transactions.is_empty() {
-            return Err("Cannot snapshot with active transactions".to_string());
-        }
-
-        // Get compacted data from storage
-        let compacted = self.storage.get_compacted_data();
-
-        // Serialize with CBOR
-        let mut buf = Vec::new();
-        ciborium::into_writer(&compacted, &mut buf)
-            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
-
-        // Compress with zstd (level 3 is a good balance)
-        let compressed = zstd::encode_all(&buf[..], 3)
-            .map_err(|e| format!("Failed to compress snapshot: {}", e))?;
-
-        Ok(compressed)
-    }
-
-    fn restore_from_snapshot(&mut self, data: &[u8]) -> std::result::Result<(), String> {
-        // Decompress the data
-        let decompressed =
-            zstd::decode_all(data).map_err(|e| format!("Failed to decompress snapshot: {}", e))?;
-
-        // Deserialize snapshot
-        let compacted: crate::storage::mvcc::CompactedSqlData =
-            ciborium::from_reader(&decompressed[..])
-                .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
-
-        // Clear existing state
-        self.storage = MvccStorage::new();
-        self.active_transactions.clear();
-        self.predicate_index = PredicateIndex::new();
-        self.migration_version = 0; // Reset migration version
-
-        // Restore storage from compacted data
-        self.storage.restore_from_compacted(compacted);
-
-        // Reinitialize all caches with new storage schemas
-        let schemas = self.storage.get_schemas();
-        let indexes = self.storage.get_index_metadata();
-
-        self.parser.clear();
-        self.analyzer = CachingSemanticAnalyzer::new(schemas.clone());
-        self.planner = CachingPlanner::new(schemas, indexes);
-
-        Ok(())
     }
 }
 

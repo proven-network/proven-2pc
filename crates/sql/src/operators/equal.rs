@@ -129,6 +129,20 @@ impl BinaryOperator for EqualOperator {
                 }
             }
 
+            // UUID comparison with string - parse the string as UUID
+            (Uuid(_), Str(s)) | (Str(s), Uuid(_)) => {
+                if let Ok(parsed_uuid) = uuid::Uuid::parse_str(s) {
+                    if matches!(left, Uuid(_)) {
+                        (left.clone(), Uuid(parsed_uuid))
+                    } else {
+                        (Uuid(parsed_uuid), right.clone())
+                    }
+                } else {
+                    // If parsing fails, comparison will return false
+                    (left.clone(), right.clone())
+                }
+            }
+
             // Default case - no conversion needed
             _ => (left.clone(), right.clone()),
         };

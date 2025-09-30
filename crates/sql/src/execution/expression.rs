@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::operators;
-use crate::storage::MvccStorage;
+use crate::storage::Storage;
 use crate::stream::transaction::TransactionContext;
 use crate::types::expression::Expression;
 use crate::types::value::{Row, Value};
@@ -29,7 +29,7 @@ pub fn evaluate_with_storage(
     row: Option<&Row>,
     context: &TransactionContext,
     params: Option<&Vec<Value>>,
-    storage: Option<&MvccStorage>,
+    storage: Option<&Storage>,
 ) -> Result<Value> {
     use Expression::*;
     Ok(match expr {
@@ -432,7 +432,7 @@ pub fn evaluate_with_arc_and_storage(
     row: Option<&Arc<Vec<Value>>>,
     context: &TransactionContext,
     params: Option<&Vec<Value>>,
-    storage: Option<&MvccStorage>,
+    storage: Option<&Storage>,
 ) -> Result<Value> {
     evaluate_with_storage(expr, row.map(|r| r.as_ref()), context, params, storage)
 }

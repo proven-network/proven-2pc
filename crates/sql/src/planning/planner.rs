@@ -15,7 +15,7 @@ use crate::parsing::ast::{
 };
 use crate::semantic::AnalyzedStatement;
 use crate::semantic::analyzer::SemanticAnalyzer;
-use crate::storage::mvcc::IndexMetadata;
+use crate::storage::index::IndexMetadata;
 use crate::types::DataType;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
@@ -31,7 +31,7 @@ impl Planner {
     /// Create a new planner
     pub fn new(
         schemas: HashMap<String, Table>,
-        _index_metadata: HashMap<String, Vec<IndexMetadata>>,
+        _index_metadata: HashMap<String, IndexMetadata>,
     ) -> Self {
         let optimizer = Optimizer::new(schemas.clone());
 

@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::operators;
 use crate::planning::plan::AggregateFunc;
-use crate::storage::MvccStorage;
+use crate::storage::Storage;
 use crate::stream::transaction::TransactionContext;
 use crate::types::expression::Expression;
 use crate::types::value::Value;
@@ -84,7 +84,7 @@ impl Aggregator {
         &mut self,
         row: &Arc<Vec<Value>>,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         // Evaluate the group key
         let key = self
@@ -149,7 +149,7 @@ impl GroupAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         for (agg, acc) in self.aggregates.iter().zip(self.accumulators.iter_mut()) {
             acc.add(row, agg, context, storage)?;
@@ -173,7 +173,7 @@ trait Accumulator: Send {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()>;
 
     /// Finalize and return the aggregate result
@@ -193,7 +193,7 @@ impl Accumulator for CountAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Count(expr) | AggregateFunc::CountDistinct(expr) => expr,
@@ -240,7 +240,7 @@ impl Accumulator for SumAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Sum(expr) | AggregateFunc::SumDistinct(expr) => expr,
@@ -287,7 +287,7 @@ impl Accumulator for AvgAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Avg(expr) | AggregateFunc::AvgDistinct(expr) => expr,
@@ -365,7 +365,7 @@ impl Accumulator for MinAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Min(expr) | AggregateFunc::MinDistinct(expr) => expr,
@@ -406,7 +406,7 @@ impl Accumulator for MaxAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Max(expr) | AggregateFunc::MaxDistinct(expr) => expr,
@@ -447,7 +447,7 @@ impl Accumulator for StDevAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::StDev(expr) | AggregateFunc::StDevDistinct(expr) => expr,
@@ -518,7 +518,7 @@ impl Accumulator for VarianceAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &TransactionContext,
-        storage: &MvccStorage,
+        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Variance(expr) | AggregateFunc::VarianceDistinct(expr) => expr,
@@ -660,7 +660,7 @@ pub(crate) fn evaluate_expression(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
     _context: &TransactionContext,
-    _storage: &MvccStorage,
+    _storage: &Storage,
 ) -> Result<Value> {
     match expr {
         Expression::Constant(val) => Ok(val.clone()),
@@ -727,12 +727,12 @@ pub(crate) fn evaluate_expression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::mvcc::MvccStorage;
+    use crate::storage::{Storage, config::StorageConfig};
     use proven_hlc::{HlcClock, NodeId};
     use rust_decimal::Decimal;
 
-    fn setup_test() -> (MvccStorage, TransactionContext) {
-        let storage = MvccStorage::new();
+    fn setup_test() -> (Storage, TransactionContext) {
+        let storage = Storage::new(StorageConfig::default()).expect("Failed to create storage");
         let clock = HlcClock::new(NodeId::new(1));
         let timestamp = clock.now();
         let context = TransactionContext::new(timestamp);

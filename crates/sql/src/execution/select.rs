@@ -6,14 +6,14 @@
 use crate::error::Result;
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
-use crate::storage::MvccStorage;
+use crate::storage::Storage;
 use crate::stream::TransactionContext;
 use crate::types::value::Value;
 
 /// Execute a SELECT query using immutable storage reference
 pub fn execute_select(
     node: Node,
-    storage: &MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {

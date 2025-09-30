@@ -124,7 +124,7 @@ fn test_drop_index() {
 }
 
 #[test]
-#[should_panic(expected = "Index 'idx_nonexistent' not found")]
+#[should_panic(expected = "IndexNotFound")]
 fn test_drop_nonexistent_index_error() {
     let mut ctx = setup_test();
 

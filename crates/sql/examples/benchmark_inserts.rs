@@ -122,6 +122,7 @@ fn main() {
         params: None,
     };
 
+    let elapsed = Instant::now();
     match sql_engine.apply_operation(count_query, verify_txn) {
         proven_stream::OperationResult::Complete(_response) => {
             // In a real system, we'd parse the response to get the actual count
@@ -130,6 +131,9 @@ fn main() {
         }
         _ => println!("⚠ Count query failed"),
     }
+
+    let count_query_time = elapsed.elapsed();
+    println!("Count query time: {}ms", count_query_time.as_millis());
 
     // Print final statistics
     println!("\n=== Benchmark Results ===");

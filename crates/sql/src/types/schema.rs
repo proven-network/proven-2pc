@@ -83,6 +83,16 @@ impl Table {
         })
     }
 
+    /// Check if a column exists in this table
+    pub fn has_column(&self, column_name: &str) -> bool {
+        self.columns.iter().any(|c| c.name == column_name)
+    }
+
+    /// Get the index of a column by name
+    pub fn column_index(&self, column_name: &str) -> Option<usize> {
+        self.columns.iter().position(|c| c.name == column_name)
+    }
+
     /// Validates a row against this table's schema.
     pub fn validate_row(&self, row: &Row) -> Result<()> {
         if row.len() != self.columns.len() {

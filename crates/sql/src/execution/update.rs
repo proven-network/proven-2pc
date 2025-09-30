@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, expression};
 use crate::parsing::ast::ddl::ReferentialAction;
 use crate::planning::plan::Node;
-use crate::storage::{MvccStorage, read_ops, write_ops};
+use crate::storage::Storage;
 use crate::stream::TransactionContext;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
@@ -18,7 +18,7 @@ fn validate_foreign_keys_on_update(
     row: &Row,
     _old_row: &Row,
     schema: &Table,
-    storage: &MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<Vec<UpdateCascadeOp>> {
     // Check each foreign key constraint on this table
@@ -57,15 +57,16 @@ fn validate_foreign_keys_on_update(
 
         // Scan the referenced table to check if the value exists
         let mut found = false;
-        let ref_iter = read_ops::scan_iter(storage, tx_ctx, &fk.referenced_table)?;
+        let ref_iter = storage.iter(tx_ctx.id, &fk.referenced_table)?;
 
-        for ref_row in ref_iter {
-            let ref_row = ref_row.as_ref();
+        for ref_row_result in ref_iter {
+            let ref_row = ref_row_result?;
+            let ref_values = &ref_row.values;
 
             // Check if all referenced columns match
             let mut all_match = true;
             for (i, &ref_idx) in ref_indices.iter().enumerate() {
-                if &ref_row[ref_idx] != fk_values[i] {
+                if &ref_values[ref_idx] != fk_values[i] {
                     all_match = false;
                     break;
                 }
@@ -120,7 +121,7 @@ enum UpdateCascadeOp {
 
 /// Helper function to update a single column value
 fn update_column_value(
-    storage: &mut MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
     table: &str,
     row_id: u64,
@@ -129,11 +130,12 @@ fn update_column_value(
 ) -> Result<()> {
     // Get the current row
     let current_row = {
-        let iter = read_ops::scan_iter_with_ids(storage, tx_ctx, table)?;
+        let iter = storage.iter_with_ids(tx_ctx.id, table)?;
         let mut found_row = None;
-        for (rid, row) in iter {
+        for result in iter {
+            let (rid, row) = result?;
             if rid == row_id {
-                found_row = Some(row.to_vec());
+                found_row = Some(row.values.clone());
                 break;
             }
         }
@@ -147,7 +149,7 @@ fn update_column_value(
     updated_row[col_idx] = new_value;
 
     // Write the updated row
-    write_ops::update(storage, tx_ctx, table, row_id, updated_row)?;
+    storage.update(tx_ctx.id, table, row_id, updated_row)?;
     Ok(())
 }
 
@@ -156,7 +158,7 @@ fn check_and_collect_update_cascades(
     old_row: &Row,
     new_row: &Row,
     schema: &Table,
-    storage: &MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
 ) -> Result<Vec<UpdateCascadeOp>> {
     let mut cascade_ops = Vec::new();
@@ -189,9 +191,12 @@ fn check_and_collect_update_cascades(
                     .0;
 
                 // Find all rows that reference the old primary key value
-                let ref_iter = read_ops::scan_iter_with_ids(storage, tx_ctx, other_table_name)?;
-                for (ref_row_id, ref_row) in ref_iter {
-                    if &ref_row[fk_col_idx] == old_pk_value && !ref_row[fk_col_idx].is_null() {
+                let ref_iter = storage.iter_with_ids(tx_ctx.id, other_table_name)?;
+                for result in ref_iter {
+                    let (ref_row_id, ref_row) = result?;
+                    if &ref_row.values[fk_col_idx] == old_pk_value
+                        && !ref_row.values[fk_col_idx].is_null()
+                    {
                         // Found a referencing row - apply the referential action
                         match fk.on_update {
                             ReferentialAction::Restrict | ReferentialAction::NoAction => {
@@ -245,19 +250,21 @@ pub fn execute_update(
     table: String,
     assignments: Vec<(usize, Expression)>,
     source: Node,
-    storage: &mut MvccStorage,
+    storage: &Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Phase 1: Read rows with IDs that match the WHERE clause
     let rows_to_update = {
-        let iter = read_ops::scan_iter_with_ids(storage, tx_ctx, &table)?;
+        let iter = storage.iter_with_ids(tx_ctx.id, &table)?;
         let mut to_update = Vec::new();
 
-        for (row_id, row) in iter {
+        for result in iter {
+            let (row_id, row) = result?;
+            let row_arc = std::sync::Arc::new(row.values.clone());
             let matches = match &source {
                 Node::Filter { predicate, .. } => {
-                    expression::evaluate_with_arc(predicate, Some(&row), tx_ctx, params)?
+                    expression::evaluate_with_arc(predicate, Some(&row_arc), tx_ctx, params)?
                         .to_bool()
                         .unwrap_or(false)
                 }
@@ -266,19 +273,18 @@ pub fn execute_update(
             };
 
             if matches {
-                to_update.push((row_id, row));
+                to_update.push((row_id, row_arc));
             }
         }
         to_update
     }; // Immutable borrow ends here
 
-    // Phase 2: Apply updates (mutable borrow)
+    // Phase 2: Apply updates
     // Get table schema for type coercion
-    let schema = storage
-        .tables
+    let schemas = storage.get_schemas();
+    let schema = schemas
         .get(&table)
         .ok_or_else(|| Error::TableNotFound(table.clone()))?
-        .schema
         .clone();
 
     let mut all_cascade_ops = Vec::new();
@@ -299,7 +305,7 @@ pub fn execute_update(
             validate_foreign_keys_on_update(&coerced_row, &current, &schema, storage, tx_ctx)?;
         all_cascade_ops.extend(cascade_ops);
 
-        write_ops::update(storage, tx_ctx, &table, row_id, coerced_row)?;
+        storage.update(tx_ctx.id, &table, row_id, coerced_row)?;
         count += 1;
     }
 

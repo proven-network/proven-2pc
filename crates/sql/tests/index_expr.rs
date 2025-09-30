@@ -186,7 +186,7 @@ fn test_drop_expression_index() {
 
     // Try to drop again - should fail because index no longer exists
     let error = ctx.exec_error("DROP INDEX idx_expr");
-    assert!(error.contains("Index 'idx_expr' not found"));
+    assert!(error.contains("IndexNotFound"));
 }
 
 #[test]

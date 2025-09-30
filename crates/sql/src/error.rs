@@ -14,6 +14,12 @@ pub enum Error {
     #[error("Table already exists: {0}")]
     DuplicateTable(String),
 
+    #[error("Index not found: {0}")]
+    IndexNotFound(String),
+
+    #[error("Row not found: {0}")]
+    RowNotFound(u64),
+
     #[error("Column not found: {0}")]
     ColumnNotFound(String),
 
@@ -109,4 +115,31 @@ pub enum Error {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    #[error("IO error: {0}")]
+    IoError(String),
+
+    #[error("Fjall database error: {0}")]
+    FjallError(String),
+
+    #[error("Other error: {0}")]
+    Other(String),
+}
+
+impl From<fjall::Error> for Error {
+    fn from(err: fjall::Error) -> Self {
+        Error::FjallError(err.to_string())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::IoError(err.to_string())
+    }
+}
+
+impl From<bincode::Error> for Error {
+    fn from(err: bincode::Error) -> Self {
+        Error::Serialization(err.to_string())
+    }
 }

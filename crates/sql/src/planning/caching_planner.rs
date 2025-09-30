@@ -7,7 +7,7 @@ use super::plan::Plan;
 use super::planner::Planner;
 use crate::error::Result;
 use crate::semantic::statement::AnalyzedStatement;
-use crate::storage::mvcc::IndexMetadata;
+use crate::storage::index::IndexMetadata;
 use crate::types::schema::Table;
 use lru::LruCache;
 use std::collections::HashMap;
@@ -29,17 +29,14 @@ pub struct CachingPlanner {
 
 impl CachingPlanner {
     /// Create a new caching planner with default capacity
-    pub fn new(
-        schemas: HashMap<String, Table>,
-        indexes: HashMap<String, Vec<IndexMetadata>>,
-    ) -> Self {
+    pub fn new(schemas: HashMap<String, Table>, indexes: HashMap<String, IndexMetadata>) -> Self {
         Self::with_capacity(schemas, indexes, DEFAULT_CACHE_CAPACITY)
     }
 
     /// Create a new caching planner with specified capacity
     pub fn with_capacity(
         schemas: HashMap<String, Table>,
-        indexes: HashMap<String, Vec<IndexMetadata>>,
+        indexes: HashMap<String, IndexMetadata>,
         capacity: usize,
     ) -> Self {
         Self {
@@ -79,7 +76,7 @@ impl CachingPlanner {
     }
 
     /// Update indexes and invalidate cache
-    pub fn update_indexes(&mut self, _indexes: HashMap<String, Vec<IndexMetadata>>) {
+    pub fn update_indexes(&mut self, _indexes: HashMap<String, IndexMetadata>) {
         // Indexes are not currently used by the planner
         self.cache.clear();
     }

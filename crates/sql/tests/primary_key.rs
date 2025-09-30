@@ -201,7 +201,7 @@ fn test_primary_key_unique_constraint() {
     assert_error!(
         ctx,
         "INSERT INTO Allegro VALUES (1, 'another hello')",
-        "Unique constraint violation"
+        "UniqueConstraintViolation"
     );
 
     // Verify original data is unchanged
@@ -262,7 +262,7 @@ fn test_primary_key_update_duplicate_fails() {
     assert_error!(
         ctx,
         "UPDATE users SET id = 2 WHERE id = 1",
-        "Unique constraint violation"
+        "UniqueConstraintViolation"
     );
 
     // Verify data is unchanged
@@ -298,7 +298,7 @@ fn test_primary_key_index_update_integrity() {
     assert_error!(
         ctx,
         "INSERT INTO products VALUES (150, 'Duplicate', 50)",
-        "Unique constraint violation"
+        "UniqueConstraintViolation"
     );
 
     // Update multiple PRIMARY KEYs in sequence
