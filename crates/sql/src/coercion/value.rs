@@ -764,6 +764,6 @@ pub fn coerce_row(row: Vec<Value>, schema: &crate::types::schema::Table) -> Resu
 
     row.into_iter()
         .zip(&schema.columns)
-        .map(|(value, column)| coerce_value_impl(value, &column.datatype))
+        .map(|(value, column)| coerce_value_impl(value, &column.data_type))
         .collect()
 }

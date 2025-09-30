@@ -575,10 +575,10 @@ impl SemanticValidator {
                     && let Some(pk_idx) = ref_schema.primary_key
                 {
                     let pk_col = &ref_schema.columns[pk_idx];
-                    if col.datatype != pk_col.datatype {
+                    if col.data_type != pk_col.data_type {
                         return Err(Error::ExecutionError(format!(
                             "Foreign key '{}' type {} doesn't match referenced primary key type {}",
-                            col.name, col.datatype, pk_col.datatype
+                            col.name, col.data_type, pk_col.data_type
                         )));
                     }
                 }
@@ -668,9 +668,9 @@ impl SemanticValidator {
                                 }
 
                                 // Check if value can be coerced to target type (for non-NULL values)
-                                if !coercion::can_coerce(&value_type, &target_col.datatype) {
+                                if !coercion::can_coerce(&value_type, &target_col.data_type) {
                                     return Err(Error::TypeMismatch {
-                                        expected: format!("{:?}", target_col.datatype),
+                                        expected: format!("{:?}", target_col.data_type),
                                         found: format!("{:?}", value_type),
                                     });
                                 }
@@ -679,7 +679,7 @@ impl SemanticValidator {
                                 // For array literals, check if it can be coerced to the target type
                                 // Arrays can be coerced to LIST types
                                 if let crate::types::data_type::DataType::List(elem_type) =
-                                    &target_col.datatype
+                                    &target_col.data_type
                                 {
                                     // Check each element can be coerced to the element type
                                     for elem in elements {
@@ -720,7 +720,7 @@ impl SemanticValidator {
                                 } else if let crate::types::data_type::DataType::Array(
                                     elem_type,
                                     size,
-                                ) = &target_col.datatype
+                                ) = &target_col.data_type
                                 {
                                     // Check array size if specified
                                     if let Some(expected_size) = size
@@ -769,7 +769,7 @@ impl SemanticValidator {
                                     }
                                 } else {
                                     return Err(Error::TypeMismatch {
-                                        expected: format!("{:?}", target_col.datatype),
+                                        expected: format!("{:?}", target_col.data_type),
                                         found: "ARRAY".to_string(),
                                     });
                                 }
@@ -986,10 +986,10 @@ impl SemanticValidator {
                     // Check type compatibility with primary key
                     if let Some(pk_idx) = ref_schema.primary_key {
                         let pk_col = &ref_schema.columns[pk_idx];
-                        if col.datatype != pk_col.datatype {
+                        if col.data_type != pk_col.data_type {
                             return Err(Error::ExecutionError(format!(
                                 "Foreign key column '{}' type {:?} doesn't match referenced primary key '{}' type {:?}",
-                                col.name, col.datatype, pk_col.name, pk_col.datatype
+                                col.name, col.data_type, pk_col.name, pk_col.data_type
                             )));
                         }
                     }
@@ -1055,10 +1055,10 @@ impl SemanticValidator {
                         ))
                     })?;
 
-                if col.datatype != ref_col.datatype {
+                if col.data_type != ref_col.data_type {
                     return Err(Error::ExecutionError(format!(
                         "Self-referencing foreign key column '{}' type {:?} doesn't match referenced column '{}' type {:?}",
-                        col_name, col.datatype, ref_col_name, ref_col.datatype
+                        col_name, col.data_type, ref_col_name, ref_col.data_type
                     )));
                 }
             }
@@ -1132,10 +1132,10 @@ impl SemanticValidator {
             })?;
             let pk_col = &ref_schema.columns[pk_idx];
 
-            if col.datatype != pk_col.datatype {
+            if col.data_type != pk_col.data_type {
                 return Err(Error::ExecutionError(format!(
                     "Foreign key type mismatch: column '{}' type {:?} doesn't match referenced primary key type {:?}",
-                    col.name, col.datatype, pk_col.datatype
+                    col.name, col.data_type, pk_col.data_type
                 )));
             }
         }

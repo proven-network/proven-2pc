@@ -15,7 +15,7 @@ mod tests {
             columns: vec![
                 Column {
                     name: "id".to_string(),
-                    datatype: DataType::I32,
+                    data_type: DataType::I32,
                     nullable: false,
                     primary_key: true,
                     unique: true,
@@ -25,7 +25,7 @@ mod tests {
                 },
                 Column {
                     name: "name".to_string(),
-                    datatype: DataType::Str,
+                    data_type: DataType::Str,
                     nullable: false,
                     primary_key: false,
                     unique: false,
@@ -35,7 +35,7 @@ mod tests {
                 },
                 Column {
                     name: "email".to_string(),
-                    datatype: DataType::Str,
+                    data_type: DataType::Str,
                     nullable: true,
                     primary_key: false,
                     unique: true,

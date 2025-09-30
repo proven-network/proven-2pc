@@ -34,17 +34,6 @@ impl DataHistoryStore {
         }
     }
 
-    /// Check if a specific table has any operations in history (optimization)
-    pub fn table_has_operations(&self, table: &str) -> bool {
-        // Build prefix for table
-        let mut prefix = Vec::new();
-        prefix.extend_from_slice(&(table.len() as u32).to_be_bytes());
-        prefix.extend_from_slice(table.as_bytes());
-
-        // Check if there's any entry for this table
-        self.partition.prefix(prefix).next().is_some()
-    }
-
     /// Encode key for data history: {table_len(4)}{table}{commit_time(24)}{row_id(8)}{seq(4)}
     ///
     /// KEY DESIGN: table_name comes FIRST for efficient prefix scans!

@@ -719,7 +719,7 @@ impl Planner {
 
         for (i, col) in columns.iter().enumerate() {
             let mut schema_col =
-                crate::types::schema::Column::new(col.name.clone(), col.datatype.clone());
+                crate::types::schema::Column::new(col.name.clone(), col.data_type.clone());
 
             if col.primary_key {
                 if primary_key_idx.is_some() {
@@ -1485,7 +1485,7 @@ impl<'a> AnalyzedPlanContext<'a> {
                     && let Some(col) = schema.columns.iter().find(|c| c.name == struct_col_name)
                 {
                     // Check if it's a struct type
-                    if let crate::types::data_type::DataType::Struct(fields) = &col.datatype {
+                    if let crate::types::data_type::DataType::Struct(fields) = &col.data_type {
                         // Verify the field exists
                         if fields.iter().any(|(name, _)| name == column_name) {
                             let base_expr =

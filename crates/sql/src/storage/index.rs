@@ -150,24 +150,6 @@ impl IndexManager {
         Ok(())
     }
 
-    /// Remove an index entry from uncommitted operations by value
-    pub fn remove_by_value(
-        &mut self,
-        index_name: &str,
-        values: &[Value],
-        row_id: RowId,
-        txn_id: HlcTimestamp,
-    ) -> Result<()> {
-        // Track the delete operation in UncommittedIndexStore
-        let op = IndexOp::Delete {
-            index_name: index_name.to_string(),
-            values: values.to_vec(),
-            row_id,
-        };
-        self.index_versions.add_operation(txn_id, op)?;
-        Ok(())
-    }
-
     /// Lookup entries by exact value
     /// For snapshot reads, pass the snapshot transaction ID as `txn_id`.
     pub fn lookup(

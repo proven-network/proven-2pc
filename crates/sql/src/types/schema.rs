@@ -112,7 +112,7 @@ impl Table {
 
             // Check data type
             if !value.is_null() {
-                value.check_type(&column.datatype)?;
+                value.check_type(&column.data_type)?;
             }
         }
 
@@ -126,11 +126,6 @@ impl Table {
             .enumerate()
             .find(|(_, c)| c.name == name)
     }
-
-    /// Returns true if the table has any indexed columns (besides primary key).
-    pub fn has_indexes(&self) -> bool {
-        self.columns.iter().any(|c| c.index && !c.primary_key)
-    }
 }
 
 /// A table column.
@@ -138,8 +133,8 @@ impl Table {
 pub struct Column {
     /// Column name. Can't be empty.
     pub name: String,
-    /// Column datatype.
-    pub datatype: DataType,
+    /// Column data_type.
+    pub data_type: DataType,
     /// Whether this is the primary key column.
     pub primary_key: bool,
     /// Whether the column allows null values. Not legal for primary keys.
@@ -156,10 +151,10 @@ pub struct Column {
 
 impl Column {
     /// Creates a new column.
-    pub fn new(name: String, datatype: DataType) -> Self {
+    pub fn new(name: String, data_type: DataType) -> Self {
         Column {
             name,
-            datatype,
+            data_type,
             primary_key: false,
             nullable: true,
             default: None,
@@ -208,23 +203,6 @@ impl Column {
         }
         self
     }
-
-    /// Sets this column as indexed.
-    pub fn indexed(mut self) -> Self {
-        if !self.primary_key {
-            self.index = true;
-        }
-        self
-    }
-
-    /// Sets this column as a foreign key reference.
-    pub fn references(mut self, table: String) -> Self {
-        self.references = Some(table);
-        if !self.primary_key {
-            self.index = true; // Foreign keys need an index
-        }
-        self
-    }
 }
 
 // Formats the table as a SQL CREATE TABLE statement.
@@ -232,7 +210,7 @@ impl Display for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "CREATE TABLE {} (", self.name)?;
         for (i, column) in self.columns.iter().enumerate() {
-            write!(f, "  {} {}", column.name, column.datatype)?;
+            write!(f, "  {} {}", column.name, column.data_type)?;
 
             if column.primary_key {
                 write!(f, " PRIMARY KEY")?;

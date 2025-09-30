@@ -737,19 +737,6 @@ impl Storage {
         Ok(None)
     }
 
-    /// Scan all rows in a table (backwards compatible Vec-based version)
-    pub fn scan(&mut self, txn_id: HlcTimestamp, table: &str) -> Result<Vec<Arc<Row>>> {
-        // Use the new streaming iterator and collect results
-        let iterator = self.iter(txn_id, table)?;
-        let mut results = Vec::new();
-
-        for row_result in iterator {
-            results.push(row_result?);
-        }
-
-        Ok(results)
-    }
-
     /// Get an iterator over all visible rows in a table
     /// The iterator holds necessary locks for its lifetime
     pub fn iter<'a>(
@@ -820,11 +807,6 @@ impl Storage {
     /// Get all index metadata
     pub fn get_index_metadata(&self) -> HashMap<String, crate::storage::index::IndexMetadata> {
         self.index_manager.get_all_metadata().into_iter().collect()
-    }
-
-    /// Check if a table exists
-    pub fn table_exists(&self, table_name: &str) -> bool {
-        self.tables.contains_key(table_name)
     }
 
     /// Get index columns for a specific index
@@ -1260,68 +1242,6 @@ impl Storage {
         // Delete the actual row data
         let row_key = crate::storage::encoding::encode_row_key(row_id);
         batch.remove(&table_meta.data_partition, row_key);
-
-        Ok(())
-    }
-
-    /// Get table schema
-    pub fn get_table_schema(&mut self, table: &str) -> Result<TableSchema> {
-        let tables = &self.tables;
-        let table_meta = tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
-        Ok(table_meta.schema.clone())
-    }
-
-    /// List all tables
-    pub fn list_tables(&mut self) -> Vec<String> {
-        self.tables.keys().cloned().collect()
-    }
-
-    // Helper methods for index maintenance
-
-    fn update_indexes_on_insert(
-        &mut self,
-        table_name: &str,
-        row: &Arc<Row>,
-        table_meta: &TableMetadata,
-        txn_id: HlcTimestamp,
-    ) -> Result<()> {
-        // Get all indexes for this table
-        let indexes_to_update = self.get_indexes_for_table(table_name)?;
-
-        for (index_name, index_meta) in indexes_to_update {
-            // Get column indices for the index
-            let column_indices: Vec<usize> = index_meta
-                .columns
-                .iter()
-                .filter_map(|col| table_meta.schema.column_index(col))
-                .collect();
-
-            // Extract values for index columns
-            let index_values: Vec<Value> = column_indices
-                .iter()
-                .filter_map(|&idx| row.values.get(idx).cloned())
-                .collect();
-
-            if index_values.len() == column_indices.len() {
-                // Check unique constraint if needed BEFORE adding
-                if index_meta.unique
-                    && self
-                        .index_manager
-                        .check_unique(&index_name, &index_values, txn_id)?
-                {
-                    return Err(Error::UniqueConstraintViolation(format!(
-                        "Duplicate value for unique index {}",
-                        index_name
-                    )));
-                }
-
-                // Add to index
-                self.index_manager
-                    .add_entry(&index_name, index_values, row.id, txn_id)?;
-            }
-        }
 
         Ok(())
     }

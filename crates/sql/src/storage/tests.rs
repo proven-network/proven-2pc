@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod integration_tests {
+    use crate::error::Result;
     use crate::storage::{Storage, StorageConfig};
     use crate::types::data_type::DataType;
     use crate::types::schema::{Column, Table as TableSchema};
@@ -48,17 +49,17 @@ mod integration_tests {
             .unwrap();
 
         // Verify table exists
-        let tables = storage.list_tables();
+        let tables = storage.get_schemas().keys().cloned().collect::<Vec<_>>();
         assert!(tables.contains(&"users".to_string()));
 
         // Get schema
-        let retrieved_schema = storage.get_table_schema("users").unwrap();
+        let retrieved_schema = storage.get_schemas().get("users").unwrap().clone();
         assert_eq!(retrieved_schema.name, schema.name);
         assert_eq!(retrieved_schema.columns.len(), schema.columns.len());
 
         // Drop table
         storage.drop_table("users").unwrap();
-        let tables = storage.list_tables();
+        let tables = storage.get_schemas().keys().cloned().collect::<Vec<_>>();
         assert!(!tables.contains(&"users".to_string()));
     }
 
@@ -230,18 +231,30 @@ mod integration_tests {
         }
 
         // Scan should see all uncommitted rows
-        let rows = storage.scan(tx1, "users").unwrap();
+        let rows = storage
+            .iter(tx1, "users")
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
         assert_eq!(rows.len(), 5);
 
         // Other transaction sees nothing
         // let tx2 = create_txn_id(200);
         let tx2 = create_txn_id(2);
-        let rows = storage.scan(tx2, "users").unwrap();
+        let rows = storage
+            .iter(tx2, "users")
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
         assert_eq!(rows.len(), 0);
 
         // After commit, all visible
         storage.commit_transaction(tx1).unwrap();
-        let rows = storage.scan(tx2, "users").unwrap();
+        let rows = storage
+            .iter(tx2, "users")
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
         assert_eq!(rows.len(), 5);
     }
 
@@ -276,7 +289,11 @@ mod integration_tests {
         let row = storage.read(tx2, "users", *row_id).unwrap();
         assert!(row.is_none());
 
-        let rows = storage.scan(tx2, "users").unwrap();
+        let rows = storage
+            .iter(tx2, "users")
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
         assert_eq!(rows.len(), 0);
     }
 
@@ -314,10 +331,10 @@ mod integration_tests {
         {
             let mut config = StorageConfig::for_testing();
             config.persist_mode = fjall::PersistMode::SyncData;
-            let mut storage = Storage::open_at_path(path, config).unwrap();
+            let storage = Storage::open_at_path(path, config).unwrap();
 
             // Check if tables are loaded
-            let tables = storage.list_tables();
+            let tables = storage.get_schemas().keys().cloned().collect::<Vec<_>>();
             assert!(!tables.is_empty(), "No tables found after restart");
             assert!(
                 tables.contains(&"users".to_string()),
@@ -327,7 +344,11 @@ mod integration_tests {
             // Use a later transaction ID to read the committed data
             let tx = create_txn_id(200);
 
-            let rows = storage.scan(tx, "users").unwrap();
+            let rows = storage
+                .iter(tx, "users")
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
             assert_eq!(rows.len(), 1, "Expected 1 row, found {}", rows.len());
             assert_eq!(rows[0].values[1], Value::Str("Alice".to_string()));
         }
@@ -371,21 +392,21 @@ mod integration_tests {
             .unwrap();
 
         // tx1 and tx2 only see their own writes
-        assert_eq!(storage.scan(tx1, "users").unwrap().len(), 1);
-        assert_eq!(storage.scan(tx2, "users").unwrap().len(), 1);
-        assert_eq!(storage.scan(tx3, "users").unwrap().len(), 0);
+        assert_eq!(storage.iter(tx1, "users").unwrap().count(), 1);
+        assert_eq!(storage.iter(tx2, "users").unwrap().count(), 1);
+        assert_eq!(storage.iter(tx3, "users").unwrap().count(), 0);
 
         // Commit tx1
         storage.commit_transaction(tx1).unwrap();
 
         // tx3 now sees tx1's data but not tx2's
-        assert_eq!(storage.scan(tx3, "users").unwrap().len(), 1);
+        assert_eq!(storage.iter(tx3, "users").unwrap().count(), 1);
 
         // Commit tx2
         storage.commit_transaction(tx2).unwrap();
 
         // tx3 sees all data
-        assert_eq!(storage.scan(tx3, "users").unwrap().len(), 2);
+        assert_eq!(storage.iter(tx3, "users").unwrap().count(), 2);
     }
 
     #[test]

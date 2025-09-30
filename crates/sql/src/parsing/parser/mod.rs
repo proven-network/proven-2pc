@@ -635,7 +635,7 @@ mod tests {
             let stmt = Parser::parse(&sql).unwrap();
             match stmt {
                 Statement::Ddl(DdlStatement::CreateTable { columns, .. }) => {
-                    assert_eq!(columns[0].datatype, expected_type);
+                    assert_eq!(columns[0].data_type, expected_type);
                 }
                 _ => panic!("Expected CREATE TABLE statement"),
             }

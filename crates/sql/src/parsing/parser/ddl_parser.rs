@@ -151,11 +151,11 @@ pub trait DdlParser: TypeParser {
         let name = self.next_ident_or_keyword()?;
 
         // Use the TypeParser trait method for type parsing
-        let datatype = self.parse_type()?;
+        let data_type = self.parse_type()?;
 
         let mut column = Column {
             name,
-            datatype,
+            data_type,
             primary_key: false,
             nullable: None,
             default: None,

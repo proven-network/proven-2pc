@@ -128,7 +128,7 @@ impl NameResolver {
                             let resolution = ColumnResolution {
                                 global_offset,
                                 table_name: name.clone(),
-                                data_type: column.datatype.clone(),
+                                data_type: column.data_type.clone(),
                                 nullable: column.nullable,
                                 is_indexed: column.index,
                             };

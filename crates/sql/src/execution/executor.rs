@@ -160,7 +160,7 @@ pub fn execute_node_read<'a>(
                     for (i, value) in filter_values.iter().enumerate() {
                         if i < coerced_values.len() {
                             coerced_values[i] =
-                                crate::coercion::coerce_value(value.clone(), &column.datatype)?;
+                                crate::coercion::coerce_value(value.clone(), &column.data_type)?;
                         }
                     }
                 }

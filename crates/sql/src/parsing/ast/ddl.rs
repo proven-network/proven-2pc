@@ -9,7 +9,7 @@ use crate::types::data_type::DataType;
 #[derive(Debug, Clone)]
 pub struct Column {
     pub name: String,
-    pub datatype: DataType,
+    pub data_type: DataType,
     pub primary_key: bool,
     pub nullable: Option<bool>,
     pub default: Option<Expression>,

@@ -12,7 +12,7 @@ use crate::types::data_type::DataType;
 pub trait TypeParser: TokenHelper {
     /// Parse a data type (can be used recursively for collection types)
     fn parse_type(&mut self) -> Result<DataType> {
-        let datatype = match self.next()? {
+        let data_type = match self.next()? {
             // Boolean types
             Token::Keyword(Keyword::Bool | Keyword::Boolean) => DataType::Bool,
 
@@ -126,7 +126,7 @@ pub trait TypeParser: TokenHelper {
 
         // Check for array size specification with TYPE[SIZE] or TYPE[SIZE][SIZE] syntax
         // Handle multiple dimensions for multi-dimensional arrays
-        let mut result_type = datatype;
+        let mut result_type = data_type;
         while self.next_if(|t| t == &Token::OpenBracket).is_some() {
             // Check if we have a size or just empty brackets for variable-size list
             let size = if self.next_if(|t| t == &Token::CloseBracket).is_some() {
