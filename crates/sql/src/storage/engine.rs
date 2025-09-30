@@ -19,6 +19,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Type alias for table indexes cache
+type TableIndexesCache = Arc<RwLock<HashMap<String, Vec<(String, IndexMetadata)>>>>;
+
 /// Metadata for a table
 pub struct TableMetadata {
     pub schema: TableSchema,
@@ -51,6 +54,10 @@ pub struct Storage {
 
     // Index history (committed) for time-travel on indexes
     index_history: Arc<IndexHistoryStore>,
+
+    // Cache of table -> indexes mapping for performance
+    // Invalidated on DDL operations (create_index, drop_index, drop_table)
+    table_indexes_cache: TableIndexesCache,
 
     // Configuration
     config: StorageConfig,
@@ -184,6 +191,7 @@ impl Storage {
             uncommitted_data,
             data_history,
             index_history,
+            table_indexes_cache: Arc::new(RwLock::new(HashMap::new())),
             config,
         })
     }
@@ -256,6 +264,9 @@ impl Storage {
 
         // Drop partition using handle
         self.keyspace.delete_partition(data_partition)?;
+
+        // Invalidate cache for this table
+        self.invalidate_table_indexes_cache(name);
 
         // Persist changes
         self.keyspace.persist(self.config.persist_mode)?;
@@ -342,18 +353,34 @@ impl Storage {
         self.metadata_partition
             .insert(index_meta_key, serialize(&index_metadata)?)?;
 
+        // Invalidate cache for this table
+        self.invalidate_table_indexes_cache(&index_metadata.table);
+
         self.keyspace.persist(self.config.persist_mode)?;
         Ok(())
     }
 
     /// Drop an index
     pub fn drop_index(&self, index_name: &str) -> Result<()> {
+        // Get table name before removing metadata
+        let index_meta_key = format!("index:{}", index_name);
+        let table_name = if let Some(meta_bytes) = self.metadata_partition.get(&index_meta_key)? {
+            let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
+            Some(index_meta.table)
+        } else {
+            None
+        };
+
         // Remove the index
         self.index_manager.write().drop_index(index_name)?;
 
         // Remove metadata
-        self.metadata_partition
-            .remove(format!("index:{}", index_name))?;
+        self.metadata_partition.remove(index_meta_key)?;
+
+        // Invalidate cache if we found the table name
+        if let Some(table) = table_name {
+            self.invalidate_table_indexes_cache(&table);
+        }
 
         self.keyspace.persist(self.config.persist_mode)?;
         Ok(())
@@ -1495,9 +1522,16 @@ impl Storage {
     }
 
     fn get_indexes_for_table(&self, table_name: &str) -> Result<Vec<(String, IndexMetadata)>> {
-        let mut indexes = Vec::new();
+        // Check cache first
+        {
+            let cache = self.table_indexes_cache.read();
+            if let Some(indexes) = cache.get(table_name) {
+                return Ok(indexes.clone());
+            }
+        }
 
-        // Scan metadata partition for indexes
+        // Cache miss - scan metadata partition for indexes
+        let mut indexes = Vec::new();
         let prefix = "index:".as_bytes();
         for entry in self.metadata_partition.prefix(prefix) {
             let (key, value) = entry?;
@@ -1508,6 +1542,15 @@ impl Storage {
             }
         }
 
+        // Store in cache
+        self.table_indexes_cache
+            .write()
+            .insert(table_name.to_string(), indexes.clone());
+
         Ok(indexes)
+    }
+
+    fn invalidate_table_indexes_cache(&self, table_name: &str) {
+        self.table_indexes_cache.write().remove(table_name);
     }
 }
