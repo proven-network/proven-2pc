@@ -1,7 +1,8 @@
 //! Fjall-based recent versions store for time-travel snapshot reads
 
+use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
-use crate::storage::types::{RowId, StorageResult, TransactionId, WriteOp};
+use crate::storage::types::{RowId, WriteOp};
 use fjall::{Keyspace, Partition};
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
@@ -50,7 +51,7 @@ impl DataHistoryStore {
     ///
     /// KEY DESIGN: table_name comes FIRST for efficient prefix scans!
     /// This allows O(k) lookup of all ops for a specific table, then filter by time.
-    fn encode_key(commit_time: TransactionId, op: &WriteOp, seq: u32) -> Vec<u8> {
+    fn encode_key(commit_time: HlcTimestamp, op: &WriteOp, seq: u32) -> Vec<u8> {
         let mut key = Vec::new();
 
         // Put table name FIRST for efficient prefix scans
@@ -77,9 +78,9 @@ impl DataHistoryStore {
     pub fn add_committed_ops_to_batch(
         &self,
         batch: &mut fjall::Batch,
-        commit_time: TransactionId,
+        commit_time: HlcTimestamp,
         ops: Vec<WriteOp>,
-    ) -> StorageResult<()> {
+    ) -> Result<()> {
         // Use sequence numbers to preserve order within transaction
         for (seq, op) in ops.into_iter().enumerate() {
             let key = Self::encode_key(commit_time, &op, seq as u32);
@@ -95,9 +96,9 @@ impl DataHistoryStore {
     /// OPTIMIZED: Uses bounded range scan - stops at end of table namespace automatically
     pub fn get_table_ops_after(
         &self,
-        snapshot_time: TransactionId,
+        snapshot_time: HlcTimestamp,
         table: &str,
-    ) -> StorageResult<HashMap<RowId, Vec<WriteOp>>> {
+    ) -> Result<HashMap<RowId, Vec<WriteOp>>> {
         let mut result: HashMap<RowId, Vec<WriteOp>> = HashMap::new();
 
         // Build start key: {table_len}{table}{snapshot_time}
@@ -127,7 +128,7 @@ impl DataHistoryStore {
     }
 
     /// Clean up operations older than the retention window
-    pub fn cleanup_old_operations(&self, current_time: TransactionId) -> StorageResult<()> {
+    pub fn cleanup_old_operations(&self, current_time: HlcTimestamp) -> Result<()> {
         // Calculate the cutoff time (retention window ago)
         // Note: HlcTimestamp's physical component is in microseconds
         let retention_micros = self.retention_window.as_micros() as u64;
@@ -173,7 +174,7 @@ impl DataHistoryStore {
     }
 
     /// Remove all operations for a specific table (used when dropping a table)
-    pub fn remove_table(&self, table_name: &str) -> StorageResult<()> {
+    pub fn remove_table(&self, table_name: &str) -> Result<()> {
         let mut batch = self.keyspace.batch();
 
         // Scan all entries and remove those matching the table

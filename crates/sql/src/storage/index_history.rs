@@ -1,7 +1,7 @@
 //! Fjall-based recent index versions store for time-travel snapshot reads
 
+use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
-use crate::storage::types::{StorageResult, TransactionId};
 use crate::storage::uncommitted_index::IndexOp;
 use fjall::{Keyspace, Partition};
 use proven_hlc::HlcTimestamp;
@@ -39,7 +39,7 @@ impl IndexHistoryStore {
     ///
     /// KEY DESIGN: index_name comes FIRST for efficient prefix scans!
     /// This allows O(k) lookup of all ops for a specific index, then filter by time.
-    fn encode_key(commit_time: TransactionId, op: &IndexOp, seq: u32) -> Vec<u8> {
+    fn encode_key(commit_time: HlcTimestamp, op: &IndexOp, seq: u32) -> Vec<u8> {
         let mut key = Vec::new();
 
         // Put index name FIRST for efficient prefix scans
@@ -65,9 +65,9 @@ impl IndexHistoryStore {
     pub fn add_committed_ops_to_batch(
         &self,
         batch: &mut fjall::Batch,
-        commit_time: TransactionId,
+        commit_time: HlcTimestamp,
         ops: Vec<IndexOp>,
-    ) -> StorageResult<()> {
+    ) -> Result<()> {
         // Use sequence numbers to preserve order within transaction
         for (seq, op) in ops.into_iter().enumerate() {
             let key = Self::encode_key(commit_time, &op, seq as u32);
@@ -83,9 +83,9 @@ impl IndexHistoryStore {
     /// OPTIMIZED: Uses bounded range scan - stops at end of index namespace automatically
     pub fn get_index_ops_after(
         &self,
-        snapshot_txn_id: TransactionId,
+        snapshot_txn_id: HlcTimestamp,
         index_name: &str,
-    ) -> StorageResult<Vec<IndexOp>> {
+    ) -> Result<Vec<IndexOp>> {
         let mut ops = Vec::new();
 
         // Build start key: {index_name_len}{index_name}{snapshot_txn_id}
@@ -115,7 +115,7 @@ impl IndexHistoryStore {
     }
 
     /// Cleanup old operations (older than retention window)
-    pub fn cleanup_old_operations(&self, current_time: HlcTimestamp) -> StorageResult<()> {
+    pub fn cleanup_old_operations(&self, current_time: HlcTimestamp) -> Result<()> {
         // Calculate the cutoff time (retention window ago)
         // Note: HlcTimestamp's physical component is in microseconds
         let retention_micros = self.retention_window.as_micros() as u64;

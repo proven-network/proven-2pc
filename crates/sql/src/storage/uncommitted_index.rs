@@ -3,10 +3,12 @@
 //! This module provides a fjall-based store for tracking uncommitted index operations,
 //! similar to ActiveVersionStore but specifically for index operations.
 
+use crate::error::Result;
 use crate::storage::encoding::serialize;
-use crate::storage::types::{RowId, StorageResult, TransactionId};
+use crate::storage::types::RowId;
 use crate::types::value::Value;
 use fjall::{Keyspace, Partition};
+use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,7 +71,7 @@ impl UncommittedIndexStore {
     }
 
     /// Encode key for index operation: {tx_id}{index_name}{seq}
-    fn encode_key(tx_id: TransactionId, index_name: &str, seq: u64) -> Vec<u8> {
+    fn encode_key(tx_id: HlcTimestamp, index_name: &str, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
 
         // Serialize tx_id first for efficient prefix scans by transaction
@@ -87,12 +89,12 @@ impl UncommittedIndexStore {
     }
 
     /// Encode prefix for transaction operations
-    fn encode_tx_prefix(tx_id: TransactionId) -> Vec<u8> {
+    fn encode_tx_prefix(tx_id: HlcTimestamp) -> Vec<u8> {
         tx_id.to_lexicographic_bytes().to_vec()
     }
 
     /// Encode prefix for transaction + index operations
-    fn encode_tx_index_prefix(tx_id: TransactionId, index_name: &str) -> Vec<u8> {
+    fn encode_tx_index_prefix(tx_id: HlcTimestamp, index_name: &str) -> Vec<u8> {
         let mut key = Vec::new();
 
         // Serialize tx_id first
@@ -107,7 +109,7 @@ impl UncommittedIndexStore {
     }
 
     /// Add an index operation for a transaction
-    pub fn add_operation(&self, tx_id: TransactionId, op: IndexOp) -> StorageResult<()> {
+    pub fn add_operation(&self, tx_id: HlcTimestamp, op: IndexOp) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let key = Self::encode_key(tx_id, op.index_name(), seq);
         let value = serialize(&op)?;
@@ -117,7 +119,7 @@ impl UncommittedIndexStore {
     }
 
     /// Get all index operations for a transaction
-    pub fn get_transaction_ops(&self, tx_id: TransactionId) -> Vec<IndexOp> {
+    pub fn get_transaction_ops(&self, tx_id: HlcTimestamp) -> Vec<IndexOp> {
         let prefix = Self::encode_tx_prefix(tx_id);
 
         self.partition
@@ -131,7 +133,7 @@ impl UncommittedIndexStore {
     }
 
     /// Get index operations for a specific index in a transaction
-    pub fn get_index_ops(&self, tx_id: TransactionId, index_name: &str) -> Vec<IndexOp> {
+    pub fn get_index_ops(&self, tx_id: HlcTimestamp, index_name: &str) -> Vec<IndexOp> {
         let prefix = Self::encode_tx_index_prefix(tx_id, index_name);
 
         self.partition
@@ -148,7 +150,7 @@ impl UncommittedIndexStore {
     /// Returns a map of (index_name, values) -> row_ids
     pub fn get_index_lookups(
         &self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         index_name: &str,
     ) -> HashMap<Vec<Value>, HashSet<RowId>> {
         let mut lookups: HashMap<Vec<Value>, HashSet<RowId>> = HashMap::new();
@@ -173,7 +175,7 @@ impl UncommittedIndexStore {
     }
 
     /// Clear all operations for a transaction (used on commit or abort)
-    pub fn clear_transaction(&self, tx_id: TransactionId) -> StorageResult<()> {
+    pub fn clear_transaction(&self, tx_id: HlcTimestamp) -> Result<()> {
         let prefix = Self::encode_tx_prefix(tx_id);
 
         // Collect all keys with this prefix
@@ -192,13 +194,13 @@ impl UncommittedIndexStore {
     }
 
     /// Check if there are any operations for a transaction
-    pub fn has_transaction_ops(&self, tx_id: TransactionId) -> bool {
+    pub fn has_transaction_ops(&self, tx_id: HlcTimestamp) -> bool {
         let prefix = Self::encode_tx_prefix(tx_id);
         self.partition.prefix(prefix).next().is_some()
     }
 
     /// Persist the store (flush to disk)
-    pub fn persist(&self) -> StorageResult<()> {
+    pub fn persist(&self) -> Result<()> {
         self.keyspace.persist(fjall::PersistMode::SyncAll)?;
         Ok(())
     }

@@ -1,11 +1,12 @@
 //! Main storage engine with fjall backend
 
+use crate::error::{Error, Result};
 use crate::storage::config::StorageConfig;
 use crate::storage::data_history::DataHistoryStore;
 use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::index::{IndexManager, IndexMetadata};
 use crate::storage::index_history::IndexHistoryStore;
-use crate::storage::types::{Row, RowId, StorageError, StorageResult, TransactionId, WriteOp};
+use crate::storage::types::{Row, RowId, WriteOp};
 use crate::storage::uncommitted_data::UncommittedDataStore;
 use crate::storage::uncommitted_index::UncommittedIndexStore;
 use crate::types::schema::Table as TableSchema;
@@ -57,12 +58,12 @@ pub struct Storage {
 
 impl Storage {
     /// Create a new storage engine
-    pub fn new(config: StorageConfig) -> StorageResult<Self> {
+    pub fn new(config: StorageConfig) -> Result<Self> {
         Self::open_at_path(&config.data_dir.clone(), config)
     }
 
     /// Open storage at a specific path
-    pub fn open_at_path(path: &Path, config: StorageConfig) -> StorageResult<Self> {
+    pub fn open_at_path(path: &Path, config: StorageConfig) -> Result<Self> {
         // Ensure directory exists
         std::fs::create_dir_all(path)?;
 
@@ -137,7 +138,7 @@ impl Storage {
         for entry in metadata_partition.prefix("table:") {
             let (key, value) = entry?;
             let table_name = std::str::from_utf8(&key[6..])
-                .map_err(|e| StorageError::Other(format!("Invalid table name: {}", e)))?
+                .map_err(|e| Error::Other(format!("Invalid table name: {}", e)))?
                 .to_string();
 
             let schema: TableSchema = deserialize(&value)?;
@@ -188,10 +189,10 @@ impl Storage {
     }
 
     /// Create a new table
-    pub fn create_table(&self, name: String, schema: TableSchema) -> StorageResult<()> {
+    pub fn create_table(&self, name: String, schema: TableSchema) -> Result<()> {
         // Check if table already exists
         if self.tables.read().contains_key(&name) {
-            return Err(StorageError::DuplicateTable(name.clone()));
+            return Err(Error::DuplicateTable(name.clone()));
         }
 
         // Create partitions
@@ -223,13 +224,13 @@ impl Storage {
     }
 
     /// Drop a table
-    pub fn drop_table(&self, name: &str) -> StorageResult<()> {
+    pub fn drop_table(&self, name: &str) -> Result<()> {
         // Remove from tables map and get partition handles
         let metadata = self
             .tables
             .write()
             .remove(name)
-            .ok_or_else(|| StorageError::TableNotFound(name.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(name.to_string()))?;
 
         // Remove schema from metadata
         self.metadata_partition.remove(format!("table:{}", name))?;
@@ -270,17 +271,17 @@ impl Storage {
         table_name: String,
         columns: Vec<String>,
         unique: bool,
-    ) -> StorageResult<()> {
+    ) -> Result<()> {
         // Verify table exists
         let tables = self.tables.read();
         let table_meta = tables
             .get(&table_name)
-            .ok_or_else(|| StorageError::TableNotFound(table_name.clone()))?;
+            .ok_or_else(|| Error::TableNotFound(table_name.clone()))?;
 
         // Verify columns exist in table
         for column in &columns {
             if !table_meta.schema.has_column(column) {
-                return Err(StorageError::Other(format!(
+                return Err(Error::Other(format!(
                     "Column {} not found in table {}",
                     column, table_name
                 )));
@@ -294,7 +295,7 @@ impl Storage {
             .collect();
 
         if column_indices.len() != columns.len() {
-            return Err(StorageError::Other(
+            return Err(Error::Other(
                 "Failed to resolve all column indices".to_string(),
             ));
         }
@@ -346,7 +347,7 @@ impl Storage {
     }
 
     /// Drop an index
-    pub fn drop_index(&self, index_name: &str) -> StorageResult<()> {
+    pub fn drop_index(&self, index_name: &str) -> Result<()> {
         // Remove the index
         self.index_manager.write().drop_index(index_name)?;
 
@@ -363,14 +364,14 @@ impl Storage {
         &self,
         index_name: &str,
         values: Vec<Value>,
-        tx_id: TransactionId,
-    ) -> StorageResult<Vec<Arc<Row>>> {
+        tx_id: HlcTimestamp,
+    ) -> Result<Vec<Arc<Row>>> {
         // Cache metadata lookup outside the loop
         let index_meta_key = format!("index:{}", index_name);
         let meta_bytes = self
             .metadata_partition
             .get(&index_meta_key)?
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
         let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
         let table_name = index_meta.table.clone();
 
@@ -396,7 +397,7 @@ impl Storage {
         &'a self,
         index_name: &str,
         values: Vec<Value>,
-    ) -> StorageResult<crate::storage::index::IndexLookupIterator<'a>> {
+    ) -> Result<crate::storage::index::IndexLookupIterator<'a>> {
         let index_guard = self.index_manager.read();
         crate::storage::index::IndexLookupIterator::new(index_guard, index_name, values)
     }
@@ -407,7 +408,7 @@ impl Storage {
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-    ) -> StorageResult<crate::storage::index::IndexRangeScanIterator<'a>> {
+    ) -> Result<crate::storage::index::IndexRangeScanIterator<'a>> {
         let index_guard = self.index_manager.read();
         crate::storage::index::IndexRangeScanIterator::new(
             index_guard,
@@ -423,14 +424,14 @@ impl Storage {
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-        tx_id: TransactionId,
-    ) -> StorageResult<Vec<Arc<Row>>> {
+        tx_id: HlcTimestamp,
+    ) -> Result<Vec<Arc<Row>>> {
         // Cache metadata lookup outside the loop
         let index_meta_key = format!("index:{}", index_name);
         let meta_bytes = self
             .metadata_partition
             .get(&index_meta_key)?
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
         let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
         let table_name = index_meta.table.clone();
 
@@ -456,8 +457,8 @@ impl Storage {
         &self,
         index_name: &str,
         values: &[Value],
-        tx_id: TransactionId,
-    ) -> StorageResult<bool> {
+        tx_id: HlcTimestamp,
+    ) -> Result<bool> {
         self.index_manager
             .read()
             .check_unique(index_name, values, tx_id)
@@ -466,15 +467,15 @@ impl Storage {
     /// Insert a row
     pub fn insert(
         &self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
         values: Vec<crate::types::value::Value>,
-    ) -> StorageResult<RowId> {
+    ) -> Result<RowId> {
         // Get table metadata
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Validate values against schema
         table_meta.schema.validate_row(&values)?;
@@ -503,15 +504,15 @@ impl Storage {
     /// Insert multiple rows atomically - all validation checks are done before any inserts
     pub fn insert_batch(
         &self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
         values_batch: Vec<Vec<crate::types::value::Value>>,
-    ) -> StorageResult<Vec<RowId>> {
+    ) -> Result<Vec<RowId>> {
         // Get table metadata
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Phase 1: Validate all rows and prepare data structures
         let mut prepared_rows = Vec::new();
@@ -554,7 +555,7 @@ impl Storage {
                     // Check if we've seen these values before in this batch
                     let values_set = batch_unique_values.entry(index_name.clone()).or_default();
                     if !values_set.insert(index_values.clone()) {
-                        return Err(StorageError::UniqueConstraintViolation(format!(
+                        return Err(Error::UniqueConstraintViolation(format!(
                             "Duplicate value within batch for unique index {}",
                             index_name
                         )));
@@ -590,7 +591,7 @@ impl Storage {
                         .read()
                         .check_unique(index_name, &index_values, tx_id)?
                     {
-                        return Err(StorageError::UniqueConstraintViolation(format!(
+                        return Err(Error::UniqueConstraintViolation(format!(
                             "Duplicate value for unique index {}",
                             index_name
                         )));
@@ -623,16 +624,16 @@ impl Storage {
     /// Update a row
     pub fn update(
         &self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
         row_id: RowId,
         values: Vec<crate::types::value::Value>,
-    ) -> StorageResult<()> {
+    ) -> Result<()> {
         // Get table metadata
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Validate values against schema
         table_meta.schema.validate_row(&values)?;
@@ -640,7 +641,7 @@ impl Storage {
         // Read current row
         let old_row = self
             .read(tx_id, table, row_id)?
-            .ok_or(StorageError::RowNotFound(row_id))?;
+            .ok_or(Error::RowNotFound(row_id))?;
 
         // Create new row
         let new_row = Arc::new(Row::new(row_id, values));
@@ -662,11 +663,11 @@ impl Storage {
     }
 
     /// Delete a row
-    pub fn delete(&self, tx_id: TransactionId, table: &str, row_id: RowId) -> StorageResult<()> {
+    pub fn delete(&self, tx_id: HlcTimestamp, table: &str, row_id: RowId) -> Result<()> {
         // Read current row
         let row = self
             .read(tx_id, table, row_id)?
-            .ok_or(StorageError::RowNotFound(row_id))?;
+            .ok_or(Error::RowNotFound(row_id))?;
 
         // Mark as deleted
         let deleted_row = Arc::new(Row {
@@ -696,10 +697,10 @@ impl Storage {
     /// Read a row
     pub fn read(
         &self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
         row_id: RowId,
-    ) -> StorageResult<Option<Arc<Row>>> {
+    ) -> Result<Option<Arc<Row>>> {
         // L1: Check active transaction writes
         match self.uncommitted_data.get_row(tx_id, table, row_id) {
             Some(Some(row)) => {
@@ -723,7 +724,7 @@ impl Storage {
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Try to read the row from disk
         let row_key = crate::storage::encoding::encode_row_key(row_id);
@@ -775,7 +776,7 @@ impl Storage {
     }
 
     /// Scan all rows in a table (backwards compatible Vec-based version)
-    pub fn scan(&self, tx_id: TransactionId, table: &str) -> StorageResult<Vec<Arc<Row>>> {
+    pub fn scan(&self, tx_id: HlcTimestamp, table: &str) -> Result<Vec<Arc<Row>>> {
         // Use the new streaming iterator and collect results
         let iterator = self.iter(tx_id, table)?;
         let mut results = Vec::new();
@@ -791,9 +792,9 @@ impl Storage {
     /// The iterator holds necessary locks for its lifetime
     pub fn iter<'a>(
         &'a self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
-    ) -> StorageResult<crate::storage::iterator::TableIterator<'a>> {
+    ) -> Result<crate::storage::iterator::TableIterator<'a>> {
         let tables_guard = self.tables.read();
         let active_versions_clone = self.uncommitted_data.clone();
         let recent_versions_clone = self.data_history.clone();
@@ -810,9 +811,9 @@ impl Storage {
     /// Get an iterator with row IDs (for UPDATE/DELETE operations)
     pub fn iter_with_ids<'a>(
         &'a self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
-    ) -> StorageResult<crate::storage::iterator::TableIteratorWithIds<'a>> {
+    ) -> Result<crate::storage::iterator::TableIteratorWithIds<'a>> {
         let tables_guard = self.tables.read();
         let active_versions_clone = self.uncommitted_data.clone();
         let recent_versions_clone = self.data_history.clone();
@@ -829,9 +830,9 @@ impl Storage {
     /// Get a reverse iterator (scanning backwards)
     pub fn iter_reverse<'a>(
         &'a self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
-    ) -> StorageResult<crate::storage::iterator::TableIteratorReverse<'a>> {
+    ) -> Result<crate::storage::iterator::TableIteratorReverse<'a>> {
         let tables_guard = self.tables.read();
         let active_versions_clone = self.uncommitted_data.clone();
         let recent_versions_clone = self.data_history.clone();
@@ -900,8 +901,8 @@ impl Storage {
         &self,
         index_name: &str,
         values: Vec<Value>,
-        tx_id: TransactionId,
-    ) -> StorageResult<Vec<Arc<Row>>> {
+        tx_id: HlcTimestamp,
+    ) -> Result<Vec<Arc<Row>>> {
         // Try the direct index name first
         match self.index_lookup(index_name, values.clone(), tx_id) {
             Ok(rows) if !rows.is_empty() => Ok(rows),
@@ -937,14 +938,14 @@ impl Storage {
         end_values: Option<Vec<Value>>,
         _end_inclusive: bool,
         reverse: bool,
-        tx_id: TransactionId,
-    ) -> StorageResult<Vec<Arc<Row>>> {
+        tx_id: HlcTimestamp,
+    ) -> Result<Vec<Arc<Row>>> {
         // Get index metadata
         let index_meta = self
             .index_manager
             .read()
             .get_index_metadata(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?
             .clone();
 
         // Use the range scan method
@@ -977,8 +978,8 @@ impl Storage {
     pub fn execute_ddl(
         &self,
         plan: &crate::planning::plan::Plan,
-        tx_id: TransactionId,
-    ) -> StorageResult<String> {
+        tx_id: HlcTimestamp,
+    ) -> Result<String> {
         use crate::planning::plan::Plan;
 
         match plan {
@@ -1039,7 +1040,7 @@ impl Storage {
                         }
                         Ok(format!("Table '{}' created", name))
                     }
-                    Err(StorageError::DuplicateTable(_)) if *if_not_exists => Ok(format!(
+                    Err(Error::DuplicateTable(_)) if *if_not_exists => Ok(format!(
                         "Table '{}' already exists (IF NOT EXISTS specified)",
                         name
                     )),
@@ -1058,7 +1059,7 @@ impl Storage {
                 for name in names {
                     match self.drop_table(name) {
                         Ok(_) => dropped_count += 1,
-                        Err(StorageError::TableNotFound(_)) if *if_exists => {
+                        Err(Error::TableNotFound(_)) if *if_exists => {
                             // Ignore if IF EXISTS is specified
                         }
                         Err(e) => errors.push((name.clone(), e)),
@@ -1089,7 +1090,7 @@ impl Storage {
             } => {
                 // Check if table exists
                 if !self.tables.read().contains_key(table) {
-                    return Err(StorageError::TableNotFound(table.clone()));
+                    return Err(Error::TableNotFound(table.clone()));
                 }
 
                 // Extract column names from IndexColumn structs
@@ -1113,7 +1114,7 @@ impl Storage {
                     *unique,
                 ) {
                     Ok(_) => Ok(format!("Index '{}' created", name)),
-                    Err(StorageError::Other(msg)) if msg.contains("already exists") => {
+                    Err(Error::Other(msg)) if msg.contains("already exists") => {
                         Ok(format!("Index '{}' already exists", name))
                     }
                     Err(e) => Err(e),
@@ -1123,7 +1124,7 @@ impl Storage {
             Plan::DropIndex { name, if_exists } => {
                 match self.index_manager.write().drop_index(name) {
                     Ok(_) => Ok(format!("Index '{}' dropped", name)),
-                    Err(StorageError::IndexNotFound(_)) if *if_exists => Ok(format!(
+                    Err(Error::IndexNotFound(_)) if *if_exists => Ok(format!(
                         "Index '{}' does not exist (IF EXISTS specified)",
                         name
                     )),
@@ -1131,14 +1132,14 @@ impl Storage {
                 }
             }
 
-            _ => Err(StorageError::InvalidOperation(
+            _ => Err(Error::InvalidOperation(
                 "Unsupported DDL operation".to_string(),
             )),
         }
     }
 
     /// Commit a transaction
-    pub fn commit_transaction(&self, tx_id: TransactionId) -> StorageResult<()> {
+    pub fn commit_transaction(&self, tx_id: HlcTimestamp) -> Result<()> {
         // Get writes for this transaction
         let writes = self.uncommitted_data.get_transaction_writes(tx_id);
 
@@ -1208,7 +1209,7 @@ impl Storage {
     }
 
     /// Abort a transaction
-    pub fn abort_transaction(&self, tx_id: TransactionId) -> StorageResult<()> {
+    pub fn abort_transaction(&self, tx_id: HlcTimestamp) -> Result<()> {
         // Create batch for atomic commit (even if no writes, we might have index ops)
         let mut batch = self.keyspace.batch();
 
@@ -1230,12 +1231,12 @@ impl Storage {
         table: &str,
         row_id: RowId,
         row: Arc<Row>,
-        _tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        _tx_id: HlcTimestamp,
+    ) -> Result<()> {
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Write row data
         let row_key = crate::storage::encoding::encode_row_key(row_id);
@@ -1250,12 +1251,12 @@ impl Storage {
         table: &str,
         row_id: RowId,
         row: Arc<Row>,
-        _tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        _tx_id: HlcTimestamp,
+    ) -> Result<()> {
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Update row data
         let row_key = crate::storage::encoding::encode_row_key(row_id);
@@ -1269,12 +1270,12 @@ impl Storage {
         batch: &mut Batch,
         table: &str,
         row_id: RowId,
-        _tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        _tx_id: HlcTimestamp,
+    ) -> Result<()> {
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Delete the actual row data
         let row_key = crate::storage::encoding::encode_row_key(row_id);
@@ -1284,11 +1285,11 @@ impl Storage {
     }
 
     /// Get table schema
-    pub fn get_table_schema(&self, table: &str) -> StorageResult<TableSchema> {
+    pub fn get_table_schema(&self, table: &str) -> Result<TableSchema> {
         let tables = self.tables.read();
         let table_meta = tables
             .get(table)
-            .ok_or_else(|| StorageError::TableNotFound(table.to_string()))?;
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
         Ok(table_meta.schema.clone())
     }
 
@@ -1304,8 +1305,8 @@ impl Storage {
         table_name: &str,
         row: &Arc<Row>,
         table_meta: &TableMetadata,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        tx_id: HlcTimestamp,
+    ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
 
@@ -1331,7 +1332,7 @@ impl Storage {
                         .read()
                         .check_unique(&index_name, &index_values, tx_id)?
                 {
-                    return Err(StorageError::UniqueConstraintViolation(format!(
+                    return Err(Error::UniqueConstraintViolation(format!(
                         "Duplicate value for unique index {}",
                         index_name
                     )));
@@ -1353,8 +1354,8 @@ impl Storage {
         table_name: &str,
         row: &Arc<Row>,
         table_meta: &TableMetadata,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        tx_id: HlcTimestamp,
+    ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
 
@@ -1389,8 +1390,8 @@ impl Storage {
         old_row: &Arc<Row>,
         new_row: &Arc<Row>,
         table_meta: &TableMetadata,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        tx_id: HlcTimestamp,
+    ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
 
@@ -1439,7 +1440,7 @@ impl Storage {
                     .read()
                     .check_unique(index_name, new_values, tx_id)?
             {
-                return Err(StorageError::UniqueConstraintViolation(format!(
+                return Err(Error::UniqueConstraintViolation(format!(
                     "Duplicate value for unique index {}",
                     index_name
                 )));
@@ -1467,8 +1468,8 @@ impl Storage {
         table_name: &str,
         row: &Arc<Row>,
         table_meta: &TableMetadata,
-        _tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        _tx_id: HlcTimestamp,
+    ) -> Result<()> {
         // Get all indexes for this table
         let indexes_to_update = self.get_indexes_for_table(table_name)?;
 
@@ -1500,10 +1501,7 @@ impl Storage {
         Ok(())
     }
 
-    fn get_indexes_for_table(
-        &self,
-        table_name: &str,
-    ) -> StorageResult<Vec<(String, IndexMetadata)>> {
+    fn get_indexes_for_table(&self, table_name: &str) -> Result<Vec<(String, IndexMetadata)>> {
         let mut indexes = Vec::new();
 
         // Scan metadata partition for indexes

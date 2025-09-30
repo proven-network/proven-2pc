@@ -1,14 +1,14 @@
 //! Index management and operations
 
+use crate::error::{Error, Result};
 use crate::storage::encoding::{decode_row_id_from_index_key, encode_index_key};
 use crate::storage::index_history::IndexHistoryStore;
-use crate::storage::types::{
-    FjallIterator, Row, RowId, StorageError, StorageResult, TransactionId,
-};
+use crate::storage::types::{FjallIterator, Row, RowId};
 use crate::storage::uncommitted_index::{IndexOp, UncommittedIndexStore};
 use crate::types::value::Value;
 use fjall::{Batch, Partition, PartitionCreateOptions};
 use parking_lot::RwLockReadGuard;
+use proven_hlc::HlcTimestamp;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -63,13 +63,10 @@ impl IndexManager {
         table: String,
         columns: Vec<String>,
         unique: bool,
-    ) -> StorageResult<()> {
+    ) -> Result<()> {
         // Check if index already exists
         if self.indexes.contains_key(&name) {
-            return Err(StorageError::Other(format!(
-                "Index {} already exists",
-                name
-            )));
+            return Err(Error::Other(format!("Index {} already exists", name)));
         }
 
         // Create index partition
@@ -100,10 +97,10 @@ impl IndexManager {
     }
 
     /// Drop an index
-    pub fn drop_index(&mut self, name: &str) -> StorageResult<()> {
+    pub fn drop_index(&mut self, name: &str) -> Result<()> {
         self.indexes
             .remove(name)
-            .ok_or_else(|| StorageError::IndexNotFound(name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(name.to_string()))?;
         self.partitions.remove(name);
         Ok(())
     }
@@ -124,8 +121,8 @@ impl IndexManager {
         index_name: &str,
         values: Vec<Value>,
         row_id: RowId,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        tx_id: HlcTimestamp,
+    ) -> Result<()> {
         // Track the operation in UncommittedIndexStore
         let op = IndexOp::Insert {
             index_name: index_name.to_string(),
@@ -142,8 +139,8 @@ impl IndexManager {
         index_name: &str,
         values: &[Value],
         row_id: RowId,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        tx_id: HlcTimestamp,
+    ) -> Result<()> {
         // Track the delete operation in UncommittedIndexStore
         let op = IndexOp::Delete {
             index_name: index_name.to_string(),
@@ -160,8 +157,8 @@ impl IndexManager {
         index_name: &str,
         values: &[Value],
         row_id: RowId,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        tx_id: HlcTimestamp,
+    ) -> Result<()> {
         // Track the delete operation in UncommittedIndexStore
         let op = IndexOp::Delete {
             index_name: index_name.to_string(),
@@ -178,12 +175,12 @@ impl IndexManager {
         &self,
         index_name: &str,
         values: Vec<Value>,
-        tx_id: TransactionId,
-    ) -> StorageResult<Vec<RowId>> {
+        tx_id: HlcTimestamp,
+    ) -> Result<Vec<RowId>> {
         let partition = self
             .partitions
             .get(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let mut results = HashSet::new();
         let key_prefix = encode_index_key(&values, 0);
@@ -243,12 +240,12 @@ impl IndexManager {
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-        tx_id: TransactionId,
-    ) -> StorageResult<Vec<RowId>> {
+        tx_id: HlcTimestamp,
+    ) -> Result<Vec<RowId>> {
         let partition = self
             .partitions
             .get(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let mut results = HashSet::new();
 
@@ -257,11 +254,19 @@ impl IndexManager {
         let end_key = end_values.as_ref().map(|v| encode_index_key(v, u64::MAX));
 
         // Create appropriate range and collect results
-        let entries: Vec<_> = match (start_key, end_key) {
-            (None, None) => partition.iter().collect::<Result<Vec<_>, _>>()?,
-            (Some(s), None) => partition.range(s..).collect::<Result<Vec<_>, _>>()?,
-            (None, Some(e)) => partition.range(..=e).collect::<Result<Vec<_>, _>>()?,
-            (Some(s), Some(e)) => partition.range(s..=e).collect::<Result<Vec<_>, _>>()?,
+        let entries: Vec<_> = match (start_key.as_ref(), end_key.as_ref()) {
+            (None, None) => partition
+                .iter()
+                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
+            (Some(s), None) => partition
+                .range(s.as_slice()..)
+                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
+            (None, Some(e)) => partition
+                .range(..=e.as_slice())
+                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
+            (Some(s), Some(e)) => partition
+                .range(s.as_slice()..=e.as_slice())
+                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
         };
 
         // First, collect committed entries
@@ -343,12 +348,12 @@ impl IndexManager {
         &self,
         index_name: &str,
         values: &[Value],
-        tx_id: TransactionId,
-    ) -> StorageResult<bool> {
+        tx_id: HlcTimestamp,
+    ) -> Result<bool> {
         let metadata = self
             .indexes
             .get(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         if !metadata.unique {
             return Ok(false);
@@ -372,8 +377,8 @@ impl IndexManager {
         index_name: &str,
         rows: &[(RowId, Arc<Row>)],
         column_indices: &[usize],
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+        tx_id: HlcTimestamp,
+    ) -> Result<()> {
         for (row_id, row) in rows {
             // Extract values for index columns
             let values: Vec<Value> = column_indices
@@ -394,11 +399,11 @@ impl IndexManager {
         &'a self,
         index_name: &str,
         values: Vec<Value>,
-    ) -> StorageResult<impl Iterator<Item = StorageResult<RowId>> + 'a> {
+    ) -> Result<impl Iterator<Item = Result<RowId>> + 'a> {
         let partition = self
             .partitions
             .get(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?
             .clone();
 
         let key_prefix = encode_index_key(&values, 0);
@@ -408,7 +413,7 @@ impl IndexManager {
         Ok(partition.prefix(prefix_bytes).map(move |entry| {
             let (key, _value) = entry?;
             decode_row_id_from_index_key(&key)
-                .ok_or_else(|| StorageError::Other("Invalid index key".to_string()))
+                .ok_or_else(|| Error::Other("Invalid index key".to_string()))
         }))
     }
 
@@ -418,11 +423,11 @@ impl IndexManager {
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-    ) -> StorageResult<Box<dyn Iterator<Item = StorageResult<RowId>> + 'a>> {
+    ) -> Result<Box<dyn Iterator<Item = Result<RowId>> + 'a>> {
         let partition = self
             .partitions
             .get(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?
             .clone();
 
         // Build range bounds
@@ -430,26 +435,26 @@ impl IndexManager {
         let end_key = end_values.map(|v| encode_index_key(&v, u64::MAX));
 
         // Create appropriate range iterator without collecting
-        let iter: Box<dyn Iterator<Item = StorageResult<RowId>>> = match (start_key, end_key) {
+        let iter: Box<dyn Iterator<Item = Result<RowId>>> = match (start_key, end_key) {
             (None, None) => Box::new(partition.iter().map(|entry| {
                 let (key, _value) = entry?;
                 decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| StorageError::Other("Invalid index key".to_string()))
+                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
             })),
             (Some(s), None) => Box::new(partition.range(s..).map(|entry| {
                 let (key, _value) = entry?;
                 decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| StorageError::Other("Invalid index key".to_string()))
+                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
             })),
             (None, Some(e)) => Box::new(partition.range(..=e).map(|entry| {
                 let (key, _value) = entry?;
                 decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| StorageError::Other("Invalid index key".to_string()))
+                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
             })),
             (Some(s), Some(e)) => Box::new(partition.range(s..=e).map(|entry| {
                 let (key, _value) = entry?;
                 decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| StorageError::Other("Invalid index key".to_string()))
+                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
             })),
         };
 
@@ -462,7 +467,7 @@ impl IndexManager {
         batch: &mut Batch,
         updates: Vec<IndexUpdate>,
         get_partition: F,
-    ) -> StorageResult<()>
+    ) -> Result<()>
     where
         F: Fn(&str) -> Option<&Partition>,
     {
@@ -496,11 +501,7 @@ impl IndexManager {
     }
 
     /// Commit index operations for a transaction
-    pub fn commit_transaction(
-        &mut self,
-        batch: &mut Batch,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+    pub fn commit_transaction(&mut self, batch: &mut Batch, tx_id: HlcTimestamp) -> Result<()> {
         for op in self.index_versions.get_transaction_ops(tx_id) {
             match op {
                 IndexOp::Insert {
@@ -533,7 +534,7 @@ impl IndexManager {
     }
 
     /// Abort index operations for a transaction
-    pub fn abort_transaction(&mut self, tx_id: TransactionId) -> StorageResult<()> {
+    pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) -> Result<()> {
         // Clear the transaction's operations from UncommittedIndexStore
         self.index_versions.clear_transaction(tx_id)?;
         Ok(())
@@ -546,7 +547,7 @@ pub enum IndexUpdate {
         index_name: String,
         values: Vec<Value>,
         row_id: RowId,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
     },
     Remove {
         index_name: String,
@@ -569,11 +570,11 @@ impl<'a> IndexLookupIterator<'a> {
         index_guard: RwLockReadGuard<'a, IndexManager>,
         index_name: &str,
         values: Vec<Value>,
-    ) -> StorageResult<Self> {
+    ) -> Result<Self> {
         let partition = index_guard
             .partitions
             .get(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let key_prefix = encode_index_key(&values, 0);
         let prefix_len = key_prefix.len() - 8; // Exclude RowId part
@@ -595,13 +596,13 @@ impl<'a> IndexLookupIterator<'a> {
 }
 
 impl<'a> Iterator for IndexLookupIterator<'a> {
-    type Item = StorageResult<RowId>;
+    type Item = Result<RowId>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next().map(|result| {
             let (key, _value) = result?;
             decode_row_id_from_index_key(&key)
-                .ok_or_else(|| StorageError::Other("Invalid index key".to_string()))
+                .ok_or_else(|| Error::Other("Invalid index key".to_string()))
         })
     }
 }
@@ -621,11 +622,11 @@ impl<'a> IndexRangeScanIterator<'a> {
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-    ) -> StorageResult<Self> {
+    ) -> Result<Self> {
         let partition = index_guard
             .partitions
             .get(index_name)
-            .ok_or_else(|| StorageError::IndexNotFound(index_name.to_string()))?;
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         // Build range bounds
         let start_key = start_values.map(|v| encode_index_key(&v, 0));
@@ -671,13 +672,13 @@ impl<'a> IndexRangeScanIterator<'a> {
 }
 
 impl<'a> Iterator for IndexRangeScanIterator<'a> {
-    type Item = StorageResult<RowId>;
+    type Item = Result<RowId>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next().map(|result| {
             let (key, _value) = result?;
             decode_row_id_from_index_key(&key)
-                .ok_or_else(|| StorageError::Other("Invalid index key".to_string()))
+                .ok_or_else(|| Error::Other("Invalid index key".to_string()))
         })
     }
 }
@@ -697,7 +698,7 @@ mod tests {
         fjall::Config::new(&path).open().unwrap()
     }
 
-    fn create_tx_id(ts: u64) -> TransactionId {
+    fn create_tx_id(ts: u64) -> HlcTimestamp {
         HlcTimestamp::new(ts, 0, NodeId::new(1))
     }
 

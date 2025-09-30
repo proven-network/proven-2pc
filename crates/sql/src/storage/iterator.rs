@@ -1,11 +1,13 @@
 //! Streaming iterators for storage_new that merge fjall and in-memory MVCC data
 
+use crate::error::{Error, Result};
 use crate::storage::data_history::DataHistoryStore;
 use crate::storage::encoding::{decode_row_key, deserialize};
 use crate::storage::engine::TableMetadata;
-use crate::storage::types::{FjallIterator, Row, RowId, StorageResult, TransactionId, WriteOp};
+use crate::storage::types::{FjallIterator, Row, RowId, WriteOp};
 use crate::storage::uncommitted_data::{TableActiveData, UncommittedDataStore};
 use parking_lot::RwLockReadGuard;
+use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -40,16 +42,16 @@ pub struct TableIterator<'a> {
 
 impl<'a> TableIterator<'a> {
     pub(crate) fn new(
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
         table_name: &str,
-    ) -> StorageResult<Self> {
+    ) -> Result<Self> {
         // Get the table metadata
-        let table_meta = tables_guard.get(table_name).ok_or_else(|| {
-            crate::storage::types::StorageError::TableNotFound(table_name.to_string())
-        })?;
+        let table_meta = tables_guard
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
         let data_partition = &table_meta.data_partition;
 
@@ -100,7 +102,7 @@ impl<'a> TableIterator<'a> {
     }
 
     /// Get next row from fjall iterator
-    fn next_fjall_row(&mut self) -> StorageResult<Option<(RowId, Arc<Row>)>> {
+    fn next_fjall_row(&mut self) -> Result<Option<(RowId, Arc<Row>)>> {
         // Return buffered row if we have one
         if let Some(buffered) = self.buffered_fjall.take() {
             return Ok(Some(buffered));
@@ -178,7 +180,7 @@ impl<'a> TableIterator<'a> {
 }
 
 impl<'a> Iterator for TableIterator<'a> {
-    type Item = StorageResult<Arc<Row>>;
+    type Item = Result<Arc<Row>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // We need to merge active writes with fjall data in RowId order
@@ -251,12 +253,12 @@ pub struct TableIteratorWithIds<'a> {
 
 impl<'a> TableIteratorWithIds<'a> {
     pub fn new(
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
         table_name: &str,
-    ) -> StorageResult<Self> {
+    ) -> Result<Self> {
         Ok(Self {
             inner: TableIterator::new(
                 tx_id,
@@ -270,7 +272,7 @@ impl<'a> TableIteratorWithIds<'a> {
 }
 
 impl<'a> Iterator for TableIteratorWithIds<'a> {
-    type Item = StorageResult<(RowId, Arc<Row>)>;
+    type Item = Result<(RowId, Arc<Row>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|result| {
@@ -312,16 +314,16 @@ pub struct TableIteratorReverse<'a> {
 
 impl<'a> TableIteratorReverse<'a> {
     pub fn new(
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         tables_guard: RwLockReadGuard<'a, HashMap<String, Arc<TableMetadata>>>,
         uncommitted_data: Arc<UncommittedDataStore>,
         data_history: Arc<DataHistoryStore>,
         table_name: &str,
-    ) -> StorageResult<Self> {
+    ) -> Result<Self> {
         // Get the table metadata
-        let table_meta = tables_guard.get(table_name).ok_or_else(|| {
-            crate::storage::types::StorageError::TableNotFound(table_name.to_string())
-        })?;
+        let table_meta = tables_guard
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
         let data_partition = &table_meta.data_partition;
 
@@ -385,7 +387,7 @@ impl<'a> TableIteratorReverse<'a> {
     }
 
     /// Get next row from fjall iterator (in reverse)
-    fn next_fjall_row(&mut self) -> StorageResult<Option<(RowId, Arc<Row>)>> {
+    fn next_fjall_row(&mut self) -> Result<Option<(RowId, Arc<Row>)>> {
         // Return buffered row if we have one
         if let Some(buffered) = self.buffered_fjall.take() {
             return Ok(Some(buffered));
@@ -463,7 +465,7 @@ impl<'a> TableIteratorReverse<'a> {
 }
 
 impl<'a> Iterator for TableIteratorReverse<'a> {
-    type Item = StorageResult<Arc<Row>>;
+    type Item = Result<Arc<Row>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // We need to merge active writes with fjall data in reverse RowId order

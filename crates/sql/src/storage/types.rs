@@ -1,18 +1,11 @@
 //! Core types used throughout the storage module
 
-use crate::error::Error;
 use crate::types::value::Value;
-use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Use the main error type instead of a separate StorageError
-pub type StorageResult<T> = crate::error::Result<T>;
-pub type StorageError = Error; // Alias for compatibility during migration
-
 // Use primitive types directly instead of wrappers
 pub type RowId = u64;
-pub type TransactionId = HlcTimestamp;
 
 pub type FjallIterator<'a> =
     Box<dyn Iterator<Item = Result<(Box<[u8]>, Box<[u8]>), fjall::Error>> + 'a>;
@@ -79,10 +72,5 @@ impl WriteOp {
             | WriteOp::Update { row_id, .. }
             | WriteOp::Delete { row_id, .. } => *row_id,
         }
-    }
-
-    /// Check if this is a data operation (always true now)
-    pub fn is_data_op(&self) -> bool {
-        true
     }
 }

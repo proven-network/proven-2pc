@@ -1,7 +1,8 @@
 //! Fjall-based active version store for uncommitted transaction operations
 
+use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
-use crate::storage::types::{Row, RowId, StorageResult, TransactionId, WriteOp};
+use crate::storage::types::{Row, RowId, WriteOp};
 use fjall::{Keyspace, Partition};
 use proven_hlc::HlcTimestamp;
 use std::collections::{BTreeMap, HashSet};
@@ -38,7 +39,7 @@ impl UncommittedDataStore {
 
     /// Encode key for active version: {tx_id}{table}{row_id}{seq}
     /// seq: sequence number to maintain operation order
-    fn encode_key(tx_id: TransactionId, op: &WriteOp, seq: u64) -> Vec<u8> {
+    fn encode_key(tx_id: HlcTimestamp, op: &WriteOp, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
         // Serialize tx_id first for efficient prefix scans by transaction
         // Use lexicographic encoding to ensure byte-wise ordering matches logical ordering
@@ -59,12 +60,12 @@ impl UncommittedDataStore {
     }
 
     /// Encode prefix for transaction operations
-    fn encode_tx_prefix(tx_id: TransactionId) -> Vec<u8> {
+    fn encode_tx_prefix(tx_id: HlcTimestamp) -> Vec<u8> {
         tx_id.to_lexicographic_bytes().to_vec()
     }
 
     /// Add a write operation for a transaction
-    pub fn add_write(&self, tx_id: TransactionId, op: WriteOp) -> StorageResult<()> {
+    pub fn add_write(&self, tx_id: HlcTimestamp, op: WriteOp) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let key = Self::encode_key(tx_id, &op, seq);
         let value = serialize(&op)?;
@@ -80,7 +81,7 @@ impl UncommittedDataStore {
     /// - None if no operations for this row
     pub fn get_row(
         &self,
-        tx_id: TransactionId,
+        tx_id: HlcTimestamp,
         table: &str,
         row_id: RowId,
     ) -> Option<Option<Arc<Row>>> {
@@ -111,7 +112,7 @@ impl UncommittedDataStore {
     }
 
     /// Get all write operations for a transaction
-    pub fn get_transaction_writes(&self, tx_id: TransactionId) -> Vec<WriteOp> {
+    pub fn get_transaction_writes(&self, tx_id: HlcTimestamp) -> Vec<WriteOp> {
         let prefix = Self::encode_tx_prefix(tx_id);
 
         self.partition
@@ -126,7 +127,7 @@ impl UncommittedDataStore {
 
     /// Get table-specific active data for efficient iteration
     /// This scans active_versions once and returns pre-built structures
-    pub fn get_table_active_data(&self, tx_id: TransactionId, table_name: &str) -> TableActiveData {
+    pub fn get_table_active_data(&self, tx_id: HlcTimestamp, table_name: &str) -> TableActiveData {
         let mut writes = BTreeMap::new();
         let mut deletes = HashSet::new();
 
@@ -158,11 +159,7 @@ impl UncommittedDataStore {
     }
 
     /// Remove all operations for a transaction (on commit or abort)
-    pub fn remove_transaction(
-        &self,
-        batch: &mut fjall::Batch,
-        tx_id: TransactionId,
-    ) -> StorageResult<()> {
+    pub fn remove_transaction(&self, batch: &mut fjall::Batch, tx_id: HlcTimestamp) -> Result<()> {
         let prefix = Self::encode_tx_prefix(tx_id);
 
         for result in self.partition.prefix(prefix) {
@@ -174,7 +171,7 @@ impl UncommittedDataStore {
     }
 
     /// Clean up operations before a given timestamp
-    pub fn cleanup_before(&self, timestamp: HlcTimestamp) -> StorageResult<()> {
+    pub fn cleanup_before(&self, timestamp: HlcTimestamp) -> Result<()> {
         let mut batch = self.keyspace.batch();
         let mut removed_count = 0;
 
@@ -183,7 +180,7 @@ impl UncommittedDataStore {
             let (key, _) = result?;
 
             // Try to decode the tx_id from the key
-            if let Ok(tx_id) = bincode::deserialize::<TransactionId>(&key[..key.len().min(24)])
+            if let Ok(tx_id) = bincode::deserialize::<HlcTimestamp>(&key[..key.len().min(24)])
                 && tx_id < timestamp
             {
                 batch.remove(&self.partition, key);
@@ -199,7 +196,7 @@ impl UncommittedDataStore {
     }
 
     /// Remove all operations for a specific table (used when dropping a table)
-    pub fn remove_table(&self, table_name: &str) -> StorageResult<()> {
+    pub fn remove_table(&self, table_name: &str) -> Result<()> {
         let mut batch = self.keyspace.batch();
 
         // Scan all entries and remove those matching the table
