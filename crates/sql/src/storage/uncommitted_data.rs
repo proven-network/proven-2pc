@@ -18,6 +18,17 @@ pub struct UncommittedDataStore {
     next_seq: std::sync::atomic::AtomicU64,
 }
 
+/// State of a row in uncommitted data
+#[derive(Debug, Clone, PartialEq)]
+pub enum RowState {
+    /// No operations for this row
+    NoOps,
+    /// Row was explicitly deleted
+    Deleted,
+    /// Row exists with data
+    Exists(Arc<Row>),
+}
+
 /// Efficient structure for table iteration
 /// Built once at the start of iteration to avoid repeated scans
 pub struct TableActiveData {
@@ -75,16 +86,7 @@ impl UncommittedDataStore {
     }
 
     /// Get a specific row for a transaction
-    /// Returns:
-    /// - Some(Some(row)) if row exists (inserted/updated)
-    /// - Some(None) if row was deleted
-    /// - None if no operations for this row
-    pub fn get_row(
-        &self,
-        txn_id: HlcTimestamp,
-        table: &str,
-        row_id: RowId,
-    ) -> Option<Option<Arc<Row>>> {
+    pub fn get_row(&self, txn_id: HlcTimestamp, table: &str, row_id: RowId) -> RowState {
         // We need to scan for the specific data operation
         // Collect all operations for this row and return the last one
         let prefix = Self::encode_tx_prefix(txn_id);
@@ -104,10 +106,10 @@ impl UncommittedDataStore {
 
         // Return based on the last operation
         match last_op {
-            Some(WriteOp::Insert { row, .. }) => Some(Some(row)),
-            Some(WriteOp::Update { new_row, .. }) => Some(Some(new_row)),
-            Some(WriteOp::Delete { .. }) => Some(None), // Deleted rows
-            None => None,                               // No operations for this row
+            Some(WriteOp::Insert { row, .. }) => RowState::Exists(row),
+            Some(WriteOp::Update { new_row, .. }) => RowState::Exists(new_row),
+            Some(WriteOp::Delete { .. }) => RowState::Deleted,
+            None => RowState::NoOps,
         }
     }
 
@@ -217,6 +219,4 @@ impl UncommittedDataStore {
         batch.commit()?;
         Ok(())
     }
-
-    // Index operations removed - now tracked separately in IndexVersionStore
 }

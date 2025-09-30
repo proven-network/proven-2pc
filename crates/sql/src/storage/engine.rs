@@ -702,8 +702,9 @@ impl Storage {
         row_id: RowId,
     ) -> Result<Option<Arc<Row>>> {
         // L1: Check uncommitted transaction writes
+        use crate::storage::uncommitted_data::RowState;
         match self.uncommitted_data.get_row(txn_id, table, row_id) {
-            Some(Some(row)) => {
+            RowState::Exists(row) => {
                 // Row exists in uncommitted transaction
                 if !row.deleted {
                     return Ok(Some(row));
@@ -711,12 +712,12 @@ impl Storage {
                     return Ok(None); // Marked as deleted
                 }
             }
-            Some(None) => {
+            RowState::Deleted => {
                 // Row was deleted in uncommitted transaction
                 return Ok(None);
             }
-            None => {
-                // No operations for this row in active transaction, check disk
+            RowState::NoOps => {
+                // No operations for this row in uncommitted data, check disk
             }
         }
 
