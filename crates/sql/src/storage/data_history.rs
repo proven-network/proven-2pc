@@ -1,4 +1,4 @@
-//! Fjall-based recent versions store for time-travel snapshot reads
+//! Fjall-based data history store for time-travel snapshot reads
 
 use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
@@ -8,7 +8,7 @@ use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Fjall-based store for recently committed operations
+/// Fjall-based store for committed operations within retention window (data history)
 /// Maintains a sliding window of operations for time-travel queries
 pub struct DataHistoryStore {
     partition: Partition,
@@ -17,7 +17,7 @@ pub struct DataHistoryStore {
 }
 
 impl DataHistoryStore {
-    /// Create a new recent versions store
+    /// Create a new data history store
     pub fn new(partition: Partition, keyspace: Keyspace, retention_window: Duration) -> Self {
         Self {
             partition,
@@ -36,7 +36,7 @@ impl DataHistoryStore {
         }
     }
 
-    /// Check if a specific table has any recent operations (optimization)
+    /// Check if a specific table has any operations in history (optimization)
     pub fn table_has_operations(&self, table: &str) -> bool {
         // Build prefix for table
         let mut prefix = Vec::new();
@@ -47,7 +47,7 @@ impl DataHistoryStore {
         self.partition.prefix(prefix).next().is_some()
     }
 
-    /// Encode key for recent version: {table_len(4)}{table}{commit_time(24)}{row_id(8)}{seq(4)}
+    /// Encode key for data history: {table_len(4)}{table}{commit_time(24)}{row_id(8)}{seq(4)}
     ///
     /// KEY DESIGN: table_name comes FIRST for efficient prefix scans!
     /// This allows O(k) lookup of all ops for a specific table, then filter by time.

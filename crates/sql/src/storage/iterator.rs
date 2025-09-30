@@ -29,9 +29,9 @@ pub struct TableIterator<'a> {
     // Iterator over persisted data in fjall
     data_iter: FjallIterator<'a>,
 
-    // Recent operations that need to be applied (loaded once)
+    // History operations that need to be applied (loaded once)
     // Map from row_id to operations that need to be reversed
-    recent_ops: HashMap<RowId, Vec<WriteOp>>,
+    history_ops: HashMap<RowId, Vec<WriteOp>>,
 
     // Track which rows we've already returned
     seen_rows: HashSet<RowId>,
@@ -55,13 +55,13 @@ impl<'a> TableIterator<'a> {
 
         let data_partition = &table_meta.data_partition;
 
-        // Get active data for this table (single scan of uncommitted_data)
+        // Get uncommitted data for this table (single scan of uncommitted_data)
         let active_data = uncommitted_data.get_table_active_data(txn_id, table_name);
 
-        // Load all recent operations for this table ONCE
+        // Load all history operations for this table ONCE
         // This avoids repeated queries during iteration
         // Optimization: skip entirely if data_history is empty
-        let recent_ops = if data_history.is_empty() {
+        let history_ops = if data_history.is_empty() {
             HashMap::new()
         } else {
             data_history.get_table_ops_after(txn_id, table_name)?
@@ -79,7 +79,7 @@ impl<'a> TableIterator<'a> {
         Ok(Self {
             active_data,
             active_position: 0,
-            recent_ops,
+            history_ops,
             data_iter,
             seen_rows: HashSet::new(),
             buffered_fjall: None,
@@ -97,7 +97,7 @@ impl<'a> TableIterator<'a> {
         // Without version_partition, we assume:
         // - Anything in the data partition is visible (committed)
         // - Unless it was deleted by us (checked above)
-        // - Recent operations are handled separately by recent_ops
+        // - History operations are handled separately by history_ops
         true
     }
 
@@ -122,12 +122,12 @@ impl<'a> TableIterator<'a> {
                 if self.is_fjall_row_visible(row_id) {
                     let row: Row = deserialize(&value_bytes)?;
 
-                    // Check if this row has any recent operations (from our preloaded map)
+                    // Check if this row has any history operations (from our preloaded map)
                     // SEMANTICS: Operations committed AFTER snapshot should be INVISIBLE
                     // - If row was INSERTED after snapshot → hide it completely
                     // - If row was UPDATED after snapshot → show old version
                     // - If row was DELETED after snapshot → show it (was still there at snapshot)
-                    if let Some(ops) = self.recent_ops.get(&row_id) {
+                    if let Some(ops) = self.history_ops.get(&row_id) {
                         // Check if this row was inserted after our snapshot
                         // If so, it shouldn't be visible at all
                         if ops.iter().any(|op| matches!(op, WriteOp::Insert { .. })) {
@@ -169,7 +169,7 @@ impl<'a> TableIterator<'a> {
                         return Ok(Some((row_id, Arc::new(historical_row))));
                     }
 
-                    // No recent operations for this row - return it as-is
+                    // No history operations for this row - return it as-is
                     return Ok(Some((row_id, Arc::new(row))));
                 }
             }
@@ -302,8 +302,8 @@ pub struct TableIteratorReverse<'a> {
     // Iterator over persisted data in fjall (reversed)
     data_iter: FjallIterator<'a>,
 
-    // Recent operations that need to be applied (loaded once)
-    recent_ops: HashMap<RowId, Vec<WriteOp>>,
+    // History operations that need to be applied (loaded once)
+    history_ops: HashMap<RowId, Vec<WriteOp>>,
 
     // Track which rows we've already returned
     seen_rows: HashSet<RowId>,
@@ -327,7 +327,7 @@ impl<'a> TableIteratorReverse<'a> {
 
         let data_partition = &table_meta.data_partition;
 
-        // Get active data for this table (single scan of uncommitted_data)
+        // Get uncommitted data for this table (single scan of uncommitted_data)
         let active_data = uncommitted_data.get_table_active_data(txn_id, table_name);
 
         // Convert writes to Vec and reverse for reverse iteration
@@ -338,9 +338,9 @@ impl<'a> TableIteratorReverse<'a> {
             .collect();
         active_writes_vec.reverse();
 
-        // Load all recent operations for this table ONCE
+        // Load all history operations for this table ONCE
         // Optimization: skip entirely if data_history is empty
-        let recent_ops = if data_history.is_empty() {
+        let history_ops = if data_history.is_empty() {
             HashMap::new()
         } else {
             data_history.get_table_ops_after(txn_id, table_name)?
@@ -366,7 +366,7 @@ impl<'a> TableIteratorReverse<'a> {
             active_position: 0,
             buffered_fjall: None,
             data_iter,
-            recent_ops,
+            history_ops,
             seen_rows: HashSet::new(),
             _tables_guard: tables_guard,
         })
@@ -382,7 +382,7 @@ impl<'a> TableIteratorReverse<'a> {
         // Without version_partition, we assume:
         // - Anything in the data partition is visible (committed)
         // - Unless it was deleted by us (checked above)
-        // - Recent operations are handled separately by recent_ops
+        // - History operations are handled separately by history_ops
         true
     }
 
@@ -407,12 +407,12 @@ impl<'a> TableIteratorReverse<'a> {
                 if self.is_fjall_row_visible(row_id) {
                     let row: Row = deserialize(&value_bytes)?;
 
-                    // Check if this row has any recent operations (from our preloaded map)
+                    // Check if this row has any history operations (from our preloaded map)
                     // SEMANTICS: Operations committed AFTER snapshot should be INVISIBLE
                     // - If row was INSERTED after snapshot → hide it completely
                     // - If row was UPDATED after snapshot → show old version
                     // - If row was DELETED after snapshot → show it (was still there at snapshot)
-                    if let Some(ops) = self.recent_ops.get(&row_id) {
+                    if let Some(ops) = self.history_ops.get(&row_id) {
                         // Check if this row was inserted after our snapshot
                         // If so, it shouldn't be visible at all
                         if ops.iter().any(|op| matches!(op, WriteOp::Insert { .. })) {
@@ -454,7 +454,7 @@ impl<'a> TableIteratorReverse<'a> {
                         return Ok(Some((row_id, Arc::new(historical_row))));
                     }
 
-                    // No recent operations for this row - return it as-is
+                    // No history operations for this row - return it as-is
                     return Ok(Some((row_id, Arc::new(row))));
                 }
             }

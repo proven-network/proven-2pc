@@ -1,7 +1,7 @@
 //! Store for uncommitted index operations
 //!
 //! This module provides a fjall-based store for tracking uncommitted index operations,
-//! similar to ActiveVersionStore but specifically for index operations.
+//! similar to UncommittedDataStore but specifically for index operations.
 
 use crate::error::Result;
 use crate::storage::encoding::serialize;

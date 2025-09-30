@@ -1,4 +1,4 @@
-//! Fjall-based recent index versions store for time-travel snapshot reads
+//! Fjall-based index history store for time-travel snapshot reads
 
 use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
@@ -7,7 +7,7 @@ use fjall::{Keyspace, Partition};
 use proven_hlc::HlcTimestamp;
 use std::time::Duration;
 
-/// Fjall-based store for recently committed index operations
+/// Fjall-based store for committed index operations within retention window (index history)
 /// Maintains a sliding window of operations for time-travel queries on indexes
 pub struct IndexHistoryStore {
     partition: Partition,
@@ -16,7 +16,7 @@ pub struct IndexHistoryStore {
 }
 
 impl IndexHistoryStore {
-    /// Create a new recent index versions store
+    /// Create a new index history store
     pub fn new(partition: Partition, keyspace: Keyspace, retention_window: Duration) -> Self {
         Self {
             partition,

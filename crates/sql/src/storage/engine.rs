@@ -80,27 +80,27 @@ impl Storage {
                 .compression(fjall::CompressionType::None),
         )?;
 
-        // Open active versions partition (for uncommitted operations)
-        let active_versions_partition = keyspace.open_partition(
-            "_active_versions",
+        // Open uncommitted data partition (for uncommitted operations)
+        let uncommitted_data_partition = keyspace.open_partition(
+            "_uncommitted_data",
             PartitionCreateOptions::default()
                 .block_size(32 * 1024)
                 .compression(fjall::CompressionType::None),
         )?;
         let uncommitted_data = Arc::new(UncommittedDataStore::new(
-            active_versions_partition,
+            uncommitted_data_partition,
             keyspace.clone(),
         ));
 
         // Open data history partition (for committed operations within retention window)
-        let recent_versions_partition = keyspace.open_partition(
-            "_recent_versions",
+        let data_history_partition = keyspace.open_partition(
+            "_data_history",
             PartitionCreateOptions::default()
-                .block_size(64 * 1024)
-                .compression(fjall::CompressionType::Lz4),
+                .block_size(4 * 1024)
+                .compression(fjall::CompressionType::None),
         )?;
         let data_history = Arc::new(DataHistoryStore::new(
-            recent_versions_partition,
+            data_history_partition,
             keyspace.clone(),
             std::time::Duration::from_secs(300), // 5 minutes retention
         ));
@@ -109,7 +109,7 @@ impl Storage {
         let index_versions_partition = keyspace.open_partition(
             "_index_versions",
             PartitionCreateOptions::default()
-                .block_size(32 * 1024)
+                .block_size(4 * 1024)
                 .compression(fjall::CompressionType::None),
         )?;
         let index_versions = Arc::new(UncommittedIndexStore::new(
@@ -118,14 +118,14 @@ impl Storage {
         ));
 
         // Open index history partition (for committed index operations within retention window)
-        let recent_index_versions_partition = keyspace.open_partition(
-            "_recent_index_versions",
+        let index_history_partition = keyspace.open_partition(
+            "_index_history",
             PartitionCreateOptions::default()
-                .block_size(64 * 1024)
-                .compression(fjall::CompressionType::Lz4),
+                .block_size(4 * 1024)
+                .compression(fjall::CompressionType::None),
         )?;
         let index_history = Arc::new(IndexHistoryStore::new(
-            recent_index_versions_partition,
+            index_history_partition,
             keyspace.clone(),
             std::time::Duration::from_secs(300), // 5 minutes retention
         ));
@@ -235,7 +235,7 @@ impl Storage {
         // Remove schema from metadata
         self.metadata_partition.remove(format!("table:{}", name))?;
 
-        // Clear any active versions for this table
+        // Clear any uncommitted data for this table
         self.uncommitted_data.remove_table(name)?;
 
         // Get partition handle before dropping
@@ -486,7 +486,7 @@ impl Storage {
         // Create row
         let row = Arc::new(Row::new(row_id, values));
 
-        // Add to active versions
+        // Add to uncommitted data
         let write_op = WriteOp::Insert {
             table: table.to_string(),
             row_id,
@@ -603,7 +603,7 @@ impl Storage {
         // Phase 4: All validations passed - now insert all rows and update indexes
         let mut inserted_row_ids = Vec::new();
         for (row_id, row) in prepared_rows {
-            // Add to active versions
+            // Add to uncommitted data
             let write_op = WriteOp::Insert {
                 table: table.to_string(),
                 row_id,
@@ -646,7 +646,7 @@ impl Storage {
         // Create new row
         let new_row = Arc::new(Row::new(row_id, values));
 
-        // Add to active versions
+        // Add to uncommitted data
         let write_op = WriteOp::Update {
             table: table.to_string(),
             row_id,
@@ -676,7 +676,7 @@ impl Storage {
             deleted: true,
         });
 
-        // Add to active versions
+        // Add to uncommitted data
         let write_op = WriteOp::Delete {
             table: table.to_string(),
             row_id,
@@ -701,10 +701,10 @@ impl Storage {
         table: &str,
         row_id: RowId,
     ) -> Result<Option<Arc<Row>>> {
-        // L1: Check active transaction writes
+        // L1: Check uncommitted transaction writes
         match self.uncommitted_data.get_row(txn_id, table, row_id) {
             Some(Some(row)) => {
-                // Row exists in active transaction
+                // Row exists in uncommitted transaction
                 if !row.deleted {
                     return Ok(Some(row));
                 } else {
@@ -712,7 +712,7 @@ impl Storage {
                 }
             }
             Some(None) => {
-                // Row was deleted in active transaction
+                // Row was deleted in uncommitted transaction
                 return Ok(None);
             }
             None => {
@@ -731,10 +731,10 @@ impl Storage {
         if let Some(row_bytes) = table_meta.data_partition.get(row_key)? {
             let row: Row = deserialize(&row_bytes)?;
 
-            // Check if this row has been modified recently (< 5 minutes)
+            // Check if this row has been modified in history window (< 5 minutes)
             // If not, it's visible (committed > 5 minutes ago)
             if !self.data_history.is_empty() {
-                // Get all recent ops for this table and filter by row_id
+                // Get all history ops for this table and filter by row_id
                 let table_ops = self.data_history.get_table_ops_after(txn_id, table)?;
 
                 if let Some(ops_for_row) = table_ops.get(&row_id) {
@@ -767,7 +767,7 @@ impl Storage {
                 }
             }
 
-            // Row exists and hasn't been modified recently - it's visible
+            // Row exists and hasn't been modified in history window - it's visible
             return Ok(Some(Arc::new(row)));
         }
 
@@ -796,14 +796,14 @@ impl Storage {
         table: &str,
     ) -> Result<crate::storage::iterator::TableIterator<'a>> {
         let tables_guard = self.tables.read();
-        let active_versions_clone = self.uncommitted_data.clone();
-        let recent_versions_clone = self.data_history.clone();
+        let uncommitted_data_clone = self.uncommitted_data.clone();
+        let data_history_clone = self.data_history.clone();
 
         crate::storage::iterator::TableIterator::new(
             txn_id,
             tables_guard,
-            active_versions_clone,
-            recent_versions_clone,
+            uncommitted_data_clone,
+            data_history_clone,
             table,
         )
     }
@@ -815,14 +815,14 @@ impl Storage {
         table: &str,
     ) -> Result<crate::storage::iterator::TableIteratorWithIds<'a>> {
         let tables_guard = self.tables.read();
-        let active_versions_clone = self.uncommitted_data.clone();
-        let recent_versions_clone = self.data_history.clone();
+        let uncommitted_data_clone = self.uncommitted_data.clone();
+        let data_history_clone = self.data_history.clone();
 
         crate::storage::iterator::TableIteratorWithIds::new(
             txn_id,
             tables_guard,
-            active_versions_clone,
-            recent_versions_clone,
+            uncommitted_data_clone,
+            data_history_clone,
             table,
         )
     }
@@ -834,14 +834,14 @@ impl Storage {
         table: &str,
     ) -> Result<crate::storage::iterator::TableIteratorReverse<'a>> {
         let tables_guard = self.tables.read();
-        let active_versions_clone = self.uncommitted_data.clone();
-        let recent_versions_clone = self.data_history.clone();
+        let uncommitted_data_clone = self.uncommitted_data.clone();
+        let data_history_clone = self.data_history.clone();
 
         crate::storage::iterator::TableIteratorReverse::new(
             txn_id,
             tables_guard,
-            active_versions_clone,
-            recent_versions_clone,
+            uncommitted_data_clone,
+            data_history_clone,
             table,
         )
     }
@@ -1210,7 +1210,7 @@ impl Storage {
         // Create batch for atomic commit (even if no writes, we might have index ops)
         let mut batch = self.keyspace.batch();
 
-        // Remove from active versions
+        // Remove from uncommitted data
         self.uncommitted_data
             .remove_transaction(&mut batch, txn_id)?;
 

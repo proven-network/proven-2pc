@@ -1,4 +1,4 @@
-//! Fjall-based active version store for uncommitted transaction operations
+//! Fjall-based uncommitted data store for uncommitted transaction operations
 
 use crate::error::Result;
 use crate::storage::encoding::{deserialize, serialize};
@@ -9,26 +9,26 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Fjall-based store for active (uncommitted) transaction writes
+/// Fjall-based store for uncommitted transaction writes
 pub struct UncommittedDataStore {
     partition: Partition,
     keyspace: Keyspace,
     /// Counter for operation sequence numbers per transaction
-    /// Note: This is in-memory only, resets on restart (which is fine for active transactions)
+    /// Note: This is in-memory only, resets on restart (which is fine for uncommitted transactions)
     next_seq: std::sync::atomic::AtomicU64,
 }
 
 /// Efficient structure for table iteration
 /// Built once at the start of iteration to avoid repeated scans
 pub struct TableActiveData {
-    /// Active writes for this table (ordered by RowId)
+    /// Uncommitted writes for this table (ordered by RowId)
     pub writes: BTreeMap<RowId, Arc<Row>>,
     /// Deleted rows for this table
     pub deletes: HashSet<RowId>,
 }
 
 impl UncommittedDataStore {
-    /// Create a new active version store with the given partition
+    /// Create a new uncommitted data store with the given partition
     pub fn new(partition: Partition, keyspace: Keyspace) -> Self {
         Self {
             partition,
@@ -37,7 +37,7 @@ impl UncommittedDataStore {
         }
     }
 
-    /// Encode key for active version: {txn_id}{table}{row_id}{seq}
+    /// Encode key for uncommitted data: {txn_id}{table}{row_id}{seq}
     /// seq: sequence number to maintain operation order
     fn encode_key(txn_id: HlcTimestamp, op: &WriteOp, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
@@ -126,7 +126,7 @@ impl UncommittedDataStore {
     }
 
     /// Get table-specific active data for efficient iteration
-    /// This scans active_versions once and returns pre-built structures
+    /// This scans uncommitted_data once and returns pre-built structures
     pub fn get_table_active_data(&self, txn_id: HlcTimestamp, table_name: &str) -> TableActiveData {
         let mut writes = BTreeMap::new();
         let mut deletes = HashSet::new();

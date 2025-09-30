@@ -19,7 +19,7 @@ pub struct StorageConfig {
     /// Compression type for data
     pub compression: CompressionType,
 
-    /// Size of in-memory cache for recent commits
+    /// Size of in-memory cache for history commits
     pub memory_cache_size: usize,
 
     /// Interval for cleaning up old versions

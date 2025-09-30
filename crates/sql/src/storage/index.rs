@@ -38,7 +38,7 @@ pub struct IndexManager {
     partitions: BTreeMap<String, Partition>,
     /// Store for uncommitted index operations
     index_versions: Arc<UncommittedIndexStore>,
-    /// Store for recently committed index operations (for time-travel)
+    /// Store for committed index operations within retention window (index history, for time-travel)
     index_history: Arc<IndexHistoryStore>,
 }
 
@@ -198,9 +198,9 @@ impl IndexManager {
         //
         // OPTIMIZATION: Only query history if it might contain relevant operations
         if !self.index_history.is_empty() {
-            let recent_ops = self.index_history.get_index_ops_after(txn_id, index_name)?;
+            let history_ops = self.index_history.get_index_ops_after(txn_id, index_name)?;
 
-            for op in recent_ops {
+            for op in history_ops {
                 if op.values() == values {
                     match op {
                         IndexOp::Insert { row_id, .. } => {
