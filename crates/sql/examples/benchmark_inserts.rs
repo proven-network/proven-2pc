@@ -187,9 +187,41 @@ fn main() {
     // Cleanup
     drop(sql_engine); // Ensure engine releases file handles
 
-    // Reopen to compact journals
     // Reopen (triggers journal replay and cleanup)
-    let sql_engine = SqlTransactionEngine::new(config);
+    let mut sql_engine = SqlTransactionEngine::new(config);
+
+    // Verify count
+    println!("\nVerifying persisted count...");
+    let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
+    sql_engine.begin(verify_txn);
+
+    let count_query = SqlOperation::Query {
+        sql: "SELECT COUNT(*) FROM bench".to_string(),
+        params: None,
+    };
+
+    match sql_engine.apply_operation(count_query, verify_txn) {
+        proven_stream::OperationResult::Complete(response) => match response {
+            SqlResponse::QueryResult { columns: _, rows } => {
+                match rows.first().unwrap().first().unwrap() {
+                    Value::I64(count) => {
+                        if *count != NUM_INSERTS as i64 {
+                            println!(
+                                "⚠ Persisted count query response: {:?} does not match expected count: {:?}",
+                                count, NUM_INSERTS as i64
+                            );
+                        } else {
+                            println!("✓ Persisted count query matched expected count: {}", count);
+                        }
+                    }
+                    _ => panic!("Unexpected response type for count query"),
+                }
+            }
+            _ => panic!("Unexpected response: {:?}", response),
+        },
+        _ => println!("⚠ Persisted count query failed"),
+    }
+
     drop(sql_engine); // Ensure engine releases file handles
 
     // Calculate directory size
