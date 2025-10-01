@@ -5,11 +5,10 @@
 
 use fjall::{CompressionType, PersistMode};
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlTransactionEngine, StorageConfig, Value};
+use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine, StorageConfig, Value};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -20,13 +19,20 @@ fn main() {
 
     println!("Data directory: {}", temp_dir.display());
 
-    // Create SQL engine directly
-    let mut sql_engine = SqlTransactionEngine::new(StorageConfig {
+    let config = StorageConfig {
         data_dir: temp_dir.clone(),
         block_cache_size: 1024 * 1024 * 1024,
         compression: CompressionType::Lz4,
         persist_mode: PersistMode::Buffer,
-    });
+        history_bucket_duration: Duration::from_secs(60),
+        uncommitted_bucket_duration: Duration::from_secs(30),
+        history_retention_window: Duration::from_secs(300),
+        uncommitted_retention_window: Duration::from_secs(120),
+        cleanup_interval: Duration::from_secs(30),
+    };
+
+    // Create SQL engine directly
+    let mut sql_engine = SqlTransactionEngine::new(config.clone());
 
     // Create table
     println!("Creating table...");
@@ -137,11 +143,27 @@ fn main() {
 
     let elapsed = Instant::now();
     match sql_engine.apply_operation(count_query, verify_txn) {
-        proven_stream::OperationResult::Complete(_response) => {
+        proven_stream::OperationResult::Complete(response) => {
+            match response {
+                SqlResponse::QueryResult { columns: _, rows } => {
+                    match rows.first().unwrap().first().unwrap() {
+                        Value::I64(count) => {
+                            if *count != NUM_INSERTS as i64 {
+                                println!(
+                                    "⚠ Count query response: {:?} does not match expected count: {:?}",
+                                    count, NUM_INSERTS as i64
+                                );
+                            } else {
+                                println!("✓ Count query matched expected count: {}", count);
+                            }
+                        }
+                        _ => panic!("Unexpected response type for count query"),
+                    }
+                }
+                _ => panic!("Unexpected response: {:?}", response),
+            }
             let count_query_time = elapsed.elapsed();
             println!("Count query time: {}ms", count_query_time.as_millis());
-            // In a real system, we'd parse the response to get the actual count
-            println!("✓ Count query executed successfully");
             sql_engine.abort(verify_txn);
         }
         _ => println!("⚠ Count query failed"),
@@ -160,8 +182,15 @@ fn main() {
     println!("\nMemory usage and detailed statistics:");
     println!("- Transactions executed: {}", NUM_INSERTS + 2); // +2 for create table and count
 
-    println!("Sleeping for 20 seconds for compaction to bring data to steady state...");
-    sleep(Duration::from_secs(20));
+    println!("\n✓ Benchmark complete!");
+
+    // Cleanup
+    drop(sql_engine); // Ensure engine releases file handles
+
+    // Reopen to compact journals
+    // Reopen (triggers journal replay and cleanup)
+    let sql_engine = SqlTransactionEngine::new(config);
+    drop(sql_engine); // Ensure engine releases file handles
 
     // Calculate directory size
     println!("\nCalculating storage size...");
@@ -178,17 +207,6 @@ fn main() {
     // Show partition breakdown
     println!("\nStorage breakdown:");
     print_directory_breakdown(&temp_dir, dir_size, 0);
-
-    println!("\n✓ Benchmark complete!");
-
-    // Cleanup
-    println!("\nCleaning up temporary directory...");
-    drop(sql_engine); // Ensure engine releases file handles
-    if let Err(e) = std::fs::remove_dir_all(&temp_dir) {
-        eprintln!("⚠ Failed to cleanup directory: {}", e);
-    } else {
-        println!("✓ Directory cleaned up");
-    }
 }
 
 /// Calculate total size of a directory recursively

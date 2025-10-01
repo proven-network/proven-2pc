@@ -1,21 +1,28 @@
 //! Fjall-based uncommitted data store for uncommitted transaction operations
+//!
+//! NEW ARCHITECTURE: Uses time-bucketed partitions for O(1) cleanup
+//! - Partition by TIME ONLY (e.g., _uncommitted_data_uncommitted_bucket_0000000001)
+//! - NOT partitioned by table (need to scan all tables for get_transaction_writes)
+//! - Key format: {txn_id(20)}{table_len(4)}{table}{row_id(8)}{seq(8)}
+//! - Cleanup drops entire partitions instead of scanning keys
 
 use crate::error::Result;
+use crate::storage::bucket_manager::BucketManager;
 use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::types::{Row, RowId, WriteOp};
-use fjall::{Keyspace, Partition};
 use proven_hlc::HlcTimestamp;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Fjall-based store for uncommitted transaction writes
 pub struct UncommittedDataStore {
-    partition: Partition,
-    keyspace: Keyspace,
+    bucket_manager: BucketManager,
+    retention_window: Duration,
     /// Counter for operation sequence numbers per transaction
     /// Note: This is in-memory only, resets on restart (which is fine for uncommitted transactions)
-    next_seq: std::sync::atomic::AtomicU64,
+    next_seq: AtomicU64,
 }
 
 /// State of a row in uncommitted data
@@ -39,11 +46,11 @@ pub struct TableActiveData {
 }
 
 impl UncommittedDataStore {
-    /// Create a new uncommitted data store with the given partition
-    pub fn new(partition: Partition, keyspace: Keyspace) -> Self {
+    /// Create a new uncommitted data store with BucketManager
+    pub fn new(bucket_manager: BucketManager, retention_window: Duration) -> Self {
         Self {
-            partition,
-            keyspace,
+            bucket_manager,
+            retention_window,
             next_seq: AtomicU64::new(0),
         }
     }
@@ -75,24 +82,41 @@ impl UncommittedDataStore {
         txn_id.to_lexicographic_bytes().to_vec()
     }
 
-    /// Add a write operation for a transaction
-    pub fn add_write(&self, txn_id: HlcTimestamp, op: WriteOp) -> Result<()> {
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let key = Self::encode_key(txn_id, &op, seq);
-        let value = serialize(&op)?;
+    /// Get existing partition (read-only) - uses entity name "uncommitted"
+    fn get_existing_partition_for_time(&self, time: HlcTimestamp) -> Option<&fjall::PartitionHandle> {
+        self.bucket_manager.get_existing_partition("uncommitted", time)
+    }
 
-        self.partition.insert(key, value)?;
+    /// Get or create partition (for writes) - uses entity name "uncommitted"
+    fn get_or_create_partition_for_time(
+        &mut self,
+        time: HlcTimestamp,
+    ) -> Result<&fjall::PartitionHandle> {
+        self.bucket_manager
+            .get_or_create_partition("uncommitted", time)
+    }
+
+    /// Add a write operation for a transaction (requires &mut)
+    pub fn add_write(&mut self, txn_id: HlcTimestamp, op: WriteOp) -> Result<()> {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let partition = self.get_or_create_partition_for_time(txn_id)?;
+        let key = Self::encode_key(txn_id, &op, seq);
+        partition.insert(key, serialize(&op)?)?;
         Ok(())
     }
 
-    /// Get a specific row for a transaction
+    /// Get a specific row for a transaction (uses &self - read-only)
     pub fn get_row(&self, txn_id: HlcTimestamp, table: &str, row_id: RowId) -> RowState {
-        // We need to scan for the specific data operation
-        // Collect all operations for this row and return the last one
+        // Check if partition exists - if not, no data
+        let Some(partition) = self.get_existing_partition_for_time(txn_id) else {
+            return RowState::NoOps; // Partition doesn't exist = no data
+        };
+
+        // Scan for the specific data operation
         let prefix = Self::encode_tx_prefix(txn_id);
         let mut last_op: Option<WriteOp> = None;
 
-        for result in self.partition.prefix(prefix) {
+        for result in partition.prefix(prefix) {
             if let Ok((_, value)) = result
                 && let Ok(op) = deserialize::<WriteOp>(&value)
             {
@@ -113,11 +137,14 @@ impl UncommittedDataStore {
         }
     }
 
-    /// Get all write operations for a transaction
+    /// Get all write operations for a transaction (uses &self - read-only)
     pub fn get_transaction_writes(&self, txn_id: HlcTimestamp) -> Vec<WriteOp> {
-        let prefix = Self::encode_tx_prefix(txn_id);
+        let Some(partition) = self.get_existing_partition_for_time(txn_id) else {
+            return Vec::new(); // Partition doesn't exist = no data
+        };
 
-        self.partition
+        let prefix = Self::encode_tx_prefix(txn_id);
+        partition
             .prefix(prefix)
             .filter_map(|result| {
                 result
@@ -127,15 +154,19 @@ impl UncommittedDataStore {
             .collect()
     }
 
-    /// Get table-specific active data for efficient iteration
+    /// Get table-specific active data for efficient iteration (uses &self - read-only)
     /// This scans uncommitted_data once and returns pre-built structures
     pub fn get_table_active_data(&self, txn_id: HlcTimestamp, table_name: &str) -> TableActiveData {
         let mut writes = BTreeMap::new();
         let mut deletes = HashSet::new();
 
+        let Some(partition) = self.get_existing_partition_for_time(txn_id) else {
+            return TableActiveData { writes, deletes }; // Partition doesn't exist = no data
+        };
+
         // Single scan through transaction's operations
         let prefix = Self::encode_tx_prefix(txn_id);
-        for result in self.partition.prefix(prefix) {
+        for result in partition.prefix(prefix) {
             if let Ok((_, value)) = result
                 && let Ok(op) = deserialize::<WriteOp>(&value)
                 && op.table_name() == Some(table_name)
@@ -160,38 +191,29 @@ impl UncommittedDataStore {
         TableActiveData { writes, deletes }
     }
 
-    /// Remove all operations for a transaction (on commit or abort)
-    pub fn remove_transaction(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
-        let prefix = Self::encode_tx_prefix(txn_id);
+    /// Remove all operations for a transaction (on commit/abort - requires &mut for batch)
+    pub fn remove_transaction(
+        &mut self,
+        batch: &mut fjall::Batch,
+        txn_id: HlcTimestamp,
+    ) -> Result<()> {
+        let Some(partition) = self.get_existing_partition_for_time(txn_id) else {
+            return Ok(()); // Partition doesn't exist = nothing to remove
+        };
 
-        for result in self.partition.prefix(prefix) {
+        let prefix = Self::encode_tx_prefix(txn_id);
+        for result in partition.prefix(prefix) {
             let (key, _) = result?;
-            batch.remove(&self.partition, key);
+            batch.remove(partition, key);
         }
 
         Ok(())
     }
 
-    /// Remove all operations for a specific table (used when dropping a table)
-    pub fn remove_table(&self, table_name: &str) -> Result<()> {
-        let mut batch = self.keyspace.batch();
-
-        // Scan all entries and remove those matching the table
-        for result in self.partition.iter() {
-            let (key, value) = result?;
-
-            // Deserialize the operation to check the table
-            if let Ok(op) = deserialize::<WriteOp>(&value) {
-                // Check if this operation is for the table being dropped
-                if op.table_name() == Some(table_name) {
-                    batch.remove(&self.partition, key);
-                }
-                // Also remove index operations for indexes on this table
-                // (We'd need to track which indexes belong to which tables)
-            }
-        }
-
-        batch.commit()?;
-        Ok(())
+    /// Cleanup old buckets - O(1) per bucket!
+    /// Note: Uncommitted data is typically very short-lived (seconds)
+    pub fn cleanup_old_buckets(&mut self, current_time: HlcTimestamp) -> Result<usize> {
+        self.bucket_manager
+            .cleanup_old_buckets(current_time, self.retention_window)
     }
 }

@@ -1,6 +1,7 @@
 //! Main storage engine with fjall backend
 
 use crate::error::{Error, Result};
+use crate::storage::bucket_manager::BucketManager;
 use crate::storage::config::StorageConfig;
 use crate::storage::data_history::DataHistoryStore;
 use crate::storage::encoding::{deserialize, serialize};
@@ -8,7 +9,7 @@ use crate::storage::index::{IndexManager, IndexMetadata};
 use crate::storage::index_history::IndexHistoryStore;
 use crate::storage::types::{Row, RowId, WriteOp};
 use crate::storage::uncommitted_data::UncommittedDataStore;
-use crate::storage::uncommitted_index::{self, UncommittedIndexStore};
+use crate::storage::uncommitted_index::UncommittedIndexStore;
 use crate::types::schema::Table as TableSchema;
 use crate::types::value::Value;
 use fjall::{Batch, Keyspace, Partition, PartitionCreateOptions};
@@ -40,16 +41,16 @@ pub struct Storage {
     index_manager: IndexManager,
 
     // Index versions (uncommitted index operations)
-    uncommitted_index: Arc<UncommittedIndexStore>,
+    uncommitted_index: UncommittedIndexStore,
 
     // Uncommitted data operations - using fjall
-    uncommitted_data: Arc<UncommittedDataStore>,
+    uncommitted_data: UncommittedDataStore,
 
     // Data history (committed) for time-travel - using fjall
-    data_history: Arc<DataHistoryStore>,
+    data_history: DataHistoryStore,
 
     // Index history (committed) for time-travel on indexes
-    index_history: Arc<IndexHistoryStore>,
+    index_history: IndexHistoryStore,
 
     // Cache of table -> indexes mapping for performance
     // Invalidated on DDL operations (create_index, drop_index, drop_table)
@@ -86,50 +87,52 @@ impl Storage {
                 .compression(fjall::CompressionType::None),
         )?;
 
-        // Open uncommitted data partition (for uncommitted operations)
-        let uncommitted_data_partition = keyspace.open_partition(
-            "_uncommitted_data",
+        // Create BucketManager for uncommitted data (time-only partitioning)
+        let uncommitted_data_mgr = BucketManager::new(
+            keyspace.clone(),
+            "_uncommitted_data".to_string(),
+            config.uncommitted_bucket_duration,
             PartitionCreateOptions::default()
                 .block_size(32 * 1024)
                 .compression(fjall::CompressionType::None),
-        )?;
-        let uncommitted_data = Arc::new(UncommittedDataStore::new(
-            uncommitted_data_partition,
+        );
+        let uncommitted_data =
+            UncommittedDataStore::new(uncommitted_data_mgr, config.uncommitted_retention_window);
+
+        // Create BucketManager for data history (table × time partitioning)
+        let data_history_mgr = BucketManager::new(
             keyspace.clone(),
-        ));
-
-        // Open data history partition (for committed operations within retention window)
-        let data_history_partition = keyspace.open_partition(
-            "_data_history",
+            "_data_history".to_string(),
+            config.history_bucket_duration,
             PartitionCreateOptions::default()
                 .block_size(4 * 1024)
                 .compression(fjall::CompressionType::None),
-        )?;
-        let data_history = Arc::new(DataHistoryStore::new(
-            data_history_partition,
-            std::time::Duration::from_secs(300), // 5 minutes retention
-        ));
+        );
+        let data_history = DataHistoryStore::new(data_history_mgr, config.history_retention_window);
 
-        // Open index versions partition (for uncommitted index operations)
-        let uncommitted_index = keyspace.open_partition(
-            "_uncommitted_index",
+        // Create BucketManager for uncommitted index (time-only partitioning)
+        let uncommitted_index_mgr = BucketManager::new(
+            keyspace.clone(),
+            "_uncommitted_index".to_string(),
+            config.uncommitted_bucket_duration,
             PartitionCreateOptions::default()
                 .block_size(4 * 1024)
                 .compression(fjall::CompressionType::None),
-        )?;
-        let uncommitted_index = Arc::new(UncommittedIndexStore::new(uncommitted_index));
+        );
+        let uncommitted_index =
+            UncommittedIndexStore::new(uncommitted_index_mgr, config.uncommitted_retention_window);
 
-        // Open index history partition (for committed index operations within retention window)
-        let index_history_partition = keyspace.open_partition(
-            "_index_history",
+        // Create BucketManager for index history (index × time partitioning)
+        let index_history_mgr = BucketManager::new(
+            keyspace.clone(),
+            "_index_history".to_string(),
+            config.history_bucket_duration,
             PartitionCreateOptions::default()
                 .block_size(4 * 1024)
                 .compression(fjall::CompressionType::None),
-        )?;
-        let index_history = Arc::new(IndexHistoryStore::new(
-            index_history_partition,
-            std::time::Duration::from_secs(300), // 5 minutes retention
-        ));
+        );
+        let index_history =
+            IndexHistoryStore::new(index_history_mgr, config.history_retention_window);
 
         // Load existing tables
         let mut tables = HashMap::new();
@@ -176,7 +179,7 @@ impl Storage {
             keyspace,
             metadata_partition,
             tables,
-            index_manager: IndexManager::new(uncommitted_index.clone(), index_history.clone()),
+            index_manager: IndexManager::new(),
             uncommitted_index,
             uncommitted_data,
             data_history,
@@ -233,8 +236,8 @@ impl Storage {
         // Remove schema from metadata
         self.metadata_partition.remove(format!("table:{}", name))?;
 
-        // Clear any uncommitted data for this table
-        self.uncommitted_data.remove_table(name)?;
+        // NOTE: Uncommitted data for this table will be cleaned up when time buckets expire
+        // No need to explicitly remove it
 
         // Get partition handle before dropping
         let data_partition = metadata.data_partition.clone();
@@ -319,8 +322,13 @@ impl Storage {
         }
 
         // Build the index
-        self.index_manager
-            .build_index(&index_name, &rows_to_index, &column_indices, txn_id)?;
+        self.index_manager.build_index(
+            &mut self.uncommitted_index,
+            &index_name,
+            &rows_to_index,
+            &column_indices,
+            txn_id,
+        )?;
 
         // Persist metadata about the index
         let index_meta_key = format!("index:{}", index_name);
@@ -389,7 +397,13 @@ impl Storage {
         let table_name = index_meta.table.clone();
 
         // Get row IDs from index
-        let row_ids = self.index_manager.lookup(index_name, values, txn_id)?;
+        let row_ids = self.index_manager.lookup(
+            &self.uncommitted_index,
+            &self.index_history,
+            index_name,
+            values,
+            txn_id,
+        )?;
 
         // Read actual rows (checking MVCC visibility)
         let mut results = Vec::new();
@@ -446,9 +460,14 @@ impl Storage {
         let table_name = index_meta.table.clone();
 
         // Get row IDs from index
-        let row_ids =
-            self.index_manager
-                .range_scan(index_name, start_values, end_values, txn_id)?;
+        let row_ids = self.index_manager.range_scan(
+            &self.uncommitted_index,
+            &self.index_history,
+            index_name,
+            start_values,
+            end_values,
+            txn_id,
+        )?;
 
         // Read actual rows (checking MVCC visibility)
         let mut results = Vec::new();
@@ -547,10 +566,13 @@ impl Storage {
 
                 if index_values.len() == column_indices.len() {
                     // Check against existing committed and uncommitted data
-                    if self
-                        .index_manager
-                        .check_unique(index_name, &index_values, txn_id)?
-                    {
+                    if self.index_manager.check_unique(
+                        &self.uncommitted_index,
+                        &self.index_history,
+                        index_name,
+                        &index_values,
+                        txn_id,
+                    )? {
                         return Err(Error::UniqueConstraintViolation(format!(
                             "Duplicate value for unique index {}",
                             index_name
@@ -744,17 +766,11 @@ impl Storage {
         txn_id: HlcTimestamp,
         table: &str,
     ) -> Result<crate::storage::iterator::TableIterator<'a>> {
-        let tables_guard = &self.tables;
-        let uncommitted_data_clone = self.uncommitted_data.clone();
-        let data_history_clone = self.data_history.clone();
+        // Pre-load all data (both use &self - read-only)
+        let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
+        let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
 
-        crate::storage::iterator::TableIterator::new(
-            txn_id,
-            tables_guard,
-            uncommitted_data_clone,
-            data_history_clone,
-            table,
-        )
+        crate::storage::iterator::TableIterator::new(&self.tables, table, active_data, history_ops)
     }
 
     /// Get an iterator with row IDs (for UPDATE/DELETE operations)
@@ -763,16 +779,15 @@ impl Storage {
         txn_id: HlcTimestamp,
         table: &str,
     ) -> Result<crate::storage::iterator::TableIteratorWithIds<'a>> {
-        let tables_guard = &self.tables;
-        let uncommitted_data_clone = self.uncommitted_data.clone();
-        let data_history_clone = self.data_history.clone();
+        // Pre-load all data (both use &self - read-only)
+        let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
+        let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
 
         crate::storage::iterator::TableIteratorWithIds::new(
-            txn_id,
-            tables_guard,
-            uncommitted_data_clone,
-            data_history_clone,
+            &self.tables,
             table,
+            active_data,
+            history_ops,
         )
     }
 
@@ -782,16 +797,15 @@ impl Storage {
         txn_id: HlcTimestamp,
         table: &str,
     ) -> Result<crate::storage::iterator::TableIteratorReverse<'a>> {
-        let tables_guard = &self.tables;
-        let uncommitted_data_clone = self.uncommitted_data.clone();
-        let data_history_clone = self.data_history.clone();
+        // Pre-load all data (both use &self - read-only)
+        let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
+        let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
 
         crate::storage::iterator::TableIteratorReverse::new(
-            txn_id,
-            tables_guard,
-            uncommitted_data_clone,
-            data_history_clone,
+            &self.tables,
             table,
+            active_data,
+            history_ops,
         )
     }
 
@@ -885,6 +899,8 @@ impl Storage {
         // Note: The current index manager doesn't support inclusive/exclusive bounds or reverse
         // We'll need to filter results accordingly
         let mut row_ids = self.index_manager.range_scan(
+            &self.uncommitted_index,
+            &self.index_history,
             index_name,
             start_values.clone(),
             end_values.clone(),
@@ -1108,7 +1124,8 @@ impl Storage {
         let index_ops = self.uncommitted_index.get_transaction_ops(txn_id);
 
         // Commit index operations to the batch
-        self.index_manager.commit_transaction(&mut batch, txn_id)?;
+        self.index_manager
+            .commit_transaction(&mut self.uncommitted_index, &mut batch, txn_id)?;
 
         // Add data operations to data_history (in the same batch)
         // OPTIMIZED: Uses commit_time-first key design for efficient range queries
@@ -1124,34 +1141,37 @@ impl Storage {
                 .add_committed_ops_to_batch(&mut batch, txn_id, index_ops)?;
         }
 
-        // Cleanup old operations if enough time has passed
-        // Run cleanup every ~30 seconds (1/10th of 5-minute retention) to avoid performance impact
+        // Remove from uncommitted stores (this is fast, no disk I/O)
+        self.uncommitted_data
+            .remove_transaction(&mut batch, txn_id)?;
+
+        // Commit single atomic batch (includes data, indexes, history)
+        batch.commit()?;
+
+        // Cleanup old buckets AFTER commit (since it drops partitions)
         let should_cleanup = match self.last_cleanup {
             None => true,
             Some(last) => {
-                let cleanup_interval_micros = 30_000_000; // 30 seconds
+                let cleanup_interval_micros = self.config.cleanup_interval.as_micros() as u64;
                 txn_id.physical.saturating_sub(last.physical) >= cleanup_interval_micros
             }
         };
 
         if should_cleanup {
-            self.data_history
-                .cleanup_old_operations(&mut batch, txn_id)?;
-            self.index_history
-                .cleanup_old_operations(&mut batch, txn_id)?;
-
+            self.data_history.cleanup_old_buckets(txn_id)?;
+            self.index_history.cleanup_old_buckets(txn_id)?;
+            // Also cleanup uncommitted stores (to catch orphaned transactions)
+            self.uncommitted_data.cleanup_old_buckets(txn_id)?;
+            self.uncommitted_index.cleanup_old_buckets(txn_id)?;
             self.last_cleanup = Some(txn_id);
         }
 
-        // Remove from uncommitted stores (this is fast, no disk I/O)
-        self.uncommitted_data
-            .remove_transaction(&mut batch, txn_id)?;
-
-        // Commit single atomic batch (includes data, indexes, history, and cleanup)
-        batch.commit()?;
-
         // Persist to disk once
-        self.keyspace.persist(self.config.persist_mode)?;
+        if should_cleanup {
+            self.keyspace.persist(fjall::PersistMode::SyncAll)?;
+        } else {
+            self.keyspace.persist(self.config.persist_mode)?;
+        }
 
         Ok(())
     }
@@ -1161,37 +1181,41 @@ impl Storage {
         // Create batch for atomic commit (even if no writes, we might have index ops)
         let mut batch = self.keyspace.batch();
 
-        // Cleanup old operations if enough time has passed (same as commit)
-        // Run cleanup every ~30 seconds (1/10th of 5-minute retention) to avoid performance impact
-        let should_cleanup = match self.last_cleanup {
-            None => true,
-            Some(last) => {
-                let cleanup_interval_micros = 30_000_000; // 30 seconds
-                txn_id.physical.saturating_sub(last.physical) >= cleanup_interval_micros
-            }
-        };
-
-        println!("Aborting transaction: {:?}", txn_id);
-        println!("Should cleanup: {:?}", should_cleanup);
-
-        if should_cleanup {
-            self.data_history
-                .cleanup_old_operations(&mut batch, txn_id)?;
-            self.index_history
-                .cleanup_old_operations(&mut batch, txn_id)?;
-
-            self.last_cleanup = Some(txn_id);
-        }
-
         // Remove from uncommitted data
         self.uncommitted_data
             .remove_transaction(&mut batch, txn_id)?;
 
         // Abort index operations (uses batch now)
-        self.index_manager.abort_transaction(&mut batch, txn_id)?;
+        self.index_manager
+            .abort_transaction(&mut self.uncommitted_index, &mut batch, txn_id)?;
 
-        // Commit the batch (includes cleanup, uncommitted data removal, and index abort)
+        // Commit the batch (includes uncommitted data removal and index abort)
         batch.commit()?;
+
+        // Cleanup old buckets AFTER commit (since it drops partitions)
+        let should_cleanup = match self.last_cleanup {
+            None => true,
+            Some(last) => {
+                let cleanup_interval_micros = self.config.cleanup_interval.as_micros() as u64;
+                txn_id.physical.saturating_sub(last.physical) >= cleanup_interval_micros
+            }
+        };
+
+        if should_cleanup {
+            self.data_history.cleanup_old_buckets(txn_id)?;
+            self.index_history.cleanup_old_buckets(txn_id)?;
+            // Also cleanup uncommitted stores (to catch orphaned transactions)
+            self.uncommitted_data.cleanup_old_buckets(txn_id)?;
+            self.uncommitted_index.cleanup_old_buckets(txn_id)?;
+            self.last_cleanup = Some(txn_id);
+        }
+
+        // Persist to disk once
+        if should_cleanup {
+            self.keyspace.persist(fjall::PersistMode::SyncAll)?;
+        } else {
+            self.keyspace.persist(self.config.persist_mode)?;
+        }
 
         Ok(())
     }
@@ -1276,8 +1300,13 @@ impl Storage {
 
             if index_values.len() == column_indices.len() {
                 // Skip unique constraint checking - add to index directly
-                self.index_manager
-                    .add_entry(&index_name, index_values, row.id, txn_id)?;
+                self.index_manager.add_entry(
+                    &mut self.uncommitted_index,
+                    &index_name,
+                    index_values,
+                    row.id,
+                    txn_id,
+                )?;
             }
         }
 
@@ -1335,9 +1364,13 @@ impl Storage {
         // Phase 1: Check all unique constraints BEFORE making any changes
         for (index_name, index_meta, _old_values, new_values) in &updates {
             if index_meta.unique
-                && self
-                    .index_manager
-                    .check_unique(index_name, new_values, txn_id)?
+                && self.index_manager.check_unique(
+                    &self.uncommitted_index,
+                    &self.index_history,
+                    index_name,
+                    new_values,
+                    txn_id,
+                )?
             {
                 return Err(Error::UniqueConstraintViolation(format!(
                     "Duplicate value for unique index {}",
@@ -1349,7 +1382,8 @@ impl Storage {
         // Phase 2: All constraints passed - now apply the changes
         for (index_name, _index_meta, old_values, new_values) in updates {
             // Remove old entry
-            let _ = &mut self.index_manager.remove_entry(
+            self.index_manager.remove_entry(
+                &mut self.uncommitted_index,
                 &index_name,
                 &old_values,
                 old_row.id,
@@ -1357,8 +1391,13 @@ impl Storage {
             )?;
 
             // Add new entry
-            self.index_manager
-                .add_entry(&index_name, new_values, new_row.id, txn_id)?;
+            self.index_manager.add_entry(
+                &mut self.uncommitted_index,
+                &index_name,
+                new_values,
+                new_row.id,
+                txn_id,
+            )?;
         }
 
         Ok(())
@@ -1390,7 +1429,8 @@ impl Storage {
 
             if index_values.len() == column_indices.len() {
                 // Remove from index
-                let _ = &mut self.index_manager.remove_entry(
+                self.index_manager.remove_entry(
+                    &mut self.uncommitted_index,
                     &index_name,
                     &index_values,
                     row.id,

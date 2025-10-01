@@ -1,9 +1,14 @@
 //! Fjall-based data history store for time-travel snapshot reads
+//!
+//! NEW ARCHITECTURE: Uses time-bucketed partitions for O(1) cleanup
+//! - Partition by table × time (e.g., _data_history_users_bucket_0000000001)
+//! - Key format: {commit_time(20)}{row_id(8)}{seq(4)} (table is in partition name)
+//! - Cleanup drops entire partitions instead of scanning keys
 
 use crate::error::Result;
+use crate::storage::bucket_manager::BucketManager;
 use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::types::{RowId, WriteOp};
-use fjall::Partition;
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -11,76 +16,65 @@ use std::time::Duration;
 /// Fjall-based store for committed operations within retention window (data history)
 /// Maintains a sliding window of operations for time-travel queries
 pub struct DataHistoryStore {
-    partition: Partition,
+    bucket_manager: BucketManager,
     retention_window: Duration,
 }
 
 impl DataHistoryStore {
     /// Create a new data history store
-    pub fn new(partition: Partition, retention_window: Duration) -> Self {
+    pub fn new(bucket_manager: BucketManager, retention_window: Duration) -> Self {
         Self {
-            partition,
+            bucket_manager,
             retention_window,
         }
     }
 
     /// Check if the store is empty (fast check for optimization)
     pub fn is_empty(&self) -> bool {
-        // This is a very fast check - just see if there's any entry at all
-        match self.partition.first_key_value() {
-            Ok(None) => true,     // No entries, it's empty
-            Ok(Some(_)) => false, // Has entries, not empty
-            Err(_) => true,       // Error reading, treat as empty for safety
-        }
+        // With bucketed partitions, check if we have any active partitions
+        // This is a fast in-memory check
+        self.bucket_manager.active_partitions.is_empty()
     }
 
-    /// Encode key for data history: {table_len(4)}{table}{commit_time(24)}{row_id(8)}{seq(4)}
-    ///
-    /// KEY DESIGN: table_name comes FIRST for efficient prefix scans!
-    /// This allows O(k) lookup of all ops for a specific table, then filter by time.
-    fn encode_key(commit_time: HlcTimestamp, op: &WriteOp, seq: u32) -> Vec<u8> {
+    /// Encode key: {commit_time(20)}{row_id(8)}{seq(4)}
+    /// Table is in partition name, not in key
+    fn encode_key(commit_time: HlcTimestamp, row_id: RowId, seq: u32) -> Vec<u8> {
         let mut key = Vec::new();
-
-        // Put table name FIRST for efficient prefix scans
-        if let Some(table) = op.table_name() {
-            key.extend_from_slice(&(table.len() as u32).to_be_bytes());
-            key.extend_from_slice(table.as_bytes());
-        }
-
-        // Then commit_time for chronological ordering within table
-        // Use lexicographic encoding to ensure byte-wise ordering matches logical ordering
-        let time_bytes = commit_time.to_lexicographic_bytes();
-        key.extend_from_slice(&time_bytes);
-
-        // Then row_id for filtering by row
-        key.extend_from_slice(&op.row_id().to_be_bytes());
-
-        // Finally sequence number for ordering within transaction
+        key.extend_from_slice(&commit_time.to_lexicographic_bytes());
+        key.extend_from_slice(&row_id.to_be_bytes());
         key.extend_from_slice(&seq.to_be_bytes());
-
         key
     }
 
-    /// Add committed operations from a transaction to an existing batch
+    /// Add committed operations (for writes - requires &mut)
     pub fn add_committed_ops_to_batch(
-        &self,
+        &mut self,
         batch: &mut fjall::Batch,
         commit_time: HlcTimestamp,
         ops: Vec<WriteOp>,
     ) -> Result<()> {
-        // Use sequence numbers to preserve order within transaction
-        for (seq, op) in ops.into_iter().enumerate() {
-            let key = Self::encode_key(commit_time, &op, seq as u32);
-            let value = serialize(&op)?;
-            batch.insert(&self.partition, key, value);
+        // Group by table
+        let mut ops_by_table: HashMap<String, Vec<WriteOp>> = HashMap::new();
+        for op in ops {
+            if let Some(table) = op.table_name() {
+                ops_by_table.entry(table.to_string()).or_default().push(op);
+            }
         }
+
+        // Write to table-specific time buckets
+        for (table, table_ops) in ops_by_table {
+            let partition = self.bucket_manager.get_or_create_partition(&table, commit_time)?;
+            for (seq, op) in table_ops.into_iter().enumerate() {
+                let key = Self::encode_key(commit_time, op.row_id(), seq as u32);
+                batch.insert(partition, key, serialize(&op)?);
+            }
+        }
+
         Ok(())
     }
 
-    /// Get all operations for a table after a timestamp, grouped by row_id
-    /// This is used to load all operations once for iteration
-    ///
-    /// OPTIMIZED: Uses bounded range scan - stops at end of table namespace automatically
+    /// Get table ops after timestamp (for reads - uses &self)
+    /// CRITICAL: Uses get_existing_partitions (read-only, no partition creation)
     pub fn get_table_ops_after(
         &self,
         snapshot_time: HlcTimestamp,
@@ -88,71 +82,31 @@ impl DataHistoryStore {
     ) -> Result<HashMap<RowId, Vec<WriteOp>>> {
         let mut result: HashMap<RowId, Vec<WriteOp>> = HashMap::new();
 
-        // Build start key: {table_len}{table}{snapshot_time}
-        let mut start_key = Vec::new();
-        start_key.extend_from_slice(&(table.len() as u32).to_be_bytes());
-        start_key.extend_from_slice(table.as_bytes());
-        let snapshot_time_bytes = snapshot_time.to_lexicographic_bytes();
-        start_key.extend_from_slice(&snapshot_time_bytes);
+        // Get EXISTING partitions only (no creation)
+        let far_future = HlcTimestamp::new(u64::MAX, 0, snapshot_time.node_id);
+        let partitions = self.bucket_manager.get_existing_partitions_for_range(
+            table,
+            snapshot_time,
+            far_future,
+        );
 
-        // Build end key: {table_len}{table}{max_time}
-        let mut end_key = Vec::new();
-        end_key.extend_from_slice(&(table.len() as u32).to_be_bytes());
-        end_key.extend_from_slice(table.as_bytes());
-        end_key.extend_from_slice(&[0xFF; 20]); // Max timestamp (20 bytes)
-
-        // Bounded range scan - automatically stops at end of table
-        for entry in self.partition.range(start_key..end_key) {
-            let (_key, value) = entry?;
-
-            if let Ok(op) = deserialize::<WriteOp>(&value) {
-                let row_id = op.row_id();
-                result.entry(row_id).or_default().push(op);
+        // Scan existing partitions
+        let snapshot_bytes = snapshot_time.to_lexicographic_bytes();
+        for partition in partitions {
+            for entry in partition.range(snapshot_bytes.to_vec()..) {
+                let (_key, value) = entry?;
+                if let Ok(op) = deserialize::<WriteOp>(&value) {
+                    result.entry(op.row_id()).or_default().push(op);
+                }
             }
         }
 
         Ok(result)
     }
 
-    /// Clean up operations older than the retention window
-    pub fn cleanup_old_operations(
-        &self,
-        batch: &mut fjall::Batch,
-        current_time: HlcTimestamp,
-    ) -> Result<()> {
-        // Calculate the cutoff time (retention window ago)
-        // Note: HlcTimestamp's physical component is in microseconds
-        let retention_micros = self.retention_window.as_micros() as u64;
-        let cutoff_physical = current_time.physical.saturating_sub(retention_micros);
-        let cutoff = HlcTimestamp::new(cutoff_physical, 0, current_time.node_id);
-
-        // Key format: {table_len(4)}{table}{commit_time(20)}{row_id(8)}{seq(8)}
-        for result in self.partition.iter() {
-            let (key, _value) = result?;
-
-            // Extract table name length to find timestamp offset
-            if key.len() < 4 {
-                continue;
-            }
-
-            let table_len = u32::from_be_bytes([key[0], key[1], key[2], key[3]]) as usize;
-            let timestamp_offset = 4 + table_len;
-
-            // Check if key has enough bytes for timestamp (20 bytes)
-            if key.len() < timestamp_offset + 20 {
-                continue;
-            }
-
-            // Extract and decode timestamp using lexicographic encoding
-            let timestamp_bytes = &key[timestamp_offset..timestamp_offset + 20];
-            if let Ok(commit_time) = HlcTimestamp::from_lexicographic_bytes(timestamp_bytes)
-                && commit_time < cutoff
-            {
-                batch.remove(&self.partition, key);
-            }
-            // Note: We can't break early since keys are ordered by table name first, not time
-        }
-
-        Ok(())
+    /// Cleanup old buckets - O(1) per bucket!
+    pub fn cleanup_old_buckets(&mut self, current_time: HlcTimestamp) -> Result<usize> {
+        self.bucket_manager
+            .cleanup_old_buckets(current_time, self.retention_window)
     }
 }

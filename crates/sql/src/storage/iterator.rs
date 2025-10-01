@@ -1,13 +1,11 @@
 //! Streaming iterators for storage_new that merge fjall and in-memory MVCC data
 
 use crate::error::{Error, Result};
-use crate::storage::data_history::DataHistoryStore;
 use crate::storage::encoding::{decode_row_key, deserialize};
 use crate::storage::engine::TableMetadata;
 use crate::storage::types::{FjallIterator, Row, RowId, WriteOp};
-use crate::storage::uncommitted_data::{TableActiveData, UncommittedDataStore};
+use crate::storage::uncommitted_data::TableActiveData;
 
-use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -39,11 +37,10 @@ pub struct TableIterator<'a> {
 
 impl<'a> TableIterator<'a> {
     pub(crate) fn new(
-        txn_id: HlcTimestamp,
         tables: &'a HashMap<String, Arc<TableMetadata>>,
-        uncommitted_data: Arc<UncommittedDataStore>,
-        data_history: Arc<DataHistoryStore>,
         table_name: &str,
+        active_data: TableActiveData,
+        history_ops: HashMap<RowId, Vec<WriteOp>>,
     ) -> Result<Self> {
         // Get the table metadata
         let table_meta = tables
@@ -51,18 +48,6 @@ impl<'a> TableIterator<'a> {
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
         let data_partition = &table_meta.data_partition;
-
-        // Get uncommitted data for this table (single scan of uncommitted_data)
-        let active_data = uncommitted_data.get_table_active_data(txn_id, table_name);
-
-        // Load all history operations for this table ONCE
-        // This avoids repeated queries during iteration
-        // Optimization: skip entirely if data_history is empty
-        let history_ops = if data_history.is_empty() {
-            HashMap::new()
-        } else {
-            data_history.get_table_ops_after(txn_id, table_name)?
-        };
 
         // Create fjall iterator - convert Slice to Box<[u8]>
         let data_iter = Box::new(data_partition.iter().map(|result| {
@@ -249,14 +234,13 @@ pub struct TableIteratorWithIds<'a> {
 
 impl<'a> TableIteratorWithIds<'a> {
     pub fn new(
-        txn_id: HlcTimestamp,
         tables: &'a HashMap<String, Arc<TableMetadata>>,
-        uncommitted_data: Arc<UncommittedDataStore>,
-        data_history: Arc<DataHistoryStore>,
         table_name: &str,
+        active_data: TableActiveData,
+        history_ops: HashMap<RowId, Vec<WriteOp>>,
     ) -> Result<Self> {
         Ok(Self {
-            inner: TableIterator::new(txn_id, tables, uncommitted_data, data_history, table_name)?,
+            inner: TableIterator::new(tables, table_name, active_data, history_ops)?,
         })
     }
 }
@@ -301,11 +285,10 @@ pub struct TableIteratorReverse<'a> {
 
 impl<'a> TableIteratorReverse<'a> {
     pub fn new(
-        txn_id: HlcTimestamp,
         tables: &'a HashMap<String, Arc<TableMetadata>>,
-        uncommitted_data: Arc<UncommittedDataStore>,
-        data_history: Arc<DataHistoryStore>,
         table_name: &str,
+        active_data: TableActiveData,
+        history_ops: HashMap<RowId, Vec<WriteOp>>,
     ) -> Result<Self> {
         // Get the table metadata
         let table_meta = tables
@@ -314,9 +297,6 @@ impl<'a> TableIteratorReverse<'a> {
 
         let data_partition = &table_meta.data_partition;
 
-        // Get uncommitted data for this table (single scan of uncommitted_data)
-        let active_data = uncommitted_data.get_table_active_data(txn_id, table_name);
-
         // Convert writes to Vec and reverse for reverse iteration
         let mut active_writes_vec: Vec<_> = active_data
             .writes
@@ -324,14 +304,6 @@ impl<'a> TableIteratorReverse<'a> {
             .map(|(k, v)| (*k, v.clone()))
             .collect();
         active_writes_vec.reverse();
-
-        // Load all history operations for this table ONCE
-        // Optimization: skip entirely if data_history is empty
-        let history_ops = if data_history.is_empty() {
-            HashMap::new()
-        } else {
-            data_history.get_table_ops_after(txn_id, table_name)?
-        };
 
         // Create reverse fjall iterator - convert Slice to Box<[u8]>
         let data_iter = Box::new(

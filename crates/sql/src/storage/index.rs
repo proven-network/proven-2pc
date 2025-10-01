@@ -35,22 +35,13 @@ pub struct IndexMetadata {
 pub struct IndexManager {
     indexes: BTreeMap<String, IndexMetadata>,
     partitions: BTreeMap<String, Partition>,
-    /// Store for uncommitted index operations
-    index_versions: Arc<UncommittedIndexStore>,
-    /// Store for committed index operations within retention window (index history, for time-travel)
-    index_history: Arc<IndexHistoryStore>,
 }
 
 impl IndexManager {
-    pub fn new(
-        index_versions: Arc<UncommittedIndexStore>,
-        index_history: Arc<IndexHistoryStore>,
-    ) -> Self {
+    pub fn new() -> Self {
         Self {
             indexes: BTreeMap::new(),
             partitions: BTreeMap::new(),
-            index_versions,
-            index_history,
         }
     }
 
@@ -117,6 +108,7 @@ impl IndexManager {
     /// Add an entry to an index (tracks as uncommitted)
     pub fn add_entry(
         &mut self,
+        uncommitted_index: &mut UncommittedIndexStore,
         index_name: &str,
         values: Vec<Value>,
         row_id: RowId,
@@ -128,13 +120,14 @@ impl IndexManager {
             values,
             row_id,
         };
-        self.index_versions.add_operation(txn_id, op)?;
+        uncommitted_index.add_operation(txn_id, op)?;
         Ok(())
     }
 
     /// Remove an entry from an index (tracks as uncommitted)
     pub fn remove_entry(
         &mut self,
+        uncommitted_index: &mut UncommittedIndexStore,
         index_name: &str,
         values: &[Value],
         row_id: RowId,
@@ -146,7 +139,7 @@ impl IndexManager {
             values: values.to_vec(),
             row_id,
         };
-        self.index_versions.add_operation(txn_id, op)?;
+        uncommitted_index.add_operation(txn_id, op)?;
         Ok(())
     }
 
@@ -154,6 +147,8 @@ impl IndexManager {
     /// For snapshot reads, pass the snapshot transaction ID as `txn_id`.
     pub fn lookup(
         &self,
+        uncommitted_index: &UncommittedIndexStore,
+        index_history: &IndexHistoryStore,
         index_name: &str,
         values: Vec<Value>,
         txn_id: HlcTimestamp,
@@ -178,8 +173,8 @@ impl IndexManager {
         // Get all index operations committed after txn_id and reverse their effects
         //
         // OPTIMIZATION: Only query history if it might contain relevant operations
-        if !self.index_history.is_empty() {
-            let history_ops = self.index_history.get_index_ops_after(txn_id, index_name)?;
+        if !index_history.is_empty() {
+            let history_ops = index_history.get_index_ops_after(txn_id, index_name)?;
 
             for op in history_ops {
                 if op.values() == values {
@@ -198,7 +193,7 @@ impl IndexManager {
         }
 
         // Then, apply uncommitted operations for the current transaction
-        let ops = self.index_versions.get_index_ops(txn_id, index_name);
+        let ops = uncommitted_index.get_index_ops(txn_id, index_name);
         for op in ops {
             if op.values() == values {
                 match op {
@@ -218,6 +213,8 @@ impl IndexManager {
     /// Range scan on index
     pub fn range_scan(
         &self,
+        uncommitted_index: &UncommittedIndexStore,
+        index_history: &IndexHistoryStore,
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
@@ -258,7 +255,7 @@ impl IndexManager {
         }
 
         // Apply MVCC: hide commits that happened after this transaction
-        let recent_ops = self.index_history.get_index_ops_after(txn_id, index_name)?;
+        let recent_ops = index_history.get_index_ops_after(txn_id, index_name)?;
 
         for op in recent_ops {
             let values = op.values();
@@ -284,7 +281,7 @@ impl IndexManager {
         }
 
         // Then, apply uncommitted operations for the current transaction
-        for op in self.index_versions.get_index_ops(txn_id, index_name) {
+        for op in uncommitted_index.get_index_ops(txn_id, index_name) {
             match op {
                 IndexOp::Insert {
                     values: idx_values,
@@ -327,6 +324,8 @@ impl IndexManager {
     /// Check if a value exists in unique index
     pub fn check_unique(
         &self,
+        uncommitted_index: &UncommittedIndexStore,
+        index_history: &IndexHistoryStore,
         index_name: &str,
         values: &[Value],
         txn_id: HlcTimestamp,
@@ -347,7 +346,7 @@ impl IndexManager {
         }
 
         // Check both committed and uncommitted entries including our own transaction
-        let existing = self.lookup(index_name, values.to_vec(), txn_id)?;
+        let existing = self.lookup(uncommitted_index, index_history, index_name, values.to_vec(), txn_id)?;
 
         Ok(!existing.is_empty())
     }
@@ -355,6 +354,7 @@ impl IndexManager {
     /// Build index from existing rows
     pub fn build_index(
         &mut self,
+        uncommitted_index: &mut UncommittedIndexStore,
         index_name: &str,
         rows: &[(RowId, Arc<Row>)],
         column_indices: &[usize],
@@ -368,7 +368,7 @@ impl IndexManager {
                 .collect();
 
             if values.len() == column_indices.len() {
-                self.add_entry(index_name, values, *row_id, txn_id)?;
+                self.add_entry(uncommitted_index, index_name, values, *row_id, txn_id)?;
             }
         }
 
@@ -443,8 +443,13 @@ impl IndexManager {
     }
 
     /// Commit index operations for a transaction
-    pub fn commit_transaction(&mut self, batch: &mut Batch, txn_id: HlcTimestamp) -> Result<()> {
-        for op in self.index_versions.get_transaction_ops(txn_id) {
+    pub fn commit_transaction(
+        &mut self,
+        uncommitted_index: &mut UncommittedIndexStore,
+        batch: &mut Batch,
+        txn_id: HlcTimestamp,
+    ) -> Result<()> {
+        for op in uncommitted_index.get_transaction_ops(txn_id) {
             match op {
                 IndexOp::Insert {
                     index_name,
@@ -471,18 +476,19 @@ impl IndexManager {
             }
         }
         // Clear the transaction's operations from UncommittedIndexStore
-        self.index_versions.clear_transaction(batch, txn_id)?;
+        uncommitted_index.clear_transaction(batch, txn_id)?;
         Ok(())
     }
 
     /// Abort index operations for a transaction
     pub fn abort_transaction(
         &mut self,
+        uncommitted_index: &mut UncommittedIndexStore,
         batch: &mut fjall::Batch,
         txn_id: HlcTimestamp,
     ) -> Result<()> {
         // Clear the transaction's operations from UncommittedIndexStore
-        self.index_versions.clear_transaction(batch, txn_id)?;
+        uncommitted_index.clear_transaction(batch, txn_id)?;
         Ok(())
     }
 }
@@ -621,32 +627,34 @@ mod tests {
         HlcTimestamp::new(ts, 0, NodeId::new(1))
     }
 
-    fn create_index_versions(keyspace: &Keyspace) -> Arc<UncommittedIndexStore> {
-        let partition = keyspace
-            .open_partition("_index_versions_test", PartitionCreateOptions::default())
-            .unwrap();
-        Arc::new(UncommittedIndexStore::new(partition))
+    fn create_index_versions(keyspace: &Keyspace) -> UncommittedIndexStore {
+        use crate::storage::bucket_manager::BucketManager;
+        let bucket_mgr = BucketManager::new(
+            keyspace.clone(),
+            "_index_versions_test".to_string(),
+            std::time::Duration::from_secs(30),
+            PartitionCreateOptions::default(),
+        );
+        UncommittedIndexStore::new(bucket_mgr, std::time::Duration::from_secs(120))
     }
 
-    fn create_recent_index_versions(keyspace: &Keyspace) -> Arc<IndexHistoryStore> {
-        let partition = keyspace
-            .open_partition(
-                "_recent_index_versions_test",
-                PartitionCreateOptions::default(),
-            )
-            .unwrap();
-        Arc::new(IndexHistoryStore::new(
-            partition,
-            std::time::Duration::from_secs(300),
-        ))
+    fn create_recent_index_versions(keyspace: &Keyspace) -> IndexHistoryStore {
+        use crate::storage::bucket_manager::BucketManager;
+        let bucket_mgr = BucketManager::new(
+            keyspace.clone(),
+            "_recent_index_versions_test".to_string(),
+            std::time::Duration::from_secs(60),
+            PartitionCreateOptions::default(),
+        );
+        IndexHistoryStore::new(bucket_mgr, std::time::Duration::from_secs(300))
     }
 
     #[test]
     fn test_create_and_drop_index() {
         let keyspace = create_test_keyspace();
-        let index_versions = create_index_versions(&keyspace);
-        let recent_index_versions = create_recent_index_versions(&keyspace);
-        let mut manager = IndexManager::new(index_versions, recent_index_versions);
+        let _index_versions = create_index_versions(&keyspace);
+        let _recent_index_versions = create_recent_index_versions(&keyspace);
+        let mut manager = IndexManager::new();
 
         // Create index
         manager
@@ -679,9 +687,9 @@ mod tests {
     #[test]
     fn test_index_operations() {
         let keyspace = create_test_keyspace();
-        let index_versions = create_index_versions(&keyspace);
+        let mut index_versions = create_index_versions(&keyspace);
         let recent_index_versions = create_recent_index_versions(&keyspace);
-        let mut manager = IndexManager::new(index_versions, recent_index_versions);
+        let mut manager = IndexManager::new();
         let txn_id = create_txn_id(100);
 
         // Create index
@@ -697,18 +705,18 @@ mod tests {
 
         // Add entries
         manager
-            .add_entry("idx_age", vec![Value::I64(25)], 1, txn_id)
+            .add_entry(&mut index_versions, "idx_age", vec![Value::I64(25)], 1, txn_id)
             .unwrap();
         manager
-            .add_entry("idx_age", vec![Value::I64(30)], 2, txn_id)
+            .add_entry(&mut index_versions, "idx_age", vec![Value::I64(30)], 2, txn_id)
             .unwrap();
         manager
-            .add_entry("idx_age", vec![Value::I64(25)], 3, txn_id)
+            .add_entry(&mut index_versions, "idx_age", vec![Value::I64(25)], 3, txn_id)
             .unwrap();
 
         // Lookup
         let results = manager
-            .lookup("idx_age", vec![Value::I64(25)], txn_id)
+            .lookup(&index_versions, &recent_index_versions, "idx_age", vec![Value::I64(25)], txn_id)
             .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&1));
@@ -717,6 +725,8 @@ mod tests {
         // Range scan
         let results = manager
             .range_scan(
+                &index_versions,
+                &recent_index_versions,
                 "idx_age",
                 Some(vec![Value::I64(20)]),
                 Some(vec![Value::I64(30)]),
@@ -729,9 +739,9 @@ mod tests {
     #[test]
     fn test_unique_index() {
         let keyspace = create_test_keyspace();
-        let index_versions = create_index_versions(&keyspace);
+        let mut index_versions = create_index_versions(&keyspace);
         let recent_index_versions = create_recent_index_versions(&keyspace);
-        let mut manager = IndexManager::new(index_versions, recent_index_versions);
+        let mut manager = IndexManager::new();
         let txn_id = create_txn_id(100);
 
         // Create unique index
@@ -748,17 +758,17 @@ mod tests {
         // Add entry
         let email = Value::Str("alice@example.com".to_string());
         manager
-            .add_entry("idx_email", vec![email.clone()], 1, txn_id)
+            .add_entry(&mut index_versions, "idx_email", vec![email.clone()], 1, txn_id)
             .unwrap();
 
         // Check uniqueness
-        assert!(manager.check_unique("idx_email", &[email], txn_id).unwrap());
+        assert!(manager.check_unique(&index_versions, &recent_index_versions, "idx_email", &[email], txn_id).unwrap());
 
         // Different email should be fine
         let email2 = Value::Str("bob@example.com".to_string());
         assert!(
             !manager
-                .check_unique("idx_email", &[email2], txn_id)
+                .check_unique(&index_versions, &recent_index_versions, "idx_email", &[email2], txn_id)
                 .unwrap()
         );
     }

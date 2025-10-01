@@ -61,6 +61,7 @@
 //! 2. Avoid unnecessary work - table iterator doesn't need to scan index ops
 //! 3. Better key structure - each can be optimized for its specific use case
 
+pub mod bucket_manager;
 pub mod config;
 pub mod data_history;
 pub mod encoding;

@@ -1,13 +1,16 @@
 //! Store for uncommitted index operations
 //!
-//! This module provides a fjall-based store for tracking uncommitted index operations,
-//! similar to UncommittedDataStore but specifically for index operations.
+//! NEW ARCHITECTURE: Uses time-bucketed partitions for O(1) cleanup
+//! - Partition by TIME ONLY (e.g., _uncommitted_index_uncommitted_bucket_0000000001)
+//! - NOT partitioned by index (need to scan all indexes for get_transaction_ops)
+//! - Key format: {txn_id(20)}{index_name_len(4)}{index_name}{seq(8)}
+//! - Cleanup drops entire partitions instead of scanning keys
 
 use crate::error::Result;
+use crate::storage::bucket_manager::BucketManager;
 use crate::storage::encoding::serialize;
 use crate::storage::types::RowId;
 use crate::types::value::Value;
-use fjall::Partition;
 use proven_hlc::HlcTimestamp;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,17 +55,19 @@ impl IndexOp {
 
 /// Fjall-based store for uncommitted index operations
 pub struct UncommittedIndexStore {
-    partition: Partition,
+    bucket_manager: BucketManager,
+    retention_window: std::time::Duration,
     /// Counter for operation sequence numbers per transaction
     /// Note: This is in-memory only, resets on restart (which is fine for active transactions)
     next_seq: AtomicU64,
 }
 
 impl UncommittedIndexStore {
-    /// Create a new index version store with the given partition
-    pub fn new(partition: Partition) -> Self {
+    /// Create a new index version store with BucketManager
+    pub fn new(bucket_manager: BucketManager, retention_window: std::time::Duration) -> Self {
         Self {
-            partition,
+            bucket_manager,
+            retention_window,
             next_seq: AtomicU64::new(0),
         }
     }
@@ -105,21 +110,38 @@ impl UncommittedIndexStore {
         key
     }
 
-    /// Add an index operation for a transaction
-    pub fn add_operation(&self, txn_id: HlcTimestamp, op: IndexOp) -> Result<()> {
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let key = Self::encode_key(txn_id, op.index_name(), seq);
-        let value = serialize(&op)?;
+    /// Get existing partition (read-only) - uses entity name "uncommitted_index"
+    fn get_existing_partition_for_time(&self, time: HlcTimestamp) -> Option<&fjall::PartitionHandle> {
+        self.bucket_manager
+            .get_existing_partition("uncommitted_index", time)
+    }
 
-        self.partition.insert(key, value)?;
+    /// Get or create partition (for writes) - uses entity name "uncommitted_index"
+    fn get_or_create_partition_for_time(
+        &mut self,
+        time: HlcTimestamp,
+    ) -> Result<&fjall::PartitionHandle> {
+        self.bucket_manager
+            .get_or_create_partition("uncommitted_index", time)
+    }
+
+    /// Add an index operation for a transaction (requires &mut)
+    pub fn add_operation(&mut self, txn_id: HlcTimestamp, op: IndexOp) -> Result<()> {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let partition = self.get_or_create_partition_for_time(txn_id)?;
+        let key = Self::encode_key(txn_id, op.index_name(), seq);
+        partition.insert(key, serialize(&op)?)?;
         Ok(())
     }
 
-    /// Get all index operations for a transaction
+    /// Get all index operations for a transaction (uses &self - read-only)
     pub fn get_transaction_ops(&self, txn_id: HlcTimestamp) -> Vec<IndexOp> {
-        let prefix = Self::encode_tx_prefix(txn_id);
+        let Some(partition) = self.get_existing_partition_for_time(txn_id) else {
+            return Vec::new(); // Partition doesn't exist = no data
+        };
 
-        self.partition
+        let prefix = Self::encode_tx_prefix(txn_id);
+        partition
             .prefix(prefix)
             .filter_map(|result| {
                 result
@@ -129,11 +151,14 @@ impl UncommittedIndexStore {
             .collect()
     }
 
-    /// Get index operations for a specific index in a transaction
+    /// Get index operations for a specific index in a transaction (uses &self - read-only)
     pub fn get_index_ops(&self, txn_id: HlcTimestamp, index_name: &str) -> Vec<IndexOp> {
-        let prefix = Self::encode_tx_index_prefix(txn_id, index_name);
+        let Some(partition) = self.get_existing_partition_for_time(txn_id) else {
+            return Vec::new(); // Partition doesn't exist = no data
+        };
 
-        self.partition
+        let prefix = Self::encode_tx_index_prefix(txn_id, index_name);
+        partition
             .prefix(prefix)
             .filter_map(|result| {
                 result
@@ -143,22 +168,34 @@ impl UncommittedIndexStore {
             .collect()
     }
 
-    /// Clear all operations for a transaction (used on commit or abort)
-    pub fn clear_transaction(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
-        let prefix = Self::encode_tx_prefix(txn_id);
+    /// Clear all operations for a transaction (used on commit or abort - requires &mut)
+    pub fn clear_transaction(
+        &mut self,
+        batch: &mut fjall::Batch,
+        txn_id: HlcTimestamp,
+    ) -> Result<()> {
+        let Some(partition) = self.get_existing_partition_for_time(txn_id) else {
+            return Ok(()); // Partition doesn't exist = nothing to clear
+        };
 
+        let prefix = Self::encode_tx_prefix(txn_id);
         // Collect all keys with this prefix
-        let keys_to_remove: Vec<_> = self
-            .partition
+        let keys_to_remove: Vec<_> = partition
             .prefix(&prefix)
             .filter_map(|result| result.ok().map(|(key, _)| key.to_vec()))
             .collect();
 
         // Remove all keys using the batch
         for key in keys_to_remove {
-            batch.remove(&self.partition, key);
+            batch.remove(partition, key);
         }
 
         Ok(())
+    }
+
+    /// Cleanup old buckets - O(1) per bucket!
+    pub fn cleanup_old_buckets(&mut self, current_time: HlcTimestamp) -> Result<usize> {
+        self.bucket_manager
+            .cleanup_old_buckets(current_time, self.retention_window)
     }
 }
