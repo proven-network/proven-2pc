@@ -5,12 +5,12 @@
 //! non-conflicting transactions to proceed.
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlTransactionEngine};
+use proven_sql::{SqlOperation, SqlTransactionEngine, StorageConfig};
 use proven_stream::{OperationResult, TransactionEngine};
 
 /// Helper to create a test engine
 fn create_engine() -> SqlTransactionEngine {
-    SqlTransactionEngine::new()
+    SqlTransactionEngine::new(StorageConfig::for_testing())
 }
 
 /// Helper to create a timestamp

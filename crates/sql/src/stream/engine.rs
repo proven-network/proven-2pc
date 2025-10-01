@@ -11,7 +11,7 @@ use crate::execution;
 use crate::parsing::CachingParser;
 use crate::planning::caching_planner::CachingPlanner;
 use crate::semantic::CachingSemanticAnalyzer;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageConfig};
 use crate::stream::{
     operation::SqlOperation,
     predicate_index::PredicateIndex,
@@ -47,9 +47,8 @@ pub struct SqlTransactionEngine {
 
 impl SqlTransactionEngine {
     /// Create a new SQL transaction engine
-    pub fn new() -> Self {
+    pub fn new(config: StorageConfig) -> Self {
         // Create storage with default config
-        let config = crate::storage::StorageConfig::default();
         let storage = Storage::new(config).expect("Failed to create storage");
         let schemas = storage.get_schemas();
 
@@ -436,6 +435,6 @@ impl TransactionEngine for SqlTransactionEngine {
 
 impl Default for SqlTransactionEngine {
     fn default() -> Self {
-        Self::new()
+        Self::new(StorageConfig::default())
     }
 }

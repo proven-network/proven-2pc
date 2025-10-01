@@ -154,7 +154,7 @@ async fn create_sql_processor(
     client: Arc<MockClient>,
     snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<proven_stream::StreamProcessor<proven_sql::SqlTransactionEngine>, crate::RunnerError> {
-    let engine = proven_sql::SqlTransactionEngine::new();
+    let engine = proven_sql::SqlTransactionEngine::default();
     Ok(proven_stream::StreamProcessor::new(
         engine,
         client,

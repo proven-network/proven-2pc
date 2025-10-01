@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine};
+use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine, StorageConfig};
 use proven_stream::{OperationResult, TransactionEngine};
 use std::collections::HashMap;
 
@@ -18,7 +18,7 @@ impl TestContext {
     /// Create a new test context
     pub fn new() -> Self {
         Self {
-            engine: SqlTransactionEngine::new(),
+            engine: SqlTransactionEngine::new(StorageConfig::for_testing()),
             current_timestamp: 1,
             in_transaction: false,
             current_tx: None,

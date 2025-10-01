@@ -3,17 +3,30 @@
 //! This benchmark measures the throughput of the SQL engine by inserting
 //! 1 million rows into a table directly using the engine.
 
+use fjall::{CompressionType, PersistMode};
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlTransactionEngine, Value};
+use proven_sql::{SqlOperation, SqlTransactionEngine, StorageConfig, Value};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
-use std::time::Instant;
+use std::path::PathBuf;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 fn main() {
     println!("=== 1 Million Insert Benchmark ===\n");
 
+    let temp_dir_obj = tempfile::tempdir().expect("Failed to create temporary directory");
+    let temp_dir = temp_dir_obj.path().to_path_buf();
+
+    println!("Data directory: {}", temp_dir.display());
+
     // Create SQL engine directly
-    let mut sql_engine = SqlTransactionEngine::new();
+    let mut sql_engine = SqlTransactionEngine::new(StorageConfig {
+        data_dir: temp_dir.clone(),
+        block_cache_size: 1024 * 1024 * 1024,
+        compression: CompressionType::Lz4,
+        persist_mode: PersistMode::Buffer,
+    });
 
     // Create table
     println!("Creating table...");
@@ -125,15 +138,14 @@ fn main() {
     let elapsed = Instant::now();
     match sql_engine.apply_operation(count_query, verify_txn) {
         proven_stream::OperationResult::Complete(_response) => {
+            let count_query_time = elapsed.elapsed();
+            println!("Count query time: {}ms", count_query_time.as_millis());
             // In a real system, we'd parse the response to get the actual count
             println!("✓ Count query executed successfully");
-            sql_engine.commit(verify_txn);
+            sql_engine.abort(verify_txn);
         }
         _ => println!("⚠ Count query failed"),
     }
-
-    let count_query_time = elapsed.elapsed();
-    println!("Count query time: {}ms", count_query_time.as_millis());
 
     // Print final statistics
     println!("\n=== Benchmark Results ===");
@@ -147,5 +159,100 @@ fn main() {
 
     println!("\nMemory usage and detailed statistics:");
     println!("- Transactions executed: {}", NUM_INSERTS + 2); // +2 for create table and count
+
+    println!("Sleeping for 20 seconds for compaction to bring data to steady state...");
+    sleep(Duration::from_secs(20));
+
+    // Calculate directory size
+    println!("\nCalculating storage size...");
+    let dir_size = calculate_dir_size(&temp_dir).unwrap_or(0);
+    println!(
+        "Total storage size: {:.2} MB",
+        dir_size as f64 / 1_048_576.0
+    );
+    println!(
+        "Bytes per row:      {:.1} bytes",
+        dir_size as f64 / NUM_INSERTS as f64
+    );
+
+    // Show partition breakdown
+    println!("\nStorage breakdown:");
+    print_directory_breakdown(&temp_dir, dir_size, 0);
+
     println!("\n✓ Benchmark complete!");
+
+    // Cleanup
+    println!("\nCleaning up temporary directory...");
+    drop(sql_engine); // Ensure engine releases file handles
+    if let Err(e) = std::fs::remove_dir_all(&temp_dir) {
+        eprintln!("⚠ Failed to cleanup directory: {}", e);
+    } else {
+        println!("✓ Directory cleaned up");
+    }
+}
+
+/// Calculate total size of a directory recursively
+fn calculate_dir_size(path: &PathBuf) -> std::io::Result<u64> {
+    let mut total = 0;
+
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+
+            if metadata.is_dir() {
+                total += calculate_dir_size(&entry.path())?;
+            } else {
+                total += metadata.len();
+            }
+        }
+    }
+
+    Ok(total)
+}
+
+/// Print directory breakdown recursively with indentation
+fn print_directory_breakdown(path: &PathBuf, total_size: u64, depth: usize) {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+
+    let mut items: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|entry| {
+            let size = calculate_dir_size(&entry.path()).ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.path().is_dir();
+            Some((name, size, is_dir, entry.path()))
+        })
+        .collect();
+
+    // Sort by size descending
+    items.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let indent = "  ".repeat(depth);
+
+    for (name, size, is_dir, entry_path) in items {
+        // Skip very small files (< 0.01 MB) at deeper levels
+        if depth > 0 && size < 10_000 {
+            continue;
+        }
+
+        let size_mb = size as f64 / 1_048_576.0;
+        let percentage = (size as f64 / total_size as f64) * 100.0;
+
+        let marker = if is_dir { "/" } else { "" };
+        println!(
+            "{}  {:40} {:>10.2} MB ({:>5.1}%)",
+            indent,
+            format!("{}{}", name, marker),
+            size_mb,
+            percentage
+        );
+
+        // Recursively print subdirectories (but limit depth to avoid clutter)
+        if is_dir && depth < 2 {
+            print_directory_breakdown(&entry_path, total_size, depth + 1);
+        }
+    }
 }

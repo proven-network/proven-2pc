@@ -36,12 +36,17 @@ impl Default for StorageConfig {
     }
 }
 
-#[cfg(test)]
 impl StorageConfig {
     /// Create config optimized for testing
     pub fn for_testing() -> Self {
+        // Use tempfile to create a proper temporary directory
+        // Using .keep() to persist the directory (won't be auto-deleted)
+        let temp_dir = tempfile::tempdir()
+            .expect("Failed to create temporary directory")
+            .keep();
+
         Self {
-            data_dir: PathBuf::from("/tmp/test_sql_storage"),
+            data_dir: temp_dir,
             block_cache_size: 64 * 1024 * 1024, // 64 MB
             compression: CompressionType::None, // Faster for tests
             persist_mode: PersistMode::Buffer,  // Don't sync to disk in tests

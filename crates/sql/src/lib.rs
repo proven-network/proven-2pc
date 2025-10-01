@@ -19,6 +19,8 @@ mod stream;
 mod types;
 
 pub use error::{Error, Result};
+pub use fjall::{CompressionType, PersistMode};
+pub use storage::StorageConfig;
 pub use stream::engine::SqlTransactionEngine;
 pub use stream::operation::SqlOperation;
 pub use stream::response::SqlResponse;

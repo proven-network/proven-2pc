@@ -1171,6 +1171,9 @@ impl Storage {
             }
         };
 
+        println!("Aborting transaction: {:?}", txn_id);
+        println!("Should cleanup: {:?}", should_cleanup);
+
         if should_cleanup {
             self.data_history
                 .cleanup_old_operations(&mut batch, txn_id)?;
