@@ -8,7 +8,7 @@ use crate::storage::index::{IndexManager, IndexMetadata};
 use crate::storage::index_history::IndexHistoryStore;
 use crate::storage::types::{Row, RowId, WriteOp};
 use crate::storage::uncommitted_data::UncommittedDataStore;
-use crate::storage::uncommitted_index::UncommittedIndexStore;
+use crate::storage::uncommitted_index::{self, UncommittedIndexStore};
 use crate::types::schema::Table as TableSchema;
 use crate::types::value::Value;
 use fjall::{Batch, Keyspace, Partition, PartitionCreateOptions};
@@ -40,7 +40,7 @@ pub struct Storage {
     index_manager: IndexManager,
 
     // Index versions (uncommitted index operations)
-    index_versions: Arc<UncommittedIndexStore>,
+    uncommitted_index: Arc<UncommittedIndexStore>,
 
     // Uncommitted data operations - using fjall
     uncommitted_data: Arc<UncommittedDataStore>,
@@ -111,13 +111,13 @@ impl Storage {
         ));
 
         // Open index versions partition (for uncommitted index operations)
-        let index_versions_partition = keyspace.open_partition(
-            "_index_versions",
+        let uncommitted_index = keyspace.open_partition(
+            "_uncommitted_index",
             PartitionCreateOptions::default()
                 .block_size(4 * 1024)
                 .compression(fjall::CompressionType::None),
         )?;
-        let index_versions = Arc::new(UncommittedIndexStore::new(index_versions_partition));
+        let uncommitted_index = Arc::new(UncommittedIndexStore::new(uncommitted_index));
 
         // Open index history partition (for committed index operations within retention window)
         let index_history_partition = keyspace.open_partition(
@@ -176,8 +176,8 @@ impl Storage {
             keyspace,
             metadata_partition,
             tables,
-            index_manager: IndexManager::new(index_versions.clone(), index_history.clone()),
-            index_versions,
+            index_manager: IndexManager::new(uncommitted_index.clone(), index_history.clone()),
+            uncommitted_index,
             uncommitted_data,
             data_history,
             index_history,
@@ -856,7 +856,7 @@ impl Storage {
                     let all_indexes = &self.index_manager.get_all_metadata();
                     for (idx_name, idx_meta) in all_indexes {
                         if idx_meta.columns.contains(&index_name.to_string()) {
-                            return self.index_lookup(&idx_name, values, txn_id);
+                            return self.index_lookup(idx_name, values, txn_id);
                         }
                     }
                     Ok(vec![])
@@ -1105,7 +1105,7 @@ impl Storage {
         }
 
         // Get index operations before committing (so we can move to index_history)
-        let index_ops = self.index_versions.get_transaction_ops(txn_id);
+        let index_ops = self.uncommitted_index.get_transaction_ops(txn_id);
 
         // Commit index operations to the batch
         self.index_manager.commit_transaction(&mut batch, txn_id)?;
