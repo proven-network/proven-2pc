@@ -111,7 +111,10 @@ impl UncommittedIndexStore {
     }
 
     /// Get existing partition (read-only) - uses entity name "uncommitted_index"
-    fn get_existing_partition_for_time(&self, time: HlcTimestamp) -> Option<&fjall::PartitionHandle> {
+    fn get_existing_partition_for_time(
+        &self,
+        time: HlcTimestamp,
+    ) -> Option<&fjall::PartitionHandle> {
         self.bucket_manager
             .get_existing_partition("uncommitted_index", time)
     }

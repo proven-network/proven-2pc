@@ -63,7 +63,9 @@ impl DataHistoryStore {
 
         // Write to table-specific time buckets
         for (table, table_ops) in ops_by_table {
-            let partition = self.bucket_manager.get_or_create_partition(&table, commit_time)?;
+            let partition = self
+                .bucket_manager
+                .get_or_create_partition(&table, commit_time)?;
             for (seq, op) in table_ops.into_iter().enumerate() {
                 let key = Self::encode_key(commit_time, op.row_id(), seq as u32);
                 batch.insert(partition, key, serialize(&op)?);
@@ -84,11 +86,9 @@ impl DataHistoryStore {
 
         // Get EXISTING partitions only (no creation)
         let far_future = HlcTimestamp::new(u64::MAX, 0, snapshot_time.node_id);
-        let partitions = self.bucket_manager.get_existing_partitions_for_range(
-            table,
-            snapshot_time,
-            far_future,
-        );
+        let partitions =
+            self.bucket_manager
+                .get_existing_partitions_for_range(table, snapshot_time, far_future);
 
         // Scan existing partitions
         let snapshot_bytes = snapshot_time.to_lexicographic_bytes();

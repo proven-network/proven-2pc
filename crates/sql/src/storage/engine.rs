@@ -770,7 +770,13 @@ impl Storage {
         let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
         let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
 
-        crate::storage::iterator::TableIterator::new(&self.tables, table, active_data, history_ops)
+        crate::storage::iterator::TableIterator::new(
+            &self.tables,
+            table,
+            active_data,
+            history_ops,
+            false,
+        )
     }
 
     /// Get an iterator with row IDs (for UPDATE/DELETE operations)
@@ -788,6 +794,7 @@ impl Storage {
             table,
             active_data,
             history_ops,
+            false,
         )
     }
 
@@ -796,16 +803,17 @@ impl Storage {
         &'a self,
         txn_id: HlcTimestamp,
         table: &str,
-    ) -> Result<crate::storage::iterator::TableIteratorReverse<'a>> {
+    ) -> Result<crate::storage::iterator::TableIterator<'a>> {
         // Pre-load all data (both use &self - read-only)
         let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
         let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
 
-        crate::storage::iterator::TableIteratorReverse::new(
+        crate::storage::iterator::TableIterator::new(
             &self.tables,
             table,
             active_data,
             history_ops,
+            true,
         )
     }
 

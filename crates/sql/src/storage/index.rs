@@ -346,7 +346,13 @@ impl IndexManager {
         }
 
         // Check both committed and uncommitted entries including our own transaction
-        let existing = self.lookup(uncommitted_index, index_history, index_name, values.to_vec(), txn_id)?;
+        let existing = self.lookup(
+            uncommitted_index,
+            index_history,
+            index_name,
+            values.to_vec(),
+            txn_id,
+        )?;
 
         Ok(!existing.is_empty())
     }
@@ -705,18 +711,42 @@ mod tests {
 
         // Add entries
         manager
-            .add_entry(&mut index_versions, "idx_age", vec![Value::I64(25)], 1, txn_id)
+            .add_entry(
+                &mut index_versions,
+                "idx_age",
+                vec![Value::I64(25)],
+                1,
+                txn_id,
+            )
             .unwrap();
         manager
-            .add_entry(&mut index_versions, "idx_age", vec![Value::I64(30)], 2, txn_id)
+            .add_entry(
+                &mut index_versions,
+                "idx_age",
+                vec![Value::I64(30)],
+                2,
+                txn_id,
+            )
             .unwrap();
         manager
-            .add_entry(&mut index_versions, "idx_age", vec![Value::I64(25)], 3, txn_id)
+            .add_entry(
+                &mut index_versions,
+                "idx_age",
+                vec![Value::I64(25)],
+                3,
+                txn_id,
+            )
             .unwrap();
 
         // Lookup
         let results = manager
-            .lookup(&index_versions, &recent_index_versions, "idx_age", vec![Value::I64(25)], txn_id)
+            .lookup(
+                &index_versions,
+                &recent_index_versions,
+                "idx_age",
+                vec![Value::I64(25)],
+                txn_id,
+            )
             .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&1));
@@ -758,17 +788,39 @@ mod tests {
         // Add entry
         let email = Value::Str("alice@example.com".to_string());
         manager
-            .add_entry(&mut index_versions, "idx_email", vec![email.clone()], 1, txn_id)
+            .add_entry(
+                &mut index_versions,
+                "idx_email",
+                vec![email.clone()],
+                1,
+                txn_id,
+            )
             .unwrap();
 
         // Check uniqueness
-        assert!(manager.check_unique(&index_versions, &recent_index_versions, "idx_email", &[email], txn_id).unwrap());
+        assert!(
+            manager
+                .check_unique(
+                    &index_versions,
+                    &recent_index_versions,
+                    "idx_email",
+                    &[email],
+                    txn_id
+                )
+                .unwrap()
+        );
 
         // Different email should be fine
         let email2 = Value::Str("bob@example.com".to_string());
         assert!(
             !manager
-                .check_unique(&index_versions, &recent_index_versions, "idx_email", &[email2], txn_id)
+                .check_unique(
+                    &index_versions,
+                    &recent_index_versions,
+                    "idx_email",
+                    &[email2],
+                    txn_id
+                )
                 .unwrap()
         );
     }

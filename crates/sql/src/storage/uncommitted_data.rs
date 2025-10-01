@@ -83,8 +83,12 @@ impl UncommittedDataStore {
     }
 
     /// Get existing partition (read-only) - uses entity name "uncommitted"
-    fn get_existing_partition_for_time(&self, time: HlcTimestamp) -> Option<&fjall::PartitionHandle> {
-        self.bucket_manager.get_existing_partition("uncommitted", time)
+    fn get_existing_partition_for_time(
+        &self,
+        time: HlcTimestamp,
+    ) -> Option<&fjall::PartitionHandle> {
+        self.bucket_manager
+            .get_existing_partition("uncommitted", time)
     }
 
     /// Get or create partition (for writes) - uses entity name "uncommitted"
