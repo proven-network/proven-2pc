@@ -37,6 +37,10 @@ impl Function for AbsFunction {
                 // ABS returns the same type as input
                 Ok(arg_types[0].clone())
             }
+            DataType::Null => {
+                // ABS(NULL) returns NULL
+                Ok(DataType::Null)
+            }
             DataType::Nullable(inner) => {
                 // Recursively validate the inner type
                 let inner_result = self.validate(&[(**inner).clone()])?;
