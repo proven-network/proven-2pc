@@ -357,6 +357,50 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 .into()
             }
 
+            // CASE expression: CASE [expr] WHEN ... THEN ... [ELSE ...] END
+            Token::Keyword(Keyword::Case) => {
+                // Check if this is a simple CASE (with operand) or searched CASE
+                let operand = if matches!(self.peek()?, Some(Token::Keyword(Keyword::When))) {
+                    None
+                } else {
+                    Some(Box::new(<Self as ExpressionParser>::parse_expression(
+                        self,
+                    )?))
+                };
+
+                // Parse WHEN clauses
+                let mut when_clauses = Vec::new();
+                while self.next_is(Token::Keyword(Keyword::When)) {
+                    let when_expr = <Self as ExpressionParser>::parse_expression(self)?;
+                    self.expect(Token::Keyword(Keyword::Then))?;
+                    let then_expr = <Self as ExpressionParser>::parse_expression(self)?;
+                    when_clauses.push((when_expr, then_expr));
+                }
+
+                if when_clauses.is_empty() {
+                    return Err(Error::ParseError(
+                        "CASE expression must have at least one WHEN clause".into(),
+                    ));
+                }
+
+                // Parse optional ELSE clause
+                let else_clause = if self.next_is(Token::Keyword(Keyword::Else)) {
+                    Some(Box::new(<Self as ExpressionParser>::parse_expression(
+                        self,
+                    )?))
+                } else {
+                    None
+                };
+
+                self.expect(Token::Keyword(Keyword::End))?;
+
+                Expression::Case {
+                    operand,
+                    when_clauses,
+                    else_clause,
+                }
+            }
+
             // ARRAY literal: ARRAY[1, 2, 3]
             Token::Keyword(Keyword::Array) => {
                 self.expect(Token::OpenBracket)?;

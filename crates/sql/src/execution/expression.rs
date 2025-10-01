@@ -413,6 +413,45 @@ pub fn evaluate_with_storage(
                 _ => Value::Null, // No rows returned
             }
         }
+
+        Case {
+            operand,
+            when_clauses,
+            else_clause,
+        } => {
+            // Evaluate operand once if present
+            let operand_value = if let Some(op) = operand {
+                evaluate_with_storage(op, row, context, params, storage)?
+            } else {
+                Value::boolean(true)
+            };
+
+            // Iterate through when/then clauses
+            for (when_expr, then_expr) in when_clauses {
+                let when_value = evaluate_with_storage(when_expr, row, context, params, storage)?;
+
+                // For simple CASE (operand present), compare operand == when_value
+                // For searched CASE (no operand), check if when_value is true
+                let matches = if operand.is_some() {
+                    // Simple CASE: compare values for equality
+                    operators::execute_equal(&operand_value, &when_value)? == Value::boolean(true)
+                } else {
+                    // Searched CASE: evaluate when as boolean condition
+                    when_value == Value::boolean(true)
+                };
+
+                if matches {
+                    return evaluate_with_storage(then_expr, row, context, params, storage);
+                }
+            }
+
+            // No match found, evaluate else clause or return NULL
+            if let Some(else_expr) = else_clause {
+                evaluate_with_storage(else_expr, row, context, params, storage)?
+            } else {
+                Value::Null
+            }
+        }
     })
 }
 

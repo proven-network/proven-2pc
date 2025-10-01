@@ -104,6 +104,13 @@ pub enum Expression {
 
     /// Scalar subquery: (SELECT ...)
     Subquery(Box<super::super::planning::plan::Plan>),
+
+    /// CASE expression with optional operand and when/then clauses
+    Case {
+        operand: Option<Box<Expression>>,
+        when_clauses: Vec<(Expression, Expression)>,
+        else_clause: Option<Box<Expression>>,
+    },
 }
 
 impl Display for Expression {
@@ -218,6 +225,24 @@ impl Display for Expression {
             }
 
             Subquery(_) => write!(f, "(subquery)"),
+
+            Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                write!(f, "CASE")?;
+                if let Some(op) = operand {
+                    write!(f, " {}", op)?;
+                }
+                for (when, then) in when_clauses {
+                    write!(f, " WHEN {} THEN {}", when, then)?;
+                }
+                if let Some(else_expr) = else_clause {
+                    write!(f, " ELSE {}", else_expr)?;
+                }
+                write!(f, " END")
+            }
         }
     }
 }

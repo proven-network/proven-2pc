@@ -1441,9 +1441,42 @@ impl<'a> AnalyzedPlanContext<'a> {
                 Ok(Expression::Subquery(Box::new(subquery_plan)))
             }
 
-            _ => Err(Error::ExecutionError(
-                "Expression type not yet supported".into(),
-            )),
+            AstExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                // Resolve operand (if present)
+                let resolved_operand = operand
+                    .as_ref()
+                    .map(|op| self.resolve_expression_simple(op))
+                    .transpose()?
+                    .map(Box::new);
+
+                // Resolve when/then clauses
+                let resolved_when_clauses = when_clauses
+                    .iter()
+                    .map(|(when, then)| {
+                        Ok((
+                            self.resolve_expression_simple(when)?,
+                            self.resolve_expression_simple(then)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                // Resolve else clause (if present)
+                let resolved_else = else_clause
+                    .as_ref()
+                    .map(|e| self.resolve_expression_simple(e))
+                    .transpose()?
+                    .map(Box::new);
+
+                Ok(Expression::Case {
+                    operand: resolved_operand,
+                    when_clauses: resolved_when_clauses,
+                    else_clause: resolved_else,
+                })
+            }
         }
     }
 

@@ -396,11 +396,86 @@ impl TypeChecker {
                 is_aggregate: false,
             },
 
-            Expression::Case { .. } => TypeInfo {
-                data_type: DataType::Null,
-                nullable: true,
-                is_aggregate: false,
-            },
+            Expression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                // Infer type from operand if present
+                let mut is_aggregate = false;
+                if let Some(op) = operand {
+                    let op_id = expr_id.child(0);
+                    let op_type =
+                        self.infer_expr_type_new(op, &op_id, column_map, param_types, type_map)?;
+                    is_aggregate |= op_type.is_aggregate;
+                }
+
+                // Infer types from all WHEN and THEN expressions
+                let mut result_type: Option<DataType> = None;
+                let mut nullable = false;
+
+                for (idx, (when, then)) in when_clauses.iter().enumerate() {
+                    // Type check WHEN expression
+                    let when_id = expr_id.child(1000 + idx * 2);
+                    let when_type = self.infer_expr_type_new(
+                        when,
+                        &when_id,
+                        column_map,
+                        param_types,
+                        type_map,
+                    )?;
+                    is_aggregate |= when_type.is_aggregate;
+
+                    // Type check THEN expression and unify with result type
+                    let then_id = expr_id.child(1000 + idx * 2 + 1);
+                    let then_type = self.infer_expr_type_new(
+                        then,
+                        &then_id,
+                        column_map,
+                        param_types,
+                        type_map,
+                    )?;
+                    is_aggregate |= then_type.is_aggregate;
+                    nullable |= then_type.nullable;
+
+                    result_type = match result_type {
+                        None => Some(then_type.data_type),
+                        Some(existing) => {
+                            Some(self.unify_values_types(&existing, &then_type.data_type)?)
+                        }
+                    };
+                }
+
+                // Type check ELSE clause if present
+                if let Some(else_expr) = else_clause {
+                    let else_id = expr_id.child(9000);
+                    let else_type = self.infer_expr_type_new(
+                        else_expr,
+                        &else_id,
+                        column_map,
+                        param_types,
+                        type_map,
+                    )?;
+                    is_aggregate |= else_type.is_aggregate;
+                    nullable |= else_type.nullable;
+
+                    result_type = match result_type {
+                        None => Some(else_type.data_type),
+                        Some(existing) => {
+                            Some(self.unify_values_types(&existing, &else_type.data_type)?)
+                        }
+                    };
+                } else {
+                    // No ELSE clause means NULL is a possible result
+                    nullable = true;
+                }
+
+                TypeInfo {
+                    data_type: result_type.unwrap_or(DataType::Null),
+                    nullable,
+                    is_aggregate,
+                }
+            }
 
             Expression::ArrayAccess { base, .. } => {
                 let base_id = expr_id.child(0);

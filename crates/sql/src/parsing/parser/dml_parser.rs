@@ -138,7 +138,8 @@ pub trait DmlParser: TokenHelper {
                 if matches!(expr, Expression::QualifiedWildcard(_)) {
                     return Err(Error::ParseError("can't alias table.*".into()));
                 }
-                alias = Some(self.next_ident()?);
+                // Allow keywords as aliases (e.g., AS case)
+                alias = Some(self.next_ident_or_keyword()?);
             }
             select.push((expr, alias));
             if !self.next_is(Token::Comma) {
