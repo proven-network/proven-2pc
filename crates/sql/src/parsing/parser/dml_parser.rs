@@ -5,7 +5,7 @@
 use super::super::{Keyword, Token};
 use super::token_helper::TokenHelper;
 use crate::error::{Error, Result};
-use crate::parsing::ast::common::{Direction, FromClause, JoinType, SubquerySource};
+use crate::parsing::ast::common::{Direction, FromClause, JoinType, SubquerySource, TableAlias};
 use crate::parsing::ast::dml::{DmlStatement, ValuesStatement};
 use crate::parsing::ast::{Expression, InsertSource, SelectStatement, Statement};
 use std::collections::BTreeMap;
@@ -195,8 +195,7 @@ pub trait DmlParser: TokenHelper {
             // Check what type of subquery this is
             let source = match self.peek()? {
                 Some(Token::Keyword(Keyword::Select)) => {
-                    // Parse SELECT subquery
-                    self.next()?; // consume SELECT
+                    // Parse SELECT subquery - parse_select_clause will consume SELECT
                     let select = Box::new(SelectStatement {
                         select: self.parse_select_clause()?,
                         from: self.parse_from_clause()?,
@@ -235,9 +234,29 @@ pub trait DmlParser: TokenHelper {
                     "Subquery in FROM clause requires an alias (AS name)".into(),
                 ));
             }
-            let alias = self.next_ident()?;
+            // Allow keywords as alias names
+            let name = self.next_ident_or_keyword()?;
 
-            Ok(FromClause::Subquery { source, alias })
+            // Check for column aliases: AS name(col1, col2, ...)
+            let columns = if self.next_is(Token::OpenParen) {
+                let mut cols = Vec::new();
+                loop {
+                    // Allow keywords as column names in alias lists
+                    cols.push(self.next_ident_or_keyword()?);
+                    if !self.next_is(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::CloseParen)?;
+                cols
+            } else {
+                Vec::new()
+            };
+
+            Ok(FromClause::Subquery {
+                source,
+                alias: TableAlias { name, columns },
+            })
         } else {
             // Parse regular table reference
             let name = self.next_ident()?;
@@ -251,7 +270,29 @@ pub trait DmlParser: TokenHelper {
 
             let mut alias = None;
             if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
-                alias = Some(self.next_ident()?)
+                // Allow keywords as alias names
+                let alias_name = self.next_ident_or_keyword()?;
+
+                // Check for column aliases: AS name(col1, col2, ...)
+                let columns = if self.next_is(Token::OpenParen) {
+                    let mut cols = Vec::new();
+                    loop {
+                        // Allow keywords as column names in alias lists
+                        cols.push(self.next_ident_or_keyword()?);
+                        if !self.next_is(Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(Token::CloseParen)?;
+                    cols
+                } else {
+                    Vec::new()
+                };
+
+                alias = Some(TableAlias {
+                    name: alias_name,
+                    columns,
+                });
             };
             Ok(FromClause::Table { name, alias })
         }

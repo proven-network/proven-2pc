@@ -23,10 +23,8 @@ pub enum Plan {
     Query {
         root: Box<Node>,
         params: Vec<Expression>,
+        column_names: Option<Vec<String>>,
     },
-
-    /// SELECT query (legacy - to be removed)
-    Select(Box<Node>),
 
     /// INSERT statement
     Insert {
@@ -104,7 +102,7 @@ impl Plan {
 
     /// Check if this plan is a query (SELECT)
     pub fn is_query(&self) -> bool {
-        matches!(self, Plan::Select(_))
+        matches!(self, Plan::Query { .. })
     }
 }
 
@@ -316,12 +314,13 @@ impl Node {
                 names
             }
 
-            // Values and Nothing nodes
+            // Values node
             Node::Values { rows } => {
                 let count = rows.first().map(|r| r.len()).unwrap_or(0);
                 (1..=count).map(|i| format!("column{}", i)).collect()
             }
 
+            // Nothing node
             Node::Nothing => vec![],
         }
     }

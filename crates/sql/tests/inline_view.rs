@@ -11,14 +11,14 @@ fn test_create_tables_for_inline_view() {
 #[ignore = "not yet implemented"]
 #[test]
 fn test_insert_data_for_inline_view() {
-    // TODO: Test INSERT INTO InnerTable VALUES (1, 'GLUE'), (2, 'SQL'), (3, 'SQL') - 3 inserts
+    // TODO: Test INSERT INTO InnerTable VALUES (1, 'PROVEN'), (2, 'SQL'), (3, 'SQL') - 3 inserts
     // TODO: Test INSERT INTO OuterTable VALUES (1, 'WORKS!'), (2, 'EXTRA') - 2 inserts
 }
 
 #[ignore = "not yet implemented"]
 #[test]
 fn test_select_from_inner_table() {
-    // TODO: Test SELECT * FROM InnerTable - verify 3 rows with GLUE, SQL, SQL
+    // TODO: Test SELECT * FROM InnerTable - verify 3 rows with PROVEN, SQL, SQL
 }
 
 #[ignore = "not yet implemented"]
@@ -96,7 +96,7 @@ fn test_join_nested_inline_views() {
 #[ignore = "not yet implemented"]
 #[test]
 fn test_inline_view_with_group_by() {
-    // TODO: Test SELECT * FROM (SELECT name, count(*) as cnt FROM InnerTable GROUP BY name) AS InlineView - 2 results (GLUE: 1, SQL: 2)
+    // TODO: Test SELECT * FROM (SELECT name, count(*) as cnt FROM InnerTable GROUP BY name) AS InlineView - 2 results (PROVEN: 1, SQL: 2)
 }
 
 #[ignore = "not yet implemented"]

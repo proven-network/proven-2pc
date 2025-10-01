@@ -161,12 +161,16 @@ impl Planner {
         select: &SelectStatement,
         analyzed: &AnalyzedStatement,
     ) -> Result<Plan> {
+        // Check if SELECT contains wildcards - we'll use this later for column names
+        let has_wildcard = select.select.iter().any(|(expr, _)| {
+            matches!(
+                expr,
+                AstExpression::All | AstExpression::QualifiedWildcard(_)
+            )
+        });
+
         // Create context that uses the analyzed statement
         let mut context = AnalyzedPlanContext::new(&self.schemas, analyzed);
-
-        // Use metadata for optimization hints
-        // Output schema is available in analyzed.metadata.output_schema
-        // Referenced columns in analyzed.metadata.referenced_columns
 
         // Start with FROM clause
         let mut node = self.plan_from(&select.from, &mut context)?;
@@ -263,9 +267,19 @@ impl Planner {
             };
         }
 
-        // Optimize the plan before returning
-        let plan = Plan::Select(Box::new(node));
-        self.optimizer.optimize(plan)
+        // Extract column names from the column resolution map only if SELECT contains wildcards
+        // For other cases (aggregates, expressions), let get_column_names() handle it
+        let column_names = if has_wildcard {
+            Some(analyzed.column_resolution_map.get_ordered_column_names())
+        } else {
+            None
+        };
+
+        Ok(Plan::Query {
+            root: Box::new(node),
+            params: Vec::new(),
+            column_names,
+        })
     }
 
     /// Plan FROM clause
@@ -279,10 +293,10 @@ impl Planner {
         for from_item in from {
             match from_item {
                 FromClause::Table { name, alias } => {
-                    context.add_table(name.clone(), alias.clone())?;
+                    context.add_table(name.clone(), alias.as_ref().map(|a| a.name.clone()))?;
                     let scan = Node::Scan {
                         table: name.clone(),
-                        alias: alias.clone(),
+                        alias: alias.as_ref().map(|a| a.name.clone()),
                     };
 
                     node = Some(if let Some(prev) = node {
@@ -306,7 +320,7 @@ impl Planner {
                             // Plan the SELECT subquery
                             let subplan = self.plan_select(select_stmt, context.analyzed)?;
                             match subplan {
-                                Plan::Select(node) | Plan::Query { root: node, .. } => *node,
+                                Plan::Query { root: node, .. } => *node,
                                 _ => {
                                     return Err(Error::ExecutionError(
                                         "Invalid subquery plan".into(),
@@ -475,8 +489,8 @@ impl Planner {
             InsertSource::Select(select) => {
                 let plan = self.plan_select(&select, _analyzed)?;
                 match plan {
-                    Plan::Select(node) => node,
-                    _ => return Err(Error::ExecutionError("Expected SELECT plan".into())),
+                    Plan::Query { root, .. } => root,
+                    _ => return Err(Error::ExecutionError("Expected Query plan".into())),
                 }
             }
         };
@@ -697,9 +711,11 @@ impl Planner {
             };
         }
 
+        // For VALUES statements, don't pass column names - let get_column_names() handle it
         Ok(Plan::Query {
             root: Box::new(node),
             params: Vec::new(),
+            column_names: None,
         })
     }
 
@@ -1020,11 +1036,53 @@ impl Planner {
             match expr {
                 AstExpression::All => {
                     // Expand * to all columns
-                    for table in &context.tables {
-                        if let Some(schema) = self.schemas.get(&table.name) {
-                            for (i, col) in schema.columns.iter().enumerate() {
-                                expressions.push(Expression::Column(table.start_column + i));
-                                aliases.push(Some(col.name.clone()));
+                    // For regular tables, use the old logic with table.start_column + i
+                    // For subqueries (VALUES/SELECT), fall back to resolution map
+
+                    if context.tables.is_empty() {
+                        // No tables in context - this is a subquery (VALUES/SELECT)
+                        // Use resolution map for both offsets and names
+                        let mut all_resolutions: Vec<_> = context
+                            .analyzed
+                            .column_resolution_map
+                            .columns
+                            .values()
+                            .collect();
+                        all_resolutions.sort_by_key(|r| r.global_offset);
+                        all_resolutions.dedup_by_key(|r| r.global_offset);
+
+                        let column_names = context
+                            .analyzed
+                            .column_resolution_map
+                            .get_ordered_column_names();
+
+                        for (resolution, col_name) in
+                            all_resolutions.iter().zip(column_names.iter())
+                        {
+                            expressions.push(Expression::Column(resolution.global_offset));
+                            aliases.push(Some(col_name.clone()));
+                        }
+                    } else {
+                        // Regular tables - use original logic for column offsets
+                        // but get column names from resolution map (may be aliased)
+                        let column_names = context
+                            .analyzed
+                            .column_resolution_map
+                            .get_ordered_column_names();
+
+                        let mut name_idx = 0;
+                        for table in &context.tables {
+                            if let Some(schema) = self.schemas.get(&table.name) {
+                                for (i, _col) in schema.columns.iter().enumerate() {
+                                    expressions.push(Expression::Column(table.start_column + i));
+                                    // Use aliased name if available, otherwise use schema name
+                                    if let Some(col_name) = column_names.get(name_idx) {
+                                        aliases.push(Some(col_name.clone()));
+                                    } else {
+                                        aliases.push(Some(_col.name.clone()));
+                                    }
+                                    name_idx += 1;
+                                }
                             }
                         }
                     }

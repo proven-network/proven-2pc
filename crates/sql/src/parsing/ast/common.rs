@@ -10,6 +10,13 @@ pub enum Direction {
     Desc,
 }
 
+/// Table alias with optional column aliases
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TableAlias {
+    pub name: String,
+    pub columns: Vec<String>,
+}
+
 /// Join types for SQL joins
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinType {
@@ -37,14 +44,14 @@ pub enum FromClause {
         /// The table name.
         name: String,
         /// An optional alias for the table.
-        alias: Option<String>,
+        alias: Option<TableAlias>,
     },
     /// A subquery (SELECT or VALUES)
     Subquery {
         /// The subquery source
         source: SubquerySource,
         /// Required alias for the subquery
-        alias: String,
+        alias: TableAlias,
     },
     /// A join of two or more tables (may be nested).
     Join {

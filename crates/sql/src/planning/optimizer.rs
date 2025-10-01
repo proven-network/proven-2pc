@@ -23,11 +23,19 @@ impl Optimizer {
     /// Optimize a query plan
     pub fn optimize(&self, plan: Plan) -> Result<Plan> {
         match plan {
-            Plan::Select(node) => {
-                let optimized = self.optimize_node(*node)?;
-                Ok(Plan::Select(Box::new(optimized)))
+            Plan::Query {
+                root,
+                params,
+                column_names,
+            } => {
+                let optimized = self.optimize_node(*root)?;
+                Ok(Plan::Query {
+                    root: Box::new(optimized),
+                    params,
+                    column_names,
+                })
             }
-            other => Ok(other), // Don't optimize non-SELECT statements for now
+            other => Ok(other), // Don't optimize non-Query statements for now
         }
     }
 

@@ -16,12 +16,16 @@ pub fn execute_select(
     storage: &mut Storage,
     tx_ctx: &mut TransactionContext,
     params: Option<&Vec<Value>>,
+    column_names_override: Option<Vec<String>>,
 ) -> Result<ExecutionResult> {
     // Get schemas from storage
     let schemas = storage.get_schemas();
 
-    // Get column names from the node tree
-    let columns = node.get_column_names(&schemas);
+    // Get column names - use override from semantic analysis if available and non-empty,
+    // otherwise reconstruct from node tree (handles aggregates, expressions, etc.)
+    let columns = column_names_override
+        .filter(|cols| !cols.is_empty())
+        .unwrap_or_else(|| node.get_column_names(&schemas));
 
     // Execute using read-only node execution
     let rows = super::executor::execute_node_read(node, storage, tx_ctx, params)?;

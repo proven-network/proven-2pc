@@ -29,6 +29,9 @@ pub enum Error {
     #[error("Column already exists: {0}")]
     DuplicateColumn(String),
 
+    #[error("Table '{0}' has {1} columns available but {2} column aliases specified")]
+    TooManyColumnAliases(String, usize, usize),
+
     // Type errors
     #[error("Type mismatch: expected {expected}, found {found}")]
     TypeMismatch { expected: String, found: String },

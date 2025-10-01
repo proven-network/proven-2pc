@@ -58,13 +58,13 @@ fn test_show_invalid_statement_should_error() {
 #[ignore = "not yet implemented"]
 #[test]
 fn test_glue_tables_system_view() {
-    // TODO: Test SELECT * FROM GLUE_TABLES returns table names and comments
+    // TODO: Test SELECT * FROM PROVEN_TABLES returns table names and comments
 }
 
 #[ignore = "not yet implemented"]
 #[test]
 fn test_glue_table_columns_system_view() {
-    // TODO: Test SELECT * FROM GLUE_TABLE_COLUMNS returns column metadata:
+    // TODO: Test SELECT * FROM PROVEN_TABLE_COLUMNS returns column metadata:
     // TABLE_NAME, COLUMN_NAME, COLUMN_ID, NULLABLE, KEY, DEFAULT, COMMENT
 }
 

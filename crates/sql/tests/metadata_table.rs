@@ -10,7 +10,7 @@ fn test_create_table_for_metadata() {
 #[ignore = "not yet implemented"]
 #[test]
 fn test_glue_objects_with_time_filter() {
-    // TODO: Test SELECT OBJECT_NAME, OBJECT_TYPE FROM GLUE_OBJECTS WHERE CREATED > NOW() - INTERVAL 1 MINUTE
+    // TODO: Test SELECT OBJECT_NAME, OBJECT_TYPE FROM PROVEN_OBJECTS WHERE CREATED > NOW() - INTERVAL 1 MINUTE
     // Should return ("Meta", "TABLE") for recently created table
 }
 
@@ -23,14 +23,14 @@ fn test_drop_table() {
 #[ignore = "not yet implemented"]
 #[test]
 fn test_glue_objects_after_drop() {
-    // TODO: Test SELECT COUNT(*) FROM GLUE_OBJECTS WHERE CREATED > NOW() - INTERVAL 1 MINUTE
+    // TODO: Test SELECT COUNT(*) FROM PROVEN_OBJECTS WHERE CREATED > NOW() - INTERVAL 1 MINUTE
     // Should return empty result after table is dropped
 }
 
 #[ignore = "not yet implemented"]
 #[test]
 fn test_glue_objects_time_filtering() {
-    // TODO: Test that GLUE_OBJECTS properly filters by CREATED timestamp
+    // TODO: Test that PROVEN_OBJECTS properly filters by CREATED timestamp
 }
 
 #[ignore = "not yet implemented"]

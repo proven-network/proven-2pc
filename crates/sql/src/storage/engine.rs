@@ -629,7 +629,7 @@ impl Storage {
         // Create new row
         let new_row = Arc::new(Row::new(row_id, values));
 
-        // Add to uncommitted data
+        // Create write operation
         let write_op = WriteOp::Update {
             table: table.to_string(),
             row_id,
@@ -637,10 +637,14 @@ impl Storage {
             new_row: new_row.clone(),
         };
 
-        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
-
         // Update indexes for this table (remove old, add new)
+        // This checks unique constraints and will error if violated
+        // IMPORTANT: Do this BEFORE adding to uncommitted data so that
+        // if constraint check fails, the write is not committed
         self.update_indexes_on_update(table, &old_row, &new_row, &table_meta, txn_id)?;
+
+        // Only add to uncommitted data AFTER all validations pass
+        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
 
         Ok(())
     }

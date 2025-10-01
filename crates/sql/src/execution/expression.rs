@@ -308,10 +308,10 @@ pub fn evaluate_with_storage(
 
             // Execute the subquery plan
             let node = match plan.as_ref() {
-                crate::planning::plan::Plan::Select(node) => node.as_ref().clone(),
+                crate::planning::plan::Plan::Query { root, .. } => root.as_ref().clone(),
                 _ => {
                     return Err(Error::ExecutionError(
-                        "IN subquery must be a SELECT statement".to_string(),
+                        "IN subquery must be a Query".to_string(),
                     ));
                 }
             };
@@ -357,10 +357,10 @@ pub fn evaluate_with_storage(
 
             // Execute the subquery plan
             let node = match plan.as_ref() {
-                crate::planning::plan::Plan::Select(node) => node.as_ref().clone(),
+                crate::planning::plan::Plan::Query { root, .. } => root.as_ref().clone(),
                 _ => {
                     return Err(Error::ExecutionError(
-                        "EXISTS subquery must be a SELECT statement".to_string(),
+                        "EXISTS subquery must be a Query".to_string(),
                     ));
                 }
             };
@@ -388,10 +388,10 @@ pub fn evaluate_with_storage(
 
             // Execute the subquery plan
             let node = match plan.as_ref() {
-                crate::planning::plan::Plan::Select(node) => node.as_ref().clone(),
+                crate::planning::plan::Plan::Query { root, .. } => root.as_ref().clone(),
                 _ => {
                     return Err(Error::ExecutionError(
-                        "Scalar subquery must be a SELECT statement".to_string(),
+                        "Scalar subquery must be a Query".to_string(),
                     ));
                 }
             };

@@ -35,14 +35,13 @@ pub fn execute_with_params(
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     match plan {
-        Plan::Query { root, params: _ } => {
+        Plan::Query {
+            root,
+            params: _,
+            column_names,
+        } => {
             // Query uses immutable storage reference (handles SELECT and VALUES)
-            super::select::execute_select(*root, storage, tx_ctx, params)
-        }
-
-        Plan::Select(node) => {
-            // SELECT uses immutable storage reference (legacy)
-            super::select::execute_select(*node, storage, tx_ctx, params)
+            super::select::execute_select(*root, storage, tx_ctx, params, column_names.clone())
         }
 
         Plan::Insert {
@@ -53,6 +52,7 @@ pub fn execute_with_params(
             // INSERT uses write execution with phased approach
             super::insert::execute_insert(table, columns, *source, storage, tx_ctx, params)
         }
+
         Plan::Update {
             table,
             assignments,
@@ -93,7 +93,12 @@ pub fn execute_with_params(
 
             // Then execute the VALUES insertion
             // Convert VALUES plan to INSERT
-            if let Plan::Query { root, params: _ } = values_plan.as_ref() {
+            if let Plan::Query {
+                root,
+                params: _,
+                column_names: _,
+            } = values_plan.as_ref()
+            {
                 // Execute the insert directly with the VALUES source
                 let insert_result = super::insert::execute_insert(
                     name.clone(),

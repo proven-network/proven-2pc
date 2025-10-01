@@ -253,7 +253,7 @@ impl MetadataBuilder {
 
         match from {
             FromClause::Table { name, .. } => Some(name.clone()),
-            FromClause::Subquery { alias, .. } => Some(alias.clone()),
+            FromClause::Subquery { alias, .. } => Some(alias.name.clone()),
             FromClause::Join { left, .. } => Self::extract_table_from_clause(left),
         }
     }

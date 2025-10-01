@@ -15,8 +15,8 @@ fn test_create_expression_index() {
 
 #[ignore = "not yet implemented"]
 #[test]
-fn test_glue_indexes_simple_indexes() {
-    // TODO: Test SELECT * FROM GLUE_INDEXES returns index metadata for simple and expression indexes
+fn test_proven_indexes_simple_indexes() {
+    // TODO: Test SELECT * FROM PROVEN_INDEXES returns index metadata for simple and expression indexes
     // Should include: TABLE_NAME, INDEX_NAME, ORDER, EXPRESSION, UNIQUENESS
 }
 
@@ -34,15 +34,15 @@ fn test_create_expression_index_on_concatenation() {
 
 #[ignore = "not yet implemented"]
 #[test]
-fn test_glue_indexes_with_primary_key() {
-    // TODO: Test SELECT * FROM GLUE_INDEXES includes PRIMARY key index
+fn test_proven_indexes_with_primary_key() {
+    // TODO: Test SELECT * FROM PROVEN_INDEXES includes PRIMARY key index
     // Should show PRIMARY index as unique=true, others as unique=false
 }
 
 #[ignore = "not yet implemented"]
 #[test]
-fn test_glue_indexes_all_tables() {
-    // TODO: Test GLUE_INDEXES returns indexes from both Bar and Foo tables
+fn test_proven_indexes_all_tables() {
+    // TODO: Test PROVEN_INDEXES returns indexes from both Bar and Foo tables
     // Bar: PRIMARY (unique), Bar_name_concat (not unique)
     // Foo: Foo_id (not unique), Foo_id_2 (not unique)
 }
@@ -62,7 +62,7 @@ fn test_create_reserved_index_name_should_error() {
 #[ignore = "not yet implemented"]
 #[test]
 fn test_index_metadata_structure() {
-    // TODO: Test that GLUE_INDEXES has correct column structure and data types
+    // TODO: Test that PROVEN_INDEXES has correct column structure and data types
 }
 
 #[ignore = "not yet implemented"]

@@ -496,4 +496,29 @@ impl ColumnResolutionMap {
 
         None
     }
+
+    /// Extract column names in order by global_offset
+    /// Returns column names as they should appear in query results
+    pub fn get_ordered_column_names(&self) -> Vec<String> {
+        // Build a map of offset -> column name, preferring unqualified entries
+        let mut offset_to_name: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
+
+        // First pass: add all entries
+        for ((qualifier, col_name), resolution) in &self.columns {
+            let offset = resolution.global_offset;
+
+            // Only set if not already set, OR if this is an unqualified entry (prefer unqualified)
+            if !offset_to_name.contains_key(&offset) || qualifier.is_none() {
+                offset_to_name.insert(offset, col_name.clone());
+            }
+        }
+
+        // Convert to sorted vector
+        let mut columns: Vec<(usize, String)> = offset_to_name.into_iter().collect();
+        columns.sort_by_key(|(offset, _)| *offset);
+
+        // Extract just the names
+        columns.into_iter().map(|(_, name)| name).collect()
+    }
 }

@@ -17,11 +17,16 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub enum TableSource {
     /// Regular table from schema
-    Table { alias: Option<String>, name: String },
+    Table {
+        alias: Option<String>,
+        name: String,
+        column_aliases: Vec<String>,
+    },
     /// Subquery with generated columns
     Subquery {
         alias: String,
         source: SubquerySource,
+        column_aliases: Vec<String>,
     },
 }
 
@@ -53,6 +58,7 @@ impl NameResolver {
                     sources.push(TableSource::Table {
                         alias: None,
                         name: table.clone(),
+                        column_aliases: Vec::new(),
                     });
                 }
                 DmlStatement::Update { table, .. } => {
@@ -60,6 +66,7 @@ impl NameResolver {
                     sources.push(TableSource::Table {
                         alias: None,
                         name: table.clone(),
+                        column_aliases: Vec::new(),
                     });
                 }
                 DmlStatement::Delete { table, .. } => {
@@ -67,6 +74,7 @@ impl NameResolver {
                     sources.push(TableSource::Table {
                         alias: None,
                         name: table.clone(),
+                        column_aliases: Vec::new(),
                     });
                 }
                 DmlStatement::Values(_) => {
@@ -88,15 +96,20 @@ impl NameResolver {
             FromClause::Table { name, alias } => {
                 self.validate_table_exists(name)?;
                 sources.push(TableSource::Table {
-                    alias: alias.clone(),
+                    alias: alias.as_ref().map(|a| a.name.clone()),
                     name: name.clone(),
+                    column_aliases: alias
+                        .as_ref()
+                        .map(|a| a.columns.clone())
+                        .unwrap_or_default(),
                 });
             }
             FromClause::Subquery { source, alias } => {
                 // For subqueries, we keep the source information
                 sources.push(TableSource::Subquery {
-                    alias: alias.clone(),
+                    alias: alias.name.clone(),
                     source: source.clone(),
+                    column_aliases: alias.columns.clone(),
                 });
             }
             FromClause::Join { left, right, .. } => {
@@ -119,11 +132,32 @@ impl NameResolver {
 
         for source in sources {
             match source {
-                TableSource::Table { alias, name } => {
+                TableSource::Table {
+                    alias,
+                    name,
+                    column_aliases,
+                } => {
                     if let Some(schema) = schemas.get(name) {
-                        for column in schema.columns.iter() {
+                        // Validate column aliases count
+                        if !column_aliases.is_empty() && column_aliases.len() > schema.columns.len()
+                        {
+                            return Err(Error::TooManyColumnAliases(
+                                alias.clone().unwrap_or_else(|| name.clone()),
+                                schema.columns.len(),
+                                column_aliases.len(),
+                            ));
+                        }
+
+                        for (idx, column) in schema.columns.iter().enumerate() {
+                            // Use column alias if provided, otherwise use original name
+                            let column_name = if idx < column_aliases.len() {
+                                column_aliases[idx].clone()
+                            } else {
+                                column.name.clone()
+                            };
+
                             // Track column name frequency
-                            *column_counts.entry(column.name.clone()).or_insert(0) += 1;
+                            *column_counts.entry(column_name.clone()).or_insert(0) += 1;
 
                             let resolution = ColumnResolution {
                                 global_offset,
@@ -136,7 +170,7 @@ impl NameResolver {
                             let table_qualifier = alias.clone().unwrap_or_else(|| name.clone());
                             resolution_map.add_resolution(
                                 Some(table_qualifier),
-                                column.name.clone(),
+                                column_name,
                                 resolution,
                             );
 
@@ -144,15 +178,37 @@ impl NameResolver {
                         }
                     }
                 }
-                TableSource::Subquery { alias, source } => {
+                TableSource::Subquery {
+                    alias,
+                    source,
+                    column_aliases,
+                } => {
                     // For subqueries, create synthetic columns
                     match source {
                         SubquerySource::Values(values_stmt) => {
                             // VALUES creates columns named column1, column2, etc.
                             // Use the first row to determine column count and types
                             if let Some(first_row) = values_stmt.rows.first() {
+                                let total_columns = first_row.len();
+
+                                // Validate column aliases count
+                                if !column_aliases.is_empty()
+                                    && column_aliases.len() > total_columns
+                                {
+                                    return Err(Error::TooManyColumnAliases(
+                                        alias.clone(),
+                                        total_columns,
+                                        column_aliases.len(),
+                                    ));
+                                }
+
                                 for (idx, _expr) in first_row.iter().enumerate() {
-                                    let column_name = format!("column{}", idx + 1);
+                                    // Use column alias if provided, otherwise use default name
+                                    let column_name = if idx < column_aliases.len() {
+                                        column_aliases[idx].clone()
+                                    } else {
+                                        format!("column{}", idx + 1)
+                                    };
 
                                     // Track column name frequency
                                     *column_counts.entry(column_name.clone()).or_insert(0) += 1;
@@ -183,7 +239,7 @@ impl NameResolver {
                         SubquerySource::Select(_select_stmt) => {
                             // For SELECT subqueries, we'd need to analyze the SELECT to get columns
                             // This is more complex and would require recursive analysis
-                            // For now, we'll skip this as it's not needed for VALUES
+                            // For now, we'll skip this as it's not needed for basic column alias support
                         }
                     }
                 }
