@@ -1,14 +1,14 @@
 //! Index management and operations
 
 use crate::error::{Error, Result};
-use crate::storage::encoding::{decode_row_id_from_index_key, encode_index_key};
+use crate::storage::encoding::encode_index_key;
 use crate::storage::index_history::IndexHistoryStore;
-use crate::storage::types::{FjallIterator, Row, RowId};
+use crate::storage::types::{Row, RowId};
 use crate::storage::uncommitted_index::{IndexOp, UncommittedIndexStore};
 use crate::types::value::Value;
 use fjall::{Batch, Partition, PartitionCreateOptions};
 use proven_hlc::HlcTimestamp;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -143,184 +143,6 @@ impl IndexManager {
         Ok(())
     }
 
-    /// Lookup entries by exact value
-    /// For snapshot reads, pass the snapshot transaction ID as `txn_id`.
-    pub fn lookup(
-        &self,
-        uncommitted_index: &UncommittedIndexStore,
-        index_history: &IndexHistoryStore,
-        index_name: &str,
-        values: Vec<Value>,
-        txn_id: HlcTimestamp,
-    ) -> Result<Vec<RowId>> {
-        let partition = self
-            .partitions
-            .get(index_name)
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-
-        let mut results = HashSet::new();
-        let key_prefix = encode_index_key(&values, 0);
-
-        // First, find all committed entries with matching prefix
-        for entry in partition.prefix(&key_prefix[..key_prefix.len() - 8]) {
-            let (key, _value) = entry?;
-            if let Some(row_id) = decode_row_id_from_index_key(&key) {
-                results.insert(row_id);
-            }
-        }
-
-        // Apply MVCC: hide commits that happened after this transaction
-        // Get all index operations committed after txn_id and reverse their effects
-        //
-        // OPTIMIZATION: Only query history if it might contain relevant operations
-        if !index_history.is_empty() {
-            let history_ops = index_history.get_index_ops_after(txn_id, index_name)?;
-
-            for op in history_ops {
-                if op.values() == values {
-                    match op {
-                        IndexOp::Insert { row_id, .. } => {
-                            // Row was inserted after us, hide it
-                            results.remove(&row_id);
-                        }
-                        IndexOp::Delete { row_id, .. } => {
-                            // Row was deleted after us, restore it
-                            results.insert(row_id);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Then, apply uncommitted operations for the current transaction
-        let ops = uncommitted_index.get_index_ops(txn_id, index_name);
-        for op in ops {
-            if op.values() == values {
-                match op {
-                    IndexOp::Insert { row_id, .. } => {
-                        results.insert(row_id);
-                    }
-                    IndexOp::Delete { row_id, .. } => {
-                        results.remove(&row_id);
-                    }
-                }
-            }
-        }
-
-        Ok(results.into_iter().collect())
-    }
-
-    /// Range scan on index
-    pub fn range_scan(
-        &self,
-        uncommitted_index: &UncommittedIndexStore,
-        index_history: &IndexHistoryStore,
-        index_name: &str,
-        start_values: Option<Vec<Value>>,
-        end_values: Option<Vec<Value>>,
-        txn_id: HlcTimestamp,
-    ) -> Result<Vec<RowId>> {
-        let partition = self
-            .partitions
-            .get(index_name)
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-
-        let mut results = HashSet::new();
-
-        // Build range bounds
-        let start_key = start_values.as_ref().map(|v| encode_index_key(v, 0));
-        let end_key = end_values.as_ref().map(|v| encode_index_key(v, u64::MAX));
-
-        // Create appropriate range and collect results
-        let entries: Vec<_> = match (start_key.as_ref(), end_key.as_ref()) {
-            (None, None) => partition
-                .iter()
-                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
-            (Some(s), None) => partition
-                .range(s.as_slice()..)
-                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
-            (None, Some(e)) => partition
-                .range(..=e.as_slice())
-                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
-            (Some(s), Some(e)) => partition
-                .range(s.as_slice()..=e.as_slice())
-                .collect::<std::result::Result<Vec<_>, fjall::Error>>()?,
-        };
-
-        // First, collect committed entries
-        for (key, _value) in entries {
-            if let Some(row_id) = decode_row_id_from_index_key(&key) {
-                results.insert(row_id);
-            }
-        }
-
-        // Apply MVCC: hide commits that happened after this transaction
-        let recent_ops = index_history.get_index_ops_after(txn_id, index_name)?;
-
-        for op in recent_ops {
-            let values = op.values();
-            let in_range = match (&start_values, &end_values) {
-                (None, None) => true,
-                (Some(start), None) => values >= start,
-                (None, Some(end)) => values <= end,
-                (Some(start), Some(end)) => values >= start && values <= end,
-            };
-
-            if in_range {
-                match op {
-                    IndexOp::Insert { row_id, .. } => {
-                        // Row was inserted after us, hide it
-                        results.remove(&row_id);
-                    }
-                    IndexOp::Delete { row_id, .. } => {
-                        // Row was deleted after us, restore it
-                        results.insert(row_id);
-                    }
-                }
-            }
-        }
-
-        // Then, apply uncommitted operations for the current transaction
-        for op in uncommitted_index.get_index_ops(txn_id, index_name) {
-            match op {
-                IndexOp::Insert {
-                    values: idx_values,
-                    row_id,
-                    ..
-                } => {
-                    // Check if values fall within range
-                    let in_range = match (&start_values, &end_values) {
-                        (None, None) => true,
-                        (Some(start), None) => &idx_values >= start,
-                        (None, Some(end)) => &idx_values <= end,
-                        (Some(start), Some(end)) => &idx_values >= start && &idx_values <= end,
-                    };
-                    if in_range {
-                        results.insert(row_id);
-                    }
-                }
-                IndexOp::Delete {
-                    values: idx_values,
-                    row_id,
-                    ..
-                } => {
-                    // Check if values fall within range
-                    let in_range = match (&start_values, &end_values) {
-                        (None, None) => true,
-                        (Some(start), None) => &idx_values >= start,
-                        (None, Some(end)) => &idx_values <= end,
-                        (Some(start), Some(end)) => &idx_values >= start && &idx_values <= end,
-                    };
-                    if in_range {
-                        results.remove(&row_id);
-                    }
-                }
-            }
-        }
-
-        Ok(results.into_iter().collect())
-    }
-
     /// Check if a value exists in unique index
     pub fn check_unique(
         &self,
@@ -346,7 +168,8 @@ impl IndexManager {
         }
 
         // Check both committed and uncommitted entries including our own transaction
-        let existing = self.lookup(
+        // Use streaming API to check if any rows exist
+        let mut existing_iter = self.lookup_iter_mvcc(
             uncommitted_index,
             index_history,
             index_name,
@@ -354,7 +177,8 @@ impl IndexManager {
             txn_id,
         )?;
 
-        Ok(!existing.is_empty())
+        // Check if there's at least one entry
+        Ok(existing_iter.next().is_some())
     }
 
     /// Build index from existing rows
@@ -381,71 +205,134 @@ impl IndexManager {
         Ok(())
     }
 
-    /// Get a streaming iterator for exact index lookup
-    pub fn lookup_iter<'a>(
+    /// Get MVCC-aware streaming iterator for exact index lookup
+    pub fn lookup_iter_mvcc<'a>(
         &'a self,
+        uncommitted_index: &UncommittedIndexStore,
+        index_history: &crate::storage::index_history::IndexHistoryStore,
         index_name: &str,
         values: Vec<Value>,
+        txn_id: HlcTimestamp,
     ) -> Result<impl Iterator<Item = Result<RowId>> + 'a> {
+        // 1. Get fjall iterator
         let partition = self
             .partitions
             .get(index_name)
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?
-            .clone();
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let key_prefix = encode_index_key(&values, 0);
-        let prefix_len = key_prefix.len() - 8; // Exclude RowId part
+        let prefix_len = key_prefix.len() - 8;
         let prefix_bytes = key_prefix[..prefix_len].to_vec();
 
-        Ok(partition.prefix(prefix_bytes).map(move |entry| {
-            let (key, _value) = entry?;
-            decode_row_id_from_index_key(&key)
-                .ok_or_else(|| Error::Other("Invalid index key".to_string()))
-        }))
+        let fjall_iter: crate::storage::types::FjallIterator<'a> =
+            Box::new(partition.prefix(prefix_bytes).map(|result| {
+                result.map(|(k, v)| {
+                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
+                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
+                    (k_bytes, v_bytes)
+                })
+            }));
+
+        // 2. Capture uncommitted operations (from our transaction)
+        let uncommitted_ops: Vec<IndexOp> = uncommitted_index
+            .get_index_ops(txn_id, index_name)
+            .into_iter()
+            .filter(|op| op.values() == values.as_slice())
+            .collect();
+
+        // 3. Capture history operations (committed AFTER our snapshot)
+        let history_ops_list = index_history.get_index_ops_after(txn_id, index_name)?;
+        let mut history_ops: std::collections::HashMap<RowId, Vec<IndexOp>> =
+            std::collections::HashMap::new();
+        for op in history_ops_list {
+            if op.values() == values.as_slice() {
+                history_ops.entry(op.row_id()).or_default().push(op);
+            }
+        }
+
+        // 4. Create streaming iterator
+        Ok(crate::storage::index_iterator::IndexLookupIterator::new(
+            fjall_iter,
+            uncommitted_ops,
+            history_ops,
+            values,
+        ))
     }
 
-    /// Get a streaming iterator for range scan
-    pub fn range_scan_iter<'a>(
+    /// Get MVCC-aware streaming iterator for range scan
+    pub fn range_scan_iter_mvcc<'a>(
         &'a self,
+        uncommitted_index: &UncommittedIndexStore,
+        index_history: &crate::storage::index_history::IndexHistoryStore,
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-    ) -> Result<Box<dyn Iterator<Item = Result<RowId>> + 'a>> {
+        txn_id: HlcTimestamp,
+    ) -> Result<impl Iterator<Item = Result<RowId>> + 'a> {
+        // 1. Get fjall range iterator
         let partition = self
             .partitions
             .get(index_name)
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?
-            .clone();
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         // Build range bounds
-        let start_key = start_values.map(|v| encode_index_key(&v, 0));
-        let end_key = end_values.map(|v| encode_index_key(&v, u64::MAX));
+        let start_key = start_values.as_ref().map(|v| encode_index_key(v, 0));
+        let end_key = end_values.as_ref().map(|v| encode_index_key(v, u64::MAX));
 
-        // Create appropriate range iterator without collecting
-        let iter: Box<dyn Iterator<Item = Result<RowId>>> = match (start_key, end_key) {
-            (None, None) => Box::new(partition.iter().map(|entry| {
-                let (key, _value) = entry?;
-                decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
+        // Create appropriate range iterator
+        let fjall_iter: crate::storage::types::FjallIterator<'a> = match (start_key, end_key) {
+            (None, None) => Box::new(partition.iter().map(|result| {
+                result.map(|(k, v)| {
+                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
+                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
+                    (k_bytes, v_bytes)
+                })
             })),
-            (Some(s), None) => Box::new(partition.range(s..).map(|entry| {
-                let (key, _value) = entry?;
-                decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
+            (Some(s), None) => Box::new(partition.range(s..).map(|result| {
+                result.map(|(k, v)| {
+                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
+                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
+                    (k_bytes, v_bytes)
+                })
             })),
-            (None, Some(e)) => Box::new(partition.range(..=e).map(|entry| {
-                let (key, _value) = entry?;
-                decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
+            (None, Some(e)) => Box::new(partition.range(..=e).map(|result| {
+                result.map(|(k, v)| {
+                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
+                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
+                    (k_bytes, v_bytes)
+                })
             })),
-            (Some(s), Some(e)) => Box::new(partition.range(s..=e).map(|entry| {
-                let (key, _value) = entry?;
-                decode_row_id_from_index_key(&key)
-                    .ok_or_else(|| Error::Other("Invalid index key".to_string()))
+            (Some(s), Some(e)) => Box::new(partition.range(s..=e).map(|result| {
+                result.map(|(k, v)| {
+                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
+                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
+                    (k_bytes, v_bytes)
+                })
             })),
         };
 
-        Ok(iter)
+        // 2. Capture uncommitted operations
+        let uncommitted_ops: Vec<IndexOp> = uncommitted_index
+            .get_index_ops(txn_id, index_name)
+            .into_iter()
+            .collect();
+
+        // 3. Capture history operations
+        let history_ops_list = index_history.get_index_ops_after(txn_id, index_name)?;
+        let mut history_ops: std::collections::HashMap<RowId, Vec<IndexOp>> =
+            std::collections::HashMap::new();
+        for op in history_ops_list {
+            history_ops.entry(op.row_id()).or_default().push(op);
+        }
+
+        // 4. Create streaming iterator
+        Ok(crate::storage::index_iterator::IndexRangeScanIterator::new(
+            fjall_iter,
+            uncommitted_ops,
+            history_ops,
+            start_values,
+            end_values,
+        ))
     }
 
     /// Commit index operations for a transaction
@@ -496,121 +383,6 @@ impl IndexManager {
         // Clear the transaction's operations from UncommittedIndexStore
         uncommitted_index.clear_transaction(batch, txn_id)?;
         Ok(())
-    }
-}
-
-/// Streaming iterator for index lookups
-pub struct IndexLookupIterator<'a> {
-    // The underlying fjall iterator
-    iter: FjallIterator<'a>,
-}
-
-impl<'a> IndexLookupIterator<'a> {
-    pub fn new(
-        index_manager: &'a IndexManager,
-        index_name: &str,
-        values: Vec<Value>,
-    ) -> Result<Self> {
-        let partition = index_manager
-            .partitions
-            .get(index_name)
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-
-        let key_prefix = encode_index_key(&values, 0);
-        let prefix_len = key_prefix.len() - 8; // Exclude RowId part
-        let prefix_bytes = key_prefix[..prefix_len].to_vec();
-
-        let iter = Box::new(partition.prefix(prefix_bytes).map(|result| {
-            result.map(|(k, v)| {
-                let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
-                let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
-                (k_bytes, v_bytes)
-            })
-        }));
-
-        Ok(Self { iter })
-    }
-}
-
-impl<'a> Iterator for IndexLookupIterator<'a> {
-    type Item = Result<RowId>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|result| {
-            let (key, _value) = result?;
-            decode_row_id_from_index_key(&key)
-                .ok_or_else(|| Error::Other("Invalid index key".to_string()))
-        })
-    }
-}
-
-/// Streaming iterator for index range scans
-pub struct IndexRangeScanIterator<'a> {
-    // The underlying fjall iterator
-    iter: FjallIterator<'a>,
-}
-
-impl<'a> IndexRangeScanIterator<'a> {
-    pub fn new(
-        index_manager: &'a IndexManager,
-        index_name: &str,
-        start_values: Option<Vec<Value>>,
-        end_values: Option<Vec<Value>>,
-    ) -> Result<Self> {
-        let partition = index_manager
-            .partitions
-            .get(index_name)
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-
-        // Build range bounds
-        let start_key = start_values.map(|v| encode_index_key(&v, 0));
-        let end_key = end_values.map(|v| encode_index_key(&v, u64::MAX));
-
-        // Create appropriate range iterator
-        let iter: FjallIterator<'a> = match (start_key, end_key) {
-            (None, None) => Box::new(partition.iter().map(|result| {
-                result.map(|(k, v)| {
-                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
-                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
-                    (k_bytes, v_bytes)
-                })
-            })),
-            (Some(s), None) => Box::new(partition.range(s..).map(|result| {
-                result.map(|(k, v)| {
-                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
-                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
-                    (k_bytes, v_bytes)
-                })
-            })),
-            (None, Some(e)) => Box::new(partition.range(..=e).map(|result| {
-                result.map(|(k, v)| {
-                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
-                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
-                    (k_bytes, v_bytes)
-                })
-            })),
-            (Some(s), Some(e)) => Box::new(partition.range(s..=e).map(|result| {
-                result.map(|(k, v)| {
-                    let k_bytes: Box<[u8]> = k.to_vec().into_boxed_slice();
-                    let v_bytes: Box<[u8]> = v.to_vec().into_boxed_slice();
-                    (k_bytes, v_bytes)
-                })
-            })),
-        };
-
-        Ok(Self { iter })
-    }
-}
-
-impl<'a> Iterator for IndexRangeScanIterator<'a> {
-    type Item = Result<RowId>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|result| {
-            let (key, _value) = result?;
-            decode_row_id_from_index_key(&key)
-                .ok_or_else(|| Error::Other("Invalid index key".to_string()))
-        })
     }
 }
 
@@ -738,23 +510,25 @@ mod tests {
             )
             .unwrap();
 
-        // Lookup
-        let results = manager
-            .lookup(
+        // Lookup (using streaming API)
+        let results: Vec<_> = manager
+            .lookup_iter_mvcc(
                 &index_versions,
                 &recent_index_versions,
                 "idx_age",
                 vec![Value::I64(25)],
                 txn_id,
             )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&1));
         assert!(results.contains(&3));
 
-        // Range scan
-        let results = manager
-            .range_scan(
+        // Range scan (using streaming API)
+        let results: Vec<_> = manager
+            .range_scan_iter_mvcc(
                 &index_versions,
                 &recent_index_versions,
                 "idx_age",
@@ -762,6 +536,8 @@ mod tests {
                 Some(vec![Value::I64(30)]),
                 txn_id,
             )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 3);
     }

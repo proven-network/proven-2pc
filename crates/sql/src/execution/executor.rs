@@ -170,11 +170,12 @@ pub fn execute_node_read<'a>(
                     }
                 }
 
-                // Use index lookup for O(log n) performance
-                let rows = storage.index_lookup_rows(&index_name, coerced_values, tx_ctx.id)?;
+                // Use streaming index lookup for O(log n) performance + O(1) memory
+                let rows =
+                    storage.index_lookup_rows_streaming(&index_name, coerced_values, tx_ctx.id)?;
 
-                // Convert to iterator format
-                let iter = rows.into_iter().map(|row| Ok(row.values.clone().into()));
+                // Convert to iterator format (already streaming!)
+                let iter = rows.map(|result| result.map(|row| row.values.clone().into()));
                 return Ok(Box::new(iter));
             }
 
@@ -270,8 +271,8 @@ pub fn execute_node_read<'a>(
 
             // Try to use index range lookup
             if storage.has_index(&table, &index_name) {
-                // Use index range lookup for O(log n) performance
-                let rows = storage.index_range_lookup_rows(
+                // Use streaming index range lookup for O(log n) performance + O(1) memory
+                let rows = storage.index_range_lookup_rows_streaming(
                     &index_name,
                     start_values,
                     end_values,
@@ -279,8 +280,8 @@ pub fn execute_node_read<'a>(
                     tx_ctx.id,
                 )?;
 
-                // Convert to iterator format
-                let iter = rows.into_iter().map(|row| Ok(row.values.clone().into()));
+                // Convert to iterator format (already streaming!)
+                let iter = rows.map(|result| result.map(|row| row.values.clone().into()));
                 return Ok(Box::new(iter));
             }
 

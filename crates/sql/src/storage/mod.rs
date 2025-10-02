@@ -68,6 +68,7 @@ pub mod encoding;
 pub mod engine;
 pub mod index;
 pub mod index_history;
+pub mod index_iterator;
 pub mod iterator;
 pub mod types;
 pub mod uncommitted_data;

@@ -29,13 +29,6 @@ impl IndexHistoryStore {
         }
     }
 
-    /// Check if the store is empty (fast check for optimization)
-    pub fn is_empty(&self) -> bool {
-        // With bucketed partitions, check if we have any active partitions
-        // This is a fast in-memory check
-        self.bucket_manager.active_partitions.is_empty()
-    }
-
     /// Encode key: {commit_time(20)}{row_id(8)}{seq(4)}
     /// Index name is in partition name, not in key
     fn encode_key(commit_time: HlcTimestamp, row_id: u64, seq: u32) -> Vec<u8> {

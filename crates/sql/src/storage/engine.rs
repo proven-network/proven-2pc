@@ -355,6 +355,8 @@ impl Storage {
     }
 
     /// Drop an index
+    /// TODO: This needs integrating with the DDL methods (probably needs thinging about MVCC more)
+    #[allow(dead_code)]
     pub fn drop_index(&mut self, index_name: &str) -> Result<()> {
         // Get table name before removing metadata
         let index_meta_key = format!("index:{}", index_name);
@@ -378,106 +380,6 @@ impl Storage {
 
         self.keyspace.persist(self.config.persist_mode)?;
         Ok(())
-    }
-
-    /// Lookup rows by index (exact match) - optimized version
-    pub fn index_lookup(
-        &self,
-        index_name: &str,
-        values: Vec<Value>,
-        txn_id: HlcTimestamp,
-    ) -> Result<Vec<Arc<Row>>> {
-        // Cache metadata lookup outside the loop
-        let index_meta_key = format!("index:{}", index_name);
-        let meta_bytes = self
-            .metadata_partition
-            .get(&index_meta_key)?
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-        let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
-        let table_name = index_meta.table.clone();
-
-        // Get row IDs from index
-        let row_ids = self.index_manager.lookup(
-            &self.uncommitted_index,
-            &self.index_history,
-            index_name,
-            values,
-            txn_id,
-        )?;
-
-        // Read actual rows (checking MVCC visibility)
-        let mut results = Vec::new();
-        for row_id in row_ids {
-            if let Some(row) = self.read(txn_id, &table_name, row_id)? {
-                results.push(row);
-            }
-        }
-
-        Ok(results)
-    }
-
-    /// Get a streaming iterator for index lookup
-    pub fn index_lookup_iter<'a>(
-        &'a self,
-        index_name: &str,
-        values: Vec<Value>,
-    ) -> Result<crate::storage::index::IndexLookupIterator<'a>> {
-        let index_guard = &self.index_manager;
-        crate::storage::index::IndexLookupIterator::new(index_guard, index_name, values)
-    }
-
-    /// Get a streaming iterator for index range scan
-    pub fn index_range_scan_iter<'a>(
-        &'a self,
-        index_name: &str,
-        start_values: Option<Vec<Value>>,
-        end_values: Option<Vec<Value>>,
-    ) -> Result<crate::storage::index::IndexRangeScanIterator<'a>> {
-        let index_guard = &self.index_manager;
-        crate::storage::index::IndexRangeScanIterator::new(
-            index_guard,
-            index_name,
-            start_values,
-            end_values,
-        )
-    }
-
-    /// Range scan on index - optimized version
-    pub fn index_range_scan(
-        &self,
-        index_name: &str,
-        start_values: Option<Vec<Value>>,
-        end_values: Option<Vec<Value>>,
-        txn_id: HlcTimestamp,
-    ) -> Result<Vec<Arc<Row>>> {
-        // Cache metadata lookup outside the loop
-        let index_meta_key = format!("index:{}", index_name);
-        let meta_bytes = self
-            .metadata_partition
-            .get(&index_meta_key)?
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-        let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
-        let table_name = index_meta.table.clone();
-
-        // Get row IDs from index
-        let row_ids = self.index_manager.range_scan(
-            &self.uncommitted_index,
-            &self.index_history,
-            index_name,
-            start_values,
-            end_values,
-            txn_id,
-        )?;
-
-        // Read actual rows (checking MVCC visibility)
-        let mut results = Vec::new();
-        for row_id in row_ids {
-            if let Some(row) = self.read(txn_id, &table_name, row_id)? {
-                results.push(row);
-            }
-        }
-
-        Ok(results)
     }
 
     /// Insert multiple rows atomically - all validation checks are done before any inserts
@@ -803,6 +705,7 @@ impl Storage {
     }
 
     /// Get a reverse iterator (scanning backwards)
+    #[allow(dead_code)]
     pub fn iter_reverse<'a>(
         &'a self,
         txn_id: HlcTimestamp,
@@ -859,80 +762,83 @@ impl Storage {
                 .unwrap_or(false)
     }
 
-    /// Perform index lookup for exact match
-    pub fn index_lookup_rows(
-        &self,
+    /// Streaming index lookup - returns iterator of rows (MVCC-aware)
+    pub fn index_lookup_rows_streaming<'a>(
+        &'a self,
         index_name: &str,
         values: Vec<Value>,
         txn_id: HlcTimestamp,
-    ) -> Result<Vec<Arc<Row>>> {
-        // Try the direct index name first
-        match self.index_lookup(index_name, values.clone(), txn_id) {
-            Ok(rows) if !rows.is_empty() => Ok(rows),
-            _ => {
-                // If not found or empty, try the primary key index name
-                // Get table name from index metadata
-                if let Some(meta) = &self.index_manager.get_index_metadata(index_name) {
-                    let pk_index_name = format!("{}_{}_pkey", meta.table, index_name);
-                    self.index_lookup(&pk_index_name, values, txn_id)
-                } else {
-                    // Try to infer table name from the pattern
-                    // This is a fallback for when column name is used as index_name
-                    // Look for any index that has this column
-                    let all_indexes = &self.index_manager.get_all_metadata();
-                    for (idx_name, idx_meta) in all_indexes {
-                        if idx_meta.columns.contains(&index_name.to_string()) {
-                            return self.index_lookup(idx_name, values, txn_id);
-                        }
-                    }
-                    Ok(vec![])
-                }
-            }
-        }
-    }
-
-    /// Perform index range lookup
-    pub fn index_range_lookup_rows(
-        &self,
-        index_name: &str,
-        start_values: Option<Vec<Value>>,
-        end_values: Option<Vec<Value>>,
-        reverse: bool,
-        txn_id: HlcTimestamp,
-    ) -> Result<Vec<Arc<Row>>> {
+    ) -> Result<impl Iterator<Item = Result<Arc<Row>>> + 'a> {
         // Get index metadata
-        let index_meta = self
-            .index_manager
-            .get_index_metadata(index_name)
-            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?
-            .clone();
+        let index_meta_key = format!("index:{}", index_name);
+        let meta_bytes = self
+            .metadata_partition
+            .get(&index_meta_key)?
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
+        let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
+        let table_name = index_meta.table.clone();
 
-        // Use the range scan method
-        // Note: The current index manager doesn't support inclusive/exclusive bounds or reverse
-        // We'll need to filter results accordingly
-        let mut row_ids = self.index_manager.range_scan(
+        // Get streaming row IDs (MVCC-aware)
+        let row_ids = self.index_manager.lookup_iter_mvcc(
             &self.uncommitted_index,
             &self.index_history,
             index_name,
-            start_values.clone(),
-            end_values.clone(),
+            values,
             txn_id,
         )?;
 
-        // Apply reverse if needed
-        if reverse {
-            row_ids.reverse();
-        }
+        // Map row IDs to rows (streaming)
+        Ok(
+            row_ids.filter_map(move |row_id_result| match row_id_result {
+                Ok(row_id) => match self.read(txn_id, &table_name, row_id) {
+                    Ok(Some(row)) => Some(Ok(row)),
+                    Ok(None) => None,
+                    Err(e) => Some(Err(e)),
+                },
+                Err(e) => Some(Err(e)),
+            }),
+        )
+    }
 
-        // Read actual rows (checking MVCC visibility)
-        let mut results = Vec::new();
-        for row_id in row_ids {
-            if let Some(row) = self.read(txn_id, &index_meta.table, row_id)? {
-                results.push(row);
-            }
-        }
+    /// Streaming index range scan - returns iterator of rows (MVCC-aware)
+    pub fn index_range_lookup_rows_streaming<'a>(
+        &'a self,
+        index_name: &str,
+        start_values: Option<Vec<Value>>,
+        end_values: Option<Vec<Value>>,
+        _reverse: bool,
+        txn_id: HlcTimestamp,
+    ) -> Result<impl Iterator<Item = Result<Arc<Row>>> + 'a> {
+        // Get index metadata
+        let index_meta_key = format!("index:{}", index_name);
+        let meta_bytes = self
+            .metadata_partition
+            .get(&index_meta_key)?
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
+        let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
+        let table_name = index_meta.table.clone();
 
-        Ok(results)
+        // Get streaming row IDs (MVCC-aware)
+        let row_ids = self.index_manager.range_scan_iter_mvcc(
+            &self.uncommitted_index,
+            &self.index_history,
+            index_name,
+            start_values,
+            end_values,
+            txn_id,
+        )?;
+
+        // Map row IDs to rows (streaming)
+        Ok(
+            row_ids.filter_map(move |row_id_result| match row_id_result {
+                Ok(row_id) => match self.read(txn_id, &table_name, row_id) {
+                    Ok(Some(row)) => Some(Ok(row)),
+                    Ok(None) => None,
+                    Err(e) => Some(Err(e)),
+                },
+                Err(e) => Some(Err(e)),
+            }),
+        )
     }
 
     /// Execute DDL operations

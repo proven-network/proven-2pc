@@ -473,8 +473,10 @@ mod integration_tests {
 
         // Verify index works with lookup
         let tx2 = create_txn_id(20);
-        let results = storage
-            .index_lookup("idx_age", vec![Value::I64(30)], tx2)
+        let results: Vec<_> = storage
+            .index_lookup_rows_streaming("idx_age", vec![Value::I64(30)], tx2)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].values[1], Value::Str("Alice".to_string()));
@@ -483,7 +485,7 @@ mod integration_tests {
         storage.drop_index("idx_age").unwrap();
 
         // Verify index is gone (should get error)
-        let result = storage.index_lookup("idx_age", vec![Value::I64(30)], tx2);
+        let result = storage.index_lookup_rows_streaming("idx_age", vec![Value::I64(30)], tx2);
         assert!(result.is_err());
     }
 
@@ -529,32 +531,53 @@ mod integration_tests {
         let tx2 = create_txn_id(20);
 
         // Test exact lookup
-        let results = storage
-            .index_lookup("idx_age", vec![Value::I64(23)], tx2)
+        let results: Vec<_> = storage
+            .index_lookup_rows_streaming("idx_age", vec![Value::I64(23)], tx2)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].values[1], Value::Str("User3".to_string()));
 
-        // Test range scan - ages 22 to 24
-        let results = storage
-            .index_range_scan(
+        // Test range scan - ages 22 to 24 (using streaming API)
+        let results: Vec<_> = storage
+            .index_range_lookup_rows_streaming(
                 "idx_age",
                 Some(vec![Value::I64(22)]),
                 Some(vec![Value::I64(24)]),
+                false,
                 tx2,
             )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 3); // Users 2, 3, and 4
 
         // Test open-ended range scan - ages >= 24
-        let results = storage
-            .index_range_scan("idx_age", Some(vec![Value::I64(24)]), None, tx2)
+        let results: Vec<_> = storage
+            .index_range_lookup_rows_streaming(
+                "idx_age",
+                Some(vec![Value::I64(24)]),
+                None,
+                false,
+                tx2,
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 2); // Users 4 and 5
 
         // Test open-ended range scan - ages <= 22
-        let results = storage
-            .index_range_scan("idx_age", None, Some(vec![Value::I64(22)]), tx2)
+        let results: Vec<_> = storage
+            .index_range_lookup_rows_streaming(
+                "idx_age",
+                None,
+                Some(vec![Value::I64(22)]),
+                false,
+                tx2,
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 2); // Users 1 and 2
     }
@@ -599,17 +622,21 @@ mod integration_tests {
         storage.commit_transaction(idx_tx).unwrap();
 
         // Test streaming iterator (doesn't collect all results into memory)
+        // Now using MVCC-aware streaming API
         let mut count = 0;
+        let scan_tx = create_txn_id(30);
         let iter = storage
-            .index_range_scan_iter(
+            .index_range_lookup_rows_streaming(
                 "idx_age",
                 Some(vec![Value::I64(30)]),
                 Some(vec![Value::I64(40)]),
+                false,
+                scan_tx,
             )
             .unwrap();
 
-        for row_id_result in iter {
-            row_id_result.unwrap();
+        for row_result in iter {
+            row_result.unwrap();
             count += 1;
             if count >= 10 {
                 break; // Early termination - a key benefit of streaming
@@ -619,18 +646,21 @@ mod integration_tests {
         // With streaming, we only processed 10 items even though there might be hundreds
         assert_eq!(count, 10);
 
-        // Compare with Vec-based approach that loads everything
+        // Verify streaming can be collected into Vec if needed
         let tx2 = create_txn_id(30);
-        let all_results = storage
-            .index_range_scan(
+        let all_results: Vec<_> = storage
+            .index_range_lookup_rows_streaming(
                 "idx_age",
                 Some(vec![Value::I64(30)]),
                 Some(vec![Value::I64(40)]),
+                false,
                 tx2,
             )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
 
-        // This loaded all matching rows into memory
+        // This collected all matching rows (but streamed during iteration)
         assert!(all_results.len() >= 200); // ~220 rows should match (11 ages * 20 rows per age)
     }
 
@@ -711,12 +741,14 @@ mod integration_tests {
 
         // Lookup by composite key
         let tx2 = create_txn_id(40);
-        let results = storage
-            .index_lookup(
+        let results: Vec<_> = storage
+            .index_lookup_rows_streaming(
                 "idx_customer_product",
                 vec![Value::I64(100), Value::I64(1)],
                 tx2,
             )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].values[0], Value::I64(1));
