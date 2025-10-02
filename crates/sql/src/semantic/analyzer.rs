@@ -45,17 +45,8 @@ pub struct OptimizationOutput {
     /// Predicate templates for conflict detection
     pub predicate_templates: Vec<PredicateTemplate>,
 
-    /// Index opportunities detected
-    pub index_hints: Vec<IndexHint>,
-
     /// Join ordering hints
     pub join_hints: Vec<JoinHint>,
-}
-
-#[derive(Debug, Clone)]
-pub struct IndexHint {
-    pub table: String,
-    // TODO: Add column and predicate_type back when index selection is improved
 }
 
 #[derive(Debug, Clone)]
@@ -205,15 +196,11 @@ impl SemanticAnalyzer {
         // Build predicate templates
         let predicate_templates = builder.build_predicates(ast, &opt_input)?;
 
-        // Identify index opportunities
-        let index_hints = builder.find_index_opportunities(ast, &opt_input)?;
-
         // Analyze joins
         let join_hints = builder.analyze_joins(ast, &opt_input)?;
 
         Ok(OptimizationOutput {
             predicate_templates,
-            index_hints,
             join_hints,
         })
     }

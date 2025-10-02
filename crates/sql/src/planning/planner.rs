@@ -23,15 +23,19 @@ use std::collections::{BTreeMap, HashMap};
 /// Query planner that leverages semantic analysis
 pub struct Planner {
     schemas: HashMap<String, Table>,
+    index_metadata: HashMap<String, IndexMetadata>,
 }
 
 impl Planner {
     /// Create a new planner
     pub fn new(
         schemas: HashMap<String, Table>,
-        _index_metadata: HashMap<String, IndexMetadata>,
+        index_metadata: HashMap<String, IndexMetadata>,
     ) -> Self {
-        Self { schemas }
+        Self {
+            schemas,
+            index_metadata,
+        }
     }
 
     /// Update schemas (for cache invalidation)
@@ -918,49 +922,135 @@ impl Planner {
         }
     }
 
-    // Stub implementations for now
     fn plan_where_with_index(
         &self,
         where_expr: &AstExpression,
         source: Node,
         context: &mut AnalyzedPlanContext,
     ) -> Result<Node> {
-        let predicate = context.resolve_expression(where_expr)?;
+        // Try to use indexes if source is a Scan node
+        if let Node::Scan { table, alias } = &source {
+            // Check predicate templates for index opportunities
+            for template in &context.analyzed.predicate_templates {
+                use crate::semantic::statement::PredicateTemplate;
 
-        // Check optimization hints for index opportunities
-        if let Node::Scan { table, alias: _ } = &source {
-            // Check if we have index hints for this table and predicate
-            if let Some(index_hint) = self.find_applicable_index_hint(table, where_expr, context) {
-                // We could create an IndexScan node if we have the index metadata
-                // For now, just log that we found a hint
-                // In a full implementation, we'd check if the index actually exists
-                // and create an IndexScan node
-                _ = index_hint; // Suppress unused warning
+                match template {
+                    // IndexedColumn template - explicitly marked as indexed
+                    PredicateTemplate::IndexedColumn {
+                        table: tbl,
+                        column,
+                        value,
+                    } if tbl == table => {
+                        if let Some(index_name) = self.find_index_for_column(table, column) {
+                            let value_expr = self.predicate_value_to_expression(value, context)?;
+                            return Ok(Node::IndexScan {
+                                table: table.clone(),
+                                alias: alias.clone(),
+                                index_name,
+                                values: vec![value_expr],
+                            });
+                        }
+                    }
+
+                    // Equality template - check if column is indexed
+                    PredicateTemplate::Equality {
+                        table: tbl,
+                        column_name,
+                        value_expr: value,
+                    } if tbl == table => {
+                        if let Some(index_name) = self.find_index_for_column(table, column_name) {
+                            let value_expr = self.predicate_value_to_expression(value, context)?;
+                            return Ok(Node::IndexScan {
+                                table: table.clone(),
+                                alias: alias.clone(),
+                                index_name,
+                                values: vec![value_expr],
+                            });
+                        }
+                    }
+
+                    // Range template - use IndexRangeScan
+                    PredicateTemplate::Range {
+                        table: tbl,
+                        column_name,
+                        lower,
+                        upper,
+                    } if tbl == table => {
+                        if let Some(index_name) = self.find_index_for_column(table, column_name) {
+                            let start = lower
+                                .as_ref()
+                                .map(|(v, _)| self.predicate_value_to_expression(v, context))
+                                .transpose()?;
+                            let end = upper
+                                .as_ref()
+                                .map(|(v, _)| self.predicate_value_to_expression(v, context))
+                                .transpose()?;
+
+                            return Ok(Node::IndexRangeScan {
+                                table: table.clone(),
+                                alias: alias.clone(),
+                                index_name,
+                                start: start.map(|v| vec![v]),
+                                start_inclusive: lower
+                                    .as_ref()
+                                    .map(|(_, inc)| *inc)
+                                    .unwrap_or(true),
+                                end: end.map(|v| vec![v]),
+                                end_inclusive: upper.as_ref().map(|(_, inc)| *inc).unwrap_or(true),
+                                reverse: false,
+                            });
+                        }
+                    }
+
+                    _ => continue,
+                }
             }
         }
 
+        // Fallback to Filter node
+        let predicate = context.resolve_expression(where_expr)?;
         Ok(Node::Filter {
             source: Box::new(source),
             predicate,
         })
     }
 
-    /// Find applicable index hint for a table and predicate
-    fn find_applicable_index_hint<'a>(
+    /// Convert a PredicateValue to an Expression
+    fn predicate_value_to_expression(
         &self,
-        table: &str,
-        _where_expr: &AstExpression,
-        context: &'a AnalyzedPlanContext,
-    ) -> Option<&'a crate::semantic::analyzer::IndexHint> {
-        // Check optimization output for index hints
-        if let Some(opt_output) = context.analyzed.metadata.optimization_output.as_ref() {
-            opt_output
-                .index_hints
-                .iter()
-                .find(|hint| hint.table == table)
-        } else {
-            None
+        value: &crate::semantic::statement::PredicateValue,
+        _context: &AnalyzedPlanContext,
+    ) -> Result<Expression> {
+        use crate::semantic::statement::PredicateValue;
+
+        match value {
+            PredicateValue::Constant(val) => Ok(Expression::Constant(val.clone())),
+            PredicateValue::Parameter(idx) => Ok(Expression::Parameter(*idx)),
+            PredicateValue::Expression(_expr_id) => {
+                // For complex expressions, we'd need to walk the AST
+                // For now, return an error - this should be rare for index predicates
+                Err(Error::ExecutionError(
+                    "Complex expressions in index predicates not yet supported".into(),
+                ))
+            }
         }
+    }
+
+    /// Find an index that covers the given column
+    fn find_index_for_column(&self, table: &str, column: &str) -> Option<String> {
+        // Search through index metadata for an index on this table and column
+        for (index_name, metadata) in &self.index_metadata {
+            // Check if this index is for the right table
+            if metadata.table.eq_ignore_ascii_case(table) {
+                // Check if this index includes the column we're looking for
+                if !metadata.columns.is_empty() && metadata.columns[0].eq_ignore_ascii_case(column)
+                {
+                    return Some(index_name.clone());
+                }
+            }
+        }
+
+        None
     }
 
     fn extract_aggregates(
@@ -1937,12 +2027,6 @@ fn resolve_default_expression(
                 InSubquery { .. } | Exists { .. } => {
                     return Err(Error::ExecutionError(
                         "Subqueries are not allowed in DEFAULT expressions".into(),
-                    ));
-                }
-
-                _ => {
-                    return Err(Error::ExecutionError(
-                        "Operator not supported in DEFAULT expressions".into(),
                     ));
                 }
             })

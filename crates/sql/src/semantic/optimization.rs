@@ -7,7 +7,7 @@
 //! - Index applicability information
 //! - Expression templates (future)
 
-use super::analyzer::{IndexHint, JoinHint};
+use super::analyzer::JoinHint;
 use super::statement::{ExpressionId, PredicateTemplate, PredicateValue};
 use crate::error::Result;
 use crate::parsing::ast::{
@@ -164,23 +164,6 @@ impl MetadataBuilder {
         }
 
         Ok(templates)
-    }
-
-    /// Find index opportunities for new phase architecture
-    pub fn find_index_opportunities(
-        &self,
-        statement: &Arc<Statement>,
-        input: &super::analyzer::OptimizationInput,
-    ) -> Result<Vec<IndexHint>> {
-        let mut hints = Vec::new();
-
-        if let Statement::Dml(DmlStatement::Select(select)) = statement.as_ref()
-            && let Some(where_expr) = &select.r#where
-        {
-            self.find_index_hints(where_expr, &mut hints, input);
-        }
-
-        Ok(hints)
     }
 
     /// Analyze joins for new phase architecture
@@ -799,73 +782,6 @@ impl MetadataBuilder {
             table: table.to_string(),
         });
         Ok(())
-    }
-
-    /// Find index hints in WHERE clause (new architecture)
-    fn find_index_hints(
-        &self,
-        expr: &Expression,
-        hints: &mut Vec<IndexHint>,
-        input: &super::analyzer::OptimizationInput,
-    ) {
-        if let Expression::Operator(op) = expr {
-            use Operator::*;
-            match op {
-                Equal(left, _right) => {
-                    if let Expression::Column(table, col) = left.as_ref()
-                        && self.is_indexed_new(table.as_deref(), col, input)
-                    {
-                        hints.push(IndexHint {
-                            table: self.resolve_table_name(table.as_deref(), col, input),
-                        });
-                    }
-                }
-                GreaterThan(left, _)
-                | GreaterThanOrEqual(left, _)
-                | LessThan(left, _)
-                | LessThanOrEqual(left, _) => {
-                    if let Expression::Column(table, col) = left.as_ref()
-                        && self.is_indexed_new(table.as_deref(), col, input)
-                    {
-                        hints.push(IndexHint {
-                            table: self.resolve_table_name(table.as_deref(), col, input),
-                        });
-                    }
-                }
-                ILike(left, right) => {
-                    if let (
-                        Expression::Column(table, col),
-                        Expression::Literal(Literal::String(pattern)),
-                    ) = (left.as_ref(), right.as_ref())
-                        && !pattern.starts_with('%')
-                        && !pattern.contains("%")
-                    // ILIKE can still use index for prefix patterns
-                    {
-                        hints.push(IndexHint {
-                            table: self.resolve_table_name(table.as_deref(), col, input),
-                        });
-                    }
-                }
-                Like(left, right) => {
-                    if let (
-                        Expression::Column(table, col),
-                        Expression::Literal(Literal::String(pattern)),
-                    ) = (left.as_ref(), right.as_ref())
-                        && !pattern.starts_with('%')
-                        && self.is_indexed_new(table.as_deref(), col, input)
-                    {
-                        hints.push(IndexHint {
-                            table: self.resolve_table_name(table.as_deref(), col, input),
-                        });
-                    }
-                }
-                And(left, right) => {
-                    self.find_index_hints(left, hints, input);
-                    self.find_index_hints(right, hints, input);
-                }
-                _ => {}
-            }
-        }
     }
 
     /// Check if a column is indexed (new architecture)
