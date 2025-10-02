@@ -154,6 +154,7 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
         },
 
         "INT" | "INTEGER" => match value {
+            Value::Bool(b) => Ok(Value::I32(if *b { 1 } else { 0 })),
             Value::I8(v) => Ok(Value::I32(*v as i32)),
             Value::I16(v) => Ok(Value::I32(*v as i32)),
             Value::I32(v) => Ok(Value::I32(*v)),
@@ -181,7 +182,7 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
                 .map(Value::I32)
                 .map_err(|_| Error::InvalidValue(format!("Cannot cast '{}' to INT", s))),
             _ => Err(Error::TypeMismatch {
-                expected: "numeric or string".into(),
+                expected: "numeric, boolean or string".into(),
                 found: value.data_type().to_string(),
             }),
         },

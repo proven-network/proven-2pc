@@ -3,6 +3,7 @@ mod tests {
     use crate::parsing::Parser;
     use crate::semantic::analyzer::SemanticAnalyzer;
     use crate::types::data_type::DataType;
+    use crate::types::expression::DefaultExpression;
     use crate::types::schema::{Column, Table};
     use crate::types::value::Value;
     use std::collections::HashMap;
@@ -41,7 +42,9 @@ mod tests {
                     primary_key: false,
                     unique: false,
                     index: false,
-                    default: Some(Value::Str("active".to_string())), // Has default
+                    default: Some(DefaultExpression::Constant(Value::Str(
+                        "active".to_string(),
+                    ))), // Has default
                     references: None,
                 },
                 Column {
@@ -51,7 +54,7 @@ mod tests {
                     primary_key: false,
                     unique: false,
                     index: false,
-                    default: Some(Value::I64(0)), // Has default (e.g., epoch time)
+                    default: Some(DefaultExpression::Constant(Value::I64(0))), // Has default (e.g., epoch time)
                     references: None,
                 },
                 Column {

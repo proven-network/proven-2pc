@@ -9,6 +9,7 @@ use crate::parsing::ast::ddl::ReferentialAction;
 use crate::planning::plan::Node;
 use crate::storage::Storage;
 use crate::stream::TransactionContext;
+use crate::types::expression::{DefaultExpression, Expression};
 use crate::types::value::{Row, Value};
 
 /// Cascading operation to perform
@@ -129,10 +130,22 @@ fn check_and_collect_cascade_ops(
                             }
                             ReferentialAction::SetDefault => {
                                 // Set the foreign key column to its default value
-                                let default_value = other_schema.columns[fk_col_idx]
+                                let default_expr = other_schema.columns[fk_col_idx]
                                     .default
                                     .clone()
-                                    .unwrap_or(Value::Null);
+                                    .unwrap_or(DefaultExpression::Constant(Value::Null));
+
+                                // Convert to Expression and evaluate
+                                let expr: Expression = default_expr.into();
+                                let default_value =
+                                    crate::execution::expression::evaluate_with_storage(
+                                        &expr,
+                                        None,
+                                        tx_ctx,
+                                        None,
+                                        Some(storage),
+                                    )?;
+
                                 cascade_ops.push(CascadeOp::SetDefault {
                                     table: other_table_name.clone(),
                                     row_id: ref_row_id,

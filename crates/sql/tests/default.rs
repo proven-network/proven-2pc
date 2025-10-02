@@ -351,7 +351,6 @@ fn test_default_cast_expression() {
 }
 
 #[test]
-#[ignore = "IN expression in DEFAULT not yet implemented"]
 fn test_default_in_expression() {
     let mut ctx = setup_test();
 
@@ -373,7 +372,6 @@ fn test_default_in_expression() {
 }
 
 #[test]
-#[ignore = "BETWEEN expression in DEFAULT not yet implemented"]
 fn test_default_between_expression() {
     let mut ctx = setup_test();
 

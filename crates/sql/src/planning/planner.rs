@@ -3,7 +3,6 @@
 //! This planner uses the column resolution map and metadata from AnalyzedStatement
 //! for efficient O(1) column lookups and conflict detection.
 
-use super::optimizer::Optimizer;
 use super::plan::{AggregateFunc, Direction, JoinType, Node, Plan};
 use crate::error::{Error, Result};
 use crate::parsing::ast::common::{Direction as AstDirection, FromClause, SubquerySource};
@@ -24,7 +23,6 @@ use std::collections::{BTreeMap, HashMap};
 /// Query planner that leverages semantic analysis
 pub struct Planner {
     schemas: HashMap<String, Table>,
-    optimizer: Optimizer,
 }
 
 impl Planner {
@@ -33,15 +31,12 @@ impl Planner {
         schemas: HashMap<String, Table>,
         _index_metadata: HashMap<String, IndexMetadata>,
     ) -> Self {
-        let optimizer = Optimizer::new(schemas.clone());
-
-        Self { schemas, optimizer }
+        Self { schemas }
     }
 
     /// Update schemas (for cache invalidation)
     pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
         self.schemas = schemas.clone();
-        self.optimizer = Optimizer::new(schemas);
     }
 
     /// Plan an analyzed statement - the main entry point
@@ -761,12 +756,10 @@ impl Planner {
 
             // Handle DEFAULT expression
             if let Some(ref default_expr) = col.default {
-                // Evaluate the default expression to a constant value
-                // We need to resolve the expression first, but we don't have tables yet
-                // So we create a minimal context just for constants and functions
+                // Resolve the default expression (validate it, convert to Expression)
+                // Functions will be evaluated at INSERT time with transaction context
                 let resolved_expr = resolve_default_expression(default_expr)?;
-                let default_value = evaluate_default_expression(resolved_expr)?;
-                schema_col = schema_col.default(default_value);
+                schema_col = schema_col.default(resolved_expr);
             }
 
             schema_columns.push(schema_col);
@@ -1779,8 +1772,11 @@ impl<'a> AnalyzedPlanContext<'a> {
 }
 
 /// Resolves a DEFAULT expression (which shouldn't have column references)
-fn resolve_default_expression(expr: &AstExpression) -> Result<Expression> {
+fn resolve_default_expression(
+    expr: &AstExpression,
+) -> Result<crate::types::expression::DefaultExpression> {
     use crate::parsing::ast::Literal;
+    use crate::types::expression::DefaultExpression;
 
     match expr {
         AstExpression::Literal(lit) => {
@@ -1804,7 +1800,7 @@ fn resolve_default_expression(expr: &AstExpression) -> Result<Expression> {
                 Literal::Timestamp(ts) => crate::types::value::Value::Timestamp(*ts),
                 Literal::Interval(i) => crate::types::value::Value::Interval(i.clone()),
             };
-            Ok(Expression::Constant(value))
+            Ok(DefaultExpression::Constant(value))
         }
 
         AstExpression::Function(name, args) => {
@@ -1812,61 +1808,138 @@ fn resolve_default_expression(expr: &AstExpression) -> Result<Expression> {
                 .iter()
                 .map(resolve_default_expression)
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Expression::Function(name.clone(), resolved_args))
+            Ok(DefaultExpression::Function(name.clone(), resolved_args))
         }
 
         AstExpression::Operator(op) => {
             use crate::parsing::Operator::*;
 
             Ok(match op {
-                Add(l, r) => Expression::Add(
+                Add(l, r) => DefaultExpression::Add(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Concat(l, r) => Expression::Concat(
+                Concat(l, r) => DefaultExpression::Concat(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Subtract(l, r) => Expression::Subtract(
+                Subtract(l, r) => DefaultExpression::Subtract(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Multiply(l, r) => Expression::Multiply(
+                Multiply(l, r) => DefaultExpression::Multiply(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Divide(l, r) => Expression::Divide(
+                Divide(l, r) => DefaultExpression::Divide(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Remainder(l, r) => Expression::Remainder(
+                Remainder(l, r) => DefaultExpression::Remainder(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Exponentiate(l, r) => Expression::Exponentiate(
+                Exponentiate(l, r) => DefaultExpression::Exponentiate(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Negate(e) => Expression::Negate(Box::new(resolve_default_expression(e)?)),
-                Identity(e) => Expression::Identity(Box::new(resolve_default_expression(e)?)),
+                Negate(e) => DefaultExpression::Negate(Box::new(resolve_default_expression(e)?)),
+                Identity(e) => {
+                    DefaultExpression::Identity(Box::new(resolve_default_expression(e)?))
+                }
                 // Boolean operators
-                And(l, r) => Expression::And(
+                And(l, r) => DefaultExpression::And(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Or(l, r) => Expression::Or(
+                Or(l, r) => DefaultExpression::Or(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
-                Not(e) => Expression::Not(Box::new(resolve_default_expression(e)?)),
+                Not(e) => DefaultExpression::Not(Box::new(resolve_default_expression(e)?)),
+
+                // Comparison operators
+                Equal(l, r) => DefaultExpression::Equal(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                GreaterThan(l, r) => DefaultExpression::GreaterThan(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                LessThan(l, r) => DefaultExpression::LessThan(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                GreaterThanOrEqual(l, r) => DefaultExpression::GreaterThanOrEqual(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                LessThanOrEqual(l, r) => DefaultExpression::LessThanOrEqual(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                NotEqual(l, r) => DefaultExpression::NotEqual(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+
                 // IS NULL
                 Is(e, lit) => {
                     let value = match lit {
                         Literal::Null => crate::types::value::Value::Null,
                         _ => return Err(Error::ExecutionError("IS only supports NULL".into())),
                     };
-                    Expression::Is(Box::new(resolve_default_expression(e)?), value)
+                    DefaultExpression::Is(Box::new(resolve_default_expression(e)?), value)
                 }
+
+                // Pattern matching
+                Like(l, r) => DefaultExpression::Like(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                ILike(l, r) => DefaultExpression::ILike(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+
+                // Other operators
+                Factorial(e) => {
+                    DefaultExpression::Factorial(Box::new(resolve_default_expression(e)?))
+                }
+
+                // IN and BETWEEN
+                InList {
+                    expr,
+                    list,
+                    negated,
+                } => {
+                    let resolved_expr = Box::new(resolve_default_expression(expr)?);
+                    let resolved_list = list
+                        .iter()
+                        .map(resolve_default_expression)
+                        .collect::<Result<Vec<_>>>()?;
+                    DefaultExpression::InList(resolved_expr, resolved_list, *negated)
+                }
+                Between {
+                    expr,
+                    low,
+                    high,
+                    negated,
+                } => {
+                    let resolved_expr = Box::new(resolve_default_expression(expr)?);
+                    let resolved_low = Box::new(resolve_default_expression(low)?);
+                    let resolved_high = Box::new(resolve_default_expression(high)?);
+                    DefaultExpression::Between(resolved_expr, resolved_low, resolved_high, *negated)
+                }
+
+                // Subqueries are NOT allowed in DEFAULT
+                InSubquery { .. } | Exists { .. } => {
+                    return Err(Error::ExecutionError(
+                        "Subqueries are not allowed in DEFAULT expressions".into(),
+                    ));
+                }
+
                 _ => {
                     return Err(Error::ExecutionError(
                         "Operator not supported in DEFAULT expressions".into(),
@@ -1875,169 +1948,29 @@ fn resolve_default_expression(expr: &AstExpression) -> Result<Expression> {
             })
         }
 
+        AstExpression::ArrayLiteral(elements) => {
+            let resolved_elements = elements
+                .iter()
+                .map(resolve_default_expression)
+                .collect::<Result<Vec<_>>>()?;
+            Ok(DefaultExpression::ArrayLiteral(resolved_elements))
+        }
+
+        AstExpression::MapLiteral(pairs) => {
+            let resolved_pairs = pairs
+                .iter()
+                .map(|(k, v)| {
+                    Ok((
+                        resolve_default_expression(k)?,
+                        resolve_default_expression(v)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(DefaultExpression::MapLiteral(resolved_pairs))
+        }
+
         _ => Err(Error::ExecutionError(
             "Expression type not supported in DEFAULT expressions".into(),
-        )),
-    }
-}
-
-/// Evaluates a DEFAULT expression to a constant Value
-fn evaluate_default_expression(expr: Expression) -> Result<crate::types::value::Value> {
-    use crate::operators;
-    use crate::types::value::Value;
-
-    match expr {
-        Expression::Constant(value) => Ok(value),
-
-        // Arithmetic operations
-        Expression::Add(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_add(&l, &r)
-        }
-        Expression::Concat(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_concat(&l, &r)
-        }
-        Expression::Subtract(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_subtract(&l, &r)
-        }
-        Expression::Multiply(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_multiply(&l, &r)
-        }
-        Expression::Divide(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_divide(&l, &r)
-        }
-        Expression::Remainder(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_remainder(&l, &r)
-        }
-        Expression::Exponentiate(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_exponentiate(&l, &r)
-        }
-
-        // Unary operations
-        Expression::Negate(expr) => {
-            let val = evaluate_default_expression(*expr)?;
-            operators::execute_negate(&val)
-        }
-        Expression::Identity(expr) => {
-            // Identity just returns the value as-is
-            evaluate_default_expression(*expr)
-        }
-
-        // Boolean operations
-        Expression::And(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_and(&l, &r)
-        }
-        Expression::Or(left, right) => {
-            let l = evaluate_default_expression(*left)?;
-            let r = evaluate_default_expression(*right)?;
-            operators::execute_or(&l, &r)
-        }
-        Expression::Not(expr) => {
-            let val = evaluate_default_expression(*expr)?;
-            operators::execute_not(&val)
-        }
-
-        // IS NULL checks
-        Expression::Is(expr, value) => {
-            let val = evaluate_default_expression(*expr)?;
-            if value.is_null() {
-                Ok(Value::Bool(val.is_null()))
-            } else {
-                Err(Error::ExecutionError("IS only supports NULL".into()))
-            }
-        }
-
-        // Functions that can be evaluated statically
-        Expression::Function(name, args) => {
-            match name.to_uppercase().as_str() {
-                "GENERATE_UUID" | "GEN_UUID" | "UUID" if args.is_empty() => {
-                    // Special marker for UUID generation at INSERT time
-                    Ok(Value::Str("__GENERATE_UUID__".to_string()))
-                }
-                "CAST" if args.len() == 2 => {
-                    // CAST(value, type_string)
-                    let value = if let Expression::Constant(v) = &args[0] {
-                        v.clone()
-                    } else {
-                        evaluate_default_expression(args[0].clone())?
-                    };
-
-                    if let Expression::Constant(Value::Str(type_str)) = &args[1] {
-                        // Parse the type string and perform the cast
-                        match type_str.as_str() {
-                            "INTEGER" | "INT" => match value {
-                                Value::I32(v) => Ok(Value::I32(v)),
-                                Value::I64(v) => Ok(Value::I32(v as i32)),
-                                Value::F32(v) => Ok(Value::I32(v as i32)),
-                                Value::F64(v) => Ok(Value::I32(v as i32)),
-                                Value::Str(s) => s.parse::<i32>().map(Value::I32).map_err(|_| {
-                                    Error::ExecutionError("Failed to parse integer".into())
-                                }),
-                                _ => Err(Error::ExecutionError("Cannot cast to INTEGER".into())),
-                            },
-                            "FLOAT" | "REAL" => match value {
-                                Value::I32(v) => Ok(Value::F64(v as f64)),
-                                Value::I64(v) => Ok(Value::F64(v as f64)),
-                                Value::F32(v) => Ok(Value::F64(v as f64)),
-                                Value::F64(v) => Ok(Value::F64(v)),
-                                Value::Str(s) => s.parse::<f64>().map(Value::F64).map_err(|_| {
-                                    Error::ExecutionError("Failed to parse float".into())
-                                }),
-                                _ => Err(Error::ExecutionError("Cannot cast to FLOAT".into())),
-                            },
-                            "TEXT" | "VARCHAR" | "STRING" => Ok(Value::Str(value.to_string())),
-                            "BOOLEAN" | "BOOL" => match value {
-                                Value::Bool(b) => Ok(Value::Bool(b)),
-                                Value::I32(i) => Ok(Value::Bool(i != 0)),
-                                Value::I64(i) => Ok(Value::Bool(i != 0)),
-                                Value::Str(s) => {
-                                    let s_upper = s.to_uppercase();
-                                    match s_upper.as_str() {
-                                        "TRUE" | "T" | "YES" | "Y" | "1" => Ok(Value::Bool(true)),
-                                        "FALSE" | "F" | "NO" | "N" | "0" => Ok(Value::Bool(false)),
-                                        _ => Err(Error::ExecutionError(format!(
-                                            "Cannot cast '{}' to BOOLEAN",
-                                            s
-                                        ))),
-                                    }
-                                }
-                                _ => Err(Error::ExecutionError("Cannot cast to BOOLEAN".into())),
-                            },
-                            _ => Err(Error::ExecutionError(format!(
-                                "Unsupported cast type: {}",
-                                type_str
-                            ))),
-                        }
-                    } else {
-                        Err(Error::ExecutionError(
-                            "CAST requires a type name as second argument".into(),
-                        ))
-                    }
-                }
-                _ => Err(Error::ExecutionError(format!(
-                    "Function {} not supported in DEFAULT expressions",
-                    name
-                ))),
-            }
-        }
-
-        _ => Err(Error::ExecutionError(
-            "Expression type not supported in DEFAULT values".into(),
         )),
     }
 }

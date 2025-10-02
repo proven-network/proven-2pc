@@ -6,6 +6,7 @@
 //! - Integrated with our Value types (including UUID, Timestamp, Blob)
 
 use super::value::Value;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
 /// An expression, made up of nested operations and values. Values are either
@@ -243,6 +244,149 @@ impl Display for Expression {
                 }
                 write!(f, " END")
             }
+        }
+    }
+}
+
+/// A DEFAULT expression - a subset of Expression that's valid in DEFAULT clauses.
+/// Cannot contain column references, subqueries, or other runtime-dependent expressions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum DefaultExpression {
+    /// A constant value
+    Constant(Value),
+
+    /// Function call (e.g., CURRENT_DATE(), UUID())
+    Function(String, Vec<DefaultExpression>),
+
+    // Boolean operations
+    And(Box<DefaultExpression>, Box<DefaultExpression>),
+    Or(Box<DefaultExpression>, Box<DefaultExpression>),
+    Not(Box<DefaultExpression>),
+
+    // Comparison operations
+    Equal(Box<DefaultExpression>, Box<DefaultExpression>),
+    GreaterThan(Box<DefaultExpression>, Box<DefaultExpression>),
+    LessThan(Box<DefaultExpression>, Box<DefaultExpression>),
+    GreaterThanOrEqual(Box<DefaultExpression>, Box<DefaultExpression>),
+    LessThanOrEqual(Box<DefaultExpression>, Box<DefaultExpression>),
+    NotEqual(Box<DefaultExpression>, Box<DefaultExpression>),
+    Is(Box<DefaultExpression>, Value),
+
+    // Arithmetic operations
+    Add(Box<DefaultExpression>, Box<DefaultExpression>),
+    Concat(Box<DefaultExpression>, Box<DefaultExpression>),
+    Subtract(Box<DefaultExpression>, Box<DefaultExpression>),
+    Multiply(Box<DefaultExpression>, Box<DefaultExpression>),
+    Divide(Box<DefaultExpression>, Box<DefaultExpression>),
+    Remainder(Box<DefaultExpression>, Box<DefaultExpression>),
+    Exponentiate(Box<DefaultExpression>, Box<DefaultExpression>),
+    Factorial(Box<DefaultExpression>),
+    Identity(Box<DefaultExpression>),
+    Negate(Box<DefaultExpression>),
+
+    // Pattern matching
+    ILike(Box<DefaultExpression>, Box<DefaultExpression>),
+    Like(Box<DefaultExpression>, Box<DefaultExpression>),
+
+    // IN list (but not subqueries)
+    InList(Box<DefaultExpression>, Vec<DefaultExpression>, bool),
+
+    // BETWEEN
+    Between(
+        Box<DefaultExpression>,
+        Box<DefaultExpression>,
+        Box<DefaultExpression>,
+        bool,
+    ),
+
+    // Literals
+    ArrayLiteral(Vec<DefaultExpression>),
+    MapLiteral(Vec<(DefaultExpression, DefaultExpression)>),
+
+    // CASE expression
+    Case {
+        operand: Option<Box<DefaultExpression>>,
+        when_clauses: Vec<(DefaultExpression, DefaultExpression)>,
+        else_clause: Option<Box<DefaultExpression>>,
+    },
+}
+
+impl Display for DefaultExpression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Delegate to Expression's Display by converting
+        let expr: Expression = self.clone().into();
+        write!(f, "{}", expr)
+    }
+}
+
+impl From<DefaultExpression> for Expression {
+    fn from(default_expr: DefaultExpression) -> Self {
+        use DefaultExpression as DE;
+        use Expression as E;
+
+        match default_expr {
+            DE::Constant(v) => E::Constant(v),
+            DE::Function(name, args) => {
+                E::Function(name, args.into_iter().map(|a| a.into()).collect())
+            }
+            DE::And(l, r) => E::And(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Or(l, r) => E::Or(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Not(e) => E::Not(Box::new((*e).into())),
+            DE::Equal(l, r) => E::Equal(Box::new((*l).into()), Box::new((*r).into())),
+            DE::GreaterThan(l, r) => E::GreaterThan(Box::new((*l).into()), Box::new((*r).into())),
+            DE::LessThan(l, r) => E::LessThan(Box::new((*l).into()), Box::new((*r).into())),
+            DE::GreaterThanOrEqual(l, r) => {
+                E::GreaterThanOrEqual(Box::new((*l).into()), Box::new((*r).into()))
+            }
+            DE::LessThanOrEqual(l, r) => {
+                E::LessThanOrEqual(Box::new((*l).into()), Box::new((*r).into()))
+            }
+            DE::NotEqual(l, r) => E::NotEqual(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Is(e, v) => E::Is(Box::new((*e).into()), v),
+            DE::Add(l, r) => E::Add(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Concat(l, r) => E::Concat(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Subtract(l, r) => E::Subtract(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Multiply(l, r) => E::Multiply(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Divide(l, r) => E::Divide(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Remainder(l, r) => E::Remainder(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Exponentiate(l, r) => E::Exponentiate(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Factorial(e) => E::Factorial(Box::new((*e).into())),
+            DE::Identity(e) => E::Identity(Box::new((*e).into())),
+            DE::Negate(e) => E::Negate(Box::new((*e).into())),
+            DE::ILike(l, r) => E::ILike(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Like(l, r) => E::Like(Box::new((*l).into()), Box::new((*r).into())),
+            DE::InList(e, list, neg) => E::InList(
+                Box::new((*e).into()),
+                list.into_iter().map(|a| a.into()).collect(),
+                neg,
+            ),
+            DE::Between(e, l, h, neg) => E::Between(
+                Box::new((*e).into()),
+                Box::new((*l).into()),
+                Box::new((*h).into()),
+                neg,
+            ),
+            DE::ArrayLiteral(elems) => {
+                E::ArrayLiteral(elems.into_iter().map(|a| a.into()).collect())
+            }
+            DE::MapLiteral(pairs) => E::MapLiteral(
+                pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into()))
+                    .collect(),
+            ),
+            DE::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => E::Case {
+                operand: operand.map(|o| Box::new((*o).into())),
+                when_clauses: when_clauses
+                    .into_iter()
+                    .map(|(w, t)| (w.into(), t.into()))
+                    .collect(),
+                else_clause: else_clause.map(|e| Box::new((*e).into())),
+            },
         }
     }
 }

@@ -4,7 +4,7 @@
 //! Tables are immutable after creation - no ALTER TABLE support.
 
 use super::data_type::DataType;
-use super::value::{Row, Value};
+use super::value::Row;
 use crate::error::{Error, Result};
 use crate::parsing::ast::ddl::ForeignKeyConstraint;
 use serde::{Deserialize, Serialize};
@@ -139,8 +139,8 @@ pub struct Column {
     pub primary_key: bool,
     /// Whether the column allows null values. Not legal for primary keys.
     pub nullable: bool,
-    /// The column's default value. If None, the user must specify an explicit value.
-    pub default: Option<Value>,
+    /// The column's default expression. If None, the user must specify an explicit value.
+    pub default: Option<crate::types::expression::DefaultExpression>,
     /// Whether the column should only allow unique values (ignoring NULLs).
     pub unique: bool,
     /// Whether the column should have a secondary index.
@@ -189,9 +189,9 @@ impl Column {
         self
     }
 
-    /// Sets the default value for this column.
-    pub fn default(mut self, value: Value) -> Self {
-        self.default = Some(value);
+    /// Sets the default expression for this column.
+    pub fn default(mut self, expr: crate::types::expression::DefaultExpression) -> Self {
+        self.default = Some(expr);
         self
     }
 
@@ -245,6 +245,7 @@ impl Display for Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::value::Value;
 
     #[test]
     fn test_table_creation() {

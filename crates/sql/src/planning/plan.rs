@@ -91,19 +91,6 @@ impl Plan {
                 | Plan::DropIndex { .. }
         )
     }
-
-    /// Check if this plan is a DML operation (modifies data)
-    pub fn is_dml(&self) -> bool {
-        matches!(
-            self,
-            Plan::Insert { .. } | Plan::Update { .. } | Plan::Delete { .. }
-        )
-    }
-
-    /// Check if this plan is a query (SELECT)
-    pub fn is_query(&self) -> bool {
-        matches!(self, Plan::Query { .. })
-    }
 }
 
 /// Execution node in the plan tree

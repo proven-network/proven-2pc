@@ -8,8 +8,26 @@ use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
 use crate::storage::Storage;
 use crate::stream::TransactionContext;
+use crate::types::expression::{DefaultExpression, Expression};
 use crate::types::schema::Table;
 use crate::types::value::{Row, Value};
+
+/// Evaluate a DEFAULT expression at INSERT time with transaction context
+fn evaluate_default(
+    expr: &DefaultExpression,
+    tx_ctx: &TransactionContext,
+    storage: &Storage,
+) -> Result<Value> {
+    // Convert DefaultExpression to Expression and evaluate using the general evaluator
+    let full_expr: Expression = expr.clone().into();
+    crate::execution::expression::evaluate_with_storage(
+        &full_expr,
+        None,
+        tx_ctx,
+        None,
+        Some(storage),
+    )
+}
 
 /// Validate foreign key constraints for a row before insertion
 fn validate_foreign_keys(
@@ -132,15 +150,9 @@ pub fn execute_insert(
                     } else {
                         reordered.push(Value::Null);
                     }
-                } else if let Some(ref default) = col.default {
-                    // Use DEFAULT value
-                    let value = match default {
-                        Value::Str(s) if s == "__GENERATE_UUID__" => {
-                            // Generate a deterministic UUID based on transaction context
-                            Value::Uuid(tx_ctx.deterministic_uuid())
-                        }
-                        _ => default.clone(),
-                    };
+                } else if let Some(ref default_expr) = col.default {
+                    // Evaluate DEFAULT expression with transaction context
+                    let value = evaluate_default(default_expr, tx_ctx, storage)?;
                     reordered.push(value);
                 } else if col.nullable {
                     // No DEFAULT and nullable - use NULL
@@ -155,14 +167,9 @@ pub fn execute_insert(
             // INSERT DEFAULT VALUES - fill all columns with defaults
             let mut default_row = Vec::with_capacity(schema.columns.len());
             for col in &schema.columns {
-                if let Some(ref default) = col.default {
-                    let value = match default {
-                        Value::Str(s) if s == "__GENERATE_UUID__" => {
-                            // Generate a deterministic UUID based on transaction context
-                            Value::Uuid(tx_ctx.deterministic_uuid())
-                        }
-                        _ => default.clone(),
-                    };
+                if let Some(ref default_expr) = col.default {
+                    // Evaluate DEFAULT expression with transaction context
+                    let value = evaluate_default(default_expr, tx_ctx, storage)?;
                     default_row.push(value);
                 } else if col.nullable {
                     default_row.push(Value::Null);

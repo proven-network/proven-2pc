@@ -17,9 +17,15 @@ pub struct TestContext {
 impl TestContext {
     /// Create a new test context
     pub fn new() -> Self {
+        // Use current system time in microseconds for realistic timestamps
+        let now_micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+
         Self {
             engine: SqlTransactionEngine::new(StorageConfig::for_testing()),
-            current_timestamp: 1,
+            current_timestamp: now_micros,
             in_transaction: false,
             current_tx: None,
         }
