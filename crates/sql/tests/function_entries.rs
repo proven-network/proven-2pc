@@ -19,7 +19,7 @@ fn test_insert_map_data() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
-    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL"}')"#);
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"Proven"}')"#);
 
     ctx.assert_row_count("SELECT * FROM Item", 1);
 
@@ -31,7 +31,7 @@ fn test_entries_returns_key_value_pairs() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
-    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL"}')"#);
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"Proven"}')"#);
 
     let results = ctx.query("SELECT ENTRIES(data) AS test FROM Item");
 
@@ -39,10 +39,10 @@ fn test_entries_returns_key_value_pairs() {
     let value = results[0].get("test").unwrap();
 
     // Should return a list containing key-value pairs
-    // Expected: [["name", "GlueSQL"]]
+    // Expected: [["name", "Proven"]]
     assert!(value.contains("List"));
     assert!(value.contains("name"));
-    assert!(value.contains("GlueSQL"));
+    assert!(value.contains("Proven"));
 
     ctx.commit();
 }
@@ -52,7 +52,7 @@ fn test_entries_requires_map_value() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
-    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL"}')"#);
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"Proven"}')"#);
 
     let error = ctx.exec_error("SELECT ENTRIES(1) FROM Item");
 
@@ -74,7 +74,7 @@ fn test_entries_with_multiple_keys() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
-    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL","version":"1.0","active":"true"}')"#);
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"Proven","version":"1.0","active":"true"}')"#);
 
     let results = ctx.query("SELECT ENTRIES(data) AS test FROM Item");
 
@@ -83,7 +83,7 @@ fn test_entries_with_multiple_keys() {
 
     // Should contain all key-value pairs
     assert!(value.contains("name"));
-    assert!(value.contains("GlueSQL"));
+    assert!(value.contains("Proven"));
     assert!(value.contains("version"));
     assert!(value.contains("1.0"));
     assert!(value.contains("active"));

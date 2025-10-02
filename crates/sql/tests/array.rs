@@ -93,13 +93,13 @@ fn test_insert_another_array_with_default_id() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE Test (id INTEGER DEFAULT 1, name TEXT[] NOT NULL)");
-    ctx.exec("INSERT INTO Test (name) VALUES (['GlueSQL'])");
+    ctx.exec("INSERT INTO Test (name) VALUES (['Proven'])");
 
     assert_rows!(ctx, "SELECT * FROM Test", 1);
     ctx.assert_query_contains("SELECT id FROM Test", "id", "I32(1)");
 
     let results = ctx.query("SELECT * FROM Test");
-    assert!(results[0].get("name").unwrap().contains("GlueSQL"));
+    assert!(results[0].get("name").unwrap().contains("Proven"));
 
     ctx.commit();
 }
@@ -161,12 +161,12 @@ fn test_select_mixed_type_array_literal() {
 fn test_array_indexing_in_select() {
     let mut ctx = setup_test();
 
-    let results = ctx.query("SELECT ['GlueSQL', 1, True] [0] AS element");
+    let results = ctx.query("SELECT ['Proven', 1, True] [0] AS element");
     assert_eq!(results.len(), 1);
     ctx.assert_query_contains(
-        "SELECT ['GlueSQL', 1, True] [0] AS element",
+        "SELECT ['Proven', 1, True] [0] AS element",
         "element",
-        "Str(GlueSQL)",
+        "Str(Proven)",
     );
 
     ctx.commit();
