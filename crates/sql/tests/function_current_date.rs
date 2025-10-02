@@ -9,7 +9,7 @@ use common::{TableBuilder, setup_test};
 fn test_create_table_with_current_date_default() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Item (date DATE DEFAULT CURRENT_DATE())");
+    ctx.exec("CREATE TABLE Item (date DATE DEFAULT CURRENT_DATE)");
 
     ctx.commit();
 }
@@ -35,8 +35,8 @@ fn test_filter_by_current_date() {
         .create_simple("date DATE")
         .insert_values("('2020-01-01'), ('9999-12-31')");
 
-    // Query for dates in the future (9999-12-31 should be greater than CURRENT_DATE())
-    let results = ctx.query("SELECT date FROM Item WHERE date > CURRENT_DATE()");
+    // Query for dates in the future (9999-12-31 should be greater than CURRENT_DATE)
+    let results = ctx.query("SELECT date FROM Item WHERE date > CURRENT_DATE");
 
     // Should return at least the far future date
     assert!(!results.is_empty(), "Should find at least one future date");
@@ -59,6 +59,21 @@ fn test_current_date_basic() {
     let mut ctx = setup_test();
 
     // Just verify CURRENT_DATE returns something that looks like a date
+    let results = ctx.query("SELECT CURRENT_DATE AS today");
+
+    assert_eq!(results.len(), 1);
+    let date_str = results[0].get("today").unwrap();
+    // Should contain a date value (basic validation)
+    assert!(date_str.contains("Date") || date_str.contains("-"));
+
+    ctx.commit();
+}
+
+#[test]
+fn test_current_date_with_parentheses() {
+    let mut ctx = setup_test();
+
+    // Test that CURRENT_DATE() with parentheses also works (for compatibility)
     let results = ctx.query("SELECT CURRENT_DATE() AS today");
 
     assert_eq!(results.len(), 1);

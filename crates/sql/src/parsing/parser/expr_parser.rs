@@ -331,6 +331,36 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 }
             }
 
+            // CURRENT_DATE - SQL standard keyword (no parentheses required)
+            Token::Keyword(Keyword::CurrentDate) => {
+                // Allow optional parentheses for compatibility: CURRENT_DATE or CURRENT_DATE()
+                if self.peek()? == Some(&Token::OpenParen) {
+                    self.next()?; // consume (
+                    self.expect(Token::CloseParen)?;
+                }
+                Expression::Function("CURRENT_DATE".to_string(), vec![])
+            }
+
+            // CURRENT_TIME - SQL standard keyword (no parentheses required)
+            Token::Keyword(Keyword::CurrentTime) => {
+                // Allow optional parentheses for compatibility: CURRENT_TIME or CURRENT_TIME()
+                if self.peek()? == Some(&Token::OpenParen) {
+                    self.next()?; // consume (
+                    self.expect(Token::CloseParen)?;
+                }
+                Expression::Function("CURRENT_TIME".to_string(), vec![])
+            }
+
+            // CURRENT_TIMESTAMP - SQL standard keyword (no parentheses required)
+            Token::Keyword(Keyword::CurrentTimestamp) => {
+                // Allow optional parentheses for compatibility: CURRENT_TIMESTAMP or CURRENT_TIMESTAMP()
+                if self.peek()? == Some(&Token::OpenParen) {
+                    self.next()?; // consume (
+                    self.expect(Token::CloseParen)?;
+                }
+                Expression::Function("CURRENT_TIMESTAMP".to_string(), vec![])
+            }
+
             // EXISTS (SELECT ...)
             Token::Keyword(Keyword::Exists) => {
                 self.expect(Token::OpenParen)?;
