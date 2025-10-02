@@ -25,10 +25,43 @@ impl Function for FromEntriesFunction {
                 "FROM_ENTRIES takes exactly 1 argument".into(),
             ));
         }
-        Ok(DataType::Map(
-            Box::new(DataType::Text),
-            Box::new(DataType::Nullable(Box::new(DataType::Text))),
-        ))
+
+        // Check if argument is a list/array or nullable
+        let base_type = match &arg_types[0] {
+            DataType::Nullable(inner) => inner.as_ref(),
+            other => other,
+        };
+
+        match base_type {
+            DataType::List(inner) | DataType::Array(inner, _) => {
+                // Try to infer the value type from the inner list structure
+                // If it's a list of pairs (lists), extract the value type
+                let value_type = match inner.as_ref() {
+                    DataType::List(pair_inner) | DataType::Array(pair_inner, _) => {
+                        // Assume the second element of the pair determines value type
+                        // But since we can't know for sure at validation time, use a generic nullable type
+                        Box::new(DataType::Nullable(pair_inner.clone()))
+                    }
+                    _ => {
+                        // Can't determine value type, use generic nullable
+                        Box::new(DataType::Nullable(Box::new(DataType::Text)))
+                    }
+                };
+
+                Ok(DataType::Map(Box::new(DataType::Text), value_type))
+            }
+            DataType::Null => {
+                // NULL input returns NULL
+                Ok(DataType::Nullable(Box::new(DataType::Map(
+                    Box::new(DataType::Text),
+                    Box::new(DataType::Nullable(Box::new(DataType::Text))),
+                ))))
+            }
+            _ => Err(Error::TypeMismatch {
+                expected: "list or array of [key, value] pairs".into(),
+                found: arg_types[0].to_string(),
+            }),
+        }
     }
 
     fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {

@@ -1,77 +1,206 @@
 //! GREATEST function tests
 //! Based on gluesql/test-suite/src/function/greatest.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::setup_test;
+
 #[test]
 fn test_greatest_integers() {
-    // TODO: Test SELECT GREATEST(1,6,9,7,0,10) AS goat
-    // Should return 10
+    let mut ctx = setup_test();
+
+    let results = ctx.query("SELECT GREATEST(1, 6, 9, 7, 0, 10) AS goat");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("goat").unwrap();
+    assert!(value.contains("10"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_floats() {
-    // TODO: Test SELECT GREATEST(1.2,6.8,9.6,7.4,0.1,10.5) AS goat
-    // Should return 10.5
+    let mut ctx = setup_test();
+
+    let results = ctx.query("SELECT GREATEST(1.2, 6.8, 9.6, 7.4, 0.1, 10.5) AS goat");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("goat").unwrap();
+    assert!(value.contains("10.5"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_strings() {
-    // TODO: Test SELECT GREATEST('bibibik', 'babamba', 'melona') AS goat
-    // Should return "melona" (lexicographical order)
+    let mut ctx = setup_test();
+
+    let results = ctx.query("SELECT GREATEST('bibibik', 'babamba', 'melona') AS goat");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("goat").unwrap();
+    // 'melona' is greatest lexicographically
+    assert!(value.contains("melona"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_dates() {
-    // TODO: Test SELECT GREATEST(DATE '2023-07-17', DATE '2022-07-17', DATE '2023-06-17', DATE '2024-07-17', DATE '2024-07-18') AS goat
-    // Should return DATE '2024-07-18'
+    let mut ctx = setup_test();
+
+    let results = ctx.query(
+        "SELECT GREATEST(
+            DATE '2023-07-17',
+            DATE '2022-07-17',
+            DATE '2023-06-17',
+            DATE '2024-07-17',
+            DATE '2024-07-18'
+        ) AS goat",
+    );
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("goat").unwrap();
+    // 2024-07-18 is the greatest date
+    assert!(value.contains("2024-07-18"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_no_arguments_should_error() {
-    // TODO: Test SELECT GREATEST() AS goat
-    // Should error: FunctionArgsLengthNotMatchingMin (expected_minimum: 2, found: 0)
+    let mut ctx = setup_test();
+
+    let error = ctx.exec_error("SELECT GREATEST() AS goat");
+
+    // Should error - GREATEST requires at least 2 arguments
+    assert!(
+        error.contains("ExecutionError")
+            || error.contains("at least 2")
+            || error.contains("minimum"),
+        "Expected argument count error, got: {}",
+        error
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_mixed_types_should_error() {
-    // TODO: Test SELECT GREATEST(1, 2, 'bibibik') AS goat
-    // Should error: NonComparableArgumentError
+    let mut ctx = setup_test();
+
+    let error = ctx.exec_error("SELECT GREATEST(1, 2, 'bibibik') AS goat");
+
+    // Should error - arguments must be of same type
+    assert!(
+        error.contains("ExecutionError")
+            || error.contains("same type")
+            || error.contains("comparable")
+            || error.contains("NonComparable"),
+        "Expected type mismatch error, got: {}",
+        error
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_with_null_should_error() {
-    // TODO: Test SELECT GREATEST(NULL, 'bibibik', 'babamba', 'melona') AS goat
-    // Should error: NonComparableArgumentError
+    let mut ctx = setup_test();
+
+    let error = ctx.exec_error("SELECT GREATEST(NULL, 'bibibik', 'babamba', 'melona') AS goat");
+
+    // Should error - NULL not accepted
+    assert!(
+        error.contains("ExecutionError")
+            || error.contains("NULL")
+            || error.contains("NonComparable"),
+        "Expected NULL error, got: {}",
+        error
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_all_nulls_should_error() {
-    // TODO: Test SELECT GREATEST(NULL, NULL, NULL) AS goat
-    // Should error: NonComparableArgumentError
+    let mut ctx = setup_test();
+
+    let error = ctx.exec_error("SELECT GREATEST(NULL, NULL, NULL) AS goat");
+
+    // Should error - NULL not accepted
+    assert!(
+        error.contains("ExecutionError")
+            || error.contains("NULL")
+            || error.contains("NonComparable"),
+        "Expected NULL error, got: {}",
+        error
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_booleans() {
-    // TODO: Test SELECT GREATEST(true, false) AS goat
-    // Should return true
+    let mut ctx = setup_test();
+
+    let results = ctx.query("SELECT GREATEST(true, false) AS goat");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("goat").unwrap();
+    // true > false
+    assert!(value.contains("true") || value.contains("Bool(true)"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_greatest_function_signature() {
-    // TODO: Test that GREATEST requires at least 2 comparable arguments
-}
-
-#[ignore = "not yet implemented"]
 #[test]
 fn test_greatest_single_argument_should_error() {
-    // TODO: Test that GREATEST with single argument errors appropriately
+    let mut ctx = setup_test();
+
+    let error = ctx.exec_error("SELECT GREATEST(42) AS goat");
+
+    // Should error - requires at least 2 arguments
+    assert!(
+        error.contains("ExecutionError")
+            || error.contains("at least 2")
+            || error.contains("minimum"),
+        "Expected argument count error, got: {}",
+        error
+    );
+
+    ctx.commit();
+}
+
+#[test]
+fn test_greatest_two_arguments() {
+    let mut ctx = setup_test();
+
+    let results = ctx.query("SELECT GREATEST(100, 50) AS goat");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("goat").unwrap();
+    assert!(value.contains("100"));
+
+    ctx.commit();
+}
+
+#[test]
+fn test_greatest_with_table_data() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Numbers (a INT, b INT, c INT)");
+    ctx.exec("INSERT INTO Numbers VALUES (1, 5, 3), (10, 2, 8), (4, 9, 6)");
+
+    let results = ctx.query("SELECT GREATEST(a, b, c) AS max_val FROM Numbers");
+
+    assert_eq!(results.len(), 3);
+    // Row 1: max(1, 5, 3) = 5
+    assert!(results[0].get("max_val").unwrap().contains("5"));
+    // Row 2: max(10, 2, 8) = 10
+    assert!(results[1].get("max_val").unwrap().contains("10"));
+    // Row 3: max(4, 9, 6) = 9
+    assert!(results[2].get("max_val").unwrap().contains("9"));
+
+    ctx.commit();
 }
