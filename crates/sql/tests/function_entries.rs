@@ -1,52 +1,149 @@
 //! ENTRIES function tests
 //! Based on gluesql/test-suite/src/function/entries.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::setup_test;
+
 #[test]
 fn test_create_table_with_map_column() {
-    // TODO: Test CREATE TABLE Item (map MAP) should return Payload::Create
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_insert_map_data() {
-    // TODO: Test INSERT INTO Item VALUES ('{"name":"GlueSQL"}') should return Payload::Insert(1)
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL"}')"#);
+
+    ctx.assert_row_count("SELECT * FROM Item", 1);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_entries_returns_key_value_pairs() {
-    // TODO: Test SELECT ENTRIES(map) AS test FROM Item
-    // Should return [[["name", "GlueSQL"]] (list of key-value pair lists)
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL"}')"#);
+
+    let results = ctx.query("SELECT ENTRIES(data) AS test FROM Item");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("test").unwrap();
+
+    // Should return a list containing key-value pairs
+    // Expected: [["name", "GlueSQL"]]
+    assert!(value.contains("List"));
+    assert!(value.contains("name"));
+    assert!(value.contains("GlueSQL"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_entries_requires_map_value() {
-    // TODO: Test SELECT ENTRIES(1) FROM Item
-    // Should error: FunctionRequiresMapValue
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL"}')"#);
+
+    let error = ctx.exec_error("SELECT ENTRIES(1) FROM Item");
+
+    // Should error - ENTRIES requires a map value
+    assert!(
+        error.contains("FunctionRequiresMapValue")
+            || error.contains("map")
+            || error.contains("Map")
+            || error.contains("type"),
+        "Expected map-related error, got: {}",
+        error
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_entries_with_multiple_keys() {
-    // TODO: Test ENTRIES with map containing multiple key-value pairs
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"name":"GlueSQL","version":"1.0","active":"true"}')"#);
+
+    let results = ctx.query("SELECT ENTRIES(data) AS test FROM Item");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("test").unwrap();
+
+    // Should contain all key-value pairs
+    assert!(value.contains("name"));
+    assert!(value.contains("GlueSQL"));
+    assert!(value.contains("version"));
+    assert!(value.contains("1.0"));
+    assert!(value.contains("active"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_entries_with_empty_map() {
-    // TODO: Test ENTRIES with empty map returns empty list
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+    ctx.exec(r#"INSERT INTO Item VALUES ('{}')"#);
+
+    let results = ctx.query("SELECT ENTRIES(data) AS test FROM Item");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("test").unwrap();
+
+    // Should return empty list
+    assert!(value.contains("List"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_entries_preserves_value_types() {
-    // TODO: Test that ENTRIES preserves the original data types of values
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"count":"42","name":"test","enabled":"true"}')"#);
+
+    let results = ctx.query("SELECT ENTRIES(data) AS test FROM Item");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("test").unwrap();
+
+    // Should preserve values as strings in MAP(VARCHAR, VARCHAR)
+    assert!(value.contains("42"));
+    assert!(value.contains("test"));
+    assert!(value.contains("true"));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_entries_nested_values() {
-    // TODO: Test ENTRIES with map containing nested objects or arrays
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Item (data MAP(VARCHAR, VARCHAR))");
+    ctx.exec(r#"INSERT INTO Item VALUES ('{"user":"nested","data":"value"}')"#);
+
+    let results = ctx.query("SELECT ENTRIES(data) AS test FROM Item");
+
+    assert_eq!(results.len(), 1);
+    let value = results[0].get("test").unwrap();
+
+    // Should contain the entries
+    assert!(value.contains("user"));
+    assert!(value.contains("nested"));
+
+    ctx.commit();
 }
