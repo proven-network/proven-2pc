@@ -53,6 +53,7 @@ pub(crate) mod now;
 mod current_date;
 mod current_time;
 mod current_timestamp;
+mod extract;
 
 // Collection functions
 mod append;
@@ -60,7 +61,6 @@ mod contains;
 mod dedup;
 mod distinct;
 mod entries;
-mod extract;
 mod fields;
 mod find_idx;
 mod flatten;
@@ -156,11 +156,11 @@ impl FunctionRegistry {
         current_timestamp::register(&mut registry);
         current_date::register(&mut registry);
         current_time::register(&mut registry);
+        extract::register(&mut registry);
 
         // Register collection functions
         is_empty::register(&mut registry);
         contains::register(&mut registry);
-        extract::register(&mut registry);
         keys::register(&mut registry);
         values::register(&mut registry);
         unwrap::register(&mut registry);

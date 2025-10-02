@@ -467,6 +467,44 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 )
             }
 
+            // EXTRACT expression: EXTRACT(field FROM source)
+            Token::Keyword(Keyword::Extract) => {
+                self.expect(Token::OpenParen)?;
+
+                // Parse the datetime field (singular or plural forms accepted)
+                let field = match self.next()? {
+                    Token::Keyword(Keyword::Year) | Token::Keyword(Keyword::Years) => "YEAR",
+                    Token::Keyword(Keyword::Month) | Token::Keyword(Keyword::Months) => "MONTH",
+                    Token::Keyword(Keyword::Day) | Token::Keyword(Keyword::Days) => "DAY",
+                    Token::Keyword(Keyword::Hour) | Token::Keyword(Keyword::Hours) => "HOUR",
+                    Token::Keyword(Keyword::Minute) | Token::Keyword(Keyword::Minutes) => "MINUTE",
+                    Token::Keyword(Keyword::Second) | Token::Keyword(Keyword::Seconds) => "SECOND",
+                    other => {
+                        return Err(Error::ParseError(format!(
+                            "expected datetime field (YEAR/YEARS, MONTH/MONTHS, DAY/DAYS, HOUR/HOURS, MINUTE/MINUTES, SECOND/SECONDS), found {}",
+                            other
+                        )));
+                    }
+                };
+
+                self.expect(Token::Keyword(Keyword::From))?;
+
+                // Parse the source expression (timestamp, date, time, or interval)
+                let source = <Self as ExpressionParser>::parse_expression(self)?;
+
+                self.expect(Token::CloseParen)?;
+
+                // Use the Function expression with EXTRACT function name
+                // We'll encode the field as a string literal as the first argument
+                Expression::Function(
+                    "EXTRACT".to_string(),
+                    vec![
+                        Expression::Literal(Literal::String(field.to_string())),
+                        source,
+                    ],
+                )
+            }
+
             // Function call.
             Token::Ident(name) if self.next_is(Token::OpenParen) => {
                 let mut args = Vec::new();

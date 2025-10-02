@@ -136,10 +136,28 @@ pub trait LiteralParser: TokenHelper {
     fn parse_interval_literal(&mut self) -> Result<Expression> {
         match self.next()? {
             Token::String(interval_str) => {
-                // Check for complex interval formats with TO keyword
-                if self.peek()?
-                    .is_some_and(|t| matches!(t, Token::Ident(s) if s.to_uppercase().ends_with("S") || s.to_uppercase().ends_with("R") || s.to_uppercase().ends_with("H") || s.to_uppercase().ends_with("Y") || s.to_uppercase().ends_with("E")))
-                {
+                // Check if next token is a time unit keyword (singular or plural)
+                let is_time_unit = if let Ok(Some(next_token)) = self.peek() {
+                    matches!(
+                        next_token,
+                        Token::Keyword(Keyword::Year)
+                            | Token::Keyword(Keyword::Years)
+                            | Token::Keyword(Keyword::Month)
+                            | Token::Keyword(Keyword::Months)
+                            | Token::Keyword(Keyword::Day)
+                            | Token::Keyword(Keyword::Days)
+                            | Token::Keyword(Keyword::Hour)
+                            | Token::Keyword(Keyword::Hours)
+                            | Token::Keyword(Keyword::Minute)
+                            | Token::Keyword(Keyword::Minutes)
+                            | Token::Keyword(Keyword::Second)
+                            | Token::Keyword(Keyword::Seconds)
+                    )
+                } else {
+                    false
+                };
+
+                if is_time_unit {
                     let unit = self.next_ident_or_keyword()?;
                     if self
                         .next_if_map(|t| match t {
