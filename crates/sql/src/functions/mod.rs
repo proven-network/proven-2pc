@@ -57,6 +57,7 @@ mod current_timestamp;
 // Collection functions
 mod append;
 mod contains;
+mod dedup;
 mod distinct;
 mod entries;
 mod extract;
@@ -167,6 +168,7 @@ impl FunctionRegistry {
         prepend::register(&mut registry);
         sort::register(&mut registry);
         reverse::register(&mut registry);
+        dedup::register(&mut registry);
         distinct::register(&mut registry);
         slice::register(&mut registry);
         take::register(&mut registry);
