@@ -10,6 +10,7 @@ use std::collections::HashMap;
 pub struct TestContext {
     pub engine: SqlTransactionEngine,
     current_timestamp: u64,
+    current_log_index: u64,
     in_transaction: bool,
     current_tx: Option<HlcTimestamp>,
 }
@@ -26,6 +27,7 @@ impl TestContext {
         Self {
             engine: SqlTransactionEngine::new(StorageConfig::for_testing()),
             current_timestamp: now_micros,
+            current_log_index: 0,
             in_transaction: false,
             current_tx: None,
         }
@@ -38,10 +40,18 @@ impl TestContext {
         ts
     }
 
+    /// Get and increment log index
+    fn next_log_index(&mut self) -> u64 {
+        let index = self.current_log_index;
+        self.current_log_index += 1;
+        index
+    }
+
     /// Begin a new transaction
     pub fn begin(&mut self) {
         let tx = self.next_timestamp();
-        self.engine.begin(tx);
+        let log_index = self.next_log_index();
+        self.engine.begin(tx, log_index);
         self.in_transaction = true;
         self.current_tx = Some(tx);
     }
@@ -49,7 +59,8 @@ impl TestContext {
     /// Commit the current transaction
     pub fn commit(&mut self) {
         if let Some(tx) = self.current_tx {
-            self.engine.commit(tx);
+            let log_index = self.next_log_index();
+            self.engine.commit(tx, log_index);
             self.in_transaction = false;
             self.current_tx = None;
         }
@@ -58,7 +69,8 @@ impl TestContext {
     /// Abort the current transaction
     pub fn abort(&mut self) {
         if let Some(tx) = self.current_tx {
-            self.engine.abort(tx);
+            let log_index = self.next_log_index();
+            self.engine.abort(tx, log_index);
             self.in_transaction = false;
             self.current_tx = None;
         }
@@ -67,6 +79,7 @@ impl TestContext {
     /// Execute SQL without expecting a result
     pub fn exec(&mut self, sql: &str) {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
+        let log_index = self.next_log_index();
 
         let result = self.engine.apply_operation(
             SqlOperation::Execute {
@@ -74,6 +87,7 @@ impl TestContext {
                 params: None,
             },
             tx,
+            log_index,
         );
 
         match result {
@@ -88,6 +102,7 @@ impl TestContext {
     /// Execute SQL and return the response
     pub fn exec_response(&mut self, sql: &str) -> SqlResponse {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
+        let log_index = self.next_log_index();
 
         match self.engine.apply_operation(
             SqlOperation::Execute {
@@ -95,6 +110,7 @@ impl TestContext {
                 params: None,
             },
             tx,
+            log_index,
         ) {
             OperationResult::Complete(response) => response,
             _ => panic!("SQL execution failed: {}", sql),
@@ -104,6 +120,7 @@ impl TestContext {
     /// Query SQL and return raw results
     pub fn query(&mut self, sql: &str) -> Vec<HashMap<String, String>> {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
+        let log_index = self.next_log_index();
 
         let result = self.engine.apply_operation(
             SqlOperation::Execute {
@@ -111,6 +128,7 @@ impl TestContext {
                 params: None,
             },
             tx,
+            log_index,
         );
 
         match result {
@@ -141,6 +159,7 @@ impl TestContext {
     /// Execute SQL expecting an error
     pub fn exec_error(&mut self, sql: &str) -> String {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
+        let log_index = self.next_log_index();
 
         match self.engine.apply_operation(
             SqlOperation::Execute {
@@ -148,6 +167,7 @@ impl TestContext {
                 params: None,
             },
             tx,
+            log_index,
         ) {
             OperationResult::Complete(SqlResponse::Error(err)) => err,
             _ => panic!("Expected error for SQL: {}", sql),

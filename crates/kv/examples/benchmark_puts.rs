@@ -8,7 +8,15 @@ use proven_kv::stream::{engine::KvTransactionEngine, operation::KvOperation};
 use proven_kv::types::Value;
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+/// Global log index counter for benchmarks
+static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
+
+fn next_log_index() -> u64 {
+    LOG_INDEX.fetch_add(1, Ordering::Relaxed)
+}
 
 fn main() {
     println!("=== 1 Million Put Benchmark ===\n");
@@ -30,7 +38,7 @@ fn main() {
     for i in 0..NUM_PUTS {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
-        kv_engine.begin(txn_id);
+        kv_engine.begin(txn_id, next_log_index());
 
         // Create put operation with various value types to simulate real usage
         let value = match i % 5 {
@@ -50,10 +58,10 @@ fn main() {
         };
 
         // Execute put directly on engine
-        match kv_engine.apply_operation(put, txn_id) {
+        match kv_engine.apply_operation(put, txn_id, next_log_index()) {
             proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
-                kv_engine.commit(txn_id);
+                kv_engine.commit(txn_id, next_log_index());
             }
             _ => {
                 eprintln!("\nError at put {}", i);
@@ -97,7 +105,7 @@ fn main() {
     // Verify a sample of keys
     println!("\nVerifying sample keys...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    kv_engine.begin(verify_txn);
+    kv_engine.begin(verify_txn, next_log_index());
 
     // Check a few keys to verify they were stored
     let sample_keys = [0, NUM_PUTS / 2, NUM_PUTS - 1];
@@ -108,7 +116,7 @@ fn main() {
             key: format!("key_{:08}", key_index),
         };
 
-        match kv_engine.apply_operation(get, verify_txn) {
+        match kv_engine.apply_operation(get, verify_txn, next_log_index()) {
             proven_stream::OperationResult::Complete(_) => {
                 verified += 1;
             }
@@ -118,7 +126,7 @@ fn main() {
         }
     }
 
-    kv_engine.commit(verify_txn);
+    kv_engine.commit(verify_txn, next_log_index());
 
     println!("✓ Verified {}/{} sample keys", verified, sample_keys.len());
 

@@ -14,8 +14,6 @@ use crate::types::Value;
 use super::operation::KvOperation;
 use super::response::KvResponse;
 
-use std::collections::HashMap;
-
 /// KV-specific transaction engine
 pub struct KvTransactionEngine {
     /// MVCC storage for versioned data
@@ -202,6 +200,7 @@ impl TransactionEngine for KvTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             KvOperation::Get { ref key } => self.execute_get_without_locking(key, read_timestamp),
@@ -213,6 +212,7 @@ impl TransactionEngine for KvTransactionEngine {
         &mut self,
         operation: Self::Operation,
         txn_id: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             KvOperation::Get { ref key } => self.execute_get(key, txn_id),
@@ -221,11 +221,11 @@ impl TransactionEngine for KvTransactionEngine {
         }
     }
 
-    fn begin(&mut self, _txn_id: HlcTimestamp) {
+    fn begin(&mut self, _txn_id: HlcTimestamp, _log_index: u64) {
         // Nothing to do - processor tracks active transactions
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) {
+    fn prepare(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Get locks held by this transaction from lock manager
         let locks = self.lock_manager.locks_held_by(txn_id);
 
@@ -237,7 +237,7 @@ impl TransactionEngine for KvTransactionEngine {
         }
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) {
+    fn commit(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Commit to storage
         self.storage.commit_transaction(txn_id);
 
@@ -245,7 +245,7 @@ impl TransactionEngine for KvTransactionEngine {
         self.lock_manager.release_all(txn_id);
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) {
+    fn abort(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Abort in storage
         self.storage.abort_transaction(txn_id);
 
@@ -255,57 +255,6 @@ impl TransactionEngine for KvTransactionEngine {
 
     fn engine_name(&self) -> &'static str {
         "kv"
-    }
-
-    fn snapshot(&self) -> Result<Vec<u8>, String> {
-        // The processor ensures no active transactions before calling snapshot
-
-        // Define the snapshot structure
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct KvSnapshot {
-            // Compacted data - only latest committed version per key
-            data: HashMap<String, Value>,
-        }
-
-        // Get compacted data from MVCC storage
-        let compacted = self.storage.get_compacted_data();
-
-        let snapshot = KvSnapshot { data: compacted };
-
-        // Serialize with CBOR
-        let mut buf = Vec::new();
-        ciborium::into_writer(&snapshot, &mut buf)
-            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
-
-        // Compress with zstd (level 3 is a good balance)
-        let compressed = zstd::encode_all(&buf[..], 3)
-            .map_err(|e| format!("Failed to compress snapshot: {}", e))?;
-
-        Ok(compressed)
-    }
-
-    fn restore_from_snapshot(&mut self, data: &[u8]) -> Result<(), String> {
-        // Decompress the data
-        let decompressed =
-            zstd::decode_all(data).map_err(|e| format!("Failed to decompress snapshot: {}", e))?;
-
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct KvSnapshot {
-            data: HashMap<String, Value>,
-        }
-
-        // Deserialize snapshot
-        let snapshot: KvSnapshot = ciborium::from_reader(&decompressed[..])
-            .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
-
-        // Clear existing state
-        self.storage = MvccStorage::new();
-        self.lock_manager = LockManager::new();
-
-        // Restore compacted data
-        self.storage.restore_from_compacted(snapshot.data);
-
-        Ok(())
     }
 }
 

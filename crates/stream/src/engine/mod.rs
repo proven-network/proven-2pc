@@ -71,59 +71,64 @@ pub trait TransactionEngine: Send + Sync {
     /// Returns the value as it existed at the given timestamp.
     fn read_at_timestamp(
         &mut self,
-        _operation: Self::Operation,
-        _read_timestamp: HlcTimestamp,
+        operation: Self::Operation,
+        read_timestamp: HlcTimestamp,
+        log_index: u64,
     ) -> OperationResult<Self::Response>;
 
     /// Apply an operation within a transaction context
     ///
     /// Returns a result indicating success, blocking, or error.
     /// The stream processor will handle control flow based on the result.
+    ///
+    /// The engine should atomically persist the log_index as metadata when applying the operation.
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
         txn_id: HlcTimestamp,
+        log_index: u64,
     ) -> OperationResult<Self::Response>;
 
     /// Begin a new transaction
     ///
     /// Initialize any necessary transaction state.
-    fn begin(&mut self, txn_id: HlcTimestamp);
+    ///
+    /// The engine should atomically persist the log_index as metadata.
+    fn begin(&mut self, txn_id: HlcTimestamp, log_index: u64);
 
     /// Prepare a transaction for commit (2PC phase 1)
     ///
     /// Marks the transaction as prepared. The transaction must exist.
     /// This is an infallible operation - validation should happen in apply_operation.
-    fn prepare(&mut self, txn_id: HlcTimestamp);
+    ///
+    /// The engine should atomically persist the log_index as metadata.
+    fn prepare(&mut self, txn_id: HlcTimestamp, log_index: u64);
 
     /// Commit a prepared transaction (2PC phase 2)
     ///
     /// Makes all changes from the transaction visible.
     /// This is an infallible operation - the transaction must exist.
-    fn commit(&mut self, txn_id: HlcTimestamp);
+    ///
+    /// The engine should atomically persist the log_index as metadata.
+    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64);
 
     /// Abort a transaction, rolling back any changes
     ///
     /// Cleans up all transaction state and releases locks.
     /// This is an infallible operation - safe to call even if transaction doesn't exist.
-    fn abort(&mut self, txn_id: HlcTimestamp);
+    ///
+    /// The engine should atomically persist the log_index as metadata.
+    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64);
 
     /// Get the name/type of this engine for logging and debugging
     fn engine_name(&self) -> &str;
 
-    /// Create a snapshot of the current state
+    /// Get the current log index that the engine has processed
     ///
-    /// Returns a serialized representation that can be restored later.
-    /// Returns an error if snapshot cannot be created.
-    fn snapshot(&self) -> Result<Vec<u8>, String> {
-        Err("Snapshots not supported".to_string())
-    }
-
-    /// Restore from a checkpoint (optional)
-    ///
-    /// Restores the engine state from a previously created checkpoint.
-    /// Not all engines need to support this.
-    fn restore_from_snapshot(&mut self, _data: &[u8]) -> Result<(), String> {
-        Err("Snapshots not supported".to_string())
+    /// This is used to verify the engine's position before starting replay.
+    /// Engines that persist state should return the last log_index they processed.
+    /// Engines that don't persist state can return 0.
+    fn get_log_index(&self) -> u64 {
+        0
     }
 }

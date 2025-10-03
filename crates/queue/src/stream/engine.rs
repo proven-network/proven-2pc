@@ -3,11 +3,10 @@
 //! Integrates with the proven-stream processor to handle distributed
 //! queue operations with MVCC and eager locking.
 
-use crate::storage::{LockAttemptResult, LockManager, LockMode, MvccStorage, QueueEntry};
+use crate::storage::{LockAttemptResult, LockManager, LockMode, MvccStorage};
 use crate::stream::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
-use std::collections::VecDeque;
 
 /// Queue engine that implements the TransactionEngine trait
 pub struct QueueTransactionEngine {
@@ -123,6 +122,7 @@ impl TransactionEngine for QueueTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             QueueOperation::Peek => self.execute_peek_without_locking(read_timestamp),
@@ -132,7 +132,7 @@ impl TransactionEngine for QueueTransactionEngine {
         }
     }
 
-    fn begin(&mut self, txn_id: HlcTimestamp) {
+    fn begin(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         self.storage.begin_transaction(txn_id);
     }
 
@@ -140,6 +140,7 @@ impl TransactionEngine for QueueTransactionEngine {
         &mut self,
         operation: Self::Operation,
         txn_id: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         // Determine required lock mode
         let lock_mode = match &operation {
@@ -207,7 +208,7 @@ impl TransactionEngine for QueueTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) {
+    fn prepare(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Get all locks held by this transaction
         let held_locks = self.lock_manager.locks_held_by(txn_id);
 
@@ -217,7 +218,7 @@ impl TransactionEngine for QueueTransactionEngine {
         }
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) {
+    fn commit(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Release all locks
         self.lock_manager.release_all(txn_id);
 
@@ -225,7 +226,7 @@ impl TransactionEngine for QueueTransactionEngine {
         self.storage.commit_transaction(txn_id);
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) {
+    fn abort(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Release all locks
         self.lock_manager.release_all(txn_id);
 
@@ -235,57 +236,6 @@ impl TransactionEngine for QueueTransactionEngine {
 
     fn engine_name(&self) -> &'static str {
         "queue"
-    }
-
-    fn snapshot(&self) -> Result<Vec<u8>, String> {
-        // The processor ensures no active transactions before calling snapshot
-
-        // Define the snapshot structure
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct QueueSnapshot {
-            // Compacted queue data - only committed state
-            entries: VecDeque<QueueEntry>,
-        }
-
-        // Get compacted data from storage
-        let entries = self.storage.get_compacted_data();
-
-        let snapshot = QueueSnapshot { entries };
-
-        // Serialize with CBOR
-        let mut buf = Vec::new();
-        ciborium::into_writer(&snapshot, &mut buf)
-            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
-
-        // Compress with zstd (level 3 is a good balance)
-        let compressed = zstd::encode_all(&buf[..], 3)
-            .map_err(|e| format!("Failed to compress snapshot: {}", e))?;
-
-        Ok(compressed)
-    }
-
-    fn restore_from_snapshot(&mut self, data: &[u8]) -> Result<(), String> {
-        // Decompress the data
-        let decompressed =
-            zstd::decode_all(data).map_err(|e| format!("Failed to decompress snapshot: {}", e))?;
-
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct QueueSnapshot {
-            entries: VecDeque<QueueEntry>,
-        }
-
-        // Deserialize snapshot
-        let snapshot: QueueSnapshot = ciborium::from_reader(&decompressed[..])
-            .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
-
-        // Clear existing state
-        self.storage = MvccStorage::new();
-        self.lock_manager = LockManager::new();
-
-        // Restore compacted data
-        self.storage.restore_from_compacted(snapshot.entries);
-
-        Ok(())
     }
 }
 
@@ -304,14 +254,14 @@ mod tests {
         let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp(100);
 
-        engine.begin(tx1);
+        engine.begin(tx1, 1);
 
         // Test enqueue
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Integer(42),
         };
 
-        let result = engine.apply_operation(enqueue_op, tx1);
+        let result = engine.apply_operation(enqueue_op, tx1, 2);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Enqueued)
@@ -320,14 +270,14 @@ mod tests {
         // Test peek
         let peek_op = QueueOperation::Peek;
 
-        let result = engine.apply_operation(peek_op, tx1);
+        let result = engine.apply_operation(peek_op, tx1, 3);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(42))))
         ));
 
         // Test commit
-        engine.commit(tx1);
+        engine.commit(tx1, 4);
     }
 
     #[test]
@@ -336,21 +286,21 @@ mod tests {
         let tx1 = create_timestamp(100);
         let tx2 = create_timestamp(200);
 
-        engine.begin(tx1);
-        engine.begin(tx2);
+        engine.begin(tx1, 1);
+        engine.begin(tx2, 2);
 
         // tx1 gets exclusive lock
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::String("tx1".to_string()),
         };
 
-        let result = engine.apply_operation(enqueue_op, tx1);
+        let result = engine.apply_operation(enqueue_op, tx1, 3);
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // tx2 should be blocked
         let dequeue_op = QueueOperation::Dequeue;
 
-        let result = engine.apply_operation(dequeue_op, tx2);
+        let result = engine.apply_operation(dequeue_op, tx2, 4);
         assert!(matches!(result, OperationResult::WouldBlock { .. }));
     }
 
@@ -359,16 +309,16 @@ mod tests {
         let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp(100);
 
-        engine.begin(tx1);
+        engine.begin(tx1, 1);
 
         // Execute operation
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Boolean(true),
         };
 
-        engine.apply_operation(enqueue_op, tx1);
+        engine.apply_operation(enqueue_op, tx1, 2);
 
         // Abort
-        engine.abort(tx1);
+        engine.abort(tx1, 3);
     }
 }

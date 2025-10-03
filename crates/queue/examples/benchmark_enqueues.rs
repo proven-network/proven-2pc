@@ -8,7 +8,15 @@ use proven_queue::stream::{engine::QueueTransactionEngine, operation::QueueOpera
 use proven_queue::types::QueueValue;
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+/// Global log index counter for benchmarks
+static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
+
+fn next_log_index() -> u64 {
+    LOG_INDEX.fetch_add(1, Ordering::Relaxed)
+}
 
 fn main() {
     println!("=== 1 Million Enqueue Benchmark ===\n");
@@ -31,7 +39,7 @@ fn main() {
     for i in 0..NUM_ENQUEUES {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
-        queue_engine.begin(txn_id);
+        queue_engine.begin(txn_id, next_log_index());
 
         // Create enqueue operation with various value types to simulate real usage
         let value = match i % 6 {
@@ -50,10 +58,10 @@ fn main() {
         let enqueue = QueueOperation::Enqueue { value };
 
         // Execute enqueue directly on engine
-        match queue_engine.apply_operation(enqueue, txn_id) {
+        match queue_engine.apply_operation(enqueue, txn_id, next_log_index()) {
             proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
-                queue_engine.commit(txn_id);
+                queue_engine.commit(txn_id, next_log_index());
             }
             _ => {
                 eprintln!("\nError at enqueue {}", i);
@@ -97,15 +105,15 @@ fn main() {
     // Verify queue size
     println!("\nVerifying queue size...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    queue_engine.begin(verify_txn);
+    queue_engine.begin(verify_txn, next_log_index());
 
     let size_op = QueueOperation::Size;
 
-    match queue_engine.apply_operation(size_op, verify_txn) {
+    match queue_engine.apply_operation(size_op, verify_txn, next_log_index()) {
         proven_stream::OperationResult::Complete(_response) => {
             println!("✓ Queue size query executed successfully");
             // The response would contain the actual size
-            queue_engine.commit(verify_txn);
+            queue_engine.commit(verify_txn, next_log_index());
         }
         _ => println!("⚠ Size query failed"),
     }
@@ -117,14 +125,14 @@ fn main() {
 
     for sample_idx in 0..SAMPLE_SIZE {
         let dequeue_txn = HlcTimestamp::new(10000000000 + sample_idx as u64, 0, NodeId::new(1));
-        queue_engine.begin(dequeue_txn);
+        queue_engine.begin(dequeue_txn, next_log_index());
 
         let dequeue = QueueOperation::Dequeue;
 
-        match queue_engine.apply_operation(dequeue, dequeue_txn) {
+        match queue_engine.apply_operation(dequeue, dequeue_txn, next_log_index()) {
             proven_stream::OperationResult::Complete(_) => {
                 verified += 1;
-                queue_engine.commit(dequeue_txn);
+                queue_engine.commit(dequeue_txn, next_log_index());
             }
             _ => {
                 println!("⚠ Failed to dequeue item {}", sample_idx);

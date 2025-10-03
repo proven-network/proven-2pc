@@ -15,14 +15,14 @@ fn test_basic_queue_operations() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin(tx);
+    engine.begin(tx, 1);
 
     // Test enqueue
     let enqueue1 = QueueOperation::Enqueue {
         value: QueueValue::String("first".to_string()),
     };
 
-    let result = engine.apply_operation(enqueue1, tx);
+    let result = engine.apply_operation(enqueue1, tx, 2);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Enqueued)
@@ -32,7 +32,7 @@ fn test_basic_queue_operations() {
         value: QueueValue::String("second".to_string()),
     };
 
-    let result = engine.apply_operation(enqueue2, tx);
+    let result = engine.apply_operation(enqueue2, tx, 3);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Enqueued)
@@ -41,7 +41,7 @@ fn test_basic_queue_operations() {
     // Test size
     let size_op = QueueOperation::Size;
 
-    let result = engine.apply_operation(size_op, tx);
+    let result = engine.apply_operation(size_op, tx, 4);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(2))
@@ -50,26 +50,26 @@ fn test_basic_queue_operations() {
     // Test dequeue (FIFO)
     let dequeue_op = QueueOperation::Dequeue;
 
-    let result = engine.apply_operation(dequeue_op.clone(), tx);
+    let result = engine.apply_operation(dequeue_op.clone(), tx, 5);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "first"
     ));
 
-    let result = engine.apply_operation(dequeue_op.clone(), tx);
+    let result = engine.apply_operation(dequeue_op.clone(), tx, 6);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "second"
     ));
 
     // Queue should be empty now
-    let result = engine.apply_operation(dequeue_op, tx);
+    let result = engine.apply_operation(dequeue_op, tx, 7);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Dequeued(None))
     ));
 
-    engine.commit(tx);
+    engine.commit(tx, 8);
 }
 
 #[test]
@@ -78,13 +78,13 @@ fn test_transaction_isolation() {
     let tx1 = create_timestamp(100);
     let tx2 = create_timestamp(200);
 
-    engine.begin(tx1);
-    engine.begin(tx2);
+    engine.begin(tx1, 1);
+    engine.begin(tx2, 2);
 
     // tx1 dequeues a value (acquires exclusive lock - blocks other operations)
     let dequeue_op = QueueOperation::Dequeue;
 
-    let result = engine.apply_operation(dequeue_op, tx1);
+    let result = engine.apply_operation(dequeue_op, tx1, 3);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Dequeued(None)) // Empty queue
@@ -93,7 +93,7 @@ fn test_transaction_isolation() {
     // tx2 tries to read the size (should be blocked by tx1's exclusive lock)
     let size_op = QueueOperation::Size;
 
-    let result = engine.apply_operation(size_op.clone(), tx2);
+    let result = engine.apply_operation(size_op.clone(), tx2, 4);
 
     // Should be blocked because Exclusive (Dequeue) blocks Shared (Size)
     match result {
@@ -105,27 +105,27 @@ fn test_transaction_isolation() {
     }
 
     // Commit tx1 to release the exclusive lock
-    engine.commit(tx1);
+    engine.commit(tx1, 5);
 
     // tx2 can now read the size
-    let result = engine.apply_operation(size_op.clone(), tx2);
+    let result = engine.apply_operation(size_op.clone(), tx2, 6);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(0)) // Still empty after dequeue
     ));
-    engine.commit(tx2);
+    engine.commit(tx2, 7);
 
     // Start a new transaction - should also see empty queue
     let tx3 = create_timestamp(300);
-    engine.begin(tx3);
+    engine.begin(tx3, 8);
 
-    let result = engine.apply_operation(size_op, tx3);
+    let result = engine.apply_operation(size_op, tx3, 9);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(0)) // Still empty after dequeue
     ));
 
-    engine.commit(tx3);
+    engine.commit(tx3, 10);
 }
 
 #[test]
@@ -134,34 +134,34 @@ fn test_concurrent_access_with_locking() {
     let tx1 = create_timestamp(100);
     let tx2 = create_timestamp(200);
 
-    engine.begin(tx1);
-    engine.begin(tx2);
+    engine.begin(tx1, 1);
+    engine.begin(tx2, 2);
 
     // tx1 acquires exclusive lock by enqueuing
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("tx1_data".to_string()),
     };
 
-    let result = engine.apply_operation(enqueue_op, tx1);
+    let result = engine.apply_operation(enqueue_op, tx1, 3);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // tx2 tries to dequeue - should be blocked
     let dequeue_op = QueueOperation::Dequeue;
 
-    let result = engine.apply_operation(dequeue_op.clone(), tx2);
+    let result = engine.apply_operation(dequeue_op.clone(), tx2, 4);
     assert!(matches!(result, OperationResult::WouldBlock { blockers } if !blockers.is_empty()));
 
     // After tx1 commits, tx2 should be able to proceed
-    engine.commit(tx1);
+    engine.commit(tx1, 5);
 
     // Now tx2 can dequeue
-    let result = engine.apply_operation(dequeue_op, tx2);
+    let result = engine.apply_operation(dequeue_op, tx2, 6);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::String(s)))) if s == "tx1_data"
     ));
 
-    engine.commit(tx2);
+    engine.commit(tx2, 7);
 }
 
 #[test]
@@ -169,39 +169,39 @@ fn test_abort_rollback() {
     let mut engine = QueueTransactionEngine::new();
     let tx1 = create_timestamp(100);
 
-    engine.begin(tx1);
+    engine.begin(tx1, 1);
 
     // Enqueue some values
     for i in 0..3 {
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Integer(i),
         };
-        engine.apply_operation(enqueue_op, tx1);
+        engine.apply_operation(enqueue_op, tx1, 2);
     }
 
     // Check size before abort
     let size_op = QueueOperation::Size;
 
-    let result = engine.apply_operation(size_op.clone(), tx1);
+    let result = engine.apply_operation(size_op.clone(), tx1, 3);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(3))
     ));
 
     // Abort the transaction
-    engine.abort(tx1);
+    engine.abort(tx1, 4);
 
     // Start new transaction - should see empty queue
     let tx2 = create_timestamp(200);
-    engine.begin(tx2);
+    engine.begin(tx2, 5);
 
-    let result = engine.apply_operation(size_op, tx2);
+    let result = engine.apply_operation(size_op, tx2, 6);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(0))
     ));
 
-    engine.commit(tx2);
+    engine.commit(tx2, 7);
 }
 
 #[test]
@@ -209,26 +209,26 @@ fn test_peek_operation() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin(tx);
+    engine.begin(tx, 1);
 
     // Enqueue a value
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("peek_me".to_string()),
     };
 
-    engine.apply_operation(enqueue_op, tx);
+    engine.apply_operation(enqueue_op, tx, 2);
 
     // Peek should not remove the value
     let peek_op = QueueOperation::Peek;
 
-    let result = engine.apply_operation(peek_op.clone(), tx);
+    let result = engine.apply_operation(peek_op.clone(), tx, 3);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "peek_me"
     ));
 
     // Peek again - should still be there
-    let result = engine.apply_operation(peek_op, tx);
+    let result = engine.apply_operation(peek_op, tx, 4);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "peek_me"
@@ -237,13 +237,13 @@ fn test_peek_operation() {
     // Size should still be 1
     let size_op = QueueOperation::Size;
 
-    let result = engine.apply_operation(size_op, tx);
+    let result = engine.apply_operation(size_op, tx, 5);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(1))
     ));
 
-    engine.commit(tx);
+    engine.commit(tx, 6);
 }
 
 #[test]
@@ -251,20 +251,20 @@ fn test_clear_operation() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin(tx);
+    engine.begin(tx, 1);
 
     // Enqueue multiple values
     for i in 0..5 {
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Integer(i),
         };
-        engine.apply_operation(enqueue_op, tx);
+        engine.apply_operation(enqueue_op, tx, 2);
     }
 
     // Verify size
     let size_op = QueueOperation::Size;
 
-    let result = engine.apply_operation(size_op.clone(), tx);
+    let result = engine.apply_operation(size_op.clone(), tx, 3);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(5))
@@ -273,14 +273,14 @@ fn test_clear_operation() {
     // Clear the queue
     let clear_op = QueueOperation::Clear;
 
-    let result = engine.apply_operation(clear_op, tx);
+    let result = engine.apply_operation(clear_op, tx, 4);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Cleared)
     ));
 
     // Queue should be empty
-    let result = engine.apply_operation(size_op, tx);
+    let result = engine.apply_operation(size_op, tx, 5);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(0))
@@ -288,13 +288,13 @@ fn test_clear_operation() {
 
     let is_empty_op = QueueOperation::IsEmpty;
 
-    let result = engine.apply_operation(is_empty_op, tx);
+    let result = engine.apply_operation(is_empty_op, tx, 6);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(true))
     ));
 
-    engine.commit(tx);
+    engine.commit(tx, 7);
 }
 
 #[test]
@@ -305,27 +305,27 @@ fn test_shared_locks_for_reads() {
     let tx3 = create_timestamp(300);
 
     // First transaction enqueues and commits
-    engine.begin(tx1);
+    engine.begin(tx1, 1);
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("shared_data".to_string()),
     };
-    engine.apply_operation(enqueue_op, tx1);
-    engine.commit(tx1);
+    engine.apply_operation(enqueue_op, tx1, 2);
+    engine.commit(tx1, 3);
 
     // Now two transactions try to read concurrently
-    engine.begin(tx2);
-    engine.begin(tx3);
+    engine.begin(tx2, 4);
+    engine.begin(tx3, 5);
 
     // Both should be able to peek (shared lock)
     let peek_op = QueueOperation::Peek;
 
-    let result = engine.apply_operation(peek_op.clone(), tx2);
+    let result = engine.apply_operation(peek_op.clone(), tx2, 6);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(_))
     ));
 
-    let result = engine.apply_operation(peek_op, tx3);
+    let result = engine.apply_operation(peek_op, tx3, 7);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(_))
@@ -334,20 +334,20 @@ fn test_shared_locks_for_reads() {
     // Both should be able to check size (shared lock)
     let size_op = QueueOperation::Size;
 
-    let result = engine.apply_operation(size_op.clone(), tx2);
+    let result = engine.apply_operation(size_op.clone(), tx2, 8);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(1))
     ));
 
-    let result = engine.apply_operation(size_op, tx3);
+    let result = engine.apply_operation(size_op, tx3, 9);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(1))
     ));
 
-    engine.commit(tx2);
-    engine.commit(tx3);
+    engine.commit(tx2, 10);
+    engine.commit(tx3, 11);
 }
 
 #[test]
@@ -355,7 +355,7 @@ fn test_various_value_types() {
     let mut engine = QueueTransactionEngine::new();
     let tx = create_timestamp(100);
 
-    engine.begin(tx);
+    engine.begin(tx, 1);
 
     // Test different value types
     let values = [
@@ -372,14 +372,14 @@ fn test_various_value_types() {
         let enqueue_op = QueueOperation::Enqueue {
             value: value.clone(),
         };
-        engine.apply_operation(enqueue_op, tx);
+        engine.apply_operation(enqueue_op, tx, 2);
     }
 
     // Dequeue and verify FIFO order
     for expected_value in values.iter() {
         let dequeue_op = QueueOperation::Dequeue;
 
-        let result = engine.apply_operation(dequeue_op, tx);
+        let result = engine.apply_operation(dequeue_op, tx, 3);
         match result {
             OperationResult::Complete(QueueResponse::Dequeued(Some(value))) => {
                 assert_eq!(&value, expected_value);
@@ -388,7 +388,7 @@ fn test_various_value_types() {
         }
     }
 
-    engine.commit(tx);
+    engine.commit(tx, 4);
 }
 
 #[test]
@@ -398,17 +398,17 @@ fn test_read_lock_released_on_prepare() {
     let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
     // Begin both transactions
-    engine.begin(tx1);
-    engine.begin(tx2);
+    engine.begin(tx1, 1);
+    engine.begin(tx2, 2);
 
     // TX1: Peek queue1 (acquires shared lock)
     let peek_op = QueueOperation::Peek;
-    let result = engine.apply_operation(peek_op, tx1);
+    let result = engine.apply_operation(peek_op, tx1, 3);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to dequeue from queue1 (should be blocked - Exclusive vs Shared)
     let dequeue_op = QueueOperation::Dequeue;
-    let result = engine.apply_operation(dequeue_op.clone(), tx2);
+    let result = engine.apply_operation(dequeue_op.clone(), tx2, 4);
 
     // Should be blocked because Exclusive (Dequeue) conflicts with Shared (Peek)
     match result {
@@ -421,10 +421,10 @@ fn test_read_lock_released_on_prepare() {
     }
 
     // TX1: Prepare (releases read lock)
-    engine.prepare(tx1);
+    engine.prepare(tx1, 5);
 
     // TX2: Retry dequeue (should now succeed since read lock was released)
-    let result = engine.apply_operation(dequeue_op, tx2);
+    let result = engine.apply_operation(dequeue_op, tx2, 6);
     assert!(matches!(result, OperationResult::Complete(_)));
 }
 
@@ -435,17 +435,17 @@ fn test_write_lock_not_released_on_prepare() {
     let tx2 = HlcTimestamp::new(200, 0, NodeId::new(1));
 
     // Begin both transactions
-    engine.begin(tx1);
-    engine.begin(tx2);
+    engine.begin(tx1, 1);
+    engine.begin(tx2, 2);
 
     // TX1: Dequeue from queue1 (acquires exclusive lock)
     let dequeue_op = QueueOperation::Dequeue;
-    let result = engine.apply_operation(dequeue_op, tx1);
+    let result = engine.apply_operation(dequeue_op, tx1, 3);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // TX2: Try to peek queue1 (should be blocked by exclusive lock)
     let peek_op = QueueOperation::Peek;
-    let result = engine.apply_operation(peek_op.clone(), tx2);
+    let result = engine.apply_operation(peek_op.clone(), tx2, 4);
 
     match result {
         OperationResult::WouldBlock { blockers } => {
@@ -457,10 +457,10 @@ fn test_write_lock_not_released_on_prepare() {
     }
 
     // TX1: Prepare (exclusive lock should NOT be released)
-    engine.prepare(tx1);
+    engine.prepare(tx1, 5);
 
     // TX2: Retry peek (should still be blocked)
-    let result = engine.apply_operation(peek_op.clone(), tx2);
+    let result = engine.apply_operation(peek_op.clone(), tx2, 6);
 
     match result {
         OperationResult::WouldBlock { blockers } => {
@@ -472,10 +472,10 @@ fn test_write_lock_not_released_on_prepare() {
     }
 
     // TX1: Commit (should release exclusive lock)
-    engine.commit(tx1);
+    engine.commit(tx1, 7);
 
     // TX2: Retry peek (should now succeed)
-    let result = engine.apply_operation(peek_op, tx2);
+    let result = engine.apply_operation(peek_op, tx2, 8);
     assert!(matches!(result, OperationResult::Complete(_)));
 }
 
@@ -489,22 +489,22 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
 
     // Setup: Create a queue with some data
     let setup_tx = create_timestamp(100);
-    engine.begin(setup_tx);
+    engine.begin(setup_tx, 1);
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("initial".to_string()),
     };
-    engine.apply_operation(enqueue_op, setup_tx);
-    engine.commit(setup_tx);
+    engine.apply_operation(enqueue_op, setup_tx, 2);
+    engine.commit(setup_tx, 3);
 
     // Start a write transaction at timestamp 300 (AFTER our read timestamp)
     let write_tx = create_timestamp(300);
-    engine.begin(write_tx);
+    engine.begin(write_tx, 4);
 
     // Write transaction enqueues (gets append lock)
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("new_value".to_string()),
     };
-    let result = engine.apply_operation(enqueue_op, write_tx);
+    let result = engine.apply_operation(enqueue_op, write_tx, 5);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Enqueued)
@@ -514,7 +514,7 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
     let read_ts = create_timestamp(200);
     let peek_op = QueueOperation::Peek;
 
-    let result = engine.read_at_timestamp(peek_op, read_ts);
+    let result = engine.read_at_timestamp(peek_op, read_ts, 6);
     // Should see only committed data (initial value) without blocking
     assert!(matches!(
         result,
@@ -528,19 +528,19 @@ fn test_snapshot_size_blocks_on_earlier_write() {
 
     // Start a write transaction at timestamp 100
     let write_tx = create_timestamp(100);
-    engine.begin(write_tx);
+    engine.begin(write_tx, 1);
 
     // Write transaction enqueues (but doesn't commit yet)
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("pending".to_string()),
     };
-    engine.apply_operation(enqueue_op, write_tx);
+    engine.apply_operation(enqueue_op, write_tx, 2);
 
     // Snapshot read at timestamp 200 (after write tx started) should block
     let read_ts = create_timestamp(200);
     let size_op = QueueOperation::Size;
 
-    let result = engine.read_at_timestamp(size_op, read_ts);
+    let result = engine.read_at_timestamp(size_op, read_ts, 3);
     match result {
         OperationResult::WouldBlock { blockers } => {
             assert_eq!(blockers.len(), 1);
@@ -557,55 +557,55 @@ fn test_snapshot_is_empty_sees_committed_state() {
 
     // Transaction at time 100: enqueue and commit
     let tx1 = create_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, 1);
     for i in 0..3 {
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Integer(i),
         };
-        engine.apply_operation(enqueue_op, tx1);
+        engine.apply_operation(enqueue_op, tx1, 2);
     }
-    engine.commit(tx1);
+    engine.commit(tx1, 3);
 
     // Transaction at time 200: dequeue one and commit
     let tx2 = create_timestamp(200);
-    engine.begin(tx2);
+    engine.begin(tx2, 4);
     let dequeue_op = QueueOperation::Dequeue;
-    engine.apply_operation(dequeue_op, tx2);
-    engine.commit(tx2);
+    engine.apply_operation(dequeue_op, tx2, 5);
+    engine.commit(tx2, 6);
 
     // Transaction at time 300: clear and commit
     let tx3 = create_timestamp(300);
-    engine.begin(tx3);
+    engine.begin(tx3, 7);
     let clear_op = QueueOperation::Clear;
-    engine.apply_operation(clear_op, tx3);
-    engine.commit(tx3);
+    engine.apply_operation(clear_op, tx3, 8);
+    engine.commit(tx3, 9);
 
     // Snapshot reads at different timestamps
     let is_empty_op = QueueOperation::IsEmpty;
 
     // Read at time 50 (before any data): should be empty
-    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(50));
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(50), 10);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(true))
     ));
 
     // Read at time 150 (after first enqueue): should not be empty
-    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(150));
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(150), 11);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(false))
     ));
 
     // Read at time 250 (after dequeue): still not empty (2 items left)
-    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(250));
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(250), 12);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(false))
     ));
 
     // Read at time 350 (after clear): should be empty
-    let result = engine.read_at_timestamp(is_empty_op, create_timestamp(350));
+    let result = engine.read_at_timestamp(is_empty_op, create_timestamp(350), 13);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(true))
@@ -618,25 +618,25 @@ fn test_snapshot_peek_ignores_aborted_operations() {
 
     // Transaction 1: enqueue and commit
     let tx1 = create_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, 1);
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("committed".to_string()),
     };
-    engine.apply_operation(enqueue_op, tx1);
-    engine.commit(tx1);
+    engine.apply_operation(enqueue_op, tx1, 2);
+    engine.commit(tx1, 3);
 
     // Transaction 2: enqueue but abort
     let tx2 = create_timestamp(200);
-    engine.begin(tx2);
+    engine.begin(tx2, 4);
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::String("aborted".to_string()),
     };
-    engine.apply_operation(enqueue_op, tx2);
-    engine.abort(tx2);
+    engine.apply_operation(enqueue_op, tx2, 5);
+    engine.abort(tx2, 6);
 
     // Snapshot read at time 300 should only see committed value
     let peek_op = QueueOperation::Peek;
-    let result = engine.read_at_timestamp(peek_op, create_timestamp(300));
+    let result = engine.read_at_timestamp(peek_op, create_timestamp(300), 7);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::String(s)))) if s == "committed"
@@ -649,45 +649,45 @@ fn test_snapshot_size_with_concurrent_operations() {
 
     // Initial state: 2 items committed at time 100
     let tx1 = create_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, 1);
     for i in 0..2 {
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Integer(i),
         };
-        engine.apply_operation(enqueue_op, tx1);
+        engine.apply_operation(enqueue_op, tx1, 2);
     }
-    engine.commit(tx1);
+    engine.commit(tx1, 3);
 
     // Start transaction at time 200 that will enqueue more (but not commit yet)
     let tx2 = create_timestamp(200);
-    engine.begin(tx2);
+    engine.begin(tx2, 4);
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::Integer(2),
     };
-    engine.apply_operation(enqueue_op, tx2);
+    engine.apply_operation(enqueue_op, tx2, 5);
 
     // Start another transaction at time 300 that also enqueues (not committed)
     let tx3 = create_timestamp(300);
-    engine.begin(tx3);
+    engine.begin(tx3, 6);
     let enqueue_op = QueueOperation::Enqueue {
         value: QueueValue::Integer(3),
     };
-    engine.apply_operation(enqueue_op, tx3);
+    engine.apply_operation(enqueue_op, tx3, 7);
 
     // Snapshot read at time 150 should see 2 items
     let size_op = QueueOperation::Size;
-    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(150));
+    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(150), 8);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(2))
     ));
 
     // Snapshot read at time 250 should block on tx2
-    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(250));
+    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(250), 9);
     assert!(matches!(result, OperationResult::WouldBlock { .. }));
 
     // Snapshot read at time 350 should block on both tx2 and tx3
-    let result = engine.read_at_timestamp(size_op, create_timestamp(350));
+    let result = engine.read_at_timestamp(size_op, create_timestamp(350), 10);
     match result {
         OperationResult::WouldBlock { blockers } => {
             assert_eq!(blockers.len(), 2);
@@ -707,42 +707,42 @@ fn test_snapshot_fifo_ordering_preserved() {
     // Enqueue items at different times
     for i in 0..5 {
         let tx = create_timestamp((i + 1) * 100);
-        engine.begin(tx);
+        engine.begin(tx, 1);
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Integer(i as i64),
         };
-        engine.apply_operation(enqueue_op, tx);
-        engine.commit(tx);
+        engine.apply_operation(enqueue_op, tx, 2);
+        engine.commit(tx, 3);
     }
 
     // Dequeue some items at time 600
     let tx = create_timestamp(600);
-    engine.begin(tx);
+    engine.begin(tx, 4);
     for _ in 0..2 {
         let dequeue_op = QueueOperation::Dequeue;
-        engine.apply_operation(dequeue_op.clone(), tx);
+        engine.apply_operation(dequeue_op.clone(), tx, 5);
     }
-    engine.commit(tx);
+    engine.commit(tx, 6);
 
     // Snapshot peek at different times should show proper FIFO order
     let peek_op = QueueOperation::Peek;
 
     // At time 150: should see first item (0)
-    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(150));
+    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(150), 7);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(0))))
     ));
 
     // At time 350: should still see first item (0)
-    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(350));
+    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(350), 8);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(0))))
     ));
 
     // At time 650: should see third item (2) after two dequeues
-    let result = engine.read_at_timestamp(peek_op, create_timestamp(650));
+    let result = engine.read_at_timestamp(peek_op, create_timestamp(650), 9);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Integer(2))))

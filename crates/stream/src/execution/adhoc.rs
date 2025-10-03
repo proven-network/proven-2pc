@@ -18,6 +18,7 @@ pub async fn execute_adhoc<E: TransactionEngine>(
     engine: &mut E,
     message: Message,
     msg_timestamp: HlcTimestamp,
+    log_index: u64,
     client: &Arc<proven_engine::MockClient>,
     stream_name: &str,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
@@ -36,13 +37,13 @@ pub async fn execute_adhoc<E: TransactionEngine>(
         .map_err(|e| ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e)))?;
 
     // Begin transaction using operation timestamp as ID
-    engine.begin(operation_timestamp);
+    engine.begin(operation_timestamp, log_index);
 
     // Execute the operation
-    match engine.apply_operation(operation.clone(), operation_timestamp) {
+    match engine.apply_operation(operation.clone(), operation_timestamp, log_index) {
         OperationResult::Complete(response) => {
             // Immediately commit the transaction
-            engine.commit(operation_timestamp);
+            engine.commit(operation_timestamp, log_index);
 
             // Send successful response
             send_adhoc_response(
@@ -69,7 +70,7 @@ pub async fn execute_adhoc<E: TransactionEngine>(
         }
         OperationResult::WouldBlock { blockers } => {
             // Ad-hoc operations should not block - abort immediately
-            engine.abort(operation_timestamp);
+            engine.abort(operation_timestamp, log_index);
 
             let blocker_list: Vec<String> = blockers.iter().map(|b| b.txn.to_string()).collect();
             tracing::warn!(
@@ -112,7 +113,7 @@ async fn retry_deferred_for_transaction<E: TransactionEngine>(
         let operation = deferred_op.operation;
         let coordinator_id = deferred_op.coordinator_id;
         let request_id = deferred_op.request_id;
-        match engine.apply_operation(operation.clone(), txn_id) {
+        match engine.apply_operation(operation.clone(), txn_id, 0) {
             OperationResult::Complete(response) => {
                 // Send successful response
                 let serialized = match serde_json::to_vec(&response) {

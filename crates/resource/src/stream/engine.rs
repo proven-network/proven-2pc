@@ -1,6 +1,6 @@
 //! Resource engine implementation
 
-use crate::storage::{CompactedResourceData, ReservationManager, ReservationType, ResourceStorage};
+use crate::storage::{ReservationManager, ReservationType, ResourceStorage};
 use crate::stream::{ResourceOperation, ResourceResponse};
 use crate::types::Amount;
 use proven_hlc::HlcTimestamp;
@@ -354,11 +354,12 @@ impl TransactionEngine for ResourceTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         self.execute_read_at_timestamp(&operation, read_timestamp)
     }
 
-    fn begin(&mut self, txn_id: HlcTimestamp) {
+    fn begin(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         self.storage.begin_transaction(txn_id);
         // ReservationManager will track everything when operations are performed
     }
@@ -367,6 +368,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         &mut self,
         operation: Self::Operation,
         txn_id: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match self.process_operation(&operation, txn_id) {
             Ok(response) => OperationResult::Complete(response),
@@ -390,12 +392,12 @@ impl TransactionEngine for ResourceTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, _txn_id: HlcTimestamp) {
+    fn prepare(&mut self, _txn_id: HlcTimestamp, _log_index: u64) {
         // In the reservation model, we keep reservations until commit
         // This ensures consistency - nothing to do here
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) {
+    fn commit(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Commit storage changes (ignore errors - best effort)
         let _ = self.storage.commit_transaction(txn_id);
 
@@ -403,7 +405,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         self.reservations.release_transaction(txn_id);
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) {
+    fn abort(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Abort storage changes
         self.storage.abort_transaction(txn_id);
 
@@ -413,43 +415,6 @@ impl TransactionEngine for ResourceTransactionEngine {
 
     fn engine_name(&self) -> &'static str {
         "resource"
-    }
-
-    fn snapshot(&self) -> Result<Vec<u8>, String> {
-        // The processor ensures no active transactions before calling snapshot
-
-        // Get compacted data from storage
-        let compacted = self.storage.get_compacted_data();
-
-        // Serialize with CBOR
-        let mut buf = Vec::new();
-        ciborium::into_writer(&compacted, &mut buf)
-            .map_err(|e| format!("Failed to serialize snapshot: {}", e))?;
-
-        // Compress with zstd (level 3 is a good balance)
-        let compressed = zstd::encode_all(&buf[..], 3)
-            .map_err(|e| format!("Failed to compress snapshot: {}", e))?;
-
-        Ok(compressed)
-    }
-
-    fn restore_from_snapshot(&mut self, data: &[u8]) -> Result<(), String> {
-        // Decompress the data
-        let decompressed =
-            zstd::decode_all(data).map_err(|e| format!("Failed to decompress snapshot: {}", e))?;
-
-        // Deserialize snapshot
-        let compacted: CompactedResourceData = ciborium::from_reader(&decompressed[..])
-            .map_err(|e| format!("Failed to deserialize snapshot: {}", e))?;
-
-        // Clear existing state
-        self.storage = ResourceStorage::new();
-        self.reservations = ReservationManager::new();
-
-        // Restore storage from compacted data
-        self.storage.restore_from_compacted(compacted);
-
-        Ok(())
     }
 }
 
@@ -474,7 +439,7 @@ mod tests {
         let tx1 = make_timestamp(100);
 
         // Begin transaction
-        engine.begin(tx1);
+        engine.begin(tx1, 1);
 
         // Initialize resource
         let op = ResourceOperation::Initialize {
@@ -483,7 +448,7 @@ mod tests {
             decimals: 8,
         };
 
-        let result = engine.apply_operation(op, tx1);
+        let result = engine.apply_operation(op, tx1, 2);
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Mint tokens
@@ -493,22 +458,22 @@ mod tests {
             memo: None,
         };
 
-        let result = engine.apply_operation(op, tx1);
+        let result = engine.apply_operation(op, tx1, 3);
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Commit transaction
-        engine.prepare(tx1);
-        engine.commit(tx1);
+        engine.prepare(tx1, 4);
+        engine.commit(tx1, 5);
 
         // Check balance in new transaction
         let tx2 = make_timestamp(200);
-        engine.begin(tx2);
+        engine.begin(tx2, 6);
 
         let op = ResourceOperation::GetBalance {
             account: "alice".to_string(),
         };
 
-        let result = engine.apply_operation(op, tx2);
+        let result = engine.apply_operation(op, tx2, 7);
         if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
             assert_eq!(amount, Amount::from_integer(1000, 0));
         } else {

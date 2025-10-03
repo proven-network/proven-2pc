@@ -18,6 +18,7 @@ pub async fn execute_read_only<E: TransactionEngine>(
     engine: &mut E,
     message: Message,
     msg_timestamp: HlcTimestamp,
+    log_index: u64,
     client: &Arc<proven_engine::MockClient>,
     stream_name: &str,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
@@ -36,7 +37,7 @@ pub async fn execute_read_only<E: TransactionEngine>(
         .map_err(|e| ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e)))?;
 
     // Execute the read at the specified timestamp
-    match engine.read_at_timestamp(operation.clone(), read_timestamp) {
+    match engine.read_at_timestamp(operation.clone(), read_timestamp, log_index) {
         OperationResult::Complete(response) => {
             // Send successful response
             send_read_response(

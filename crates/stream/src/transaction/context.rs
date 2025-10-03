@@ -104,10 +104,9 @@ impl<E: TransactionEngine> TransactionContext<E> {
 
     /// Clean up state for an aborted transaction
     pub fn cleanup_aborted(&mut self, txn_id: &HlcTimestamp) {
-        self.transaction_coordinators.remove(txn_id);
-        self.transaction_deadlines.remove(txn_id);
+        // NOTE: We keep coordinator, deadline, and wounded state so that late-arriving
+        // messages (like prepare) can still be properly handled and report wound status
         self.transaction_participants.remove(txn_id);
-        self.wounded_transactions.remove(txn_id);
         self.begun_transactions.remove(txn_id);
         self.deferred_manager
             .remove_operations_for_transaction(txn_id);

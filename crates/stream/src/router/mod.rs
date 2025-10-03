@@ -67,6 +67,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         &mut self,
         message: Message,
         msg_timestamp: HlcTimestamp,
+        log_index: u64,
     ) -> Result<()> {
         // Determine transaction mode
         let mode = execution::get_transaction_mode(&message);
@@ -78,6 +79,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
                     &mut self.engine,
                     message,
                     msg_timestamp,
+                    log_index,
                     &self.client,
                     &self.stream_name,
                     &mut self.context.deferred_manager,
@@ -90,6 +92,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
                     &mut self.engine,
                     message,
                     msg_timestamp,
+                    log_index,
                     &self.client,
                     &self.stream_name,
                     &mut self.context.deferred_manager,
@@ -98,7 +101,8 @@ impl<E: TransactionEngine> MessageRouter<E> {
             }
             TransactionMode::ReadWrite => {
                 // Read-write needs full routing through this router
-                self.process_readwrite_message(message, msg_timestamp).await
+                self.process_readwrite_message(message, msg_timestamp, log_index)
+                    .await
             }
         }
     }
@@ -161,6 +165,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         &mut self,
         message: Message,
         msg_timestamp: HlcTimestamp,
+        log_index: u64,
     ) -> Result<()> {
         // Extract transaction ID
         let txn_id_str = message
@@ -169,6 +174,15 @@ impl<E: TransactionEngine> MessageRouter<E> {
             .to_string();
         let txn_id =
             HlcTimestamp::parse(&txn_id_str).map_err(ProcessorError::InvalidTransactionId)?;
+
+        // Check if wounded first - wounded status takes precedence over deadline
+        if let Some(wounded_by) = self.context.is_wounded(&txn_id) {
+            if let Some(coordinator_id) = message.get_header("coordinator_id") {
+                let request_id = message.get_header("request_id").map(String::from);
+                self.send_wounded_response(coordinator_id, &txn_id_str, wounded_by, request_id);
+            }
+            return Ok(());
+        }
 
         // Check if we're past the deadline
         if let Some(deadline) = self.context.get_deadline(&txn_id)
@@ -189,12 +203,12 @@ impl<E: TransactionEngine> MessageRouter<E> {
         // Handle transaction control messages (empty body)
         if message.body.is_empty() {
             return self
-                .handle_control_message(message, txn_id, &txn_id_str, msg_timestamp)
+                .handle_control_message(message, txn_id, &txn_id_str, msg_timestamp, log_index)
                 .await;
         }
 
         // Handle regular operations
-        self.handle_operation_message(message, txn_id, &txn_id_str)
+        self.handle_operation_message(message, txn_id, &txn_id_str, log_index)
             .await
     }
 
@@ -205,6 +219,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         txn_id: HlcTimestamp,
         txn_id_str: &str,
         msg_timestamp: HlcTimestamp,
+        log_index: u64,
     ) -> Result<()> {
         let phase = message
             .get_header("txn_phase")
@@ -221,6 +236,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
                     coordinator_id,
                     request_id,
                     msg_timestamp,
+                    log_index,
                 )
                 .await
             }
@@ -231,15 +247,16 @@ impl<E: TransactionEngine> MessageRouter<E> {
                     coordinator_id,
                     request_id,
                     msg_timestamp,
+                    log_index,
                 )
                 .await
             }
             "commit" => {
-                self.handle_commit(txn_id, txn_id_str, coordinator_id, request_id)
+                self.handle_commit(txn_id, txn_id_str, coordinator_id, request_id, log_index)
                     .await
             }
             "abort" => {
-                self.handle_abort(txn_id, txn_id_str, coordinator_id, request_id)
+                self.handle_abort(txn_id, txn_id_str, coordinator_id, request_id, log_index)
                     .await
             }
             unknown => Err(ProcessorError::UnknownPhase(unknown.to_string())),
@@ -252,6 +269,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         message: Message,
         txn_id: HlcTimestamp,
         txn_id_str: &str,
+        log_index: u64,
     ) -> Result<()> {
         // Deserialize the operation
         let operation: E::Operation = serde_json::from_slice(&message.body).map_err(|e| {
@@ -293,7 +311,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
             }
 
             // Begin transaction
-            self.engine.begin(txn_id);
+            self.engine.begin(txn_id, log_index);
             self.context.mark_begun(txn_id);
         }
 
@@ -302,8 +320,15 @@ impl<E: TransactionEngine> MessageRouter<E> {
             .set_coordinator(txn_id, coordinator_id.to_string());
 
         // Execute the operation
-        self.execute_operation(operation, txn_id, txn_id_str, coordinator_id, request_id)
-            .await
+        self.execute_operation(
+            operation,
+            txn_id,
+            txn_id_str,
+            coordinator_id,
+            request_id,
+            log_index,
+        )
+        .await
     }
 
     /// Execute an operation and handle the result
@@ -314,8 +339,12 @@ impl<E: TransactionEngine> MessageRouter<E> {
         txn_id_str: &str,
         coordinator_id: &str,
         request_id: Option<String>,
+        log_index: u64,
     ) -> Result<()> {
-        match self.engine.apply_operation(operation.clone(), txn_id) {
+        match self
+            .engine
+            .apply_operation(operation.clone(), txn_id, log_index)
+        {
             OperationResult::Complete(response) => {
                 self.send_response(coordinator_id, txn_id_str, response, request_id);
                 Ok(())
@@ -336,7 +365,10 @@ impl<E: TransactionEngine> MessageRouter<E> {
                     }
 
                     // Retry after wounding
-                    match self.engine.apply_operation(operation.clone(), txn_id) {
+                    match self
+                        .engine
+                        .apply_operation(operation.clone(), txn_id, log_index)
+                    {
                         OperationResult::Complete(response) => {
                             self.send_response(coordinator_id, txn_id_str, response, request_id);
                             Ok(())
@@ -378,6 +410,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         coordinator_id: Option<&str>,
         request_id: Option<String>,
         msg_timestamp: HlcTimestamp,
+        log_index: u64,
     ) -> Result<()> {
         // Check deadline
         if let Some(deadline) = self.context.get_deadline(&txn_id)
@@ -416,7 +449,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         }
 
         // Prepare the transaction
-        self.engine.prepare(txn_id);
+        self.engine.prepare(txn_id, log_index);
 
         // Schedule recovery
         if let Some(deadline) = self.context.get_deadline(&txn_id) {
@@ -450,6 +483,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         coordinator_id: Option<&str>,
         request_id: Option<String>,
         msg_timestamp: HlcTimestamp,
+        log_index: u64,
     ) -> Result<()> {
         // Check deadline
         if let Some(deadline) = self.context.get_deadline(&txn_id)
@@ -488,8 +522,8 @@ impl<E: TransactionEngine> MessageRouter<E> {
         }
 
         // Prepare and commit
-        self.engine.prepare(txn_id);
-        self.engine.commit(txn_id);
+        self.engine.prepare(txn_id, log_index);
+        self.engine.commit(txn_id, log_index);
 
         // Send response
         if let Some(coord_id) = coordinator_id {
@@ -510,9 +544,10 @@ impl<E: TransactionEngine> MessageRouter<E> {
         _txn_id_str: &str,
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
+        log_index: u64,
     ) -> Result<()> {
         // Commit the transaction
-        self.engine.commit(txn_id);
+        self.engine.commit(txn_id, log_index);
 
         // Clean up state
         self.context.cleanup_committed(&txn_id);
@@ -530,9 +565,10 @@ impl<E: TransactionEngine> MessageRouter<E> {
         _txn_id_str: &str,
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
+        log_index: u64,
     ) -> Result<()> {
         // Abort the transaction
-        self.engine.abort(txn_id);
+        self.engine.abort(txn_id, log_index);
 
         // Clean up state
         self.context.cleanup_aborted(&txn_id);
@@ -554,8 +590,8 @@ impl<E: TransactionEngine> MessageRouter<E> {
             self.send_wounded_response(&victim_coord, &victim_str, wounded_by, None);
         }
 
-        // Abort the victim
-        self.engine.abort(victim);
+        // Abort the victim (with dummy log index since this is internally initiated)
+        self.engine.abort(victim, 0);
 
         // Clean up
         self.context.cleanup_aborted(&victim);
@@ -569,15 +605,23 @@ impl<E: TransactionEngine> MessageRouter<E> {
             .take_prepare_waiting_operations(&prepared_txn);
 
         for deferred in waiting_ops {
-            let _ = self
+            if let Err(e) = self
                 .execute_operation(
                     deferred.operation,
                     deferred.txn_id,
                     &deferred.txn_id.to_string(),
                     &deferred.coordinator_id,
                     deferred.request_id,
+                    0, // Deferred operations use dummy log index
                 )
-                .await;
+                .await
+            {
+                tracing::error!(
+                    "Failed to retry deferred operation for txn {}: {:?}",
+                    deferred.txn_id,
+                    e
+                );
+            }
         }
     }
 
@@ -592,15 +636,23 @@ impl<E: TransactionEngine> MessageRouter<E> {
             // Check if this is a read-only operation (would have used read timestamp as txn_id)
             // For now, treat all deferred operations the same way
             // In the future, we might want to re-route read-only ops differently
-            let _ = self
+            if let Err(e) = self
                 .execute_operation(
                     deferred.operation,
                     deferred.txn_id,
                     &deferred.txn_id.to_string(),
                     &deferred.coordinator_id,
                     deferred.request_id,
+                    0, // Deferred operations use dummy log index
                 )
-                .await;
+                .await
+            {
+                tracing::error!(
+                    "Failed to retry deferred operation for txn {}: {:?}",
+                    deferred.txn_id,
+                    e
+                );
+            }
         }
     }
 
@@ -624,13 +676,13 @@ impl<E: TransactionEngine> MessageRouter<E> {
 
             match decision {
                 TransactionDecision::Commit => {
-                    self.engine.commit(txn_id);
+                    self.engine.commit(txn_id, 0); // Recovery uses dummy log index
                     self.context.cleanup_committed(&txn_id);
                     // Retry deferred operations
                     self.retry_deferred_operations(txn_id).await;
                 }
                 TransactionDecision::Abort => {
-                    self.engine.abort(txn_id);
+                    self.engine.abort(txn_id, 0); // Recovery uses dummy log index
                     self.context.cleanup_aborted(&txn_id);
                     // Retry deferred operations that were waiting on this transaction
                     self.retry_deferred_operations(txn_id).await;

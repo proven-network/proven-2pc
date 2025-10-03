@@ -79,30 +79,53 @@ pub struct StreamProcessor<E: TransactionEngine> {
 impl<E: TransactionEngine + Send> StreamProcessor<E> {
     /// Create a new stream processor
     pub fn new(
-        mut engine: E,
+        engine: E,
         client: Arc<MockClient>,
         stream_name: String,
         snapshot_store: Arc<dyn SnapshotStore>,
     ) -> Self {
         use proven_hlc::NodeId;
 
-        // Try to restore from latest snapshot
-        let mut start_offset = 0u64;
-        let mut last_snapshot_offset = 0u64;
-        let mut last_timestamp = HlcTimestamp::new(0, 0, NodeId::new(0));
+        // Get the engine's current log index
+        let engine_offset = engine.get_log_index();
 
-        if let Some((metadata, data)) = snapshot_store.get_latest_snapshot(&stream_name)
-            && engine.restore_from_snapshot(&data).is_ok()
-        {
-            last_snapshot_offset = metadata.log_offset;
-            start_offset = metadata.log_offset + 1;
-            last_timestamp = metadata.log_timestamp;
-            tracing::info!(
-                "Restored from snapshot at offset {}, will replay from {} for stream {}",
-                metadata.log_offset,
-                start_offset,
-                stream_name
-            );
+        // Try to get the last snapshot offset
+        let start_offset;
+        let last_snapshot_offset;
+
+        if let Some(snapshot_offset) = snapshot_store.get(&stream_name) {
+            // Verify the engine is at the right position
+            if engine_offset == snapshot_offset {
+                start_offset = snapshot_offset + 1;
+                last_snapshot_offset = snapshot_offset;
+                tracing::info!(
+                    "Engine at offset {}, will replay from {} for stream {}",
+                    snapshot_offset,
+                    start_offset,
+                    stream_name
+                );
+            } else {
+                tracing::warn!(
+                    "Engine offset ({}) doesn't match snapshot offset ({}), replaying from engine position for stream {}",
+                    engine_offset,
+                    snapshot_offset,
+                    stream_name
+                );
+                start_offset = engine_offset + 1;
+                last_snapshot_offset = engine_offset;
+            }
+        } else {
+            // No snapshot, use engine's position
+            start_offset = engine_offset + 1;
+            last_snapshot_offset = engine_offset;
+            if engine_offset > 0 {
+                tracing::info!(
+                    "No snapshot found, using engine offset {}, will replay from {} for stream {}",
+                    engine_offset,
+                    start_offset,
+                    stream_name
+                );
+            }
         }
 
         // Create the router with the engine
@@ -115,7 +138,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             snapshot_store: Some(snapshot_store),
             last_snapshot_offset,
             last_message_time: None,
-            last_log_timestamp: last_timestamp,
+            last_log_timestamp: HlcTimestamp::new(0, 0, NodeId::new(0)),
             snapshot_config: SnapshotConfig::default(),
             is_ready: Arc::new(AtomicBool::new(false)),
             stream_name,
@@ -155,8 +178,10 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                 unreachable!("Should not process messages during recovery phase")
             }
             ProcessorPhase::Live => {
-                // In live mode, route the message
-                self.router.route_message(message, msg_timestamp).await
+                // In live mode, route the message with log index
+                self.router
+                    .route_message(message, msg_timestamp, msg_offset)
+                    .await
             }
         }
     }
@@ -192,32 +217,17 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         }
 
         if let Some(store) = &self.snapshot_store {
-            match self.router.engine_mut().snapshot() {
-                Ok(data) => {
-                    store
-                        .save_snapshot(
-                            &self.stream_name,
-                            self.current_offset,
-                            self.last_log_timestamp,
-                            data,
-                        )
-                        .map_err(|e| {
-                            ProcessorError::EngineError(format!("Snapshot save failed: {}", e))
-                        })?;
+            // Just save the current offset - engine has already persisted its state
+            store.update(&self.stream_name, self.current_offset);
 
-                    self.last_snapshot_offset = self.current_offset;
-                    self.router.context_mut().commits_since_snapshot = 0;
+            self.last_snapshot_offset = self.current_offset;
+            self.router.context_mut().commits_since_snapshot = 0;
 
-                    tracing::info!(
-                        "Created snapshot at offset {} for stream {}",
-                        self.current_offset,
-                        self.stream_name
-                    );
-                }
-                Err(e) => {
-                    tracing::debug!("Snapshot not taken: {}", e);
-                }
-            }
+            tracing::info!(
+                "Updated snapshot to offset {} for stream {}",
+                self.current_offset,
+                self.stream_name
+            );
         }
 
         Ok(())

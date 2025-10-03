@@ -349,6 +349,7 @@ impl TransactionEngine for SqlTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             SqlOperation::Query { sql, params } => {
@@ -363,6 +364,7 @@ impl TransactionEngine for SqlTransactionEngine {
         &mut self,
         operation: Self::Operation,
         txn_id: HlcTimestamp,
+        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             SqlOperation::Query { sql, params } => self.execute_sql(&sql, params, txn_id),
@@ -389,7 +391,13 @@ impl TransactionEngine for SqlTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp) {
+    fn begin(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
+        // Create transaction context
+        self.active_transactions
+            .insert(txn_id, TransactionContext::new(txn_id));
+    }
+
+    fn prepare(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Get transaction and release read predicates
         if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
             // Prepare the transaction (releases read predicates)
@@ -398,7 +406,7 @@ impl TransactionEngine for SqlTransactionEngine {
         // If transaction doesn't exist, that's fine - it may have been aborted already
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp) {
+    fn commit(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
             // Remove from predicate index
@@ -410,7 +418,7 @@ impl TransactionEngine for SqlTransactionEngine {
         // If transaction doesn't exist, that's fine - may have been committed already
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp) {
+    fn abort(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
             // Remove from predicate index
@@ -420,12 +428,6 @@ impl TransactionEngine for SqlTransactionEngine {
             let _ = self.storage.abort_transaction(txn_id);
         }
         // If transaction doesn't exist, that's fine - may have been aborted already
-    }
-
-    fn begin(&mut self, txn_id: HlcTimestamp) {
-        // Create transaction context
-        self.active_transactions
-            .insert(txn_id, TransactionContext::new(txn_id));
     }
 
     fn engine_name(&self) -> &'static str {

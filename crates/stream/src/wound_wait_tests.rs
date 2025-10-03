@@ -5,139 +5,22 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::{OperationResult, RetryOn, TransactionEngine};
     use crate::processor::StreamProcessor;
+    use crate::test_utils::{LockOp, LockResponse, TestEngine};
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_hlc::{HlcTimestamp, NodeId};
     use proven_snapshot_memory::MemorySnapshotStore;
-    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-    /// Helper to generate test timestamps
-    #[allow(dead_code)]
-    fn test_timestamp() -> HlcTimestamp {
-        let physical = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u64;
-        HlcTimestamp::new(physical, 0, NodeId::new(1))
-    }
+    use std::time::Duration;
 
     /// Helper to generate transaction ID strings in HLC format
     fn txn_id(physical: u64, logical: u32) -> String {
         HlcTimestamp::new(physical, logical, NodeId::new(1)).to_string()
     }
 
-    // Test operation and response types
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    enum TestOp {
-        Lock { resource: String },
-        Read { resource: String },
-    }
-
-    impl proven_common::Operation for TestOp {
-        fn operation_type(&self) -> proven_common::OperationType {
-            match self {
-                TestOp::Lock { .. } => proven_common::OperationType::Write,
-                TestOp::Read { .. } => proven_common::OperationType::Read,
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    enum TestResponse {
-        Success { message: String },
-        Value { data: String },
-    }
-
-    impl proven_common::Response for TestResponse {}
-
-    // Test engine that simulates lock conflicts
-    struct TestEngine {
-        locks: HashMap<String, HlcTimestamp>,
-    }
-
-    impl TestEngine {
-        fn new() -> Self {
-            Self {
-                locks: HashMap::new(),
-            }
-        }
-    }
-
-    impl TransactionEngine for TestEngine {
-        type Operation = TestOp;
-        type Response = TestResponse;
-
-        fn read_at_timestamp(
-            &mut self,
-            operation: Self::Operation,
-            _read_timestamp: HlcTimestamp,
-        ) -> OperationResult<Self::Response> {
-            match operation {
-                TestOp::Lock { .. } => {
-                    panic!("Lock operations not supported for read-only operations");
-                }
-                TestOp::Read { resource } => OperationResult::Complete(TestResponse::Value {
-                    data: format!("Data from {}", resource),
-                }),
-            }
-        }
-
-        fn apply_operation(
-            &mut self,
-            operation: Self::Operation,
-            txn_id: HlcTimestamp,
-        ) -> OperationResult<Self::Response> {
-            match operation {
-                TestOp::Lock { resource } => {
-                    if let Some(&holder) = self.locks.get(&resource)
-                        && holder != txn_id
-                    {
-                        // Just report the conflict - stream processor handles wound-wait
-                        return OperationResult::WouldBlock {
-                            blockers: vec![crate::engine::BlockingInfo {
-                                txn: holder,
-                                retry_on: RetryOn::CommitOrAbort,
-                            }],
-                        };
-                    }
-                    self.locks.insert(resource, txn_id);
-                    OperationResult::Complete(TestResponse::Success {
-                        message: "Lock acquired".to_string(),
-                    })
-                }
-                TestOp::Read { resource } => OperationResult::Complete(TestResponse::Value {
-                    data: format!("Data from {}", resource),
-                }),
-            }
-        }
-
-        fn prepare(&mut self, _txn_id: HlcTimestamp) {
-            // No-op for test engine
-        }
-
-        fn commit(&mut self, txn_id: HlcTimestamp) {
-            // Release locks
-            self.locks.retain(|_, &mut holder| holder != txn_id);
-        }
-
-        fn abort(&mut self, txn_id: HlcTimestamp) {
-            // Release locks
-            self.locks.retain(|_, &mut holder| holder != txn_id);
-        }
-
-        fn begin(&mut self, _txn_id: HlcTimestamp) {}
-
-        fn engine_name(&self) -> &'static str {
-            "test"
-        }
-    }
-
     fn create_message(
-        operation: Option<TestOp>,
+        operation: Option<LockOp>,
         txn_id: &str,
         coordinator_id: &str,
         txn_phase: Option<&str>,
@@ -145,6 +28,15 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("coordinator_id".to_string(), coordinator_id.to_string());
+
+        // Add deadline (far in the future to avoid timeout issues in tests)
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        let deadline = HlcTimestamp::new(now + 60_000_000, 0, NodeId::new(1)).to_string(); // 60 seconds in the future
+        headers.insert("txn_deadline".to_string(), deadline);
 
         if let Some(phase) = txn_phase {
             headers.insert("txn_phase".to_string(), phase.to_string());
@@ -181,7 +73,7 @@ mod tests {
             .unwrap();
 
         // Start processor first
-        let test_engine = TestEngine::new();
+        let test_engine = TestEngine::<LockOp, LockResponse>::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
         let processor = StreamProcessor::new(
             test_engine,
@@ -201,10 +93,10 @@ mod tests {
 
         // Younger transaction (3000) acquires lock first
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000, 0),
+            &txn_id(3000000000000000, 0),
             "younger",
             None,
         );
@@ -215,10 +107,10 @@ mod tests {
 
         // Older transaction (2000) tries to acquire same lock
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000, 0),
+            &txn_id(2000000000000000, 0),
             "older",
             None,
         );
@@ -275,7 +167,7 @@ mod tests {
             .unwrap();
 
         // Start processor first
-        let test_engine = TestEngine::new();
+        let test_engine = TestEngine::<LockOp, LockResponse>::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
         let processor = StreamProcessor::new(
             test_engine,
@@ -295,10 +187,10 @@ mod tests {
 
         // Older transaction (2000) acquires lock first
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000, 0),
+            &txn_id(2000000000000000, 0),
             "older",
             None,
         );
@@ -309,10 +201,10 @@ mod tests {
 
         // Younger transaction (3000) tries - should defer
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000, 0),
+            &txn_id(3000000000000000, 0),
             "younger",
             None,
         );
@@ -322,7 +214,7 @@ mod tests {
             .unwrap();
 
         // Commit older to release lock
-        let msg = create_message(None, &txn_id(2000000000, 0), "older", Some("commit"));
+        let msg = create_message(None, &txn_id(2000000000000000, 0), "older", Some("commit"));
         client
             .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
@@ -332,9 +224,15 @@ mod tests {
         let older_msg = older_responses.recv().await.unwrap();
         assert!(!older_msg.body.is_empty(), "Older should acquire lock");
 
+        // Give processor time to process commit and retry deferred operation
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
         // Younger transaction is deferred internally (no deferred message sent anymore)
         // It will be automatically retried after older commits and should succeed
-        let younger_msg = younger_responses.recv().await.unwrap();
+        let younger_msg = tokio::time::timeout(Duration::from_secs(2), younger_responses.recv())
+            .await
+            .expect("Timeout waiting for younger response - deferred operation may not have been retried")
+            .unwrap();
         assert!(
             !younger_msg.body.is_empty(),
             "Younger should succeed after retry"
@@ -362,7 +260,7 @@ mod tests {
             .unwrap();
 
         // Start processor first
-        let test_engine = TestEngine::new();
+        let test_engine = TestEngine::<LockOp, LockResponse>::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
         let processor = StreamProcessor::new(
             test_engine,
@@ -382,10 +280,10 @@ mod tests {
 
         // Youngest (4000) gets lock
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(4000000000, 0),
+            &txn_id(4000000000000000, 0),
             "youngest",
             None,
         );
@@ -396,10 +294,10 @@ mod tests {
 
         // Middle (3000) tries - should defer
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000, 0),
+            &txn_id(3000000000000000, 0),
             "middle",
             None,
         );
@@ -410,10 +308,10 @@ mod tests {
 
         // Oldest (2000) tries - should wound youngest
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000, 0),
+            &txn_id(2000000000000000, 0),
             "oldest",
             None,
         );
@@ -479,15 +377,15 @@ mod tests {
 
         // Fixed sequence of operations
         let operations = vec![
-            (txn_id(3000000000, 0), "coord3", "resource1"),
-            (txn_id(2000000000, 0), "coord2", "resource1"),
-            (txn_id(4000000000, 0), "coord1", "resource1"),
+            (txn_id(3000000000000000, 0), "coord3", "resource1"),
+            (txn_id(2000000000000000, 0), "coord2", "resource1"),
+            (txn_id(4000000000000000, 0), "coord1", "resource1"),
         ];
 
         // Publish all operations to stream
         for (txn_id_str, coord_id, resource) in &operations {
             let msg = create_message(
-                Some(TestOp::Lock {
+                Some(LockOp::Lock {
                     resource: resource.to_string(),
                 }),
                 txn_id_str,
@@ -501,7 +399,7 @@ mod tests {
         }
 
         // Start processor
-        let test_engine = TestEngine::new();
+        let test_engine = TestEngine::<LockOp, LockResponse>::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
         let processor = StreamProcessor::new(
             test_engine,
@@ -585,7 +483,7 @@ mod tests {
             .unwrap();
 
         // Start processor first
-        let test_engine = TestEngine::new();
+        let test_engine = TestEngine::<LockOp, LockResponse>::new();
         let snapshot_store = Arc::new(MemorySnapshotStore::new());
         let processor = StreamProcessor::new(
             test_engine,
@@ -605,10 +503,10 @@ mod tests {
 
         // Younger transaction acquires lock
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000, 0),
+            &txn_id(3000000000000000, 0),
             "younger",
             None,
         );
@@ -619,10 +517,10 @@ mod tests {
 
         // Older transaction wounds younger
         let msg = create_message(
-            Some(TestOp::Lock {
+            Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000, 0),
+            &txn_id(2000000000000000, 0),
             "older",
             None,
         );
@@ -632,7 +530,12 @@ mod tests {
             .unwrap();
 
         // Try to prepare younger transaction - should fail
-        let msg = create_message(None, &txn_id(3000000000, 0), "younger", Some("prepare"));
+        let msg = create_message(
+            None,
+            &txn_id(3000000000000000, 0),
+            "younger",
+            Some("prepare"),
+        );
         client
             .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
@@ -644,12 +547,13 @@ mod tests {
         // Younger should be wounded
         let _wounded_msg = younger_responses.recv().await.unwrap();
 
-        // Should get error response
+        // Should get wounded response
         let prepare_response = younger_responses.recv().await.unwrap();
         assert_eq!(
             prepare_response.headers.get("status"),
             Some(&"wounded".to_string()),
-            "Wounded transaction should not be able to prepare"
+            "Wounded transaction should not be able to prepare. Got error: {:?}",
+            prepare_response.headers.get("error")
         );
 
         // Shutdown the processor

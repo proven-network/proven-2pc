@@ -37,6 +37,8 @@ pub mod transaction;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
+mod test_utils;
+#[cfg(test)]
 mod wound_wait_tests;
 
 // Re-export from engine module

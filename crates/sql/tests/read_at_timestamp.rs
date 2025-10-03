@@ -3,6 +3,14 @@
 use proven_hlc::{HlcTimestamp, NodeId};
 use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine, StorageConfig};
 use proven_stream::{OperationResult, TransactionEngine};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Global log index counter for tests
+static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
+
+fn next_log_index() -> u64 {
+    LOG_INDEX.fetch_add(1, Ordering::Relaxed)
+}
 
 fn make_timestamp(n: u64) -> HlcTimestamp {
     HlcTimestamp::new(n, 0, NodeId::new(0))
@@ -14,31 +22,31 @@ fn test_snapshot_read_doesnt_block_later_write() {
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, next_log_index());
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)".to_string(),
         params: None,
     };
-    engine.apply_operation(create_table, tx1);
+    engine.apply_operation(create_table, tx1, next_log_index());
 
     let insert = SqlOperation::Execute {
         sql: "INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)".to_string(),
         params: None,
     };
-    engine.apply_operation(insert, tx1);
+    engine.apply_operation(insert, tx1, next_log_index());
 
-    engine.commit(tx1);
+    engine.commit(tx1, next_log_index());
 
     // Start a write transaction at timestamp 300
     let tx_write = make_timestamp(300);
-    engine.begin(tx_write);
+    engine.begin(tx_write, next_log_index());
 
     let update = SqlOperation::Execute {
         sql: "UPDATE users SET age = 31 WHERE id = 1".to_string(),
         params: None,
     };
-    let result = engine.apply_operation(update, tx_write);
+    let result = engine.apply_operation(update, tx_write, next_log_index());
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Snapshot read at timestamp 250 should NOT block
@@ -49,7 +57,7 @@ fn test_snapshot_read_doesnt_block_later_write() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select, read_ts);
+    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
 
     // Should complete successfully
     assert!(matches!(result, OperationResult::Complete(_)));
@@ -62,7 +70,7 @@ fn test_snapshot_read_doesnt_block_later_write() {
         panic!("Expected query result");
     }
 
-    engine.commit(tx_write);
+    engine.commit(tx_write, next_log_index());
 }
 
 #[test]
@@ -71,31 +79,31 @@ fn test_snapshot_read_blocks_on_earlier_write() {
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, next_log_index());
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)".to_string(),
         params: None,
     };
-    engine.apply_operation(create_table, tx1);
+    engine.apply_operation(create_table, tx1, next_log_index());
 
     let insert = SqlOperation::Execute {
         sql: "INSERT INTO users (id, name, age) VALUES (1, 'Bob', 25)".to_string(),
         params: None,
     };
-    engine.apply_operation(insert, tx1);
+    engine.apply_operation(insert, tx1, next_log_index());
 
-    engine.commit(tx1);
+    engine.commit(tx1, next_log_index());
 
     // Start a write transaction at timestamp 200 (but don't commit)
     let tx_write = make_timestamp(200);
-    engine.begin(tx_write);
+    engine.begin(tx_write, next_log_index());
 
     let update = SqlOperation::Execute {
         sql: "UPDATE users SET age = 26 WHERE id = 1".to_string(),
         params: None,
     };
-    engine.apply_operation(update, tx_write);
+    engine.apply_operation(update, tx_write, next_log_index());
 
     // Snapshot read at timestamp 250 SHOULD block
     // (there's a pending write from timestamp 200)
@@ -105,7 +113,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select.clone(), read_ts);
+    let result = engine.read_at_timestamp(select.clone(), read_ts, next_log_index());
 
     // Should block
     assert!(matches!(result, OperationResult::WouldBlock { .. }));
@@ -116,10 +124,10 @@ fn test_snapshot_read_blocks_on_earlier_write() {
     }
 
     // Commit the write
-    engine.commit(tx_write);
+    engine.commit(tx_write, next_log_index());
 
     // Now the same read should succeed
-    let result = engine.read_at_timestamp(select, read_ts);
+    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
     assert!(matches!(result, OperationResult::Complete(_)));
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
@@ -135,46 +143,46 @@ fn test_snapshot_read_ignores_uncommitted_changes() {
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, next_log_index());
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER)".to_string(),
         params: None,
     };
-    engine.apply_operation(create_table, tx1);
+    engine.apply_operation(create_table, tx1, next_log_index());
 
     let insert1 = SqlOperation::Execute {
         sql: "INSERT INTO products (id, name, price) VALUES (1, 'Widget', 100)".to_string(),
         params: None,
     };
-    engine.apply_operation(insert1, tx1);
+    engine.apply_operation(insert1, tx1, next_log_index());
 
     let insert2 = SqlOperation::Execute {
         sql: "INSERT INTO products (id, name, price) VALUES (2, 'Gadget', 200)".to_string(),
         params: None,
     };
-    engine.apply_operation(insert2, tx1);
+    engine.apply_operation(insert2, tx1, next_log_index());
 
-    engine.commit(tx1);
+    engine.commit(tx1, next_log_index());
 
     // Start a write transaction that will be aborted
     let tx_abort = make_timestamp(200);
-    engine.begin(tx_abort);
+    engine.begin(tx_abort, next_log_index());
 
     let update = SqlOperation::Execute {
         sql: "UPDATE products SET price = 999 WHERE id = 1".to_string(),
         params: None,
     };
-    engine.apply_operation(update, tx_abort);
+    engine.apply_operation(update, tx_abort, next_log_index());
 
     let insert3 = SqlOperation::Execute {
         sql: "INSERT INTO products (id, name, price) VALUES (3, 'Doohickey', 300)".to_string(),
         params: None,
     };
-    engine.apply_operation(insert3, tx_abort);
+    engine.apply_operation(insert3, tx_abort, next_log_index());
 
     // Abort the transaction
-    engine.abort(tx_abort);
+    engine.abort(tx_abort, next_log_index());
 
     // Snapshot read at timestamp 250 should see original data only
     let read_ts = make_timestamp(250);
@@ -183,7 +191,7 @@ fn test_snapshot_read_ignores_uncommitted_changes() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select, read_ts);
+    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
 
     // Should NOT block (transaction was aborted)
     assert!(matches!(result, OperationResult::Complete(_)));
@@ -206,7 +214,7 @@ fn test_snapshot_read_consistency_across_tables() {
 
     // Create tables and initial data
     let tx1 = make_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, next_log_index());
 
     engine.apply_operation(
         SqlOperation::Execute {
@@ -214,6 +222,7 @@ fn test_snapshot_read_consistency_across_tables() {
             params: None,
         },
         tx1,
+        next_log_index(),
     );
 
     engine.apply_operation(
@@ -222,6 +231,7 @@ fn test_snapshot_read_consistency_across_tables() {
             params: None,
         },
         tx1,
+        next_log_index(),
     );
 
     engine.apply_operation(
@@ -230,13 +240,14 @@ fn test_snapshot_read_consistency_across_tables() {
             params: None,
         },
         tx1,
+        next_log_index(),
     );
 
-    engine.commit(tx1);
+    engine.commit(tx1, next_log_index());
 
     // Perform a transfer at timestamp 200
     let tx2 = make_timestamp(200);
-    engine.begin(tx2);
+    engine.begin(tx2, next_log_index());
 
     engine.apply_operation(
         SqlOperation::Execute {
@@ -244,6 +255,7 @@ fn test_snapshot_read_consistency_across_tables() {
             params: None,
         },
         tx2,
+        next_log_index(),
     );
 
     engine.apply_operation(
@@ -252,6 +264,7 @@ fn test_snapshot_read_consistency_across_tables() {
             params: None,
         },
         tx2,
+        next_log_index(),
     );
 
     engine.apply_operation(
@@ -261,9 +274,10 @@ fn test_snapshot_read_consistency_across_tables() {
             params: None,
         },
         tx2,
+        next_log_index(),
     );
 
-    engine.commit(tx2);
+    engine.commit(tx2, next_log_index());
 
     // Snapshot read at timestamp 150 should see state before transfer
     let read_ts1 = make_timestamp(150);
@@ -273,7 +287,7 @@ fn test_snapshot_read_consistency_across_tables() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select_accounts.clone(), read_ts1);
+    let result = engine.read_at_timestamp(select_accounts.clone(), read_ts1, next_log_index());
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows.len(), 2);
@@ -288,7 +302,7 @@ fn test_snapshot_read_consistency_across_tables() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select_txns.clone(), read_ts1);
+    let result = engine.read_at_timestamp(select_txns.clone(), read_ts1, next_log_index());
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows[0][0].to_string(), "0"); // No transactions yet
@@ -299,7 +313,7 @@ fn test_snapshot_read_consistency_across_tables() {
     // Snapshot read at timestamp 250 should see state after transfer
     let read_ts2 = make_timestamp(250);
 
-    let result = engine.read_at_timestamp(select_accounts, read_ts2);
+    let result = engine.read_at_timestamp(select_accounts, read_ts2, next_log_index());
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows.len(), 2);
@@ -309,7 +323,7 @@ fn test_snapshot_read_consistency_across_tables() {
         panic!("Expected query result");
     }
 
-    let result = engine.read_at_timestamp(select_txns, read_ts2);
+    let result = engine.read_at_timestamp(select_txns, read_ts2, next_log_index());
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows[0][0].to_string(), "1"); // One transaction
@@ -324,7 +338,7 @@ fn test_snapshot_read_with_index_scan() {
 
     // Create indexed table
     let tx1 = make_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, next_log_index());
 
     engine.apply_operation(
         SqlOperation::Execute {
@@ -333,6 +347,7 @@ fn test_snapshot_read_with_index_scan() {
             params: None,
         },
         tx1,
+        next_log_index(),
     );
 
     engine.apply_operation(
@@ -341,6 +356,7 @@ fn test_snapshot_read_with_index_scan() {
             params: None,
         },
         tx1,
+        next_log_index(),
     );
 
     engine.apply_operation(
@@ -349,13 +365,14 @@ fn test_snapshot_read_with_index_scan() {
             params: None,
         },
         tx1,
+        next_log_index(),
     );
 
-    engine.commit(tx1);
+    engine.commit(tx1, next_log_index());
 
     // Update at timestamp 200
     let tx2 = make_timestamp(200);
-    engine.begin(tx2);
+    engine.begin(tx2, next_log_index());
 
     engine.apply_operation(
         SqlOperation::Execute {
@@ -363,9 +380,10 @@ fn test_snapshot_read_with_index_scan() {
             params: None,
         },
         tx2,
+        next_log_index(),
     );
 
-    engine.commit(tx2);
+    engine.commit(tx2, next_log_index());
 
     // Snapshot read at timestamp 150 using index
     let read_ts = make_timestamp(150);
@@ -374,7 +392,7 @@ fn test_snapshot_read_with_index_scan() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select, read_ts);
+    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         // Should only see items 1 and 3, not 4 (added later)
@@ -393,14 +411,14 @@ fn test_snapshot_read_only_operations_allowed() {
 
     // Create table
     let tx1 = make_timestamp(100);
-    engine.begin(tx1);
+    engine.begin(tx1, next_log_index());
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE test (id INTEGER PRIMARY KEY)".to_string(),
         params: None,
     };
-    engine.apply_operation(create_table, tx1);
-    engine.commit(tx1);
+    engine.apply_operation(create_table, tx1, next_log_index());
+    engine.commit(tx1, next_log_index());
 
     // Try to perform a write operation via snapshot read
     let read_ts = make_timestamp(200);
@@ -410,5 +428,5 @@ fn test_snapshot_read_only_operations_allowed() {
         params: None,
     };
 
-    engine.read_at_timestamp(insert, read_ts);
+    engine.read_at_timestamp(insert, read_ts, next_log_index());
 }

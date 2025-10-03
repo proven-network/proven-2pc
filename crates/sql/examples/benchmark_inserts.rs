@@ -9,7 +9,15 @@ use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine, StorageConfig,
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Global log index counter for benchmarks
+static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
+
+fn next_log_index() -> u64 {
+    LOG_INDEX.fetch_add(1, Ordering::Relaxed)
+}
 
 fn main() {
     println!("=== 1 Million Insert Benchmark ===\n");
@@ -37,7 +45,7 @@ fn main() {
     // Create table
     println!("Creating table...");
     let txn_id = HlcTimestamp::new(1000000000, 0, NodeId::new(1));
-    sql_engine.begin(txn_id);
+    sql_engine.begin(txn_id, next_log_index());
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE bench (
@@ -50,9 +58,9 @@ fn main() {
         params: None,
     };
 
-    match sql_engine.apply_operation(create_table, txn_id) {
+    match sql_engine.apply_operation(create_table, txn_id, next_log_index()) {
         proven_stream::OperationResult::Complete(_) => {
-            sql_engine.commit(txn_id);
+            sql_engine.commit(txn_id, next_log_index());
             println!("✓ Table created");
         }
         _ => panic!("Failed to create table"),
@@ -73,7 +81,7 @@ fn main() {
     for i in 0..NUM_INSERTS {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
-        sql_engine.begin(txn_id);
+        sql_engine.begin(txn_id, next_log_index());
 
         // Create insert operation
         let insert = SqlOperation::Execute {
@@ -87,10 +95,10 @@ fn main() {
         };
 
         // Execute insert directly on engine
-        match sql_engine.apply_operation(insert, txn_id) {
+        match sql_engine.apply_operation(insert, txn_id, next_log_index()) {
             proven_stream::OperationResult::Complete(_) => {
                 // Commit the transaction
-                sql_engine.commit(txn_id);
+                sql_engine.commit(txn_id, next_log_index());
             }
             _ => {
                 eprintln!("\nError at insert {}", i);
@@ -134,7 +142,7 @@ fn main() {
     // Verify count
     println!("\nVerifying insert count...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    sql_engine.begin(verify_txn);
+    sql_engine.begin(verify_txn, next_log_index());
 
     let count_query = SqlOperation::Query {
         sql: "SELECT COUNT(*) FROM bench".to_string(),
@@ -142,7 +150,7 @@ fn main() {
     };
 
     let elapsed = Instant::now();
-    match sql_engine.apply_operation(count_query, verify_txn) {
+    match sql_engine.apply_operation(count_query, verify_txn, next_log_index()) {
         proven_stream::OperationResult::Complete(response) => {
             match response {
                 SqlResponse::QueryResult { columns: _, rows } => {
@@ -164,7 +172,7 @@ fn main() {
             }
             let count_query_time = elapsed.elapsed();
             println!("Count query time: {}ms", count_query_time.as_millis());
-            sql_engine.abort(verify_txn);
+            sql_engine.abort(verify_txn, next_log_index());
         }
         _ => println!("⚠ Count query failed"),
     }
@@ -193,14 +201,14 @@ fn main() {
     // Verify count
     println!("\nVerifying persisted count...");
     let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
-    sql_engine.begin(verify_txn);
+    sql_engine.begin(verify_txn, next_log_index());
 
     let count_query = SqlOperation::Query {
         sql: "SELECT COUNT(*) FROM bench".to_string(),
         params: None,
     };
 
-    match sql_engine.apply_operation(count_query, verify_txn) {
+    match sql_engine.apply_operation(count_query, verify_txn, next_log_index()) {
         proven_stream::OperationResult::Complete(response) => match response {
             SqlResponse::QueryResult { columns: _, rows } => {
                 match rows.first().unwrap().first().unwrap() {
