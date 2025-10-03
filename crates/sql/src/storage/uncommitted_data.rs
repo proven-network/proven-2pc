@@ -6,9 +6,9 @@
 //! - Key format: {txn_id(20)}{table_len(4)}{table}{row_id(8)}{seq(8)}
 //! - Cleanup drops entire partitions instead of scanning keys
 
+use crate::Error;
 use crate::error::Result;
 use crate::storage::bucket_manager::BucketManager;
-use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::types::{Row, RowId, WriteOp};
 use proven_hlc::HlcTimestamp;
 use std::collections::{BTreeMap, HashSet};
@@ -105,7 +105,10 @@ impl UncommittedDataStore {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let partition = self.get_or_create_partition_for_time(txn_id)?;
         let key = Self::encode_key(txn_id, &op, seq);
-        partition.insert(key, serialize(&op)?)?;
+        partition.insert(
+            key,
+            bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
+        )?;
         Ok(())
     }
 
@@ -122,7 +125,7 @@ impl UncommittedDataStore {
 
         for result in partition.prefix(prefix) {
             if let Ok((_, value)) = result
-                && let Ok(op) = deserialize::<WriteOp>(&value)
+                && let Ok(op) = bincode::deserialize::<WriteOp>(&value)
             {
                 // Check if this is the data operation we're looking for
                 if op.table_name() == Some(table) && op.row_id() == row_id {
@@ -153,7 +156,7 @@ impl UncommittedDataStore {
             .filter_map(|result| {
                 result
                     .ok()
-                    .and_then(|(_, value)| deserialize::<WriteOp>(&value).ok())
+                    .and_then(|(_, value)| bincode::deserialize::<WriteOp>(&value).ok())
             })
             .collect()
     }
@@ -172,7 +175,7 @@ impl UncommittedDataStore {
         let prefix = Self::encode_tx_prefix(txn_id);
         for result in partition.prefix(prefix) {
             if let Ok((_, value)) = result
-                && let Ok(op) = deserialize::<WriteOp>(&value)
+                && let Ok(op) = bincode::deserialize::<WriteOp>(&value)
                 && op.table_name() == Some(table_name)
             {
                 match op {

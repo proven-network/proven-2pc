@@ -6,9 +6,9 @@
 //! - Key format: {txn_id(20)}{index_name_len(4)}{index_name}{seq(8)}
 //! - Cleanup drops entire partitions instead of scanning keys
 
+use crate::Error;
 use crate::error::Result;
 use crate::storage::bucket_manager::BucketManager;
-use crate::storage::encoding::serialize;
 use crate::storage::types::RowId;
 use crate::types::value::Value;
 use proven_hlc::HlcTimestamp;
@@ -133,7 +133,10 @@ impl UncommittedIndexStore {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let partition = self.get_or_create_partition_for_time(txn_id)?;
         let key = Self::encode_key(txn_id, op.index_name(), seq);
-        partition.insert(key, serialize(&op)?)?;
+        partition.insert(
+            key,
+            bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
+        )?;
         Ok(())
     }
 

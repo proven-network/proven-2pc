@@ -11,6 +11,7 @@ mod tests {
 
         let users_table = Table {
             name: "users".to_string(),
+            schema_version: 1,
             foreign_keys: Vec::new(),
             columns: vec![
                 Column {

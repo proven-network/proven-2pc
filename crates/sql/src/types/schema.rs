@@ -10,6 +10,11 @@ use crate::parsing::ast::ddl::ForeignKeyConstraint;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
+/// Default schema version (starts at 1)
+fn default_schema_version() -> u32 {
+    1
+}
+
 /// A table schema, which specifies its data structure and constraints.
 ///
 /// Tables can't change after they are created. There is no ALTER TABLE nor
@@ -18,6 +23,10 @@ use std::fmt::Display;
 pub struct Table {
     /// The table name. Unique identifier for the table. Can't be empty.
     pub name: String,
+    /// Schema version for this table. Incremented on schema changes.
+    /// Stored in each row to identify which version of the schema to use for decoding.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     /// The primary key column index. None if no primary key specified.
     /// Note: Tables still have internal row IDs for storage and locking.
     pub primary_key: Option<usize>,
@@ -77,6 +86,7 @@ impl Table {
 
         Ok(Table {
             name,
+            schema_version: 1, // Start at version 1
             primary_key,
             columns,
             foreign_keys,

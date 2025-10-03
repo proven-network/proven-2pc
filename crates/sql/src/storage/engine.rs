@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use crate::storage::bucket_manager::BucketManager;
 use crate::storage::config::StorageConfig;
 use crate::storage::data_history::DataHistoryStore;
-use crate::storage::encoding::{deserialize, serialize};
+use crate::storage::encoding;
 use crate::storage::index::{IndexManager, IndexMetadata};
 use crate::storage::index_history::IndexHistoryStore;
 use crate::storage::types::{Row, RowId, WriteOp};
@@ -144,7 +144,8 @@ impl Storage {
                 .map_err(|e| Error::Other(format!("Invalid table name: {}", e)))?
                 .to_string();
 
-            let schema: TableSchema = deserialize(&value)?;
+            let schema: TableSchema =
+                bincode::deserialize(&value).map_err(|e| Error::Serialization(e.to_string()))?;
 
             // Open table partitions
             let data_partition = keyspace.open_partition(
@@ -206,8 +207,10 @@ impl Storage {
         )?;
 
         // Store schema in metadata
-        self.metadata_partition
-            .insert(format!("table:{}", name), serialize(&schema)?)?;
+        self.metadata_partition.insert(
+            format!("table:{}", name),
+            bincode::serialize(&schema).map_err(|e| Error::Serialization(e.to_string()))?,
+        )?;
 
         // Create table metadata
         let metadata = Arc::new(TableMetadata {
@@ -344,8 +347,10 @@ impl Storage {
             unique,
         };
 
-        self.metadata_partition
-            .insert(index_meta_key, serialize(&index_metadata)?)?;
+        self.metadata_partition.insert(
+            index_meta_key,
+            bincode::serialize(&index_metadata).map_err(|e| Error::Serialization(e.to_string()))?,
+        )?;
 
         // Invalidate cache for this table
         self.invalidate_table_indexes_cache(&index_metadata.table);
@@ -361,7 +366,8 @@ impl Storage {
         // Get table name before removing metadata
         let index_meta_key = format!("index:{}", index_name);
         let table_name = if let Some(meta_bytes) = self.metadata_partition.get(&index_meta_key)? {
-            let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
+            let index_meta: IndexMetadata = bincode::deserialize(&meta_bytes)
+                .map_err(|e| Error::Serialization(e.to_string()))?;
             Some(index_meta.table)
         } else {
             None
@@ -405,8 +411,10 @@ impl Storage {
             // Generate row ID
             let row_id = table_meta.next_row_id.fetch_add(1, Ordering::SeqCst);
 
-            // Create row
-            let row = Arc::new(Row::new(row_id, values));
+            // Create row with schema_id
+            let row = Arc::new(
+                Row::new(row_id, values).with_schema_version(table_meta.schema.schema_version),
+            );
             prepared_rows.push((row_id, row));
         }
 
@@ -528,8 +536,10 @@ impl Storage {
             .read(txn_id, table, row_id)?
             .ok_or(Error::RowNotFound(row_id))?;
 
-        // Create new row
-        let new_row = Arc::new(Row::new(row_id, values));
+        // Create new row with schema_version
+        let new_row = Arc::new(
+            Row::new(row_id, values).with_schema_version(table_meta.schema.schema_version),
+        );
 
         // Create write operation
         let write_op = WriteOp::Update {
@@ -563,6 +573,7 @@ impl Storage {
             id: row_id,
             values: row.values.clone(),
             deleted: true,
+            schema_version: row.schema_version,
         });
 
         // Add to uncommitted data
@@ -617,9 +628,16 @@ impl Storage {
             .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Try to read the row from disk
-        let row_key = crate::storage::encoding::encode_row_key(row_id);
+        let row_key = row_id.to_be_bytes();
         if let Some(row_bytes) = table_meta.data_partition.get(row_key)? {
-            let row: Row = deserialize(&row_bytes)?;
+            // Decode using compact encoding
+            let values = encoding::decode_row(&row_bytes, &table_meta.schema)?;
+            let row = Row {
+                id: row_id,
+                values,
+                deleted: false,
+                schema_version: table_meta.schema.schema_version,
+            };
 
             // Check if this row has been modified in history window (< 5 minutes)
             // If not, it's visible (committed > 5 minutes ago)
@@ -775,7 +793,8 @@ impl Storage {
             .metadata_partition
             .get(&index_meta_key)?
             .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-        let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
+        let index_meta: IndexMetadata =
+            bincode::deserialize(&meta_bytes).map_err(|e| Error::Serialization(e.to_string()))?;
         let table_name = index_meta.table.clone();
 
         // Get streaming row IDs (MVCC-aware)
@@ -815,7 +834,8 @@ impl Storage {
             .metadata_partition
             .get(&index_meta_key)?
             .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-        let index_meta: IndexMetadata = deserialize(&meta_bytes)?;
+        let index_meta: IndexMetadata =
+            bincode::deserialize(&meta_bytes).map_err(|e| Error::Serialization(e.to_string()))?;
         let table_name = index_meta.table.clone();
 
         // Get streaming row IDs (MVCC-aware)
@@ -1152,9 +1172,10 @@ impl Storage {
             .get(table)
             .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
-        // Write row data
-        let row_key = crate::storage::encoding::encode_row_key(row_id);
-        batch.insert(&table_meta.data_partition, row_key, serialize(&*row)?);
+        // Write row data using compact encoding
+        let row_key = row_id.to_be_bytes();
+        let encoded = encoding::encode_row(&row.values, &table_meta.schema)?;
+        batch.insert(&table_meta.data_partition, row_key, encoded);
 
         Ok(())
     }
@@ -1171,9 +1192,10 @@ impl Storage {
             .get(table)
             .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
-        // Update row data
-        let row_key = crate::storage::encoding::encode_row_key(row_id);
-        batch.insert(&table_meta.data_partition, row_key, serialize(&*row)?);
+        // Update row data using compact encoding
+        let row_key = row_id.to_be_bytes();
+        let encoded = encoding::encode_row(&row.values, &table_meta.schema)?;
+        batch.insert(&table_meta.data_partition, row_key, encoded);
 
         Ok(())
     }
@@ -1185,7 +1207,7 @@ impl Storage {
             .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
 
         // Delete the actual row data
-        let row_key = crate::storage::encoding::encode_row_key(row_id);
+        let row_key = row_id.to_be_bytes();
         batch.remove(&table_meta.data_partition, row_key);
 
         Ok(())
@@ -1374,7 +1396,8 @@ impl Storage {
         let prefix = "index:".as_bytes();
         for entry in self.metadata_partition.prefix(prefix) {
             let (key, value) = entry?;
-            let index_meta: IndexMetadata = deserialize(&value)?;
+            let index_meta: IndexMetadata =
+                bincode::deserialize(&value).map_err(|e| Error::Serialization(e.to_string()))?;
             if index_meta.table == table_name {
                 let index_name = String::from_utf8_lossy(&key[prefix.len()..]).to_string();
                 indexes.push((index_name, index_meta));

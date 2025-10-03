@@ -5,9 +5,9 @@
 //! - Key format: {commit_time(20)}{row_id(8)}{seq(4)} (table is in partition name)
 //! - Cleanup drops entire partitions instead of scanning keys
 
+use crate::Error;
 use crate::error::Result;
 use crate::storage::bucket_manager::BucketManager;
-use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::types::{RowId, WriteOp};
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
@@ -68,7 +68,11 @@ impl DataHistoryStore {
                 .get_or_create_partition(&table, commit_time)?;
             for (seq, op) in table_ops.into_iter().enumerate() {
                 let key = Self::encode_key(commit_time, op.row_id(), seq as u32);
-                batch.insert(partition, key, serialize(&op)?);
+                batch.insert(
+                    partition,
+                    key,
+                    bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
+                );
             }
         }
 
@@ -95,7 +99,7 @@ impl DataHistoryStore {
         for partition in partitions {
             for entry in partition.range(snapshot_bytes.to_vec()..) {
                 let (_key, value) = entry?;
-                if let Ok(op) = deserialize::<WriteOp>(&value) {
+                if let Ok(op) = bincode::deserialize::<WriteOp>(&value) {
                     result.entry(op.row_id()).or_default().push(op);
                 }
             }

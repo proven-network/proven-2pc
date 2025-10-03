@@ -5,9 +5,9 @@
 //! - Key format: {commit_time(20)}{row_id(8)}{seq(4)} (index is in partition name)
 //! - Cleanup drops entire partitions instead of scanning keys
 
+use crate::Error;
 use crate::error::Result;
 use crate::storage::bucket_manager::BucketManager;
-use crate::storage::encoding::{deserialize, serialize};
 use crate::storage::uncommitted_index::IndexOp;
 use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
@@ -62,7 +62,11 @@ impl IndexHistoryStore {
                 .get_or_create_partition(&index_name, commit_time)?;
             for (seq, op) in index_ops.into_iter().enumerate() {
                 let key = Self::encode_key(commit_time, op.row_id(), seq as u32);
-                batch.insert(partition, key, serialize(&op)?);
+                batch.insert(
+                    partition,
+                    key,
+                    bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
+                );
             }
         }
 
@@ -91,7 +95,7 @@ impl IndexHistoryStore {
         for partition in partitions {
             for result in partition.range(snapshot_bytes.to_vec()..) {
                 let (_key, value) = result?;
-                if let Ok(op) = deserialize::<IndexOp>(&value) {
+                if let Ok(op) = bincode::deserialize::<IndexOp>(&value) {
                     ops.push(op);
                 }
             }

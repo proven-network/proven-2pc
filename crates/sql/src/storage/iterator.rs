@@ -1,10 +1,10 @@
 //! Streaming iterators for storage_new that merge fjall and in-memory MVCC data
 
 use crate::error::{Error, Result};
-use crate::storage::encoding::{decode_row_key, deserialize};
 use crate::storage::engine::TableMetadata;
 use crate::storage::types::{FjallIterator, Row, RowId, WriteOp};
 use crate::storage::uncommitted_data::TableActiveData;
+use crate::types::schema::Table as TableSchema;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -15,6 +15,9 @@ use std::sync::Arc;
 /// This struct holds the necessary locks to ensure the data remains valid
 /// for the lifetime of the iterator.
 pub struct TableIterator<'a> {
+    // Table schema for decoding rows
+    schema: Arc<TableSchema>,
+
     // Table-specific active data (loaded once at iterator creation)
     active_data: TableActiveData,
 
@@ -73,6 +76,7 @@ impl<'a> TableIterator<'a> {
         };
 
         Ok(Self {
+            schema: Arc::new(table_meta.schema.clone()),
             active_data,
             active_position: 0,
             history_ops,
@@ -108,7 +112,8 @@ impl<'a> TableIterator<'a> {
         while let Some(result) = self.data_iter.next() {
             let (key_bytes, value_bytes) = result?;
 
-            if let Some(row_id) = decode_row_key(&key_bytes) {
+            if key_bytes.len() == 8 {
+                let row_id = u64::from_be_bytes(key_bytes[..8].try_into().unwrap());
                 // Skip if we've already seen this row
                 if self.seen_rows.contains(&row_id) {
                     continue;
@@ -116,7 +121,14 @@ impl<'a> TableIterator<'a> {
 
                 // Check visibility
                 if self.is_fjall_row_visible(row_id) {
-                    let row: Row = deserialize(&value_bytes)?;
+                    // Decode using compact encoding
+                    let values = crate::storage::encoding::decode_row(&value_bytes, &self.schema)?;
+                    let row = Row {
+                        id: row_id,
+                        values,
+                        deleted: false,
+                        schema_version: self.schema.schema_version,
+                    };
 
                     // Check if this row has any history operations (from our preloaded map)
                     // SEMANTICS: Operations committed AFTER snapshot should be INVISIBLE

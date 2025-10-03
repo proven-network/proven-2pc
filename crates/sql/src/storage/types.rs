@@ -16,6 +16,13 @@ pub struct Row {
     pub id: u64, // Use u64 directly
     pub values: Vec<Value>,
     pub deleted: bool,
+    /// Schema version for this row (used for compact encoding)
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+}
+
+fn default_schema_version() -> u32 {
+    1
 }
 
 impl Row {
@@ -24,7 +31,13 @@ impl Row {
             id,
             values,
             deleted: false,
+            schema_version: 1,
         }
+    }
+
+    pub fn with_schema_version(mut self, schema_version: u32) -> Self {
+        self.schema_version = schema_version;
+        self
     }
 }
 
