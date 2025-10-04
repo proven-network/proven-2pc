@@ -425,11 +425,12 @@ impl Storage {
     /// Insert multiple rows atomically - all validation checks are done before any inserts
     pub fn insert_batch(
         &mut self,
-        txn_id: HlcTimestamp,
+        tx_ctx: &mut crate::stream::transaction::TransactionContext,
         table: &str,
         values_batch: Vec<Vec<crate::types::value::Value>>,
-        log_index: u64,
     ) -> Result<Vec<RowId>> {
+        let txn_id = tx_ctx.id;
+        let log_index = tx_ctx.log_index;
         // Get table metadata
         let table_meta = self
             .tables
@@ -558,7 +559,12 @@ impl Storage {
         // Update in-memory log_index
         self.log_index.store(log_index, Ordering::SeqCst);
 
-        // Commit the entire batch atomically
+        // Add predicates to the same batch
+        let _predicate_keys =
+            self.add_predicates_to_batch(&mut batch, txn_id, &tx_ctx.predicates)?;
+        // Note: We don't need to track predicate_keys anymore - we use prefix scan for cleanup
+
+        // Commit the entire batch atomically (data + log_index + predicates)
         batch.commit()?;
 
         Ok(inserted_row_ids)
@@ -567,12 +573,13 @@ impl Storage {
     /// Update a row
     pub fn update(
         &mut self,
-        txn_id: HlcTimestamp,
+        tx_ctx: &mut crate::stream::transaction::TransactionContext,
         table: &str,
         row_id: RowId,
         values: Vec<crate::types::value::Value>,
-        log_index: u64,
     ) -> Result<()> {
+        let txn_id = tx_ctx.id;
+        let log_index = tx_ctx.log_index;
         // Get table metadata
         let table_meta = self
             .tables
@@ -624,7 +631,12 @@ impl Storage {
         // Update in-memory log_index
         self.log_index.store(log_index, Ordering::SeqCst);
 
-        // Commit the batch atomically
+        // Add predicates to the same batch
+        let _predicate_keys =
+            self.add_predicates_to_batch(&mut batch, txn_id, &tx_ctx.predicates)?;
+        // Note: We don't need to track predicate_keys anymore - we use prefix scan for cleanup
+
+        // Commit the batch atomically (data + log_index + predicates)
         batch.commit()?;
 
         Ok(())
@@ -633,11 +645,12 @@ impl Storage {
     /// Delete a row
     pub fn delete(
         &mut self,
-        txn_id: HlcTimestamp,
+        tx_ctx: &mut crate::stream::transaction::TransactionContext,
         table: &str,
         row_id: RowId,
-        log_index: u64,
     ) -> Result<()> {
+        let txn_id = tx_ctx.id;
+        let log_index = tx_ctx.log_index;
         // Read current row
         let row = self
             .read(txn_id, table, row_id)?
@@ -680,7 +693,12 @@ impl Storage {
         // Update in-memory log_index
         self.log_index.store(log_index, Ordering::SeqCst);
 
-        // Commit the batch atomically
+        // Add predicates to the same batch
+        let _predicate_keys =
+            self.add_predicates_to_batch(&mut batch, txn_id, &tx_ctx.predicates)?;
+        // Note: We don't need to track predicate_keys anymore - we use prefix scan for cleanup
+
+        // Commit the batch atomically (data + log_index + predicates)
         batch.commit()?;
 
         Ok(())
@@ -1184,7 +1202,11 @@ impl Storage {
         self.uncommitted_data
             .remove_transaction(&mut batch, txn_id)?;
 
-        // Commit single atomic batch (includes data, indexes, history)
+        // Remove predicates from storage (transaction committed)
+        self.predicate_store
+            .remove_all_predicates(&mut batch, txn_id)?;
+
+        // Commit single atomic batch (includes data, indexes, history, predicate cleanup)
         batch.commit()?;
 
         // Cleanup old buckets AFTER commit (since it drops partitions)
@@ -1240,7 +1262,11 @@ impl Storage {
             log_index.to_be_bytes(),
         );
 
-        // Commit the batch (includes uncommitted data removal and index abort)
+        // Remove predicates from storage (transaction aborted)
+        self.predicate_store
+            .remove_all_predicates(&mut batch, txn_id)?;
+
+        // Commit the batch (includes uncommitted data removal, index abort, predicate cleanup)
         batch.commit()?;
 
         // Cleanup old buckets AFTER commit (since it drops partitions)
@@ -1535,9 +1561,9 @@ impl Storage {
         self.log_index.load(Ordering::SeqCst)
     }
 
-    /// Add predicates to a batch for atomic persistence
-    /// Returns the predicate keys for later cleanup
-    pub fn add_predicates_to_batch(
+    /// Add predicates to a batch for atomic persistence (internal use only)
+    /// Returns the predicate keys (not used anymore - we use prefix scan for cleanup)
+    fn add_predicates_to_batch(
         &mut self,
         batch: &mut Batch,
         txn_id: HlcTimestamp,
@@ -1572,15 +1598,21 @@ impl Storage {
         Ok(predicate_keys)
     }
 
-    /// Remove predicates for a transaction (on commit/abort)
-    pub fn remove_predicates_from_batch(
+    /// Persist read predicates (for SELECT operations that don't write data)
+    pub fn persist_read_predicates(
         &mut self,
-        batch: &mut Batch,
-        txn_id: HlcTimestamp,
-        predicate_keys: &[Vec<u8>],
+        tx_ctx: &mut crate::stream::transaction::TransactionContext,
     ) -> Result<()> {
-        self.predicate_store
-            .remove_transaction_predicates(batch, txn_id, predicate_keys)
+        let mut batch = self.keyspace.batch();
+
+        // Add predicates to batch
+        let _predicate_keys =
+            self.add_predicates_to_batch(&mut batch, tx_ctx.id, &tx_ctx.predicates)?;
+
+        // Commit the batch
+        batch.commit()?;
+
+        Ok(())
     }
 
     /// Get all active transactions from predicate storage (for recovery)
@@ -1592,8 +1624,20 @@ impl Storage {
             .get_all_active_transactions(current_time)
     }
 
-    /// Create a new batch for atomic operations
-    pub fn batch(&self) -> Batch {
-        self.keyspace.batch()
+    /// Prepare transaction by releasing read predicates from storage
+    pub fn prepare_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
+        let mut batch = self.keyspace.batch();
+
+        // Remove read predicates from storage
+        self.predicate_store
+            .remove_read_predicates(&mut batch, txn_id)?;
+
+        // Commit the batch
+        batch.commit()?;
+
+        // Persist to disk to ensure crash safety
+        self.keyspace.persist(self.config.persist_mode)?;
+
+        Ok(())
     }
 }

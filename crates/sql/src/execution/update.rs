@@ -149,7 +149,7 @@ fn update_column_value(
     updated_row[col_idx] = new_value;
 
     // Write the updated row
-    storage.update(tx_ctx.id, table, row_id, updated_row, tx_ctx.log_index)?;
+    storage.update(tx_ctx, table, row_id, updated_row)?;
     Ok(())
 }
 
@@ -319,7 +319,7 @@ pub fn execute_update(
             validate_foreign_keys_on_update(&coerced_row, &current, &schema, storage, tx_ctx)?;
         all_cascade_ops.extend(cascade_ops);
 
-        storage.update(tx_ctx.id, &table, row_id, coerced_row, tx_ctx.log_index)?;
+        storage.update(tx_ctx, &table, row_id, coerced_row)?;
         count += 1;
     }
 

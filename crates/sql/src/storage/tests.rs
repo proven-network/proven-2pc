@@ -4,6 +4,7 @@
 mod integration_tests {
     use crate::error::Result;
     use crate::storage::{Storage, StorageConfig};
+    use crate::stream::transaction::TransactionContext;
     use crate::types::data_type::DataType;
     use crate::types::schema::{Column, Table as TableSchema};
     use crate::types::value::Value;
@@ -19,6 +20,12 @@ mod integration_tests {
 
         let config = StorageConfig::for_testing();
         Storage::open_at_path(&path, config).unwrap()
+    }
+
+    fn create_test_tx_ctx(txn_id: HlcTimestamp, log_index: u64) -> TransactionContext {
+        let mut ctx = TransactionContext::new(txn_id);
+        ctx.log_index = log_index;
+        ctx
     }
 
     fn create_test_schema() -> TableSchema {
@@ -72,6 +79,7 @@ mod integration_tests {
 
         // let tx1 = create_txn_id(100);
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
 
         // Insert row
         let values = vec![
@@ -81,7 +89,7 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()], 0)
+            .insert_batch(&mut tx1_ctx, "users", vec![values.clone()])
             .unwrap();
 
         let row_id = row_ids.first().unwrap();
@@ -116,6 +124,7 @@ mod integration_tests {
 
         // let tx1 = create_txn_id(100);
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
 
         // Insert and commit
         let values = vec![
@@ -125,7 +134,7 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()], 0)
+            .insert_batch(&mut tx1_ctx, "users", vec![values.clone()])
             .unwrap();
         let row_id = row_ids.first().unwrap();
         storage.commit_transaction(tx1, 1).unwrap();
@@ -133,6 +142,7 @@ mod integration_tests {
         // Update in new transaction
         // let tx2 = create_txn_id(200);
         let tx2 = create_txn_id(2);
+        let mut tx2_ctx = create_test_tx_ctx(tx2, 0);
 
         let new_values = vec![
             Value::I64(1),
@@ -141,7 +151,7 @@ mod integration_tests {
             Value::I64(31),
         ];
         storage
-            .update(tx2, "users", *row_id, new_values.clone(), 0)
+            .update(&mut tx2_ctx, "users", *row_id, new_values.clone())
             .unwrap();
 
         // tx2 sees new value
@@ -172,6 +182,7 @@ mod integration_tests {
 
         // let tx1 = create_txn_id(100);
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
 
         // Insert and commit
         let values = vec![
@@ -181,7 +192,7 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()], 0)
+            .insert_batch(&mut tx1_ctx, "users", vec![values.clone()])
             .unwrap();
         let row_id = row_ids.first().unwrap();
         storage.commit_transaction(tx1, 1).unwrap();
@@ -189,7 +200,8 @@ mod integration_tests {
         // Delete in new transaction
         // let tx2 = create_txn_id(200);
         let tx2 = create_txn_id(2);
-        storage.delete(tx2, "users", *row_id, 0).unwrap();
+        let mut tx2_ctx = create_test_tx_ctx(tx2, 0);
+        storage.delete(&mut tx2_ctx, "users", *row_id).unwrap();
 
         // tx2 doesn't see deleted row
         let row = storage.read(tx2, "users", *row_id).unwrap();
@@ -216,6 +228,7 @@ mod integration_tests {
 
         // let tx1 = create_txn_id(100);
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
 
         // Insert multiple rows
         for i in 1..=5 {
@@ -226,7 +239,7 @@ mod integration_tests {
                 Value::I64(20 + i),
             ];
             storage
-                .insert_batch(tx1, "users", vec![values.clone()], 0)
+                .insert_batch(&mut tx1_ctx, "users", vec![values.clone()])
                 .unwrap();
         }
 
@@ -267,6 +280,7 @@ mod integration_tests {
 
         // let tx1 = create_txn_id(100);
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
 
         // Insert row
         let values = vec![
@@ -276,7 +290,7 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()], 0)
+            .insert_batch(&mut tx1_ctx, "users", vec![values.clone()])
             .unwrap();
         let row_id = row_ids.first().unwrap();
 
@@ -314,6 +328,7 @@ mod integration_tests {
                 .unwrap();
 
             let tx = create_txn_id(100);
+            let mut tx_ctx = create_test_tx_ctx(tx, 0);
 
             let values = vec![
                 Value::I64(1),
@@ -322,7 +337,7 @@ mod integration_tests {
                 Value::I64(30),
             ];
             storage
-                .insert_batch(tx, "users", vec![values.clone()], 0)
+                .insert_batch(&mut tx_ctx, "users", vec![values.clone()])
                 .unwrap();
             storage.commit_transaction(tx, 1).unwrap();
         }
@@ -369,6 +384,8 @@ mod integration_tests {
         let tx1 = create_txn_id(1);
         let tx2 = create_txn_id(2);
         let tx3 = create_txn_id(3);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
+        let mut tx2_ctx = create_test_tx_ctx(tx2, 0);
 
         // Each inserts different rows
         let values1 = vec![
@@ -378,7 +395,7 @@ mod integration_tests {
             Value::I64(30),
         ];
         storage
-            .insert_batch(tx1, "users", vec![values1.clone()], 0)
+            .insert_batch(&mut tx1_ctx, "users", vec![values1.clone()])
             .unwrap();
 
         let values2 = vec![
@@ -388,7 +405,7 @@ mod integration_tests {
             Value::I64(25),
         ];
         storage
-            .insert_batch(tx2, "users", vec![values2.clone()], 0)
+            .insert_batch(&mut tx2_ctx, "users", vec![values2.clone()])
             .unwrap();
 
         // tx1 and tx2 only see their own writes
@@ -419,9 +436,10 @@ mod integration_tests {
 
         // Insert some data
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
         storage
             .insert_batch(
-                tx1,
+                &mut tx1_ctx,
                 "users",
                 vec![vec![
                     Value::I64(1),
@@ -429,12 +447,11 @@ mod integration_tests {
                     Value::Str("alice@example.com".to_string()),
                     Value::I64(30),
                 ]],
-                0,
             )
             .unwrap();
         storage
             .insert_batch(
-                tx1,
+                &mut tx1_ctx,
                 "users",
                 vec![vec![
                     Value::I64(2),
@@ -442,7 +459,6 @@ mod integration_tests {
                     Value::Str("bob@example.com".to_string()),
                     Value::I64(25),
                 ]],
-                0,
             )
             .unwrap();
         storage.commit_transaction(tx1, 1).unwrap();
@@ -501,10 +517,11 @@ mod integration_tests {
 
         // Insert test data
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
         for i in 1..=5 {
             storage
                 .insert_batch(
-                    tx1,
+                    &mut tx1_ctx,
                     "users",
                     vec![vec![
                         Value::I64(i),
@@ -512,7 +529,6 @@ mod integration_tests {
                         Value::Str(format!("user{}@example.com", i)),
                         Value::I64(20 + i),
                     ]],
-                    0,
                 )
                 .unwrap();
         }
@@ -595,10 +611,11 @@ mod integration_tests {
 
         // Insert a large number of rows
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
         for i in 1..=1000 {
             storage
                 .insert_batch(
-                    tx1,
+                    &mut tx1_ctx,
                     "users",
                     vec![vec![
                         Value::I64(i),
@@ -606,7 +623,6 @@ mod integration_tests {
                         Value::Str(format!("user{}@example.com", i)),
                         Value::I64(20 + (i % 50)), // Ages from 20-69
                     ]],
-                    0,
                 )
                 .unwrap();
         }
@@ -689,9 +705,10 @@ mod integration_tests {
 
         // Insert test data
         let tx1 = create_txn_id(1);
+        let mut tx1_ctx = create_test_tx_ctx(tx1, 0);
         storage
             .insert_batch(
-                tx1,
+                &mut tx1_ctx,
                 "orders",
                 vec![vec![
                     Value::I64(1),
@@ -700,12 +717,11 @@ mod integration_tests {
                     Value::I64(2),
                     Value::F64(19.99),
                 ]],
-                0,
             )
             .unwrap();
         storage
             .insert_batch(
-                tx1,
+                &mut tx1_ctx,
                 "orders",
                 vec![vec![
                     Value::I64(2),
@@ -714,12 +730,11 @@ mod integration_tests {
                     Value::I64(1),
                     Value::F64(29.99),
                 ]],
-                0,
             )
             .unwrap();
         storage
             .insert_batch(
-                tx1,
+                &mut tx1_ctx,
                 "orders",
                 vec![vec![
                     Value::I64(3),
@@ -728,7 +743,6 @@ mod integration_tests {
                     Value::I64(3),
                     Value::F64(19.99),
                 ]],
-                0,
             )
             .unwrap();
         storage.commit_transaction(tx1, 1).unwrap();

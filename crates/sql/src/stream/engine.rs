@@ -372,32 +372,16 @@ impl SqlTransactionEngine {
         ) {
             Ok(result) => {
                 // Step 8: Persist predicates to storage (crash-safe)
-                // This happens AFTER execution succeeds
-                let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
+                // For write operations (INSERT/UPDATE/DELETE), predicates are already persisted
+                // in the same batch as the data. For read operations (SELECT), we need to
+                // persist them separately.
+                if !plan.is_write() {
+                    let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
 
-                // Create a batch for predicate persistence
-                let mut batch = self.storage.batch();
-
-                // Add predicates to batch and track keys for cleanup
-                match self
-                    .storage
-                    .add_predicates_to_batch(&mut batch, txn_id, &query_predicates)
-                {
-                    Ok(keys) => {
-                        // Track predicate keys in transaction context
-                        tx_ctx.predicate_keys.extend(keys);
-
-                        // Commit predicate batch
-                        if let Err(e) = batch.commit() {
-                            return OperationResult::Complete(SqlResponse::Error(format!(
-                                "Failed to persist predicates: {:?}",
-                                e
-                            )));
-                        }
-                    }
-                    Err(e) => {
+                    // Persist read predicates (handled internally by storage)
+                    if let Err(e) = self.storage.persist_read_predicates(tx_ctx) {
                         return OperationResult::Complete(SqlResponse::Error(format!(
-                            "Failed to add predicates to batch: {:?}",
+                            "Failed to persist predicates: {:?}",
                             e
                         )));
                     }
@@ -493,38 +477,21 @@ impl TransactionEngine for SqlTransactionEngine {
     fn prepare(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
         // Get transaction and release read predicates
         if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-            // Prepare the transaction (releases read predicates)
+            // Prepare the transaction (releases read predicates in-memory)
             tx_ctx.prepare();
+
+            // Also remove read predicates from storage
+            let _ = self.storage.prepare_transaction(txn_id);
         }
     }
 
     fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
-        if let Some(tx_ctx) = self.active_transactions.remove(&txn_id) {
+        if self.active_transactions.remove(&txn_id).is_some() {
             // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
 
-            // Remove predicates from storage (they're committed to data now)
-            if !tx_ctx.predicate_keys.is_empty() {
-                // Create batch for predicate cleanup
-                let mut batch = self.storage.batch();
-
-                // Remove all predicate keys for this transaction
-                if let Err(e) = self.storage.remove_predicates_from_batch(
-                    &mut batch,
-                    txn_id,
-                    &tx_ctx.predicate_keys,
-                ) {
-                    eprintln!("Warning: Failed to remove predicates from batch: {:?}", e);
-                }
-
-                // Commit the cleanup batch
-                if let Err(e) = batch.commit() {
-                    eprintln!("Warning: Failed to commit predicate cleanup batch: {:?}", e);
-                }
-            }
-
-            // Commit in storage with log_index (ignore errors - best effort)
+            // Commit in storage with log_index (this also cleans up predicates internally)
             let _ = self.storage.commit_transaction(txn_id, log_index);
         }
         // If transaction doesn't exist, that's fine - may have been committed already
@@ -532,31 +499,11 @@ impl TransactionEngine for SqlTransactionEngine {
 
     fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
-        if let Some(tx_ctx) = self.active_transactions.remove(&txn_id) {
+        if self.active_transactions.remove(&txn_id).is_some() {
             // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
 
-            // Remove predicates from storage (transaction aborted)
-            if !tx_ctx.predicate_keys.is_empty() {
-                // Create batch for predicate cleanup
-                let mut batch = self.storage.batch();
-
-                // Remove all predicate keys for this transaction
-                if let Err(e) = self.storage.remove_predicates_from_batch(
-                    &mut batch,
-                    txn_id,
-                    &tx_ctx.predicate_keys,
-                ) {
-                    eprintln!("Warning: Failed to remove predicates from batch: {:?}", e);
-                }
-
-                // Commit the cleanup batch
-                if let Err(e) = batch.commit() {
-                    eprintln!("Warning: Failed to commit predicate cleanup batch: {:?}", e);
-                }
-            }
-
-            // Abort in storage with log_index (ignore errors - best effort)
+            // Abort in storage with log_index (this also cleans up predicates internally)
             let _ = self.storage.abort_transaction(txn_id, log_index);
         }
         // If transaction doesn't exist, that's fine - may have been aborted already

@@ -43,11 +43,12 @@ impl PredicateStore {
         }
     }
 
-    /// Encode key: {txn_id}:{seq}
-    fn encode_key(txn_id: HlcTimestamp, seq: u64) -> Vec<u8> {
+    /// Encode key: {txn_id}{lock_type}{seq}
+    /// lock_type: 'r' for read (shared), 'w' for write (exclusive)
+    fn encode_key(txn_id: HlcTimestamp, is_write: bool, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
         key.extend_from_slice(&txn_id.to_lexicographic_bytes());
-        key.push(b':');
+        key.push(if is_write { b'w' } else { b'r' });
         key.extend_from_slice(&seq.to_be_bytes());
         key
     }
@@ -63,7 +64,7 @@ impl PredicateStore {
     ) -> Result<Vec<u8>> {
         // Generate unique key
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let key = Self::encode_key(txn_id, seq);
+        let key = Self::encode_key(txn_id, is_write, seq);
 
         // Serialize the full predicate with metadata
         let stored = StoredPredicate {
@@ -82,19 +83,44 @@ impl PredicateStore {
     }
 
     /// Remove all predicates for a transaction (on commit/abort)
-    pub fn remove_transaction_predicates(
+    pub fn remove_all_predicates(&mut self, batch: &mut Batch, txn_id: HlcTimestamp) -> Result<()> {
+        // Get the partition for this transaction's timestamp (if it exists)
+        if let Some(partition) = self
+            .bucket_manager
+            .get_existing_partition("predicates", txn_id)
+        {
+            // Use prefix scan to find all predicate keys for this transaction
+            // Key format: {txn_id}{r|w}{seq}
+            let prefix = txn_id.to_lexicographic_bytes().to_vec();
+
+            // Collect all predicate keys with this prefix
+            for (key, _) in partition.prefix(prefix).flatten() {
+                batch.remove(&partition, key);
+            }
+        }
+        // If partition doesn't exist, nothing to clean up
+
+        Ok(())
+    }
+
+    /// Remove only read predicates for a transaction (on prepare)
+    pub fn remove_read_predicates(
         &mut self,
         batch: &mut Batch,
         txn_id: HlcTimestamp,
-        predicate_keys: &[Vec<u8>],
     ) -> Result<()> {
         // Get the partition for this transaction's timestamp (if it exists)
         if let Some(partition) = self
             .bucket_manager
             .get_existing_partition("predicates", txn_id)
         {
-            // Remove all predicate keys atomically
-            for key in predicate_keys {
+            // Use prefix scan to find all read predicate keys
+            // Key format: {txn_id}r{seq}
+            let mut prefix = txn_id.to_lexicographic_bytes().to_vec();
+            prefix.push(b'r');
+
+            // Collect all read predicate keys with this prefix
+            for (key, _) in partition.prefix(prefix).flatten() {
                 batch.remove(&partition, key);
             }
         }
@@ -152,14 +178,15 @@ impl PredicateStore {
         key: &[u8],
         value: &[u8],
     ) -> Result<Option<(HlcTimestamp, Predicate)>> {
-        // Key format: {txn_id_bytes}:{seq_bytes}
-        // Extract txn_id from the key (everything before the colon)
-        let colon_pos = key.iter().position(|&b| b == b':');
-        if colon_pos.is_none() {
+        // Key format: {txn_id_bytes}{lock_type}{seq_bytes}
+        // HlcTimestamp is 20 bytes in lexicographic format
+        const TXN_ID_SIZE: usize = 20;
+
+        if key.len() < TXN_ID_SIZE + 1 {
             return Ok(None);
         }
 
-        let txn_id_bytes = &key[..colon_pos.unwrap()];
+        let txn_id_bytes = &key[..TXN_ID_SIZE];
         let txn_id = HlcTimestamp::from_lexicographic_bytes(txn_id_bytes)
             .map_err(|e| Error::Other(format!("Invalid txn_id in key: {}", e)))?;
 

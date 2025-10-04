@@ -1971,6 +1971,7 @@ fn test_nested_subquery_predicates() {
     engine.abort(tx4, next_log_index());
     engine.abort(tx5, next_log_index());
 }
+
 // ==================== CRASH RECOVERY TESTS ====================
 
 /// Helper to create a crash-safe storage config with persistent data directory
@@ -2251,5 +2252,100 @@ fn test_no_recovery_if_transactions_committed() {
         );
 
         engine.commit(tx2, next_log_index());
+    }
+}
+
+#[test]
+fn test_prepare_releases_read_predicates_from_storage() {
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let data_path = temp_dir.path().to_path_buf();
+
+    // Phase 1: Create transaction with read predicate and prepare it
+    {
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        // Create table
+        let tx1 = timestamp(1);
+        engine.begin(tx1, next_log_index());
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "CREATE TABLE test (id INT PRIMARY KEY, value INT)".to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "INSERT INTO test VALUES (1, 100)".to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        engine.commit(tx1, next_log_index());
+
+        // Transaction 2: Read data (creates read predicate)
+        let tx2 = timestamp(2);
+        engine.begin(tx2, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Query {
+                params: None,
+                sql: "SELECT * FROM test WHERE id = 1".to_string(),
+            },
+            tx2,
+            next_log_index(),
+        );
+        assert!(matches!(result, OperationResult::Complete(_)));
+
+        // Prepare tx2 - this should release read predicates
+        engine.prepare(tx2, next_log_index());
+
+        // Verify in-memory predicates are released
+        let tx3 = timestamp(3);
+        engine.begin(tx3, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE test SET value = 200 WHERE id = 1".to_string(),
+            },
+            tx3,
+            next_log_index(),
+        );
+        // Should succeed since read predicates were released in-memory
+        assert!(matches!(result, OperationResult::Complete(_)));
+        engine.commit(tx3, next_log_index());
+
+        // Drop engine (simulating crash) - tx2 is still in "preparing" state!
+        eprintln!("Simulating crash after prepare...");
+    }
+
+    // Phase 2: Restart and verify read predicates were removed from storage
+    {
+        eprintln!("Restarting engine after prepare...");
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        // Transaction 4: Try to update same data
+        let tx4 = timestamp(4);
+        engine.begin(tx4, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE test SET value = 300 WHERE id = 1".to_string(),
+            },
+            tx4,
+            next_log_index(),
+        );
+
+        // This SHOULD succeed (read locks released on prepare)
+        // But will likely FAIL (predicates still in storage) - confirming the bug
+        assert!(
+            matches!(result, OperationResult::Complete(_)),
+            "Read predicates should be released from storage on prepare, but they are not!"
+        );
+
+        engine.commit(tx4, next_log_index());
     }
 }

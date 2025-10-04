@@ -192,7 +192,7 @@ pub fn execute_insert(
     }
 
     // Perform atomic batch insert
-    let inserted_row_ids = storage.insert_batch(tx_ctx.id, &table, final_rows, tx_ctx.log_index)?;
+    let inserted_row_ids = storage.insert_batch(tx_ctx, &table, final_rows)?;
 
     Ok(ExecutionResult::Modified(inserted_row_ids.len()))
 }

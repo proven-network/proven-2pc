@@ -91,6 +91,14 @@ impl Plan {
                 | Plan::DropIndex { .. }
         )
     }
+
+    /// Check if this plan is a write operation (INSERT/UPDATE/DELETE)
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Plan::Insert { .. } | Plan::Update { .. } | Plan::Delete { .. }
+        )
+    }
 }
 
 /// Execution node in the plan tree

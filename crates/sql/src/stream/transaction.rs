@@ -32,8 +32,6 @@ pub struct TransactionContext {
     uuid_sequence: std::sync::atomic::AtomicU64,
     /// Log index for this transaction (for crash recovery)
     pub log_index: u64,
-    /// Predicate keys stored in the database (for cleanup on commit/abort)
-    pub predicate_keys: Vec<Vec<u8>>,
 }
 
 impl TransactionContext {
@@ -45,7 +43,6 @@ impl TransactionContext {
             predicates: QueryPredicates::new(),
             uuid_sequence: std::sync::atomic::AtomicU64::new(0),
             log_index: 0,
-            predicate_keys: Vec::new(),
         }
     }
 
@@ -120,7 +117,6 @@ impl Clone for TransactionContext {
                 self.uuid_sequence.load(std::sync::atomic::Ordering::SeqCst),
             ),
             log_index: self.log_index,
-            predicate_keys: self.predicate_keys.clone(),
         }
     }
 }
