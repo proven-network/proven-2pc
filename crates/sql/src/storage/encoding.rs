@@ -34,7 +34,7 @@ pub fn encode_index_key(index_values: &[Value], row_id: u64) -> Vec<u8> {
 }
 
 /// Encode a value in a sortable binary format (for index keys)
-fn encode_value_sortable(value: &Value, output: &mut Vec<u8>) {
+pub fn encode_value_sortable(value: &Value, output: &mut Vec<u8>) {
     match value {
         Value::Null => {
             output.push(0x00); // NULL sorts first

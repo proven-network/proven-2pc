@@ -1971,3 +1971,285 @@ fn test_nested_subquery_predicates() {
     engine.abort(tx4, next_log_index());
     engine.abort(tx5, next_log_index());
 }
+// ==================== CRASH RECOVERY TESTS ====================
+
+/// Helper to create a crash-safe storage config with persistent data directory
+fn persistent_storage_config(data_path: std::path::PathBuf) -> StorageConfig {
+    let mut config = StorageConfig::for_testing();
+    config.data_dir = data_path;
+    config.persist_mode = proven_sql::StorageConfig::default().persist_mode; // Enable disk persistence
+    config
+}
+
+#[test]
+fn test_predicate_crash_recovery() {
+    use tempfile::TempDir;
+
+    // Create a persistent data directory
+    let temp_dir = TempDir::new().unwrap();
+    let data_path = temp_dir.path().to_path_buf();
+
+    // Phase 1: Create engine and start transactions with predicates
+    {
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        // Create table
+        let tx1 = timestamp(1);
+        engine.begin(tx1, next_log_index());
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "CREATE TABLE accounts (id INT PRIMARY KEY, balance INT)".to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "INSERT INTO accounts VALUES (1, 1000), (2, 500)".to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        engine.commit(tx1, next_log_index());
+
+        // Start transaction 2 with read predicate (don't commit)
+        let tx2 = timestamp(2);
+        engine.begin(tx2, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Query {
+                params: None,
+                sql: "SELECT * FROM accounts WHERE id = 1".to_string(),
+            },
+            tx2,
+            next_log_index(),
+        );
+        assert!(matches!(result, OperationResult::Complete(_)));
+
+        // Start transaction 3 with write predicate (don't commit)
+        let tx3 = timestamp(3);
+        engine.begin(tx3, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE accounts SET balance = balance + 100 WHERE id = 2".to_string(),
+            },
+            tx3,
+            next_log_index(),
+        );
+        assert!(matches!(result, OperationResult::Complete(_)));
+
+        // Drop engine (simulating crash) - tx2 and tx3 are still active!
+        eprintln!("Simulating crash: dropping engine with active transactions...");
+    }
+
+    // Phase 2: Restart engine and verify predicates were recovered
+    {
+        eprintln!("Restarting engine...");
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        // Start a new transaction that should conflict with recovered predicates
+        let tx4 = timestamp(4);
+        engine.begin(tx4, next_log_index());
+
+        // Try to write to account 1 - should block on recovered tx2's read predicate
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE accounts SET balance = 2000 WHERE id = 1".to_string(),
+            },
+            tx4,
+            next_log_index(),
+        );
+
+        // This should block if recovery worked correctly
+        assert!(
+            matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == timestamp(2))),
+            "Recovered predicate from tx2 should block tx4"
+        );
+
+        // Try to write to account 2 - should block on recovered tx3's write predicate
+        let tx5 = timestamp(5);
+        engine.begin(tx5, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE accounts SET balance = 3000 WHERE id = 2".to_string(),
+            },
+            tx5,
+            next_log_index(),
+        );
+
+        assert!(
+            matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == timestamp(3))),
+            "Recovered predicate from tx3 should block tx5"
+        );
+
+        // Commit/abort the recovered transactions to clean up
+        engine.commit(timestamp(2), next_log_index());
+        engine.abort(timestamp(3), next_log_index());
+
+        // Now new transactions should succeed
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE accounts SET balance = 2000 WHERE id = 1".to_string(),
+            },
+            tx4,
+            next_log_index(),
+        );
+        assert!(matches!(result, OperationResult::Complete(_)));
+        engine.commit(tx4, next_log_index());
+    }
+}
+
+#[test]
+fn test_predicate_recovery_with_multiple_operations() {
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let data_path = temp_dir.path().to_path_buf();
+
+    // Phase 1: Build up complex predicate state
+    {
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        // Setup
+        let tx1 = timestamp(1);
+        engine.begin(tx1, next_log_index());
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "CREATE TABLE orders (id INT PRIMARY KEY, status TEXT, amount INT)"
+                    .to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "INSERT INTO orders VALUES (1, 'pending', 100), (2, 'shipped', 200)"
+                    .to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        engine.commit(tx1, next_log_index());
+
+        // Transaction with multiple predicates (multiple operations)
+        let tx2 = timestamp(2);
+        engine.begin(tx2, next_log_index());
+
+        // First operation - read predicate
+        engine.apply_operation(
+            SqlOperation::Query {
+                params: None,
+                sql: "SELECT * FROM orders WHERE status = 'pending'".to_string(),
+            },
+            tx2,
+            next_log_index(),
+        );
+
+        // Second operation - write predicate
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE orders SET amount = amount + 50 WHERE id = 1".to_string(),
+            },
+            tx2,
+            next_log_index(),
+        );
+
+        // Drop engine with tx2 active
+        eprintln!("Simulating crash with multi-operation transaction...");
+    }
+
+    // Phase 2: Verify all predicates recovered
+    {
+        eprintln!("Restarting engine...");
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        // Try to conflict with accumulated predicates
+        let tx3 = timestamp(3);
+        engine.begin(tx3, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE orders SET status = 'cancelled' WHERE status = 'pending'".to_string(),
+            },
+            tx3,
+            next_log_index(),
+        );
+
+        // Should block due to recovered predicates
+        assert!(
+            matches!(result, OperationResult::WouldBlock { blockers } if blockers.iter().any(|b| b.txn == timestamp(2))),
+            "Multiple recovered predicates should block conflicting transaction"
+        );
+
+        // Clean up
+        engine.abort(timestamp(2), next_log_index());
+        engine.abort(tx3, next_log_index());
+    }
+}
+
+#[test]
+fn test_no_recovery_if_transactions_committed() {
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let data_path = temp_dir.path().to_path_buf();
+
+    // Phase 1: Create and commit transaction
+    {
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        let tx1 = timestamp(1);
+        engine.begin(tx1, next_log_index());
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "CREATE TABLE test (id INT PRIMARY KEY, value INT)".to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "INSERT INTO test VALUES (1, 100)".to_string(),
+            },
+            tx1,
+            next_log_index(),
+        );
+        // Commit - predicates should be cleaned up
+        engine.commit(tx1, next_log_index());
+    }
+
+    // Phase 2: After restart, committed transaction should not block
+    {
+        let mut engine = SqlTransactionEngine::new(persistent_storage_config(data_path.clone()));
+
+        // New transaction should not be blocked by tx1 (it was committed)
+        let tx2 = timestamp(2);
+        engine.begin(tx2, next_log_index());
+        let result = engine.apply_operation(
+            SqlOperation::Execute {
+                params: None,
+                sql: "UPDATE test SET value = 200 WHERE id = 1".to_string(),
+            },
+            tx2,
+            next_log_index(),
+        );
+
+        // Should complete - no predicates from tx1 should remain
+        assert!(
+            matches!(result, OperationResult::Complete(_)),
+            "Committed transaction predicates should not be recovered"
+        );
+
+        engine.commit(tx2, next_log_index());
+    }
+}

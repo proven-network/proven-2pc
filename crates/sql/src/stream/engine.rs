@@ -59,7 +59,7 @@ impl SqlTransactionEngine {
         let analyzer = CachingSemanticAnalyzer::new(schemas.clone());
         let planner = CachingPlanner::new(schemas, indexes);
 
-        Self {
+        let mut engine = Self {
             storage,
             active_transactions: HashMap::new(),
             predicate_index: PredicateIndex::new(),
@@ -67,6 +67,62 @@ impl SqlTransactionEngine {
             parser,
             analyzer,
             planner,
+        };
+
+        // Recover active transactions from storage (crash recovery)
+        engine.recover_from_storage();
+
+        engine
+    }
+
+    /// Recover active transactions and predicates from storage (crash recovery)
+    fn recover_from_storage(&mut self) {
+        // Use current wall clock time for recovery
+        // We create a timestamp with node_id 0 since this is just for scanning
+        let current_physical = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        let current_time = proven_hlc::HlcTimestamp::from_physical_time(
+            current_physical,
+            proven_hlc::NodeId::new(0),
+        );
+
+        // Get all active transactions from predicate storage
+        match self
+            .storage
+            .get_active_transactions_from_predicates(current_time)
+        {
+            Ok(transactions) => {
+                for (txn_id, predicates) in transactions {
+                    // Create transaction context
+                    let mut tx_ctx = TransactionContext::new(txn_id);
+
+                    // Rebuild predicates for this transaction
+                    let mut query_predicates = crate::semantic::predicate::QueryPredicates::new();
+                    for predicate in predicates {
+                        // We don't know if these were reads or writes from storage
+                        // To be safe, treat them all as writes (more restrictive)
+                        query_predicates.writes.push(predicate);
+                    }
+
+                    tx_ctx.predicates = query_predicates.clone();
+
+                    // Add to active transactions
+                    self.active_transactions.insert(txn_id, tx_ctx);
+
+                    // Add to predicate index
+                    self.predicate_index
+                        .add_transaction(txn_id, &query_predicates);
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to recover predicates from storage: {:?}",
+                    e
+                );
+                // Continue without recovery - predicates will be rebuilt as operations execute
+            }
         }
     }
 
@@ -315,6 +371,38 @@ impl SqlTransactionEngine {
             params.as_ref(),
         ) {
             Ok(result) => {
+                // Step 8: Persist predicates to storage (crash-safe)
+                // This happens AFTER execution succeeds
+                let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
+
+                // Create a batch for predicate persistence
+                let mut batch = self.storage.batch();
+
+                // Add predicates to batch and track keys for cleanup
+                match self
+                    .storage
+                    .add_predicates_to_batch(&mut batch, txn_id, &query_predicates)
+                {
+                    Ok(keys) => {
+                        // Track predicate keys in transaction context
+                        tx_ctx.predicate_keys.extend(keys);
+
+                        // Commit predicate batch
+                        if let Err(e) = batch.commit() {
+                            return OperationResult::Complete(SqlResponse::Error(format!(
+                                "Failed to persist predicates: {:?}",
+                                e
+                            )));
+                        }
+                    }
+                    Err(e) => {
+                        return OperationResult::Complete(SqlResponse::Error(format!(
+                            "Failed to add predicates to batch: {:?}",
+                            e
+                        )));
+                    }
+                }
+
                 // Update schema cache if DDL operation
                 if plan.is_ddl() {
                     // Schema updates are handled internally by storage
@@ -412,9 +500,29 @@ impl TransactionEngine for SqlTransactionEngine {
 
     fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
-        if self.active_transactions.remove(&txn_id).is_some() {
-            // Remove from predicate index
+        if let Some(tx_ctx) = self.active_transactions.remove(&txn_id) {
+            // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
+
+            // Remove predicates from storage (they're committed to data now)
+            if !tx_ctx.predicate_keys.is_empty() {
+                // Create batch for predicate cleanup
+                let mut batch = self.storage.batch();
+
+                // Remove all predicate keys for this transaction
+                if let Err(e) = self.storage.remove_predicates_from_batch(
+                    &mut batch,
+                    txn_id,
+                    &tx_ctx.predicate_keys,
+                ) {
+                    eprintln!("Warning: Failed to remove predicates from batch: {:?}", e);
+                }
+
+                // Commit the cleanup batch
+                if let Err(e) = batch.commit() {
+                    eprintln!("Warning: Failed to commit predicate cleanup batch: {:?}", e);
+                }
+            }
 
             // Commit in storage with log_index (ignore errors - best effort)
             let _ = self.storage.commit_transaction(txn_id, log_index);
@@ -424,9 +532,29 @@ impl TransactionEngine for SqlTransactionEngine {
 
     fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
-        if self.active_transactions.remove(&txn_id).is_some() {
-            // Remove from predicate index
+        if let Some(tx_ctx) = self.active_transactions.remove(&txn_id) {
+            // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
+
+            // Remove predicates from storage (transaction aborted)
+            if !tx_ctx.predicate_keys.is_empty() {
+                // Create batch for predicate cleanup
+                let mut batch = self.storage.batch();
+
+                // Remove all predicate keys for this transaction
+                if let Err(e) = self.storage.remove_predicates_from_batch(
+                    &mut batch,
+                    txn_id,
+                    &tx_ctx.predicate_keys,
+                ) {
+                    eprintln!("Warning: Failed to remove predicates from batch: {:?}", e);
+                }
+
+                // Commit the cleanup batch
+                if let Err(e) = batch.commit() {
+                    eprintln!("Warning: Failed to commit predicate cleanup batch: {:?}", e);
+                }
+            }
 
             // Abort in storage with log_index (ignore errors - best effort)
             let _ = self.storage.abort_transaction(txn_id, log_index);

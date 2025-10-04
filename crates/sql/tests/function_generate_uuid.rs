@@ -67,18 +67,18 @@ fn test_generate_uuid_return_type() {
 }
 
 #[test]
-fn test_generate_uuid_deterministic_within_transaction() {
+fn test_generate_uuid_unique_within_transaction() {
     let mut ctx = setup_test();
 
-    // Within the same transaction, GENERATE_UUID should be deterministic
+    // Each call to GENERATE_UUID should generate a unique UUID
     let results1 = ctx.query("SELECT GENERATE_UUID() AS uuid");
     let uuid1 = results1[0].get("uuid").unwrap().clone();
 
     let results2 = ctx.query("SELECT GENERATE_UUID() AS uuid");
     let uuid2 = results2[0].get("uuid").unwrap().clone();
 
-    // UUIDs should be the same within the same transaction context
-    assert_eq!(uuid1, uuid2);
+    // UUIDs should be different on each call
+    assert_ne!(uuid1, uuid2);
 
     ctx.commit();
 }
@@ -118,11 +118,10 @@ fn test_generate_uuid_in_insert() {
 }
 
 #[test]
-fn test_generate_uuid_multiple_inserts_same_uuid() {
+fn test_generate_uuid_multiple_inserts_unique_uuids() {
     let mut ctx = setup_test();
 
-    // Since GENERATE_UUID() is deterministic within a transaction,
-    // multiple calls will generate the same UUID
+    // Each call to GENERATE_UUID() generates a unique UUID
     ctx.exec("CREATE TABLE Items (id UUID, name TEXT)");
 
     ctx.exec("INSERT INTO Items VALUES (GENERATE_UUID(), 'item1')");
@@ -131,7 +130,7 @@ fn test_generate_uuid_multiple_inserts_same_uuid() {
 
     ctx.assert_row_count("SELECT * FROM Items", 3);
 
-    // All UUIDs should be the same within this transaction
+    // All UUIDs should be different
     let results = ctx.query("SELECT id FROM Items");
     assert_eq!(results.len(), 3);
 
@@ -139,14 +138,9 @@ fn test_generate_uuid_multiple_inserts_same_uuid() {
     let uuid2 = results[1].get("id").unwrap();
     let uuid3 = results[2].get("id").unwrap();
 
-    assert_eq!(
-        uuid1, uuid2,
-        "All UUIDs should be identical within the same transaction"
-    );
-    assert_eq!(
-        uuid2, uuid3,
-        "All UUIDs should be identical within the same transaction"
-    );
+    assert_ne!(uuid1, uuid2, "UUIDs should be unique");
+    assert_ne!(uuid2, uuid3, "UUIDs should be unique");
+    assert_ne!(uuid1, uuid3, "UUIDs should be unique");
 
     ctx.commit();
 }
@@ -184,6 +178,23 @@ fn test_generate_uuid_in_select_list() {
     for result in results {
         assert!(result.get("uuid").unwrap().contains("Uuid"));
     }
+
+    ctx.commit();
+}
+
+#[test]
+fn test_generate_uuid_multiple_calls_same_statement() {
+    let mut ctx = setup_test();
+
+    // Multiple calls to GENERATE_UUID in the same SELECT should produce different UUIDs
+    let results = ctx.query("SELECT GENERATE_UUID() AS uuid1, GENERATE_UUID() AS uuid2");
+
+    assert_eq!(results.len(), 1);
+    let uuid1 = results[0].get("uuid1").unwrap();
+    let uuid2 = results[0].get("uuid2").unwrap();
+
+    // Even within the same statement, UUIDs should be unique
+    assert_ne!(uuid1, uuid2, "UUIDs in same statement should be unique");
 
     ctx.commit();
 }

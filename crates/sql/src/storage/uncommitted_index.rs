@@ -114,7 +114,7 @@ impl UncommittedIndexStore {
     fn get_existing_partition_for_time(
         &self,
         time: HlcTimestamp,
-    ) -> Option<&fjall::PartitionHandle> {
+    ) -> Option<fjall::PartitionHandle> {
         self.bucket_manager
             .get_existing_partition("uncommitted_index", time)
     }
@@ -123,7 +123,7 @@ impl UncommittedIndexStore {
     fn get_or_create_partition_for_time(
         &mut self,
         time: HlcTimestamp,
-    ) -> Result<&fjall::PartitionHandle> {
+    ) -> Result<fjall::PartitionHandle> {
         self.bucket_manager
             .get_or_create_partition("uncommitted_index", time)
     }
@@ -193,7 +193,7 @@ impl UncommittedIndexStore {
 
         // Remove all keys using the batch
         for key in keys_to_remove {
-            batch.remove(partition, key);
+            batch.remove(&partition, key);
         }
 
         Ok(())

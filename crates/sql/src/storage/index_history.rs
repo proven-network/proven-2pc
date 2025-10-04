@@ -63,7 +63,7 @@ impl IndexHistoryStore {
             for (seq, op) in index_ops.into_iter().enumerate() {
                 let key = Self::encode_key(commit_time, op.row_id(), seq as u32);
                 batch.insert(
-                    partition,
+                    &partition,
                     key,
                     bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
                 );

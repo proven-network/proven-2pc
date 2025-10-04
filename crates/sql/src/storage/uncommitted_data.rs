@@ -86,7 +86,7 @@ impl UncommittedDataStore {
     fn get_existing_partition_for_time(
         &self,
         time: HlcTimestamp,
-    ) -> Option<&fjall::PartitionHandle> {
+    ) -> Option<fjall::PartitionHandle> {
         self.bucket_manager
             .get_existing_partition("uncommitted", time)
     }
@@ -95,7 +95,7 @@ impl UncommittedDataStore {
     fn get_or_create_partition_for_time(
         &mut self,
         time: HlcTimestamp,
-    ) -> Result<&fjall::PartitionHandle> {
+    ) -> Result<fjall::PartitionHandle> {
         self.bucket_manager
             .get_or_create_partition("uncommitted", time)
     }
@@ -111,7 +111,7 @@ impl UncommittedDataStore {
         let partition = self.get_or_create_partition_for_time(txn_id)?;
         let key = Self::encode_key(txn_id, &op, seq);
         batch.insert(
-            partition,
+            &partition,
             key,
             bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
         );
@@ -217,7 +217,7 @@ impl UncommittedDataStore {
         let prefix = Self::encode_tx_prefix(txn_id);
         for result in partition.prefix(prefix) {
             let (key, _) = result?;
-            batch.remove(partition, key);
+            batch.remove(&partition, key);
         }
 
         Ok(())

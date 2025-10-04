@@ -70,6 +70,7 @@ pub mod index;
 pub mod index_history;
 pub mod index_iterator;
 pub mod iterator;
+pub mod predicate_store;
 pub mod types;
 pub mod uncommitted_data;
 pub mod uncommitted_index;

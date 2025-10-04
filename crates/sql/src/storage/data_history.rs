@@ -31,9 +31,7 @@ impl DataHistoryStore {
 
     /// Check if the store is empty (fast check for optimization)
     pub fn is_empty(&self) -> bool {
-        // With bucketed partitions, check if we have any active partitions
-        // This is a fast in-memory check
-        self.bucket_manager.active_partitions.is_empty()
+        !self.bucket_manager.has_partitions()
     }
 
     /// Encode key: {commit_time(20)}{row_id(8)}{seq(4)}
@@ -69,7 +67,7 @@ impl DataHistoryStore {
             for (seq, op) in table_ops.into_iter().enumerate() {
                 let key = Self::encode_key(commit_time, op.row_id(), seq as u32);
                 batch.insert(
-                    partition,
+                    &partition,
                     key,
                     bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
                 );

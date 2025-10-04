@@ -32,6 +32,8 @@ pub struct TransactionContext {
     uuid_sequence: std::sync::atomic::AtomicU64,
     /// Log index for this transaction (for crash recovery)
     pub log_index: u64,
+    /// Predicate keys stored in the database (for cleanup on commit/abort)
+    pub predicate_keys: Vec<Vec<u8>>,
 }
 
 impl TransactionContext {
@@ -43,6 +45,7 @@ impl TransactionContext {
             predicates: QueryPredicates::new(),
             uuid_sequence: std::sync::atomic::AtomicU64::new(0),
             log_index: 0,
+            predicate_keys: Vec::new(),
         }
     }
 
@@ -73,9 +76,9 @@ impl TransactionContext {
         &self.id
     }
 
-    /// Generate a deterministic UUID based on transaction ID and an auto-incrementing sequence
+    /// Generate a deterministic UUID based on transaction ID, log_index, and sequence
+    /// This ensures that replaying operations from the log produces identical UUIDs
     pub fn deterministic_uuid(&self) -> uuid::Uuid {
-        // Ignore the passed sequence and use our internal counter
         let sequence = self
             .uuid_sequence
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -83,7 +86,11 @@ impl TransactionContext {
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
+        // Hash transaction ID
         self.id.hash(&mut hasher);
+        // Hash log_index for deterministic replay
+        self.log_index.hash(&mut hasher);
+        // Hash sequence for uniqueness within operation
         sequence.hash(&mut hasher);
 
         let hash = hasher.finish();
@@ -113,6 +120,7 @@ impl Clone for TransactionContext {
                 self.uuid_sequence.load(std::sync::atomic::Ordering::SeqCst),
             ),
             log_index: self.log_index,
+            predicate_keys: self.predicate_keys.clone(),
         }
     }
 }

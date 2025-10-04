@@ -6,7 +6,6 @@
 use crate::error::Result;
 use fjall::{Keyspace, PartitionCreateOptions, PartitionHandle};
 use proven_hlc::HlcTimestamp;
-use std::collections::HashMap;
 use std::time::Duration;
 
 /// Calculate bucket ID from timestamp and bucket duration
@@ -21,12 +20,6 @@ pub struct BucketManager {
     prefix: String, // e.g., "_data_history", "_uncommitted_data"
     bucket_duration: Duration,
     partition_options: PartitionCreateOptions,
-
-    // Active partitions: (entity, bucket_id) -> PartitionHandle
-    pub(crate) active_partitions: HashMap<(String, u64), PartitionHandle>,
-
-    // Tracked buckets for cleanup: (entity, bucket_id, handle)
-    tracked_buckets: Vec<(String, u64, PartitionHandle)>,
 }
 
 impl BucketManager {
@@ -41,34 +34,22 @@ impl BucketManager {
             prefix,
             bucket_duration,
             partition_options,
-            active_partitions: HashMap::new(),
-            tracked_buckets: Vec::new(),
         }
     }
 
-    /// Get or create partition for writes (requires &mut self)
+    /// Get or create partition for writes
     pub fn get_or_create_partition(
         &mut self,
         entity: &str,
         time: HlcTimestamp,
-    ) -> Result<&PartitionHandle> {
+    ) -> Result<PartitionHandle> {
         let bucket_id = get_bucket_id(time, self.bucket_duration);
-        let key = (entity.to_string(), bucket_id);
-
-        if self.active_partitions.contains_key(&key) {
-            return Ok(&self.active_partitions[&key]);
-        }
-
-        // Create partition: prefix_entity_bucket_ID
         let partition_name = format!("{}_{}_bucket_{:010}", self.prefix, entity, bucket_id);
-        let partition = self
-            .keyspace
-            .open_partition(&partition_name, self.partition_options.clone())?;
 
-        self.tracked_buckets
-            .push((entity.to_string(), bucket_id, partition.clone()));
-        self.active_partitions.insert(key.clone(), partition);
-        Ok(&self.active_partitions[&key])
+        // Fjall handles caching internally
+        self.keyspace
+            .open_partition(&partition_name, self.partition_options.clone())
+            .map_err(Into::into)
     }
 
     /// Get existing partition for reads - doesn't create (&self - read-only)
@@ -76,9 +57,14 @@ impl BucketManager {
         &self,
         entity: &str,
         time: HlcTimestamp,
-    ) -> Option<&PartitionHandle> {
+    ) -> Option<PartitionHandle> {
         let bucket_id = get_bucket_id(time, self.bucket_duration);
-        self.active_partitions.get(&(entity.to_string(), bucket_id))
+
+        // Just try to open from keyspace - fjall handles caching internally
+        let partition_name = format!("{}_{}_bucket_{:010}", self.prefix, entity, bucket_id);
+        self.keyspace
+            .open_partition(&partition_name, self.partition_options.clone())
+            .ok()
     }
 
     /// Get existing partitions for a time range - read-only (&self)
@@ -91,18 +77,29 @@ impl BucketManager {
         let start_bucket = get_bucket_id(start_time, self.bucket_duration);
         let end_bucket = get_bucket_id(end_time, self.bucket_duration);
 
-        // OPTIMIZATION: Instead of iterating through potentially billions of buckets,
-        // only check the buckets that actually exist for this entity
-        self.active_partitions
-            .iter()
-            .filter_map(|((e, bucket_id), handle)| {
-                if e == entity && *bucket_id >= start_bucket && *bucket_id <= end_bucket {
-                    Some(handle.clone())
-                } else {
-                    None
+        let mut partitions = Vec::new();
+
+        // Scan keyspace for all matching partitions
+        // Fjall handles caching internally, so we don't need to duplicate that logic
+        let prefix = format!("{}_{}_bucket_", self.prefix, entity);
+        for partition_name in self.keyspace.list_partitions() {
+            let name = partition_name.as_ref();
+            if let Some(bucket_str) = name.strip_prefix(&prefix)
+                && let Ok(bucket_id) = bucket_str.parse::<u64>()
+                && bucket_id >= start_bucket
+                && bucket_id <= end_bucket
+            {
+                // Open the partition - fjall will use its internal cache if already open
+                if let Ok(handle) = self
+                    .keyspace
+                    .open_partition(name, self.partition_options.clone())
+                {
+                    partitions.push(handle);
                 }
-            })
-            .collect()
+            }
+        }
+
+        partitions
     }
 
     /// Cleanup old buckets - drops entire partitions (O(1) per bucket)
@@ -117,31 +114,36 @@ impl BucketManager {
 
         let mut removed = 0;
 
-        // Collect partition handles to remove
-        let mut handles_to_delete = Vec::new();
-
-        self.tracked_buckets.retain(|(entity, bucket_id, handle)| {
-            if *bucket_id < cutoff_bucket {
-                // Remove from active partitions HashMap (drops one reference)
-                self.active_partitions.remove(&(entity.clone(), *bucket_id));
-
-                // Collect the handle for deletion (we'll drop it after removing from tracked_buckets)
-                handles_to_delete.push(handle.clone());
-
-                removed += 1;
-                false // Don't retain in tracked_buckets
-            } else {
-                true // Keep this bucket
+        // Scan all partitions matching our prefix
+        let prefix = format!("{}_", self.prefix);
+        for partition_name in self.keyspace.list_partitions() {
+            let name = partition_name.as_ref();
+            if let Some(rest) = name.strip_prefix(&prefix) {
+                // Parse: entity_bucket_NNNNNNNNNN
+                if let Some(bucket_pos) = rest.rfind("_bucket_") {
+                    let bucket_str = &rest[bucket_pos + 8..];
+                    if let Ok(bucket_id) = bucket_str.parse::<u64>()
+                        && bucket_id < cutoff_bucket
+                    {
+                        // Open and delete the partition
+                        if let Ok(handle) = self
+                            .keyspace
+                            .open_partition(name, self.partition_options.clone())
+                        {
+                            let _ = self.keyspace.delete_partition(handle);
+                            removed += 1;
+                        }
+                    }
+                }
             }
-        });
-
-        // Now all references from active_partitions and tracked_buckets are dropped
-        // Delete the partitions (this should now actually delete the data)
-        for handle in handles_to_delete {
-            // The delete_partition call should work now that we've dropped all our references
-            let _ = self.keyspace.delete_partition(handle);
         }
 
         Ok(removed)
+    }
+
+    /// Check if there are any partitions with this prefix
+    pub fn has_partitions(&self) -> bool {
+        // Check partition count > 1 (since _metadata always exists)
+        self.keyspace.partition_count() > 1
     }
 }

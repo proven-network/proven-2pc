@@ -7,14 +7,14 @@ use crate::types::Value;
 use std::ops::Bound;
 
 /// A predicate representing a condition on a table
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Predicate {
     pub table: String,
     pub condition: PredicateCondition,
 }
 
 /// The condition part of a predicate
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PredicateCondition {
     /// The entire table (no filter)
     All,

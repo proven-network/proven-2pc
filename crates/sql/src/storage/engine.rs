@@ -7,6 +7,7 @@ use crate::storage::data_history::DataHistoryStore;
 use crate::storage::encoding;
 use crate::storage::index::{IndexManager, IndexMetadata};
 use crate::storage::index_history::IndexHistoryStore;
+use crate::storage::predicate_store::PredicateStore;
 use crate::storage::types::{Row, RowId, WriteOp};
 use crate::storage::uncommitted_data::UncommittedDataStore;
 use crate::storage::uncommitted_index::UncommittedIndexStore;
@@ -51,6 +52,9 @@ pub struct Storage {
 
     // Index history (committed) for time-travel on indexes
     index_history: IndexHistoryStore,
+
+    // Predicate store for crash-safe predicate locking
+    predicate_store: PredicateStore,
 
     // Cache of table -> indexes mapping for performance
     // Invalidated on DDL operations (create_index, drop_index, drop_table)
@@ -137,6 +141,18 @@ impl Storage {
         let index_history =
             IndexHistoryStore::new(index_history_mgr, config.history_retention_window);
 
+        // Create BucketManager for predicates (time-based partitioning for cleanup)
+        let predicates_mgr = BucketManager::new(
+            keyspace.clone(),
+            "_predicates".to_string(),
+            config.uncommitted_bucket_duration, // Use same bucketing as uncommitted data
+            PartitionCreateOptions::default()
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
+        );
+        let predicate_store =
+            PredicateStore::new(predicates_mgr, config.uncommitted_retention_window);
+
         // Load log_index from metadata (default to 0 if not found)
         let log_index = if let Some(bytes) = metadata_partition.get("log_index")? {
             if bytes.len() == 8 {
@@ -201,6 +217,7 @@ impl Storage {
             uncommitted_data,
             data_history,
             index_history,
+            predicate_store,
             table_indexes_cache: HashMap::new(),
             last_cleanup: None,
             log_index: AtomicU64::new(log_index),
@@ -1185,6 +1202,8 @@ impl Storage {
             // Also cleanup uncommitted stores (to catch orphaned transactions)
             self.uncommitted_data.cleanup_old_buckets(txn_id)?;
             self.uncommitted_index.cleanup_old_buckets(txn_id)?;
+            // Cleanup orphaned predicates
+            self.predicate_store.cleanup_old_buckets(txn_id)?;
             self.last_cleanup = Some(txn_id);
         }
 
@@ -1239,6 +1258,8 @@ impl Storage {
             // Also cleanup uncommitted stores (to catch orphaned transactions)
             self.uncommitted_data.cleanup_old_buckets(txn_id)?;
             self.uncommitted_index.cleanup_old_buckets(txn_id)?;
+            // Cleanup orphaned predicates
+            self.predicate_store.cleanup_old_buckets(txn_id)?;
             self.last_cleanup = Some(txn_id);
         }
 
@@ -1512,5 +1533,67 @@ impl Storage {
     /// Get the last processed log index
     pub fn get_log_index(&self) -> u64 {
         self.log_index.load(Ordering::SeqCst)
+    }
+
+    /// Add predicates to a batch for atomic persistence
+    /// Returns the predicate keys for later cleanup
+    pub fn add_predicates_to_batch(
+        &mut self,
+        batch: &mut Batch,
+        txn_id: HlcTimestamp,
+        predicates: &crate::semantic::predicate::QueryPredicates,
+    ) -> Result<Vec<Vec<u8>>> {
+        let mut predicate_keys = Vec::new();
+
+        // Add read predicates (shared locks)
+        for pred in &predicates.reads {
+            let key = self.predicate_store.add_predicate_to_batch(
+                batch, txn_id, pred, false, // shared lock
+            )?;
+            predicate_keys.push(key);
+        }
+
+        // Add write predicates (exclusive locks)
+        for pred in &predicates.writes {
+            let key = self.predicate_store.add_predicate_to_batch(
+                batch, txn_id, pred, true, // exclusive lock
+            )?;
+            predicate_keys.push(key);
+        }
+
+        // Add insert predicates (exclusive locks)
+        for pred in &predicates.inserts {
+            let key = self.predicate_store.add_predicate_to_batch(
+                batch, txn_id, pred, true, // exclusive lock
+            )?;
+            predicate_keys.push(key);
+        }
+
+        Ok(predicate_keys)
+    }
+
+    /// Remove predicates for a transaction (on commit/abort)
+    pub fn remove_predicates_from_batch(
+        &mut self,
+        batch: &mut Batch,
+        txn_id: HlcTimestamp,
+        predicate_keys: &[Vec<u8>],
+    ) -> Result<()> {
+        self.predicate_store
+            .remove_transaction_predicates(batch, txn_id, predicate_keys)
+    }
+
+    /// Get all active transactions from predicate storage (for recovery)
+    pub fn get_active_transactions_from_predicates(
+        &self,
+        current_time: HlcTimestamp,
+    ) -> Result<HashMap<HlcTimestamp, Vec<crate::semantic::predicate::Predicate>>> {
+        self.predicate_store
+            .get_all_active_transactions(current_time)
+    }
+
+    /// Create a new batch for atomic operations
+    pub fn batch(&self) -> Batch {
+        self.keyspace.batch()
     }
 }
