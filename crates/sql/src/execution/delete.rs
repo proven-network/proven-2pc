@@ -62,7 +62,7 @@ fn update_column_value(
     updated_row[col_idx] = new_value;
 
     // Write the updated row
-    storage.update(tx_ctx.id, table, row_id, updated_row)?;
+    storage.update(tx_ctx.id, table, row_id, updated_row, tx_ctx.log_index)?;
     Ok(())
 }
 
@@ -248,7 +248,7 @@ pub fn execute_delete(
                                 table: t,
                                 row_id: r,
                             } => {
-                                storage.delete(tx_ctx.id, &t, r)?;
+                                storage.delete(tx_ctx.id, &t, r, tx_ctx.log_index)?;
                             }
                             CascadeOp::SetNull {
                                 table: t,
@@ -268,7 +268,7 @@ pub fn execute_delete(
                         }
                     }
                     // Now delete the cascaded row
-                    storage.delete(tx_ctx.id, &cascade_table, cascade_row_id)?;
+                    storage.delete(tx_ctx.id, &cascade_table, cascade_row_id, tx_ctx.log_index)?;
                 }
             }
             CascadeOp::SetNull {
@@ -305,7 +305,7 @@ pub fn execute_delete(
 
     // Phase 4: Delete the original rows
     for (row_id, _) in rows_to_delete {
-        storage.delete(tx_ctx.id, &table, row_id)?;
+        storage.delete(tx_ctx.id, &table, row_id, tx_ctx.log_index)?;
         count += 1;
     }
 

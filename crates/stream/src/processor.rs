@@ -86,8 +86,8 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
     ) -> Self {
         use proven_hlc::NodeId;
 
-        // Get the engine's current log index
-        let engine_offset = engine.get_log_index();
+        // Get the engine's current log index (if it persists state)
+        let engine_offset = engine.get_log_index().unwrap_or(0);
 
         // Try to get the last snapshot offset
         let start_offset;

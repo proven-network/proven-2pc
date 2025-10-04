@@ -81,7 +81,7 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()])
+            .insert_batch(tx1, "users", vec![values.clone()], 0)
             .unwrap();
 
         let row_id = row_ids.first().unwrap();
@@ -99,7 +99,7 @@ mod integration_tests {
         assert!(row.is_none());
 
         // Commit tx1
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // Now tx2 should see it
         let row = storage.read(tx2, "users", *row_id).unwrap();
@@ -125,10 +125,10 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()])
+            .insert_batch(tx1, "users", vec![values.clone()], 0)
             .unwrap();
         let row_id = row_ids.first().unwrap();
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // Update in new transaction
         // let tx2 = create_txn_id(200);
@@ -141,7 +141,7 @@ mod integration_tests {
             Value::I64(31),
         ];
         storage
-            .update(tx2, "users", *row_id, new_values.clone())
+            .update(tx2, "users", *row_id, new_values.clone(), 0)
             .unwrap();
 
         // tx2 sees new value
@@ -157,7 +157,7 @@ mod integration_tests {
         assert_eq!(row.values[3], Value::I64(30));
 
         // After commit, new value is visible
-        storage.commit_transaction(tx2).unwrap();
+        storage.commit_transaction(tx2, 1).unwrap();
         let row = storage.read(tx3, "users", *row_id).unwrap().unwrap();
         assert_eq!(row.values[1], Value::Str("Alice Smith".to_string()));
         assert_eq!(row.values[3], Value::I64(31));
@@ -181,15 +181,15 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()])
+            .insert_batch(tx1, "users", vec![values.clone()], 0)
             .unwrap();
         let row_id = row_ids.first().unwrap();
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // Delete in new transaction
         // let tx2 = create_txn_id(200);
         let tx2 = create_txn_id(2);
-        storage.delete(tx2, "users", *row_id).unwrap();
+        storage.delete(tx2, "users", *row_id, 0).unwrap();
 
         // tx2 doesn't see deleted row
         let row = storage.read(tx2, "users", *row_id).unwrap();
@@ -202,7 +202,7 @@ mod integration_tests {
         assert!(row.is_some());
 
         // After commit, row is deleted
-        storage.commit_transaction(tx2).unwrap();
+        storage.commit_transaction(tx2, 1).unwrap();
         let row = storage.read(tx3, "users", *row_id).unwrap();
         assert!(row.is_none());
     }
@@ -226,7 +226,7 @@ mod integration_tests {
                 Value::I64(20 + i),
             ];
             storage
-                .insert_batch(tx1, "users", vec![values.clone()])
+                .insert_batch(tx1, "users", vec![values.clone()], 0)
                 .unwrap();
         }
 
@@ -249,7 +249,7 @@ mod integration_tests {
         assert_eq!(rows.len(), 0);
 
         // After commit, all visible
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
         let rows = storage
             .iter(tx2, "users")
             .unwrap()
@@ -276,12 +276,12 @@ mod integration_tests {
             Value::I64(30),
         ];
         let row_ids = storage
-            .insert_batch(tx1, "users", vec![values.clone()])
+            .insert_batch(tx1, "users", vec![values.clone()], 0)
             .unwrap();
         let row_id = row_ids.first().unwrap();
 
         // Abort transaction
-        storage.abort_transaction(tx1).unwrap();
+        storage.abort_transaction(tx1, 1).unwrap();
 
         // Row should not be visible even to same transaction
         // let tx2 = create_txn_id(200);
@@ -322,9 +322,9 @@ mod integration_tests {
                 Value::I64(30),
             ];
             storage
-                .insert_batch(tx, "users", vec![values.clone()])
+                .insert_batch(tx, "users", vec![values.clone()], 0)
                 .unwrap();
-            storage.commit_transaction(tx).unwrap();
+            storage.commit_transaction(tx, 1).unwrap();
         }
 
         // Reopen and verify data persisted
@@ -378,7 +378,7 @@ mod integration_tests {
             Value::I64(30),
         ];
         storage
-            .insert_batch(tx1, "users", vec![values1.clone()])
+            .insert_batch(tx1, "users", vec![values1.clone()], 0)
             .unwrap();
 
         let values2 = vec![
@@ -388,7 +388,7 @@ mod integration_tests {
             Value::I64(25),
         ];
         storage
-            .insert_batch(tx2, "users", vec![values2.clone()])
+            .insert_batch(tx2, "users", vec![values2.clone()], 0)
             .unwrap();
 
         // tx1 and tx2 only see their own writes
@@ -397,13 +397,13 @@ mod integration_tests {
         assert_eq!(storage.iter(tx3, "users").unwrap().count(), 0);
 
         // Commit tx1
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // tx3 now sees tx1's data but not tx2's
         assert_eq!(storage.iter(tx3, "users").unwrap().count(), 1);
 
         // Commit tx2
-        storage.commit_transaction(tx2).unwrap();
+        storage.commit_transaction(tx2, 1).unwrap();
 
         // tx3 sees all data
         assert_eq!(storage.iter(tx3, "users").unwrap().count(), 2);
@@ -429,6 +429,7 @@ mod integration_tests {
                     Value::Str("alice@example.com".to_string()),
                     Value::I64(30),
                 ]],
+                0,
             )
             .unwrap();
         storage
@@ -441,9 +442,10 @@ mod integration_tests {
                     Value::Str("bob@example.com".to_string()),
                     Value::I64(25),
                 ]],
+                0,
             )
             .unwrap();
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // Create non-unique index on age
         let idx_tx1 = create_txn_id(10);
@@ -456,7 +458,7 @@ mod integration_tests {
                 false,
             )
             .unwrap();
-        storage.commit_transaction(idx_tx1).unwrap();
+        storage.commit_transaction(idx_tx1, 1).unwrap();
 
         // Create unique index on email
         let idx_tx2 = create_txn_id(11);
@@ -469,7 +471,7 @@ mod integration_tests {
                 true,
             )
             .unwrap();
-        storage.commit_transaction(idx_tx2).unwrap();
+        storage.commit_transaction(idx_tx2, 1).unwrap();
 
         // Verify index works with lookup
         let tx2 = create_txn_id(20);
@@ -510,10 +512,11 @@ mod integration_tests {
                         Value::Str(format!("user{}@example.com", i)),
                         Value::I64(20 + i),
                     ]],
+                    0,
                 )
                 .unwrap();
         }
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // Create index on age
         let idx_tx = create_txn_id(15);
@@ -526,7 +529,7 @@ mod integration_tests {
                 false,
             )
             .unwrap();
-        storage.commit_transaction(idx_tx).unwrap();
+        storage.commit_transaction(idx_tx, 1).unwrap();
 
         let tx2 = create_txn_id(20);
 
@@ -603,10 +606,11 @@ mod integration_tests {
                         Value::Str(format!("user{}@example.com", i)),
                         Value::I64(20 + (i % 50)), // Ages from 20-69
                     ]],
+                    0,
                 )
                 .unwrap();
         }
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // Create index on age
         let idx_tx = create_txn_id(25);
@@ -619,7 +623,7 @@ mod integration_tests {
                 false,
             )
             .unwrap();
-        storage.commit_transaction(idx_tx).unwrap();
+        storage.commit_transaction(idx_tx, 1).unwrap();
 
         // Test streaming iterator (doesn't collect all results into memory)
         // Now using MVCC-aware streaming API
@@ -696,6 +700,7 @@ mod integration_tests {
                     Value::I64(2),
                     Value::F64(19.99),
                 ]],
+                0,
             )
             .unwrap();
         storage
@@ -709,6 +714,7 @@ mod integration_tests {
                     Value::I64(1),
                     Value::F64(29.99),
                 ]],
+                0,
             )
             .unwrap();
         storage
@@ -722,9 +728,10 @@ mod integration_tests {
                     Value::I64(3),
                     Value::F64(19.99),
                 ]],
+                0,
             )
             .unwrap();
-        storage.commit_transaction(tx1).unwrap();
+        storage.commit_transaction(tx1, 1).unwrap();
 
         // Create composite index on (customer_id, product_id)
         let idx_tx = create_txn_id(30);
@@ -737,7 +744,7 @@ mod integration_tests {
                 false,
             )
             .unwrap();
-        storage.commit_transaction(idx_tx).unwrap();
+        storage.commit_transaction(idx_tx, 1).unwrap();
 
         // Lookup by composite key
         let tx2 = create_txn_id(40);

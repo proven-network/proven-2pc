@@ -59,6 +59,9 @@ pub struct Storage {
     // Last cleanup timestamp - used to throttle cleanup operations
     last_cleanup: Option<HlcTimestamp>,
 
+    // Last processed log index - persisted with each write batch
+    log_index: AtomicU64,
+
     // Configuration
     config: StorageConfig,
 }
@@ -134,6 +137,19 @@ impl Storage {
         let index_history =
             IndexHistoryStore::new(index_history_mgr, config.history_retention_window);
 
+        // Load log_index from metadata (default to 0 if not found)
+        let log_index = if let Some(bytes) = metadata_partition.get("log_index")? {
+            if bytes.len() == 8 {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&bytes);
+                u64::from_be_bytes(buf)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         // Load existing tables
         let mut tables = HashMap::new();
 
@@ -187,6 +203,7 @@ impl Storage {
             index_history,
             table_indexes_cache: HashMap::new(),
             last_cleanup: None,
+            log_index: AtomicU64::new(log_index),
             config,
         })
     }
@@ -394,6 +411,7 @@ impl Storage {
         txn_id: HlcTimestamp,
         table: &str,
         values_batch: Vec<Vec<crate::types::value::Value>>,
+        log_index: u64,
     ) -> Result<Vec<RowId>> {
         // Get table metadata
         let table_meta = self
@@ -492,23 +510,39 @@ impl Storage {
             }
         }
 
-        // Phase 4: All validations passed - now insert all rows and update indexes
+        // Phase 4: All validations passed - now insert all rows and update indexes atomically
+        let mut batch = self.keyspace.batch();
         let mut inserted_row_ids = Vec::new();
+
         for (row_id, row) in prepared_rows {
-            // Add to uncommitted data
+            // Add to uncommitted data batch
             let write_op = WriteOp::Insert {
                 table: table.to_string(),
                 row_id,
                 row: row.clone(),
             };
 
-            self.uncommitted_data.add_write(txn_id, write_op.clone())?;
+            self.uncommitted_data
+                .add_write_to_batch(&mut batch, txn_id, write_op.clone())?;
 
             // Update indexes for this table
             self.update_indexes_on_insert_unchecked(table, &row, &table_meta, txn_id)?;
 
             inserted_row_ids.push(row_id);
         }
+
+        // Add log_index to the same batch for atomicity
+        batch.insert(
+            &self.metadata_partition,
+            "log_index",
+            log_index.to_be_bytes(),
+        );
+
+        // Update in-memory log_index
+        self.log_index.store(log_index, Ordering::SeqCst);
+
+        // Commit the entire batch atomically
+        batch.commit()?;
 
         Ok(inserted_row_ids)
     }
@@ -520,6 +554,7 @@ impl Storage {
         table: &str,
         row_id: RowId,
         values: Vec<crate::types::value::Value>,
+        log_index: u64,
     ) -> Result<()> {
         // Get table metadata
         let table_meta = self
@@ -555,14 +590,37 @@ impl Storage {
         // if constraint check fails, the write is not committed
         self.update_indexes_on_update(table, &old_row, &new_row, &table_meta, txn_id)?;
 
-        // Only add to uncommitted data AFTER all validations pass
-        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
+        // Create batch for atomic write
+        let mut batch = self.keyspace.batch();
+
+        // Add to uncommitted data batch AFTER all validations pass
+        self.uncommitted_data
+            .add_write_to_batch(&mut batch, txn_id, write_op.clone())?;
+
+        // Add log_index to the same batch for atomicity
+        batch.insert(
+            &self.metadata_partition,
+            "log_index",
+            log_index.to_be_bytes(),
+        );
+
+        // Update in-memory log_index
+        self.log_index.store(log_index, Ordering::SeqCst);
+
+        // Commit the batch atomically
+        batch.commit()?;
 
         Ok(())
     }
 
     /// Delete a row
-    pub fn delete(&mut self, txn_id: HlcTimestamp, table: &str, row_id: RowId) -> Result<()> {
+    pub fn delete(
+        &mut self,
+        txn_id: HlcTimestamp,
+        table: &str,
+        row_id: RowId,
+        log_index: u64,
+    ) -> Result<()> {
         // Read current row
         let row = self
             .read(txn_id, table, row_id)?
@@ -576,20 +634,37 @@ impl Storage {
             schema_version: row.schema_version,
         });
 
-        // Add to uncommitted data
+        // Update indexes for this table (remove entries) BEFORE creating the batch
+        if let Some(table_meta) = self.tables.get(table) {
+            let table_meta = table_meta.clone();
+            self.update_indexes_on_delete(table, &row, &table_meta, txn_id)?;
+        }
+
+        // Create batch for atomic write
+        let mut batch = self.keyspace.batch();
+
+        // Add to uncommitted data batch
         let write_op = WriteOp::Delete {
             table: table.to_string(),
             row_id,
             row: deleted_row.clone(),
         };
 
-        self.uncommitted_data.add_write(txn_id, write_op.clone())?;
+        self.uncommitted_data
+            .add_write_to_batch(&mut batch, txn_id, write_op.clone())?;
 
-        // Update indexes for this table (remove entries)
-        if let Some(table_meta) = self.tables.get(table) {
-            let table_meta = table_meta.clone();
-            self.update_indexes_on_delete(table, &row, &table_meta, txn_id)?;
-        }
+        // Add log_index to the same batch for atomicity
+        batch.insert(
+            &self.metadata_partition,
+            "log_index",
+            log_index.to_be_bytes(),
+        );
+
+        // Update in-memory log_index
+        self.log_index.store(log_index, Ordering::SeqCst);
+
+        // Commit the batch atomically
+        batch.commit()?;
 
         Ok(())
     }
@@ -1024,7 +1099,9 @@ impl Storage {
     }
 
     /// Commit a transaction
-    pub fn commit_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn commit_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
+        // Update in-memory log_index
+        self.log_index.store(log_index, Ordering::SeqCst);
         // Get writes for this transaction
         let writes = self.uncommitted_data.get_transaction_writes(txn_id);
 
@@ -1079,6 +1156,13 @@ impl Storage {
                 .add_committed_ops_to_batch(&mut batch, txn_id, index_ops)?;
         }
 
+        // Persist log_index atomically with the commit
+        batch.insert(
+            &self.metadata_partition,
+            "log_index",
+            log_index.to_be_bytes(),
+        );
+
         // Remove from uncommitted stores (this is fast, no disk I/O)
         self.uncommitted_data
             .remove_transaction(&mut batch, txn_id)?;
@@ -1115,7 +1199,10 @@ impl Storage {
     }
 
     /// Abort a transaction
-    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
+        // Update in-memory log_index
+        self.log_index.store(log_index, Ordering::SeqCst);
+
         // Create batch for atomic commit (even if no writes, we might have index ops)
         let mut batch = self.keyspace.batch();
 
@@ -1126,6 +1213,13 @@ impl Storage {
         // Abort index operations (uses batch now)
         self.index_manager
             .abort_transaction(&mut self.uncommitted_index, &mut batch, txn_id)?;
+
+        // Persist log_index atomically with the abort
+        batch.insert(
+            &self.metadata_partition,
+            "log_index",
+            log_index.to_be_bytes(),
+        );
 
         // Commit the batch (includes uncommitted data removal and index abort)
         batch.commit()?;
@@ -1413,5 +1507,10 @@ impl Storage {
 
     fn invalidate_table_indexes_cache(&mut self, table_name: &str) {
         self.table_indexes_cache.remove(table_name);
+    }
+
+    /// Get the last processed log index
+    pub fn get_log_index(&self) -> u64 {
+        self.log_index.load(Ordering::SeqCst)
     }
 }

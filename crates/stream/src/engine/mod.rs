@@ -127,8 +127,8 @@ pub trait TransactionEngine: Send + Sync {
     ///
     /// This is used to verify the engine's position before starting replay.
     /// Engines that persist state should return the last log_index they processed.
-    /// Engines that don't persist state can return 0.
-    fn get_log_index(&self) -> u64 {
-        0
+    /// Engines that don't persist state can return None.
+    fn get_log_index(&self) -> Option<u64> {
+        None
     }
 }

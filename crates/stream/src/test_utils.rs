@@ -170,8 +170,8 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
         "test"
     }
 
-    fn get_log_index(&self) -> u64 {
-        self.log_index
+    fn get_log_index(&self) -> Option<u64> {
+        Some(self.log_index)
     }
 }
 
@@ -240,7 +240,7 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
         "test-engine"
     }
 
-    fn get_log_index(&self) -> u64 {
-        self.log_index
+    fn get_log_index(&self) -> Option<u64> {
+        Some(self.log_index)
     }
 }

@@ -161,7 +161,7 @@ mod tests {
         let engine = TestEngine::<BasicOp, BasicResponse>::new();
 
         // Default log index is 0
-        assert_eq!(engine.get_log_index(), 0);
+        assert_eq!(engine.get_log_index(), Some(0));
     }
 
     #[tokio::test]

@@ -30,6 +30,8 @@ pub struct TransactionContext {
     pub predicates: QueryPredicates,
     /// Sequence counter for generating unique UUIDs within the transaction
     uuid_sequence: std::sync::atomic::AtomicU64,
+    /// Log index for this transaction (for crash recovery)
+    pub log_index: u64,
 }
 
 impl TransactionContext {
@@ -40,7 +42,13 @@ impl TransactionContext {
             state: TransactionState::Active,
             predicates: QueryPredicates::new(),
             uuid_sequence: std::sync::atomic::AtomicU64::new(0),
+            log_index: 0,
         }
+    }
+
+    /// Set the log index for this transaction
+    pub fn set_log_index(&mut self, log_index: u64) {
+        self.log_index = log_index;
     }
 
     /// Add predicates from a query to this transaction
@@ -104,6 +112,7 @@ impl Clone for TransactionContext {
             uuid_sequence: std::sync::atomic::AtomicU64::new(
                 self.uuid_sequence.load(std::sync::atomic::Ordering::SeqCst),
             ),
+            log_index: self.log_index,
         }
     }
 }

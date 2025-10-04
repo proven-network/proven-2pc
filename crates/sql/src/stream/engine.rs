@@ -174,8 +174,8 @@ impl SqlTransactionEngine {
             params.as_ref(),
         );
 
-        // Clean up the temporary transaction
-        let _ = self.storage.abort_transaction(read_timestamp);
+        // Clean up the temporary transaction (use read_timestamp as log_index since this is a snapshot read)
+        let _ = self.storage.abort_transaction(read_timestamp, 0);
 
         match result {
             Ok(result) => OperationResult::Complete(convert_execution_result(result)),
@@ -364,8 +364,13 @@ impl TransactionEngine for SqlTransactionEngine {
         &mut self,
         operation: Self::Operation,
         txn_id: HlcTimestamp,
-        _log_index: u64,
+        log_index: u64,
     ) -> OperationResult<Self::Response> {
+        // Set log_index in transaction context
+        if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
+            tx_ctx.set_log_index(log_index);
+        }
+
         match operation {
             SqlOperation::Query { sql, params } => self.execute_sql(&sql, params, txn_id),
             SqlOperation::Execute { sql, params } => self.execute_sql(&sql, params, txn_id),
@@ -403,35 +408,42 @@ impl TransactionEngine for SqlTransactionEngine {
             // Prepare the transaction (releases read predicates)
             tx_ctx.prepare();
         }
-        // If transaction doesn't exist, that's fine - it may have been aborted already
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
+    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
             // Remove from predicate index
             self.predicate_index.remove_transaction(&txn_id);
 
-            // Commit in storage (ignore errors - best effort)
-            let _ = self.storage.commit_transaction(txn_id);
+            // Commit in storage with log_index (ignore errors - best effort)
+            let _ = self.storage.commit_transaction(txn_id, log_index);
         }
         // If transaction doesn't exist, that's fine - may have been committed already
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
+    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
             // Remove from predicate index
             self.predicate_index.remove_transaction(&txn_id);
 
-            // Abort in storage (ignore errors - best effort)
-            let _ = self.storage.abort_transaction(txn_id);
+            // Abort in storage with log_index (ignore errors - best effort)
+            let _ = self.storage.abort_transaction(txn_id, log_index);
         }
         // If transaction doesn't exist, that's fine - may have been aborted already
     }
 
     fn engine_name(&self) -> &'static str {
         "sql"
+    }
+
+    fn get_log_index(&self) -> Option<u64> {
+        if self.storage.get_log_index() > 0 {
+            Some(self.storage.get_log_index())
+        } else {
+            None
+        }
     }
 }
 

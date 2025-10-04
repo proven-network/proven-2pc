@@ -230,6 +230,10 @@ fn main() {
         _ => println!("⚠ Persisted count query failed"),
     }
 
+    if let Some(log_index) = sql_engine.get_log_index() {
+        println!("✓ Persisted log index: {}", log_index)
+    }
+
     drop(sql_engine); // Ensure engine releases file handles
 
     // Calculate directory size

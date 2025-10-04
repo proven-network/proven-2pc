@@ -100,15 +100,21 @@ impl UncommittedDataStore {
             .get_or_create_partition("uncommitted", time)
     }
 
-    /// Add a write operation for a transaction (requires &mut)
-    pub fn add_write(&mut self, txn_id: HlcTimestamp, op: WriteOp) -> Result<()> {
+    /// Add a write operation to a batch (for atomic operations)
+    pub fn add_write_to_batch(
+        &mut self,
+        batch: &mut fjall::Batch,
+        txn_id: HlcTimestamp,
+        op: WriteOp,
+    ) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let partition = self.get_or_create_partition_for_time(txn_id)?;
         let key = Self::encode_key(txn_id, &op, seq);
-        partition.insert(
+        batch.insert(
+            partition,
             key,
             bincode::serialize(&op).map_err(|e| Error::Serialization(e.to_string()))?,
-        )?;
+        );
         Ok(())
     }
 
