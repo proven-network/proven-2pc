@@ -4,7 +4,7 @@
 mod integration_tests {
     use crate::error::Result;
     use crate::storage::{Storage, StorageConfig};
-    use crate::stream::transaction::TransactionContext;
+    use crate::types::context::ExecutionContext;
     use crate::types::data_type::DataType;
     use crate::types::schema::{Column, Table as TableSchema};
     use crate::types::value::Value;
@@ -22,10 +22,8 @@ mod integration_tests {
         Storage::open_at_path(&path, config).unwrap()
     }
 
-    fn create_test_tx_ctx(txn_id: HlcTimestamp, log_index: u64) -> TransactionContext {
-        let mut ctx = TransactionContext::new(txn_id);
-        ctx.log_index = log_index;
-        ctx
+    fn create_test_tx_ctx(txn_id: HlcTimestamp, log_index: u64) -> ExecutionContext {
+        ExecutionContext::new(txn_id, log_index)
     }
 
     fn create_test_schema() -> TableSchema {

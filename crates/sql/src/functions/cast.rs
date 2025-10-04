@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -41,7 +41,7 @@ impl Function for CastFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 2 {
             return Err(Error::ExecutionError(
                 "CAST takes exactly 2 arguments".into(),
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn test_cast_to_int() {
         let func = CastFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // String to int
         let result = func
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn test_cast_to_string() {
         let func = CastFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Int to string
         let result = func
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn test_cast_to_boolean() {
         let func = CastFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // String to bool
         let result = func
@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn test_cast_null() {
         let func = CastFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // NULL casts to NULL
         let result = func

@@ -425,11 +425,11 @@ impl Storage {
     /// Insert multiple rows atomically - all validation checks are done before any inserts
     pub fn insert_batch(
         &mut self,
-        tx_ctx: &mut crate::stream::transaction::TransactionContext,
+        tx_ctx: &mut crate::types::context::ExecutionContext,
         table: &str,
         values_batch: Vec<Vec<crate::types::value::Value>>,
     ) -> Result<Vec<RowId>> {
-        let txn_id = tx_ctx.id;
+        let txn_id = tx_ctx.txn_id;
         let log_index = tx_ctx.log_index;
         // Get table metadata
         let table_meta = self
@@ -573,12 +573,12 @@ impl Storage {
     /// Update a row
     pub fn update(
         &mut self,
-        tx_ctx: &mut crate::stream::transaction::TransactionContext,
+        tx_ctx: &mut crate::types::context::ExecutionContext,
         table: &str,
         row_id: RowId,
         values: Vec<crate::types::value::Value>,
     ) -> Result<()> {
-        let txn_id = tx_ctx.id;
+        let txn_id = tx_ctx.txn_id;
         let log_index = tx_ctx.log_index;
         // Get table metadata
         let table_meta = self
@@ -645,11 +645,11 @@ impl Storage {
     /// Delete a row
     pub fn delete(
         &mut self,
-        tx_ctx: &mut crate::stream::transaction::TransactionContext,
+        tx_ctx: &mut crate::types::context::ExecutionContext,
         table: &str,
         row_id: RowId,
     ) -> Result<()> {
-        let txn_id = tx_ctx.id;
+        let txn_id = tx_ctx.txn_id;
         let log_index = tx_ctx.log_index;
         // Read current row
         let row = self
@@ -1601,13 +1601,13 @@ impl Storage {
     /// Persist read predicates (for SELECT operations that don't write data)
     pub fn persist_read_predicates(
         &mut self,
-        tx_ctx: &mut crate::stream::transaction::TransactionContext,
+        tx_ctx: &mut crate::types::context::ExecutionContext,
     ) -> Result<()> {
         let mut batch = self.keyspace.batch();
 
         // Add predicates to batch
         let _predicate_keys =
-            self.add_predicates_to_batch(&mut batch, tx_ctx.id, &tx_ctx.predicates)?;
+            self.add_predicates_to_batch(&mut batch, tx_ctx.txn_id, &tx_ctx.predicates)?;
 
         // Commit the batch
         batch.commit()?;

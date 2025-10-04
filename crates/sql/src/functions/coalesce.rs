@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -50,7 +50,7 @@ impl Function for CoalesceFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.is_empty() {
             return Err(Error::ExecutionError(
                 "COALESCE requires at least one argument".into(),
@@ -92,7 +92,7 @@ impl Function for IfNullFunction {
         CoalesceFunction.validate(arg_types)
     }
 
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value> {
         if args.len() != 2 {
             return Err(Error::ExecutionError(
                 "IFNULL takes exactly 2 arguments".into(),
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn test_coalesce_execute() {
         let func = CoalesceFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // First non-null value
         let result = func
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn test_ifnull() {
         let func = IfNullFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // First is null, return second
         let result = func

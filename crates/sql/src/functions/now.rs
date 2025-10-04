@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -28,7 +28,7 @@ impl Function for NowFunction {
         Ok(DataType::Timestamp)
     }
 
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value> {
         if !args.is_empty() {
             return Err(Error::ExecutionError(format!(
                 "NOW takes no arguments, got {}",
@@ -64,7 +64,7 @@ impl Function for CurrentTimestampFunction {
         NowFunction.validate(arg_types)
     }
 
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value> {
         NowFunction.execute(args, context)
     }
 }
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_now_deterministic() {
         let timestamp = HlcTimestamp::new(1_000_000_000, 0, NodeId::new(1));
-        let context = TransactionContext::new(timestamp);
+        let context = ExecutionContext::new(timestamp, 0);
 
         // NOW() should always return the same value within a transaction
         let now1 = NowFunction.execute(&[], &context).unwrap();

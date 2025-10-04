@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -27,7 +27,7 @@ impl Function for SortFunction {
         )))))
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.is_empty() || args.len() > 2 {
             return Err(Error::ExecutionError(
                 "SORT takes 1 or 2 arguments (list, [order])".into(),

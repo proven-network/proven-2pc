@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
 use crate::storage::Storage;
-use crate::stream::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::expression::{DefaultExpression, Expression};
 use crate::types::schema::Table;
 use crate::types::value::{Row, Value};
@@ -15,7 +15,7 @@ use crate::types::value::{Row, Value};
 /// Evaluate a DEFAULT expression at INSERT time with transaction context
 fn evaluate_default(
     expr: &DefaultExpression,
-    tx_ctx: &TransactionContext,
+    tx_ctx: &ExecutionContext,
     storage: &Storage,
 ) -> Result<Value> {
     // Convert DefaultExpression to Expression and evaluate using the general evaluator
@@ -34,7 +34,7 @@ fn validate_foreign_keys(
     row: &Row,
     schema: &Table,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
 ) -> Result<()> {
     // Check each foreign key constraint
     let schemas = storage.get_schemas();
@@ -72,7 +72,7 @@ fn validate_foreign_keys(
 
         // Scan the referenced table to check if the value exists
         let mut found = false;
-        let ref_iter = storage.iter(tx_ctx.id, &fk.referenced_table)?;
+        let ref_iter = storage.iter(tx_ctx.txn_id, &fk.referenced_table)?;
 
         for ref_row_result in ref_iter {
             let ref_row = ref_row_result?;
@@ -115,7 +115,7 @@ pub fn execute_insert(
     columns: Option<Vec<usize>>,
     source: Node,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Get schema from storage

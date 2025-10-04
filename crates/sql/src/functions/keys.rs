@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -27,7 +27,7 @@ impl Function for KeysFunction {
         Ok(DataType::List(Box::new(DataType::Text)))
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 1 {
             return Err(Error::ExecutionError(
                 "KEYS takes exactly 1 argument".into(),
@@ -64,7 +64,7 @@ impl Function for MapKeysFunction {
         KeysFunction.validate(arg_types)
     }
 
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value> {
         KeysFunction.execute(args, context)
     }
 }

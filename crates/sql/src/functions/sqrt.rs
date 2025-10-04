@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -55,7 +55,7 @@ impl Function for SqrtFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 1 {
             return Err(Error::ExecutionError(
                 "SQRT takes exactly 1 argument".into(),
@@ -165,7 +165,7 @@ impl Function for PowerFunction {
         Ok(DataType::F64)
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 2 {
             return Err(Error::ExecutionError(
                 "POWER takes exactly 2 arguments".into(),
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn test_sqrt_execute() {
         let func = SqrtFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Perfect square
         assert_eq!(
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_power_execute() {
         let func = PowerFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Integer power
         assert_eq!(

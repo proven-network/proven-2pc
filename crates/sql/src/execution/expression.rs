@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::operators;
 use crate::storage::Storage;
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::value::{Row, Value};
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 pub fn evaluate(
     expr: &Expression,
     row: Option<&Row>,
-    context: &TransactionContext,
+    context: &ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<Value> {
     evaluate_with_storage(expr, row, context, params, None)
@@ -27,7 +27,7 @@ pub fn evaluate(
 pub fn evaluate_with_storage(
     expr: &Expression,
     row: Option<&Row>,
-    context: &TransactionContext,
+    context: &ExecutionContext,
     params: Option<&Vec<Value>>,
     storage: Option<&Storage>,
 ) -> Result<Value> {
@@ -459,7 +459,7 @@ pub fn evaluate_with_storage(
 pub fn evaluate_with_arc(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
-    context: &TransactionContext,
+    context: &ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<Value> {
     evaluate(expr, row.map(|r| r.as_ref()), context, params)
@@ -469,7 +469,7 @@ pub fn evaluate_with_arc(
 pub fn evaluate_with_arc_and_storage(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
-    context: &TransactionContext,
+    context: &ExecutionContext,
     params: Option<&Vec<Value>>,
     storage: Option<&Storage>,
 ) -> Result<Value> {

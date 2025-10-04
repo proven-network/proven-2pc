@@ -8,7 +8,7 @@ use crate::execution::{ExecutionResult, expression};
 use crate::parsing::ast::ddl::ReferentialAction;
 use crate::planning::plan::Node;
 use crate::storage::Storage;
-use crate::stream::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::expression::{DefaultExpression, Expression};
 use crate::types::value::{Row, Value};
 
@@ -35,7 +35,7 @@ enum CascadeOp {
 /// Helper function to update a single column value
 fn update_column_value(
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
     table: &str,
     row_id: u64,
     col_idx: usize,
@@ -43,7 +43,7 @@ fn update_column_value(
 ) -> Result<()> {
     // Get the current row
     let current_row = {
-        let iter = storage.iter_with_ids(tx_ctx.id, table)?;
+        let iter = storage.iter_with_ids(tx_ctx.txn_id, table)?;
         let mut found_row = None;
         for result in iter {
             let (rid, row) = result?;
@@ -72,7 +72,7 @@ fn check_and_collect_cascade_ops(
     row: &Row,
     table_name: &str,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
 ) -> Result<Vec<CascadeOp>> {
     let mut cascade_ops = Vec::new();
     let schemas = storage.get_schemas();
@@ -99,7 +99,7 @@ fn check_and_collect_cascade_ops(
                     .0;
 
                 // Find all rows in the referencing table that point to this row
-                let ref_iter = storage.iter_with_ids(tx_ctx.id, other_table_name)?;
+                let ref_iter = storage.iter_with_ids(tx_ctx.txn_id, other_table_name)?;
                 for result in ref_iter {
                     let (ref_row_id, ref_row) = result?;
                     if &ref_row.values[fk_col_idx] == pk_value
@@ -168,12 +168,12 @@ pub fn execute_delete(
     table: String,
     source: Node,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Phase 1: Read rows with IDs that match the WHERE clause
     let rows_to_delete = {
-        let iter = storage.iter_with_ids(tx_ctx.id, &table)?;
+        let iter = storage.iter_with_ids(tx_ctx.txn_id, &table)?;
         let mut to_delete = Vec::new();
 
         for result in iter {
@@ -220,7 +220,7 @@ pub fn execute_delete(
                 // Recursively handle cascading deletes
                 // Get the row data first for potential further cascades
                 let cascade_row = {
-                    let iter = storage.iter_with_ids(tx_ctx.id, &cascade_table)?;
+                    let iter = storage.iter_with_ids(tx_ctx.txn_id, &cascade_table)?;
                     let mut found_row = None;
                     for result in iter {
                         let (rid, r) = result?;

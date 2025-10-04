@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::Result;
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -22,7 +22,7 @@ impl Function for CurrentTimestampFunction {
         super::now::NowFunction.validate(arg_types)
     }
 
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value> {
         super::now::NowFunction.execute(args, context)
     }
 }

@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -30,7 +30,7 @@ impl Function for CountFunction {
         Ok(DataType::I64)
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         // Note: This is the single-row execution for COUNT
         // The actual aggregation logic happens in the executor/aggregator
         // This is called for each row to determine if it should be counted
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn test_count_execute() {
         let func = CountFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Non-null values return 1
         assert_eq!(

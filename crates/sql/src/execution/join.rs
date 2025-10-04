@@ -7,7 +7,7 @@
 use super::expression;
 use crate::error::{Error, Result};
 use crate::storage::Storage;
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::query::{JoinType, RowRef, Rows};
 use crate::types::value::Value;
@@ -43,7 +43,7 @@ pub struct NestedLoopJoiner {
     /// The join type
     join_type: JoinType,
     /// Transaction context for expression evaluation
-    context: TransactionContext,
+    context: ExecutionContext,
 }
 
 impl NestedLoopJoiner {
@@ -55,7 +55,7 @@ impl NestedLoopJoiner {
         right_columns: usize,
         predicate: Expression,
         join_type: JoinType,
-        context: TransactionContext,
+        context: ExecutionContext,
     ) -> Result<Self> {
         // Collect all rows from both sources
         let mut left_rows = Vec::new();
@@ -404,7 +404,7 @@ pub fn execute_nested_loop_join<'a>(
 ) -> Result<Rows<'a>> {
     // For now, create a dummy context - this should come from the transaction context
     use proven_hlc::{HlcTimestamp, NodeId};
-    let context = TransactionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)));
+    let context = ExecutionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)), 0);
     let joiner = NestedLoopJoiner::new(
         left,
         right,
@@ -444,13 +444,13 @@ pub fn execute_hash_join<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stream::transaction::TransactionContext;
+    use crate::types::context::ExecutionContext;
     use crate::types::expression::Expression;
     use crate::types::value::Value;
     use proven_hlc::{HlcTimestamp, NodeId};
 
-    fn create_test_context() -> TransactionContext {
-        TransactionContext::new(HlcTimestamp::new(100, 0, NodeId::new(1)))
+    fn create_test_context() -> ExecutionContext {
+        ExecutionContext::new(HlcTimestamp::new(100, 0, NodeId::new(1)), 0)
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -33,7 +33,7 @@ impl Function for ConcatFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.is_empty() {
             return Err(Error::ExecutionError(
                 "CONCAT requires at least one argument".into(),
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn test_concat_execute() {
         let func = ConcatFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Simple concatenation
         let result = func

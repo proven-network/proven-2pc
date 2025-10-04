@@ -20,18 +20,12 @@ pub enum TransactionState {
     Aborted,
 }
 
-/// Transaction execution state
+/// Transaction-level context (long-lived, spans multiple operations)
 pub struct TransactionContext {
     /// Transaction ID (HLC timestamp provides total ordering across the distributed system)
     pub id: HlcTimestamp,
-    /// Current state of the transaction
-    pub state: TransactionState,
-    /// Predicates for conflict detection
+    /// Predicates accumulated across all operations in this transaction
     pub predicates: QueryPredicates,
-    /// Sequence counter for generating unique UUIDs within the transaction
-    uuid_sequence: std::sync::atomic::AtomicU64,
-    /// Log index for this transaction (for crash recovery)
-    pub log_index: u64,
 }
 
 impl TransactionContext {
@@ -39,16 +33,8 @@ impl TransactionContext {
     pub fn new(hlc_timestamp: HlcTimestamp) -> Self {
         Self {
             id: hlc_timestamp,
-            state: TransactionState::Active,
             predicates: QueryPredicates::new(),
-            uuid_sequence: std::sync::atomic::AtomicU64::new(0),
-            log_index: 0,
         }
-    }
-
-    /// Set the log index for this transaction
-    pub fn set_log_index(&mut self, log_index: u64) {
-        self.log_index = log_index;
     }
 
     /// Add predicates from a query to this transaction
@@ -57,20 +43,61 @@ impl TransactionContext {
     }
 
     /// Prepare the transaction (releases read predicates)
-    pub fn prepare(&mut self) -> bool {
-        if self.state == TransactionState::Active {
-            self.state = TransactionState::Preparing;
-            // At PREPARE, we can release read predicates
-            self.predicates.release_reads();
-            true
-        } else {
-            false
+    pub fn prepare(&mut self) {
+        // At PREPARE, we can release read predicates
+        self.predicates.release_reads();
+    }
+
+    /// Create an execution context for a single operation
+    pub fn create_execution_context(
+        &self,
+        log_index: u64,
+        new_predicates: QueryPredicates,
+    ) -> ExecutionContext {
+        ExecutionContext {
+            txn_id: self.id,
+            log_index,
+            predicates: new_predicates,
+            uuid_sequence: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+impl Clone for TransactionContext {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            predicates: self.predicates.clone(),
+        }
+    }
+}
+
+/// Execution context for a single operation (short-lived)
+#[derive(Debug)]
+pub struct ExecutionContext {
+    /// Transaction ID
+    pub txn_id: HlcTimestamp,
+    /// Log index for this operation (for deterministic replay)
+    pub log_index: u64,
+    /// Predicates for this specific operation only
+    pub predicates: QueryPredicates,
+    /// Sequence counter for generating unique UUIDs within this operation
+    uuid_sequence: std::sync::atomic::AtomicU64,
+}
+
+impl ExecutionContext {
+    pub fn new(txn_id: HlcTimestamp, log_index: u64) -> Self {
+        Self {
+            txn_id,
+            log_index,
+            predicates: QueryPredicates::new(),
+            uuid_sequence: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    /// Get the timestamp for deterministic SQL functions
+    /// Get the transaction timestamp for deterministic SQL functions
     pub fn timestamp(&self) -> &HlcTimestamp {
-        &self.id
+        &self.txn_id
     }
 
     /// Generate a deterministic UUID based on transaction ID, log_index, and sequence
@@ -84,7 +111,7 @@ impl TransactionContext {
 
         let mut hasher = DefaultHasher::new();
         // Hash transaction ID
-        self.id.hash(&mut hasher);
+        self.txn_id.hash(&mut hasher);
         // Hash log_index for deterministic replay
         self.log_index.hash(&mut hasher);
         // Hash sequence for uniqueness within operation
@@ -106,17 +133,16 @@ impl TransactionContext {
     }
 }
 
-impl Clone for TransactionContext {
+impl Clone for ExecutionContext {
     fn clone(&self) -> Self {
         Self {
-            id: self.id,
-            state: self.state,
+            txn_id: self.txn_id,
+            log_index: self.log_index,
             predicates: self.predicates.clone(),
             // Create a new AtomicU64 with the current value
             uuid_sequence: std::sync::atomic::AtomicU64::new(
                 self.uuid_sequence.load(std::sync::atomic::Ordering::SeqCst),
             ),
-            log_index: self.log_index,
         }
     }
 }

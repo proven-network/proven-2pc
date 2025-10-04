@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 use chrono::NaiveTime;
@@ -28,7 +28,7 @@ impl Function for CurrentTimeFunction {
         Ok(DataType::Time)
     }
 
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value> {
         if !args.is_empty() {
             return Err(Error::ExecutionError(
                 "CURRENT_TIME takes no arguments".into(),

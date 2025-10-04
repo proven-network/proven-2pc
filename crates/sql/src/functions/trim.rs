@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -43,7 +43,7 @@ impl Function for TrimFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 1 {
             return Err(Error::ExecutionError(
                 "TRIM takes exactly 1 argument".into(),
@@ -94,7 +94,7 @@ impl Function for LtrimFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 1 {
             return Err(Error::ExecutionError(
                 "LTRIM takes exactly 1 argument".into(),
@@ -145,7 +145,7 @@ impl Function for RtrimFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 1 {
             return Err(Error::ExecutionError(
                 "RTRIM takes exactly 1 argument".into(),
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn test_trim_execute() {
         let func = TrimFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Trim both sides
         let result = func
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn test_ltrim_execute() {
         let func = LtrimFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Trim left side only
         let result = func
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn test_rtrim_execute() {
         let func = RtrimFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Trim right side only
         let result = func

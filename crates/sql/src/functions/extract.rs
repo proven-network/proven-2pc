@@ -5,7 +5,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::{DataType, Interval};
 use crate::types::value::Value;
 use chrono::{Datelike, Timelike};
@@ -32,7 +32,7 @@ impl Function for ExtractFunction {
         Ok(DataType::I64)
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 2 {
             return Err(Error::ExecutionError(
                 "EXTRACT takes exactly 2 arguments (field and source)".into(),

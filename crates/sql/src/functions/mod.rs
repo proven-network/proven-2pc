@@ -4,7 +4,7 @@
 //! separating metadata/validation from execution.
 
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 use std::collections::HashMap;
@@ -97,7 +97,7 @@ pub trait Function: Send + Sync {
     fn validate(&self, arg_types: &[DataType]) -> Result<DataType>;
 
     /// Execute the function with runtime values
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value>;
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value>;
 }
 
 use std::sync::LazyLock;
@@ -222,7 +222,7 @@ pub fn validate_function(name: &str, arg_types: &[DataType]) -> Result<DataType>
 }
 
 /// Execute a function with runtime values
-pub fn execute_function(name: &str, args: &[Value], context: &TransactionContext) -> Result<Value> {
+pub fn execute_function(name: &str, args: &[Value], context: &ExecutionContext) -> Result<Value> {
     if let Some(func) = get_function(name) {
         func.execute(args, context)
     } else {

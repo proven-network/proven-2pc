@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -52,7 +52,7 @@ impl Function for CeilFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 1 {
             return Err(Error::ExecutionError(
                 "CEIL takes exactly 1 argument".into(),
@@ -127,7 +127,7 @@ impl Function for FloorFunction {
         }
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() != 1 {
             return Err(Error::ExecutionError(
                 "FLOOR takes exactly 1 argument".into(),
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn test_ceil_execute() {
         let func = CeilFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Integer stays the same
         assert_eq!(
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_floor_execute() {
         let func = FloorFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Integer stays the same
         assert_eq!(

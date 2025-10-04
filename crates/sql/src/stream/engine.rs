@@ -16,8 +16,8 @@ use crate::stream::{
     operation::SqlOperation,
     predicate_index::PredicateIndex,
     response::{SqlResponse, convert_execution_result},
-    transaction::TransactionContext,
 };
+use crate::types::context::{ExecutionContext, TransactionContext, TransactionState};
 
 use std::collections::HashMap;
 
@@ -28,6 +28,9 @@ pub struct SqlTransactionEngine {
 
     /// Active transactions with their predicates
     active_transactions: HashMap<HlcTimestamp, TransactionContext>,
+
+    /// Transaction states (separate from predicates)
+    transaction_states: HashMap<HlcTimestamp, TransactionState>,
 
     /// Fast predicate index for conflict detection
     predicate_index: PredicateIndex,
@@ -62,6 +65,7 @@ impl SqlTransactionEngine {
         let mut engine = Self {
             storage,
             active_transactions: HashMap::new(),
+            transaction_states: HashMap::new(),
             predicate_index: PredicateIndex::new(),
             migration_version: 0,
             parser,
@@ -110,6 +114,8 @@ impl SqlTransactionEngine {
 
                     // Add to active transactions
                     self.active_transactions.insert(txn_id, tx_ctx);
+                    self.transaction_states
+                        .insert(txn_id, TransactionState::Active);
 
                     // Add to predicate index
                     self.predicate_index
@@ -132,6 +138,7 @@ impl SqlTransactionEngine {
         sql: &str,
         params: Option<Vec<crate::types::value::Value>>,
         read_timestamp: HlcTimestamp,
+        log_index: u64,
     ) -> OperationResult<SqlResponse> {
         // Parse SQL with caching
         let statement = match self.parser.parse(sql) {
@@ -221,17 +228,14 @@ impl SqlTransactionEngine {
         };
 
         // Execute with a temporary context (snapshot reads are stateless)
-        let mut temp_ctx = TransactionContext::new(read_timestamp);
+        let mut exec_ctx = ExecutionContext::new(read_timestamp, log_index);
 
         let result = execution::execute_with_params(
             (*plan).clone(),
             &mut self.storage,
-            &mut temp_ctx,
+            &mut exec_ctx,
             params.as_ref(),
         );
-
-        // Clean up the temporary transaction (use read_timestamp as log_index since this is a snapshot read)
-        let _ = self.storage.abort_transaction(read_timestamp, 0);
 
         match result {
             Ok(result) => OperationResult::Complete(convert_execution_result(result)),
@@ -247,6 +251,7 @@ impl SqlTransactionEngine {
         sql: &str,
         params: Option<Vec<crate::types::value::Value>>,
         txn_id: HlcTimestamp,
+        log_index: u64,
     ) -> OperationResult<SqlResponse> {
         // Verify transaction exists
         if !self.active_transactions.contains_key(&txn_id) {
@@ -363,11 +368,15 @@ impl SqlTransactionEngine {
             }
         };
 
+        // Create execution context for this operation
+        let tx_ctx = self.active_transactions.get(&txn_id).unwrap();
+        let mut exec_ctx = tx_ctx.create_execution_context(log_index, query_predicates.clone());
+
         // Step 7: Execute with parameters
         match execution::execute_with_params(
             (*plan).clone(),
             &mut self.storage,
-            tx_ctx,
+            &mut exec_ctx,
             params.as_ref(),
         ) {
             Ok(result) => {
@@ -376,10 +385,8 @@ impl SqlTransactionEngine {
                 // in the same batch as the data. For read operations (SELECT), we need to
                 // persist them separately.
                 if !plan.is_write() {
-                    let tx_ctx = self.active_transactions.get_mut(&txn_id).unwrap();
-
                     // Persist read predicates (handled internally by storage)
-                    if let Err(e) = self.storage.persist_read_predicates(tx_ctx) {
+                    if let Err(e) = self.storage.persist_read_predicates(&mut exec_ctx) {
                         return OperationResult::Complete(SqlResponse::Error(format!(
                             "Failed to persist predicates: {:?}",
                             e
@@ -421,12 +428,12 @@ impl TransactionEngine for SqlTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
-        _log_index: u64,
+        log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             SqlOperation::Query { sql, params } => {
                 // Execute as a snapshot read using the read_timestamp as txn_id
-                self.execute_sql_snapshot(&sql, params, read_timestamp)
+                self.execute_sql_snapshot(&sql, params, read_timestamp, log_index)
             }
             _ => panic!("Must be read-only operation"),
         }
@@ -438,14 +445,13 @@ impl TransactionEngine for SqlTransactionEngine {
         txn_id: HlcTimestamp,
         log_index: u64,
     ) -> OperationResult<Self::Response> {
-        // Set log_index in transaction context
-        if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
-            tx_ctx.set_log_index(log_index);
-        }
-
         match operation {
-            SqlOperation::Query { sql, params } => self.execute_sql(&sql, params, txn_id),
-            SqlOperation::Execute { sql, params } => self.execute_sql(&sql, params, txn_id),
+            SqlOperation::Query { sql, params } => {
+                self.execute_sql(&sql, params, txn_id, log_index)
+            }
+            SqlOperation::Execute { sql, params } => {
+                self.execute_sql(&sql, params, txn_id, log_index)
+            }
             SqlOperation::Migrate { version, sql } => {
                 // Check if migration is needed
                 if version <= self.migration_version {
@@ -457,7 +463,7 @@ impl TransactionEngine for SqlTransactionEngine {
                 }
 
                 // Execute migration (no parameters for migrations)
-                match self.execute_sql(&sql, None, txn_id) {
+                match self.execute_sql(&sql, None, txn_id, log_index) {
                     OperationResult::Complete(response) => {
                         self.migration_version = version;
                         OperationResult::Complete(response)
@@ -472,6 +478,8 @@ impl TransactionEngine for SqlTransactionEngine {
         // Create transaction context
         self.active_transactions
             .insert(txn_id, TransactionContext::new(txn_id));
+        self.transaction_states
+            .insert(txn_id, TransactionState::Active);
     }
 
     fn prepare(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
@@ -479,6 +487,10 @@ impl TransactionEngine for SqlTransactionEngine {
         if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
             // Prepare the transaction (releases read predicates in-memory)
             tx_ctx.prepare();
+
+            // Update state
+            self.transaction_states
+                .insert(txn_id, TransactionState::Preparing);
 
             // Also remove read predicates from storage
             let _ = self.storage.prepare_transaction(txn_id);
@@ -488,6 +500,8 @@ impl TransactionEngine for SqlTransactionEngine {
     fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
+            self.transaction_states.remove(&txn_id);
+
             // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
 
@@ -500,6 +514,8 @@ impl TransactionEngine for SqlTransactionEngine {
     fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
+            self.transaction_states.remove(&txn_id);
+
             // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
 

@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -28,7 +28,7 @@ impl Function for GenerateUuidFunction {
         Ok(DataType::Uuid)
     }
 
-    fn execute(&self, args: &[Value], context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], context: &ExecutionContext) -> Result<Value> {
         if !args.is_empty() {
             return Err(Error::ExecutionError(format!(
                 "GENERATE_UUID takes no arguments, got {}",
@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn test_generate_uuid() {
         let func = GenerateUuidFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         let result = func.execute(&[], &context).unwrap();
         match result {

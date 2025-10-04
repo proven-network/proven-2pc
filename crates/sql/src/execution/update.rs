@@ -8,7 +8,7 @@ use crate::execution::{ExecutionResult, expression};
 use crate::parsing::ast::ddl::ReferentialAction;
 use crate::planning::plan::Node;
 use crate::storage::Storage;
-use crate::stream::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
 use crate::types::value::{Row, Value};
@@ -19,7 +19,7 @@ fn validate_foreign_keys_on_update(
     _old_row: &Row,
     schema: &Table,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
 ) -> Result<Vec<UpdateCascadeOp>> {
     // Check each foreign key constraint on this table
     let schemas = storage.get_schemas();
@@ -57,7 +57,7 @@ fn validate_foreign_keys_on_update(
 
         // Scan the referenced table to check if the value exists
         let mut found = false;
-        let ref_iter = storage.iter(tx_ctx.id, &fk.referenced_table)?;
+        let ref_iter = storage.iter(tx_ctx.txn_id, &fk.referenced_table)?;
 
         for ref_row_result in ref_iter {
             let ref_row = ref_row_result?;
@@ -122,7 +122,7 @@ enum UpdateCascadeOp {
 /// Helper function to update a single column value
 fn update_column_value(
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
     table: &str,
     row_id: u64,
     col_idx: usize,
@@ -130,7 +130,7 @@ fn update_column_value(
 ) -> Result<()> {
     // Get the current row
     let current_row = {
-        let iter = storage.iter_with_ids(tx_ctx.id, table)?;
+        let iter = storage.iter_with_ids(tx_ctx.txn_id, table)?;
         let mut found_row = None;
         for result in iter {
             let (rid, row) = result?;
@@ -159,7 +159,7 @@ fn check_and_collect_update_cascades(
     new_row: &Row,
     schema: &Table,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
 ) -> Result<Vec<UpdateCascadeOp>> {
     let mut cascade_ops = Vec::new();
 
@@ -191,7 +191,7 @@ fn check_and_collect_update_cascades(
                     .0;
 
                 // Find all rows that reference the old primary key value
-                let ref_iter = storage.iter_with_ids(tx_ctx.id, other_table_name)?;
+                let ref_iter = storage.iter_with_ids(tx_ctx.txn_id, other_table_name)?;
                 for result in ref_iter {
                     let (ref_row_id, ref_row) = result?;
                     if &ref_row.values[fk_col_idx] == old_pk_value
@@ -265,12 +265,12 @@ pub fn execute_update(
     assignments: Vec<(usize, Expression)>,
     source: Node,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     // Phase 1: Read rows with IDs that match the WHERE clause
     let rows_to_update = {
-        let iter = storage.iter_with_ids(tx_ctx.id, &table)?;
+        let iter = storage.iter_with_ids(tx_ctx.txn_id, &table)?;
         let mut to_update = Vec::new();
 
         for result in iter {

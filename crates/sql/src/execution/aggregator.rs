@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::operators;
 use crate::planning::plan::AggregateFunc;
 use crate::storage::Storage;
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::value::Value;
 use std::collections::{HashMap, HashSet};
@@ -83,7 +83,7 @@ impl Aggregator {
     pub fn add(
         &mut self,
         row: &Arc<Vec<Value>>,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         // Evaluate the group key
@@ -148,7 +148,7 @@ impl GroupAccumulator {
     fn add_row(
         &mut self,
         row: &Arc<Vec<Value>>,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         for (agg, acc) in self.aggregates.iter().zip(self.accumulators.iter_mut()) {
@@ -172,7 +172,7 @@ trait Accumulator: Send {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()>;
 
@@ -192,7 +192,7 @@ impl Accumulator for CountAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
@@ -239,7 +239,7 @@ impl Accumulator for SumAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
@@ -286,7 +286,7 @@ impl Accumulator for AvgAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
@@ -364,7 +364,7 @@ impl Accumulator for MinAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
@@ -405,7 +405,7 @@ impl Accumulator for MaxAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
@@ -446,7 +446,7 @@ impl Accumulator for StDevAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
@@ -517,7 +517,7 @@ impl Accumulator for VarianceAccumulator {
         &mut self,
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
-        context: &TransactionContext,
+        context: &ExecutionContext,
         storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
@@ -659,7 +659,7 @@ fn create_accumulator(agg: &AggregateFunc) -> Box<dyn Accumulator> {
 pub(crate) fn evaluate_expression(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
-    _context: &TransactionContext,
+    _context: &ExecutionContext,
     _storage: &Storage,
 ) -> Result<Value> {
     match expr {
@@ -731,11 +731,11 @@ mod tests {
     use proven_hlc::{HlcClock, NodeId};
     use rust_decimal::Decimal;
 
-    fn setup_test() -> (Storage, TransactionContext) {
+    fn setup_test() -> (Storage, ExecutionContext) {
         let storage = Storage::new(StorageConfig::default()).expect("Failed to create storage");
         let clock = HlcClock::new(NodeId::new(1));
         let timestamp = clock.now();
-        let context = TransactionContext::new(timestamp);
+        let context = ExecutionContext::new(timestamp, 0);
         (storage, context)
     }
 

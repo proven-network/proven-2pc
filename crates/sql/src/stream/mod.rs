@@ -8,7 +8,3 @@ pub mod operation;
 pub mod predicate_index;
 pub mod response;
 // pub mod stats_cache;
-pub mod transaction;
-
-// Re-export commonly used types
-pub use transaction::TransactionContext;

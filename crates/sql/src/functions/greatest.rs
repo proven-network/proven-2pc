@@ -2,7 +2,7 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
-use crate::stream::transaction::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
 use crate::types::value::Value;
 
@@ -64,7 +64,7 @@ impl Function for GreatestFunction {
         Ok(first_type.clone())
     }
 
-    fn execute(&self, args: &[Value], _context: &TransactionContext) -> Result<Value> {
+    fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
         if args.len() < 2 {
             return Err(Error::ExecutionError(format!(
                 "GREATEST requires at least 2 arguments, got {}",
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn test_greatest_execute() {
         let func = GreatestFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         // Integers
         let result = func
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn test_greatest_null_error() {
         let func = GreatestFunction;
-        let context = TransactionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)));
+        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
 
         let result = func.execute(&[Value::Null, Value::I64(1)], &context);
         assert!(result.is_err());

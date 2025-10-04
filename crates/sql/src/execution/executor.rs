@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::operators;
 use crate::planning::plan::{Node, Plan};
 use crate::storage::Storage;
-use crate::stream::TransactionContext;
+use crate::types::context::ExecutionContext;
 use crate::types::query::Rows;
 use crate::types::value::Value;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ pub enum ExecutionResult {
 pub fn execute_with_params(
     plan: Plan,
     storage: &mut Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
     match plan {
@@ -72,7 +72,7 @@ pub fn execute_with_params(
         | Plan::DropTable { .. }
         | Plan::CreateIndex { .. }
         | Plan::DropIndex { .. } => {
-            let result_msg = storage.execute_ddl(&plan, tx_ctx.id)?;
+            let result_msg = storage.execute_ddl(&plan, tx_ctx.txn_id)?;
             Ok(ExecutionResult::Ddl(result_msg))
         }
 
@@ -89,7 +89,7 @@ pub fn execute_with_params(
                 foreign_keys: Vec::new(), // TODO: Handle foreign keys for CREATE TABLE AS VALUES
                 if_not_exists,
             };
-            let create_msg = storage.execute_ddl(&create_plan, tx_ctx.id)?;
+            let create_msg = storage.execute_ddl(&create_plan, tx_ctx.txn_id)?;
 
             // Then execute the VALUES insertion
             // Convert VALUES plan to INSERT
@@ -129,14 +129,14 @@ pub fn execute_with_params(
 pub fn execute_node_read<'a>(
     node: Node,
     storage: &'a Storage,
-    tx_ctx: &mut TransactionContext,
+    tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<Rows<'a>> {
     match node {
         Node::Scan { table, .. } => {
             // True streaming with immutable storage!
             let iter = storage
-                .iter(tx_ctx.id, &table)?
+                .iter(tx_ctx.txn_id, &table)?
                 .map(|result| result.map(|row| row.values.clone().into()));
 
             Ok(Box::new(iter))
@@ -171,8 +171,11 @@ pub fn execute_node_read<'a>(
                 }
 
                 // Use streaming index lookup for O(log n) performance + O(1) memory
-                let rows =
-                    storage.index_lookup_rows_streaming(&index_name, coerced_values, tx_ctx.id)?;
+                let rows = storage.index_lookup_rows_streaming(
+                    &index_name,
+                    coerced_values,
+                    tx_ctx.txn_id,
+                )?;
 
                 // Convert to iterator format (already streaming!)
                 let iter = rows.map(|result| result.map(|row| row.values.clone().into()));
@@ -205,7 +208,7 @@ pub fn execute_node_read<'a>(
                     } else {
                         // Column not found, can't filter
                         let iter = storage
-                            .iter(tx_ctx.id, &table)?
+                            .iter(tx_ctx.txn_id, &table)?
                             .map(|result| result.map(|row| row.values.clone().into()));
                         return Ok(Box::new(iter));
                     }
@@ -213,28 +216,32 @@ pub fn execute_node_read<'a>(
 
                 // Filter by checking all column values match
                 if col_indices.len() == filter_values.len() {
-                    let iter = storage.iter(tx_ctx.id, &table)?.filter_map(move |result| {
-                        match result {
-                            Ok(row) => {
-                                let values: Arc<Vec<Value>> = row.values.clone().into();
-                                // Check if all indexed columns match the filter values
-                                for (idx, expected_val) in col_indices.iter().zip(&filter_values) {
-                                    if values.get(*idx) != Some(expected_val) {
-                                        return None;
+                    let iter = storage
+                        .iter(tx_ctx.txn_id, &table)?
+                        .filter_map(move |result| {
+                            match result {
+                                Ok(row) => {
+                                    let values: Arc<Vec<Value>> = row.values.clone().into();
+                                    // Check if all indexed columns match the filter values
+                                    for (idx, expected_val) in
+                                        col_indices.iter().zip(&filter_values)
+                                    {
+                                        if values.get(*idx) != Some(expected_val) {
+                                            return None;
+                                        }
                                     }
+                                    Some(Ok(values))
                                 }
-                                Some(Ok(values))
+                                Err(e) => Some(Err(e)),
                             }
-                            Err(e) => Some(Err(e)),
-                        }
-                    });
+                        });
                     return Ok(Box::new(iter));
                 }
             }
 
             // Can't determine columns, fall back to full scan
             let iter = storage
-                .iter(tx_ctx.id, &table)?
+                .iter(tx_ctx.txn_id, &table)?
                 .map(|result| result.map(|row| row.values.clone().into()));
             Ok(Box::new(iter))
         }
@@ -277,7 +284,7 @@ pub fn execute_node_read<'a>(
                     start_values,
                     end_values,
                     reverse,
-                    tx_ctx.id,
+                    tx_ctx.txn_id,
                 )?;
 
                 // Convert to iterator format (already streaming!)
@@ -310,7 +317,7 @@ pub fn execute_node_read<'a>(
                     } else {
                         // Column not found, can't filter
                         let iter = storage
-                            .iter(tx_ctx.id, &table)?
+                            .iter(tx_ctx.txn_id, &table)?
                             .map(|result| result.map(|row| row.values.clone().into()));
                         return Ok(Box::new(iter));
                     }
@@ -322,49 +329,55 @@ pub fn execute_node_read<'a>(
                 let start_incl = start_inclusive;
                 let end_incl = end_inclusive;
 
-                let iter = storage.iter(tx_ctx.id, &table)?.filter_map(move |result| {
-                    match result {
-                        Ok(row) => {
-                            let values: Arc<Vec<Value>> = row.values.clone().into();
-                            // Extract values for the indexed columns
-                            let mut row_values = Vec::new();
-                            for &idx in &col_indices {
-                                if let Some(val) = values.get(idx) {
-                                    row_values.push(val.clone());
-                                } else {
-                                    return None; // NULL in key, skip
+                let iter = storage
+                    .iter(tx_ctx.txn_id, &table)?
+                    .filter_map(move |result| {
+                        match result {
+                            Ok(row) => {
+                                let values: Arc<Vec<Value>> = row.values.clone().into();
+                                // Extract values for the indexed columns
+                                let mut row_values = Vec::new();
+                                for &idx in &col_indices {
+                                    if let Some(val) = values.get(idx) {
+                                        row_values.push(val.clone());
+                                    } else {
+                                        return None; // NULL in key, skip
+                                    }
                                 }
-                            }
 
-                            // Check start bound
-                            if let Some(ref start) = start_vals {
-                                match operators::compare_composite(&row_values, start).ok() {
-                                    Some(std::cmp::Ordering::Less) => return None,
-                                    Some(std::cmp::Ordering::Equal) if !start_incl => return None,
-                                    _ => {}
+                                // Check start bound
+                                if let Some(ref start) = start_vals {
+                                    match operators::compare_composite(&row_values, start).ok() {
+                                        Some(std::cmp::Ordering::Less) => return None,
+                                        Some(std::cmp::Ordering::Equal) if !start_incl => {
+                                            return None;
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                            }
 
-                            // Check end bound
-                            if let Some(ref end) = end_vals {
-                                match operators::compare_composite(&row_values, end).ok() {
-                                    Some(std::cmp::Ordering::Greater) => return None,
-                                    Some(std::cmp::Ordering::Equal) if !end_incl => return None,
-                                    _ => {}
+                                // Check end bound
+                                if let Some(ref end) = end_vals {
+                                    match operators::compare_composite(&row_values, end).ok() {
+                                        Some(std::cmp::Ordering::Greater) => return None,
+                                        Some(std::cmp::Ordering::Equal) if !end_incl => {
+                                            return None;
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                            }
 
-                            Some(Ok(values))
+                                Some(Ok(values))
+                            }
+                            Err(e) => Some(Err(e)),
                         }
-                        Err(e) => Some(Err(e)),
-                    }
-                });
+                    });
                 return Ok(Box::new(iter));
             }
 
             // Can't determine columns, fall back to full scan
             let iter = storage
-                .iter(tx_ctx.id, &table)?
+                .iter(tx_ctx.txn_id, &table)?
                 .map(|result| result.map(|row| row.values.clone().into()));
             Ok(Box::new(iter))
         }
