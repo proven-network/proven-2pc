@@ -4,6 +4,7 @@ pub mod context;
 pub mod data_type;
 // pub mod evaluator; // Deprecated: use operators module instead
 pub mod expression;
+pub mod index;
 pub mod query;
 pub mod schema;
 // pub mod statistics;

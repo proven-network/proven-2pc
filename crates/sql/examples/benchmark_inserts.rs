@@ -5,12 +5,12 @@
 
 use fjall::{CompressionType, PersistMode};
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine, StorageConfig, Value};
+use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine, Value};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Global log index counter for benchmarks
 static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
@@ -27,16 +27,11 @@ fn main() {
 
     println!("Data directory: {}", temp_dir.display());
 
-    let config = StorageConfig {
+    let config = SqlStorageConfig {
         data_dir: temp_dir.clone(),
         block_cache_size: 1024 * 1024 * 1024,
         compression: CompressionType::Lz4,
         persist_mode: PersistMode::Buffer,
-        history_bucket_duration: Duration::from_secs(60),
-        uncommitted_bucket_duration: Duration::from_secs(30),
-        history_retention_window: Duration::from_secs(300),
-        uncommitted_retention_window: Duration::from_secs(120),
-        cleanup_interval: Duration::from_secs(30),
     };
 
     // Create SQL engine directly

@@ -11,7 +11,7 @@ use crate::execution;
 use crate::parsing::CachingParser;
 use crate::planning::caching_planner::CachingPlanner;
 use crate::semantic::CachingSemanticAnalyzer;
-use crate::storage::{Storage, StorageConfig};
+use crate::storage::{SqlStorage, SqlStorageConfig};
 use crate::stream::{
     operation::SqlOperation,
     predicate_index::PredicateIndex,
@@ -24,7 +24,7 @@ use std::collections::HashMap;
 /// SQL transaction engine with predicate-based conflict detection
 pub struct SqlTransactionEngine {
     /// Storage engine with persistence
-    storage: Storage,
+    storage: SqlStorage,
 
     /// Active transactions with their predicates
     active_transactions: HashMap<HlcTimestamp, TransactionContext>,
@@ -50,17 +50,23 @@ pub struct SqlTransactionEngine {
 
 impl SqlTransactionEngine {
     /// Create a new SQL transaction engine
-    pub fn new(config: StorageConfig) -> Self {
+    pub fn new(config: SqlStorageConfig) -> Self {
         // Create storage with default config
-        let storage = Storage::new(config).expect("Failed to create storage");
+        let storage = SqlStorage::new(config).expect("Failed to create storage");
         let schemas = storage.get_schemas();
 
         // Get index metadata directly from new storage
         let indexes = storage.get_index_metadata();
 
+        // Convert Arc<Table> schemas to Table for analyzer/planner
+        let schemas_plain: HashMap<String, crate::types::schema::Table> = schemas
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_ref().clone()))
+            .collect();
+
         let parser = CachingParser::new();
-        let analyzer = CachingSemanticAnalyzer::new(schemas.clone());
-        let planner = CachingPlanner::new(schemas, indexes);
+        let analyzer = CachingSemanticAnalyzer::new(schemas_plain.clone());
+        let planner = CachingPlanner::new(schemas_plain, indexes);
 
         let mut engine = Self {
             storage,
@@ -81,22 +87,8 @@ impl SqlTransactionEngine {
 
     /// Recover active transactions and predicates from storage (crash recovery)
     fn recover_from_storage(&mut self) {
-        // Use current wall clock time for recovery
-        // We create a timestamp with node_id 0 since this is just for scanning
-        let current_physical = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u64;
-        let current_time = proven_hlc::HlcTimestamp::from_physical_time(
-            current_physical,
-            proven_hlc::NodeId::new(0),
-        );
-
         // Get all active transactions from predicate storage
-        match self
-            .storage
-            .get_active_transactions_from_predicates(current_time)
-        {
+        match self.storage.get_active_transactions() {
             Ok(transactions) => {
                 for (txn_id, predicates) in transactions {
                     // Create transaction context
@@ -230,9 +222,13 @@ impl SqlTransactionEngine {
         // Execute with a temporary context (snapshot reads are stateless)
         let mut exec_ctx = ExecutionContext::new(read_timestamp, log_index);
 
+        // Create batch (even for reads, for consistency - will be empty for SELECT)
+        let mut batch = self.storage.batch();
+
         let result = execution::execute_with_params(
             (*plan).clone(),
             &mut self.storage,
+            &mut batch,
             &mut exec_ctx,
             params.as_ref(),
         );
@@ -372,36 +368,51 @@ impl SqlTransactionEngine {
         let tx_ctx = self.active_transactions.get(&txn_id).unwrap();
         let mut exec_ctx = tx_ctx.create_execution_context(log_index, query_predicates.clone());
 
-        // Step 7: Execute with parameters
+        // Step 7: Create batch for atomic commit (data + predicates + log_index)
+        let mut batch = self.storage.batch();
+
+        // Step 8: Execute with batch
         match execution::execute_with_params(
             (*plan).clone(),
             &mut self.storage,
+            &mut batch,
             &mut exec_ctx,
             params.as_ref(),
         ) {
             Ok(result) => {
-                // Step 8: Persist predicates to storage (crash-safe)
-                // For write operations (INSERT/UPDATE/DELETE), predicates are already persisted
-                // in the same batch as the data. For read operations (SELECT), we need to
-                // persist them separately.
-                if !plan.is_write() {
-                    // Persist read predicates (handled internally by storage)
-                    if let Err(e) = self.storage.persist_read_predicates(&mut exec_ctx) {
-                        return OperationResult::Complete(SqlResponse::Error(format!(
-                            "Failed to persist predicates: {:?}",
-                            e
-                        )));
-                    }
+                // Step 9: Add predicates to batch (atomic with data for writes, standalone for reads)
+                if let Err(e) =
+                    self.storage
+                        .add_predicates_to_batch(&mut batch, txn_id, &query_predicates)
+                {
+                    return OperationResult::Complete(SqlResponse::Error(format!(
+                        "Failed to add predicates to batch: {:?}",
+                        e
+                    )));
+                }
+
+                // Step 10: Commit batch atomically (data + predicates + log_index)
+                if let Err(e) = batch.commit() {
+                    return OperationResult::Complete(SqlResponse::Error(format!(
+                        "Failed to commit batch: {:?}",
+                        e
+                    )));
                 }
 
                 // Update schema cache if DDL operation
                 if plan.is_ddl() {
                     // Schema updates are handled internally by storage
                     // Update all caches with new schemas
-                    let schemas = self.storage.get_schemas();
+                    let schemas_arc = self.storage.get_schemas();
 
                     // Get index metadata directly from new storage
                     let indexes = self.storage.get_index_metadata();
+
+                    // Convert Arc<Table> to Table for analyzer/planner
+                    let schemas: HashMap<String, crate::types::schema::Table> = schemas_arc
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_ref().clone()))
+                        .collect();
 
                     // Clear parser cache on schema change
                     self.parser.clear();
@@ -540,6 +551,6 @@ impl TransactionEngine for SqlTransactionEngine {
 
 impl Default for SqlTransactionEngine {
     fn default() -> Self {
-        Self::new(StorageConfig::default())
+        Self::new(SqlStorageConfig::default())
     }
 }

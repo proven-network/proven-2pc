@@ -4,8 +4,7 @@
 //! 1 million key-value pairs directly using the engine.
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_kv::stream::{engine::KvTransactionEngine, operation::KvOperation};
-use proven_kv::types::Value;
+use proven_kv::{KvOperation, KvTransactionEngine, Value};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};

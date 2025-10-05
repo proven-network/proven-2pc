@@ -1,1643 +1,2183 @@
-//! Main storage engine with fjall backend
+//! New SQL storage engine using proven-mvcc
+//!
+//! This is a reimplementation of the SQL storage layer using the proven-mvcc
+//! abstraction. Key design:
+//! - One MvccStorage<TableEntity> per table (separate partitions)
+//! - One MvccStorage<IndexEntity> per index (separate partitions)
+//! - Shared keyspace for atomic cross-entity batching
+//! - Schema-aware row encoding preserved (36.1 bytes/row)
 
 use crate::error::{Error, Result};
-use crate::storage::bucket_manager::BucketManager;
-use crate::storage::config::StorageConfig;
-use crate::storage::data_history::DataHistoryStore;
-use crate::storage::encoding;
-use crate::storage::index::{IndexManager, IndexMetadata};
-use crate::storage::index_history::IndexHistoryStore;
+use crate::semantic::predicate::{Predicate, QueryPredicates};
+use crate::storage::encoding::{decode_row, encode_row};
+use crate::storage::entity::{IndexDelta, IndexEntity, IndexKey, TableDelta, TableEntity};
 use crate::storage::predicate_store::PredicateStore;
-use crate::storage::types::{Row, RowId, WriteOp};
-use crate::storage::uncommitted_data::UncommittedDataStore;
-use crate::storage::uncommitted_index::UncommittedIndexStore;
+use crate::types::index::IndexMetadata;
 use crate::types::schema::Table as TableSchema;
 use crate::types::value::Value;
-use fjall::{Batch, Keyspace, Partition, PartitionCreateOptions};
+
+use fjall::{Keyspace, PartitionCreateOptions};
 use proven_hlc::HlcTimestamp;
-use std::collections::{HashMap, HashSet};
+use proven_mvcc::{MvccStorage, StorageConfig as MvccConfig};
+
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Metadata for a table
-pub struct TableMetadata {
-    pub schema: TableSchema,
-    pub data_partition: Partition,
-    pub next_row_id: AtomicU64,
+/// Configuration for SQL storage
+#[derive(Clone)]
+pub struct SqlStorageConfig {
+    pub data_dir: std::path::PathBuf,
+    pub block_cache_size: usize,
+    pub compression: fjall::CompressionType,
+    pub persist_mode: fjall::PersistMode,
 }
 
-/// Main storage engine
-pub struct Storage {
-    // Fjall keyspace
+impl SqlStorageConfig {
+    pub fn with_data_dir(data_dir: std::path::PathBuf) -> Self {
+        Self {
+            data_dir,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for SqlStorageConfig {
+    fn default() -> Self {
+        // Use tempfile to create a proper temporary directory
+        // Using .keep() to persist the directory (won't be auto-deleted)
+        let temp_dir = tempfile::tempdir()
+            .expect("Failed to create temporary directory")
+            .keep();
+
+        Self {
+            data_dir: temp_dir,
+            block_cache_size: 512 * 1024 * 1024, // 512MB
+            compression: fjall::CompressionType::Lz4,
+            persist_mode: fjall::PersistMode::Buffer,
+        }
+    }
+}
+
+/// Main SQL storage engine using MVCC
+pub struct SqlStorage {
+    /// Shared keyspace for atomic batching across all tables and indexes
     keyspace: Keyspace,
 
-    // Metadata partition
-    metadata_partition: Partition,
+    /// One MvccStorage per table (table_name -> storage)
+    /// Each table gets separate partitions via with_shared_keyspace()
+    table_storages: HashMap<String, MvccStorage<TableEntity>>,
 
-    // Table metadata
-    tables: HashMap<String, Arc<TableMetadata>>,
+    /// One MvccStorage per index (index_name -> storage)
+    /// Each index gets separate partitions via with_shared_keyspace()
+    index_storages: HashMap<String, MvccStorage<IndexEntity>>,
 
-    // Index manager
-    index_manager: IndexManager,
+    /// Schema registry (table_name -> schema)
+    /// Needed for schema-aware row encoding/decoding
+    schemas: HashMap<String, Arc<TableSchema>>,
 
-    // Index versions (uncommitted index operations)
-    uncommitted_index: UncommittedIndexStore,
+    /// Index metadata (index_name -> metadata)
+    index_metadata: HashMap<String, IndexMetadata>,
 
-    // Uncommitted data operations - using fjall
-    uncommitted_data: UncommittedDataStore,
-
-    // Data history (committed) for time-travel - using fjall
-    data_history: DataHistoryStore,
-
-    // Index history (committed) for time-travel on indexes
-    index_history: IndexHistoryStore,
-
-    // Predicate store for crash-safe predicate locking
+    /// Predicate store for crash recovery
     predicate_store: PredicateStore,
 
-    // Cache of table -> indexes mapping for performance
-    // Invalidated on DDL operations (create_index, drop_index, drop_table)
-    table_indexes_cache: HashMap<String, Vec<(String, IndexMetadata)>>,
+    /// Row ID counters per table (for generating unique row IDs)
+    next_row_ids: HashMap<String, AtomicU64>,
 
-    // Last cleanup timestamp - used to throttle cleanup operations
-    last_cleanup: Option<HlcTimestamp>,
-
-    // Last processed log index - persisted with each write batch
-    log_index: AtomicU64,
-
-    // Configuration
-    config: StorageConfig,
+    /// Configuration
+    config: SqlStorageConfig,
 }
 
-impl Storage {
-    /// Create a new storage engine
-    pub fn new(config: StorageConfig) -> Result<Self> {
+impl SqlStorage {
+    /// Create new SQL storage
+    pub fn new(config: SqlStorageConfig) -> Result<Self> {
         Self::open_at_path(&config.data_dir.clone(), config)
     }
 
-    /// Open storage at a specific path
-    pub fn open_at_path(path: &Path, config: StorageConfig) -> Result<Self> {
+    /// Open storage at specific path
+    pub fn open_at_path(path: &Path, config: SqlStorageConfig) -> Result<Self> {
         // Ensure directory exists
         std::fs::create_dir_all(path)?;
 
-        // Open fjall keyspace
+        // Open shared keyspace
         let keyspace = fjall::Config::new(path)
-            .cache_size(config.block_cache_size)
+            .cache_size(config.block_cache_size as u64)
             .open()?;
 
+        // Create predicate store with dedicated partition
+        let predicate_store = PredicateStore::new(&keyspace)?;
+
+        let mut storage = Self {
+            keyspace,
+            table_storages: HashMap::new(),
+            index_storages: HashMap::new(),
+            schemas: HashMap::new(),
+            index_metadata: HashMap::new(),
+            predicate_store,
+            next_row_ids: HashMap::new(),
+            config,
+        };
+
+        // Load existing tables and schemas from metadata
+        storage.load_metadata()?;
+
+        Ok(storage)
+    }
+
+    /// Load table schemas and indexes from metadata partition
+    fn load_metadata(&mut self) -> Result<()> {
         // Open metadata partition
-        let metadata_partition = keyspace.open_partition(
+        let metadata = self.keyspace.open_partition(
             "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024) // Small blocks for metadata
-                .compression(fjall::CompressionType::None),
-        )?;
-
-        // Create BucketManager for uncommitted data (time-only partitioning)
-        let uncommitted_data_mgr = BucketManager::new(
-            keyspace.clone(),
-            "_uncommitted_data".to_string(),
-            config.uncommitted_bucket_duration,
-            PartitionCreateOptions::default()
-                .block_size(32 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let uncommitted_data =
-            UncommittedDataStore::new(uncommitted_data_mgr, config.uncommitted_retention_window);
-
-        // Create BucketManager for data history (table × time partitioning)
-        let data_history_mgr = BucketManager::new(
-            keyspace.clone(),
-            "_data_history".to_string(),
-            config.history_bucket_duration,
-            PartitionCreateOptions::default()
-                .block_size(4 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let data_history = DataHistoryStore::new(data_history_mgr, config.history_retention_window);
-
-        // Create BucketManager for uncommitted index (time-only partitioning)
-        let uncommitted_index_mgr = BucketManager::new(
-            keyspace.clone(),
-            "_uncommitted_index".to_string(),
-            config.uncommitted_bucket_duration,
-            PartitionCreateOptions::default()
-                .block_size(4 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let uncommitted_index =
-            UncommittedIndexStore::new(uncommitted_index_mgr, config.uncommitted_retention_window);
-
-        // Create BucketManager for index history (index × time partitioning)
-        let index_history_mgr = BucketManager::new(
-            keyspace.clone(),
-            "_index_history".to_string(),
-            config.history_bucket_duration,
-            PartitionCreateOptions::default()
-                .block_size(4 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let index_history =
-            IndexHistoryStore::new(index_history_mgr, config.history_retention_window);
-
-        // Create BucketManager for predicates (time-based partitioning for cleanup)
-        let predicates_mgr = BucketManager::new(
-            keyspace.clone(),
-            "_predicates".to_string(),
-            config.uncommitted_bucket_duration, // Use same bucketing as uncommitted data
             PartitionCreateOptions::default()
                 .block_size(16 * 1024)
                 .compression(fjall::CompressionType::None),
-        );
-        let predicate_store =
-            PredicateStore::new(predicates_mgr, config.uncommitted_retention_window);
+        )?;
 
-        // Load log_index from metadata (default to 0 if not found)
-        let log_index = if let Some(bytes) = metadata_partition.get("log_index")? {
-            if bytes.len() == 8 {
-                let mut buf = [0u8; 8];
-                buf.copy_from_slice(&bytes);
-                u64::from_be_bytes(buf)
-            } else {
-                0
+        // Scan for table schemas
+        for result in metadata.prefix(b"schema_") {
+            let (key, value) = result?;
+            let key_str = String::from_utf8_lossy(&key);
+
+            if let Some(table_name) = key_str.strip_prefix("schema_") {
+                // Decode schema
+                let schema: TableSchema = bincode::deserialize(&value)
+                    .map_err(|e| Error::Serialization(e.to_string()))?;
+
+                // Create MvccStorage for this table
+                let mvcc_config = MvccConfig {
+                    data_dir: self.config.data_dir.clone(),
+                    block_cache_size: self.config.block_cache_size as u64,
+                    compression: self.config.compression,
+                    persist_mode: self.config.persist_mode,
+                    history_bucket_duration: std::time::Duration::from_secs(60),
+                    uncommitted_bucket_duration: std::time::Duration::from_secs(30),
+                    history_retention_window: std::time::Duration::from_secs(300),
+                    uncommitted_retention_window: std::time::Duration::from_secs(120),
+                    cleanup_interval: std::time::Duration::from_secs(30),
+                };
+
+                let table_storage = MvccStorage::<TableEntity>::with_shared_keyspace(
+                    self.keyspace.clone(),
+                    table_name.to_string(),
+                    mvcc_config,
+                )?;
+
+                // Load or initialize next_row_id counter
+                let row_id_key = format!("next_row_id_{}", table_name);
+                let next_row_id = metadata
+                    .get(&row_id_key)?
+                    .map(|bytes| {
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(&bytes);
+                        u64::from_be_bytes(buf)
+                    })
+                    .unwrap_or(1); // Default to 1 if not found
+
+                self.table_storages
+                    .insert(table_name.to_string(), table_storage);
+                self.schemas
+                    .insert(table_name.to_string(), Arc::new(schema));
+                self.next_row_ids
+                    .insert(table_name.to_string(), AtomicU64::new(next_row_id));
             }
-        } else {
-            0
-        };
-
-        // Load existing tables
-        let mut tables = HashMap::new();
-
-        // Scan metadata for existing tables
-        for entry in metadata_partition.prefix("table:") {
-            let (key, value) = entry?;
-            let table_name = std::str::from_utf8(&key[6..])
-                .map_err(|e| Error::Other(format!("Invalid table name: {}", e)))?
-                .to_string();
-
-            let schema: TableSchema =
-                bincode::deserialize(&value).map_err(|e| Error::Serialization(e.to_string()))?;
-
-            // Open table partitions
-            let data_partition = keyspace.open_partition(
-                &format!("{}_data", table_name),
-                PartitionCreateOptions::default()
-                    .block_size(64 * 1024)
-                    .compression(config.compression),
-            )?;
-
-            // Find max row ID
-            let mut max_row_id = 0u64;
-            for entry in data_partition.iter() {
-                let (key, _) = entry?;
-                if key.len() == 8 {
-                    let mut bytes = [0u8; 8];
-                    bytes.copy_from_slice(&key);
-                    let row_id = u64::from_be_bytes(bytes);
-                    max_row_id = max_row_id.max(row_id);
-                }
-            }
-
-            let metadata = Arc::new(TableMetadata {
-                schema,
-                data_partition,
-                next_row_id: AtomicU64::new(max_row_id + 1),
-            });
-
-            tables.insert(table_name, metadata);
         }
 
-        Ok(Self {
-            keyspace,
-            metadata_partition,
-            tables,
-            index_manager: IndexManager::new(),
-            uncommitted_index,
-            uncommitted_data,
-            data_history,
-            index_history,
-            predicate_store,
-            table_indexes_cache: HashMap::new(),
-            last_cleanup: None,
-            log_index: AtomicU64::new(log_index),
-            config,
-        })
+        // Scan for index metadata
+        for result in metadata.prefix(b"index_") {
+            let (key, value) = result?;
+            let key_str = String::from_utf8_lossy(&key);
+
+            if let Some(index_name) = key_str.strip_prefix("index_") {
+                // Decode index metadata
+                let index_meta: IndexMetadata = bincode::deserialize(&value)
+                    .map_err(|e| Error::Serialization(e.to_string()))?;
+
+                // Create MvccStorage for this index
+                let mvcc_config = MvccConfig {
+                    data_dir: self.config.data_dir.clone(),
+                    block_cache_size: self.config.block_cache_size as u64,
+                    compression: self.config.compression,
+                    persist_mode: self.config.persist_mode,
+                    history_bucket_duration: std::time::Duration::from_secs(60),
+                    uncommitted_bucket_duration: std::time::Duration::from_secs(30),
+                    history_retention_window: std::time::Duration::from_secs(300),
+                    uncommitted_retention_window: std::time::Duration::from_secs(120),
+                    cleanup_interval: std::time::Duration::from_secs(30),
+                };
+
+                let index_storage = MvccStorage::<IndexEntity>::with_shared_keyspace(
+                    self.keyspace.clone(),
+                    index_name.to_string(),
+                    mvcc_config,
+                )?;
+
+                self.index_storages
+                    .insert(index_name.to_string(), index_storage);
+                self.index_metadata
+                    .insert(index_name.to_string(), index_meta);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Create a new batch for atomic operations
+    pub fn batch(&self) -> fjall::Batch {
+        self.keyspace.batch()
+    }
+
+    /// Get schemas (for query planning)
+    pub fn get_schemas(&self) -> HashMap<String, Arc<TableSchema>> {
+        self.schemas.clone()
+    }
+
+    /// Get index metadata (for query planning)
+    pub fn get_index_metadata(&self) -> HashMap<String, IndexMetadata> {
+        self.index_metadata.clone()
     }
 
     /// Create a new table
-    pub fn create_table(&mut self, name: String, schema: TableSchema) -> Result<()> {
+    pub fn create_table(&mut self, table_name: String, schema: TableSchema) -> Result<()> {
         // Check if table already exists
-        if self.tables.contains_key(&name) {
-            return Err(Error::DuplicateTable(name.clone()));
+        if self.schemas.contains_key(&table_name) {
+            return Err(Error::DuplicateTable(table_name));
         }
 
-        // Create partitions
-        let data_partition = self.keyspace.open_partition(
-            &format!("{}_data", name),
+        // Create MvccStorage for this table
+        let mvcc_config = MvccConfig {
+            data_dir: self.config.data_dir.clone(),
+            block_cache_size: self.config.block_cache_size as u64,
+            compression: self.config.compression,
+            persist_mode: self.config.persist_mode,
+            history_bucket_duration: std::time::Duration::from_secs(60),
+            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
+            history_retention_window: std::time::Duration::from_secs(300),
+            uncommitted_retention_window: std::time::Duration::from_secs(120),
+            cleanup_interval: std::time::Duration::from_secs(30),
+        };
+
+        let table_storage = MvccStorage::<TableEntity>::with_shared_keyspace(
+            self.keyspace.clone(),
+            table_name.clone(),
+            mvcc_config,
+        )?;
+
+        // Persist schema to metadata
+        let metadata = self.keyspace.open_partition(
+            "_metadata",
             PartitionCreateOptions::default()
-                .block_size(64 * 1024)
-                .compression(self.config.compression),
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
         )?;
 
-        // Store schema in metadata
-        self.metadata_partition.insert(
-            format!("table:{}", name),
-            bincode::serialize(&schema).map_err(|e| Error::Serialization(e.to_string()))?,
-        )?;
+        let schema_key = format!("schema_{}", table_name);
+        let schema_bytes =
+            bincode::serialize(&schema).map_err(|e| Error::Serialization(e.to_string()))?;
 
-        // Create table metadata
-        let metadata = Arc::new(TableMetadata {
-            schema: schema.clone(),
-            data_partition,
-            next_row_id: AtomicU64::new(1),
-        });
+        metadata.insert(schema_key, schema_bytes)?;
 
-        // Add to tables map
-        self.tables.insert(name.clone(), metadata);
+        // Initialize next_row_id counter
+        let row_id_key = format!("next_row_id_{}", table_name);
+        metadata.insert(row_id_key, 1u64.to_be_bytes())?;
 
-        // Persist changes
-        self.keyspace.persist(self.config.persist_mode)?;
+        // Store in memory
+        self.table_storages
+            .insert(table_name.clone(), table_storage);
+        self.schemas.insert(table_name.clone(), Arc::new(schema));
+        self.next_row_ids.insert(table_name, AtomicU64::new(1));
 
         Ok(())
     }
 
     /// Drop a table
-    pub fn drop_table(&mut self, name: &str) -> Result<()> {
-        // Remove from tables map and get partition handles
-        let metadata = self
-            .tables
-            .remove(name)
-            .ok_or_else(|| Error::TableNotFound(name.to_string()))?;
+    pub fn drop_table(&mut self, table_name: &str) -> Result<()> {
+        // Remove from in-memory state
+        self.table_storages.remove(table_name);
+        self.schemas.remove(table_name);
 
         // Remove schema from metadata
-        self.metadata_partition.remove(format!("table:{}", name))?;
+        let metadata = self.keyspace.open_partition(
+            "_metadata",
+            PartitionCreateOptions::default()
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
+        )?;
 
-        // NOTE: Uncommitted data for this table will be cleaned up when time buckets expire
-        // No need to explicitly remove it
+        let schema_key = format!("schema_{}", table_name);
+        metadata.remove(schema_key)?;
 
-        // Get partition handle before dropping
-        let data_partition = metadata.data_partition.clone();
-
-        // Clear all data from partition before dropping
-        // This ensures data doesn't persist when partition is recreated
-        // Iterate and remove all entries
-        let mut batch = self.keyspace.batch();
-        for entry in data_partition.iter() {
-            let (key, _) = entry?;
-            batch.remove(&data_partition, key);
-        }
-        batch.commit()?;
-
-        // Release the metadata Arc
-        drop(metadata);
-
-        // Drop partition using handle
-        self.keyspace.delete_partition(data_partition)?;
-
-        // Invalidate cache for this table
-        self.invalidate_table_indexes_cache(name);
-
-        // Persist changes
-        self.keyspace.persist(self.config.persist_mode)?;
+        // Note: MvccStorage partitions will be cleaned up when dropped
+        // or can be manually cleaned via fjall keyspace operations
 
         Ok(())
     }
 
-    /// Create an index on a table
+    /// Read a row from a table
+    pub fn read_row(
+        &self,
+        table_name: &str,
+        row_id: u64,
+        txn_id: HlcTimestamp,
+    ) -> Result<Option<Vec<Value>>> {
+        // Get table storage
+        let table_storage = self
+            .table_storages
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Get schema
+        let schema = self
+            .schemas
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Read opaque bytes from MVCC
+        let encoded_bytes = table_storage.read(&row_id, txn_id)?;
+
+        // If no data, return None
+        let Some(bytes) = encoded_bytes else {
+            return Ok(None);
+        };
+
+        // Decode with schema (preserves optimization!)
+        let values = decode_row(&bytes, schema)?;
+
+        Ok(Some(values))
+    }
+
+    /// Write a row to a table
+    pub fn write_row(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+        row_id: u64,
+        values: &[Value],
+        txn_id: HlcTimestamp,
+        log_index: u64,
+    ) -> Result<()> {
+        // Get table storage
+        let table_storage = self
+            .table_storages
+            .get_mut(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Get schema
+        let schema = self
+            .schemas
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Encode row WITH SCHEMA (preserves 36.1 bytes/row optimization!)
+        let encoded_row = encode_row(values, schema)?;
+
+        // Check if row exists (for update vs insert)
+        let encoded_old = table_storage.read(&row_id, txn_id)?;
+
+        // Create appropriate delta
+        let delta = if let Some(old) = encoded_old {
+            TableDelta::Update {
+                row_id,
+                encoded_old: old,
+                encoded_new: encoded_row,
+            }
+        } else {
+            TableDelta::Insert {
+                row_id,
+                encoded_row,
+            }
+        };
+
+        // Write to MVCC storage via batch
+        table_storage.write_to_batch(batch, delta, txn_id, log_index)?;
+
+        Ok(())
+    }
+
+    /// Scan all rows in a table using MVCC iterator
+    ///
+    /// Returns an iterator over (row_id, values) pairs visible at the snapshot time.
+    /// This properly handles uncommitted changes and history reconstruction.
+    pub fn scan_table<'a>(
+        &'a self,
+        table_name: &str,
+        txn_id: HlcTimestamp,
+    ) -> Result<TableScanIterator<'a>> {
+        // Get table storage
+        let table_storage = self
+            .table_storages
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Get schema for decoding
+        let schema = self
+            .schemas
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?
+            .clone();
+
+        // Use MVCC iterator - this handles uncommitted + history automatically!
+        let iter = table_storage.iter(txn_id)?;
+
+        Ok(TableScanIterator {
+            mvcc_iter: iter,
+            schema,
+        })
+    }
+
+    /// Scan rows in a table within a row_id range using MVCC iterator
+    ///
+    /// Returns an iterator over (row_id, values) pairs visible at the snapshot time
+    /// for row_ids within the specified range.
+    /// Supports all Rust range types: .., a.., ..b, a..b, a..=b
+    pub fn scan_table_range<'a, R>(
+        &'a self,
+        table_name: &str,
+        range: R,
+        txn_id: HlcTimestamp,
+    ) -> Result<TableScanIterator<'a>>
+    where
+        R: std::ops::RangeBounds<u64> + 'a,
+    {
+        // Get table storage
+        let table_storage = self
+            .table_storages
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Get schema for decoding
+        let schema = self
+            .schemas
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?
+            .clone();
+
+        // Convert u64 range to Vec<u8> range for MVCC storage
+        use std::ops::Bound;
+        let start_bound = match range.start_bound() {
+            Bound::Included(&start) => Bound::Included(start.to_be_bytes().to_vec()),
+            Bound::Excluded(&start) => Bound::Excluded(start.to_be_bytes().to_vec()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        let end_bound = match range.end_bound() {
+            Bound::Included(&end) => Bound::Included(end.to_be_bytes().to_vec()),
+            Bound::Excluded(&end) => Bound::Excluded(end.to_be_bytes().to_vec()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        // Use MVCC range iterator
+        let iter = table_storage.range((start_bound, end_bound), txn_id)?;
+
+        Ok(TableScanIterator {
+            mvcc_iter: iter,
+            schema,
+        })
+    }
+
+    /// Delete a row from a table
+    pub fn delete_row(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+        row_id: u64,
+        txn_id: HlcTimestamp,
+        log_index: u64,
+    ) -> Result<bool> {
+        // Get table storage
+        let table_storage = self
+            .table_storages
+            .get_mut(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Read current value
+        let encoded_old = table_storage.read(&row_id, txn_id)?;
+
+        // If doesn't exist, nothing to delete
+        let Some(old) = encoded_old else {
+            return Ok(false);
+        };
+
+        // Create delete delta
+        let delta = TableDelta::Delete {
+            row_id,
+            encoded_old: old,
+        };
+
+        // Write to MVCC storage via batch
+        table_storage.write_to_batch(batch, delta, txn_id, log_index)?;
+
+        Ok(true)
+    }
+
+    /// Commit a transaction (atomic across all tables and indexes)
+    pub fn commit_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
+        // Create shared batch for atomic commit
+        let mut batch = self.keyspace.batch();
+
+        // Commit all table storages
+        for table_storage in self.table_storages.values_mut() {
+            table_storage.commit_transaction_to_batch(&mut batch, txn_id, log_index)?;
+        }
+
+        // Commit all index storages
+        for index_storage in self.index_storages.values_mut() {
+            index_storage.commit_transaction_to_batch(&mut batch, txn_id, log_index)?;
+        }
+
+        // Remove predicates (on commit)
+        self.predicate_store.remove_all(&mut batch, txn_id)?;
+
+        // Atomic commit across ALL entities!
+        batch.commit()?;
+
+        // Cleanup old buckets if needed (throttled internally by each storage)
+        for table_storage in self.table_storages.values_mut() {
+            table_storage.maybe_cleanup(txn_id).ok();
+        }
+        for index_storage in self.index_storages.values_mut() {
+            index_storage.maybe_cleanup(txn_id).ok();
+        }
+
+        Ok(())
+    }
+
+    /// Abort a transaction (atomic across all tables and indexes)
+    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
+        // Create shared batch for atomic abort
+        let mut batch = self.keyspace.batch();
+
+        // Abort all table storages
+        for table_storage in self.table_storages.values_mut() {
+            table_storage.abort_transaction_to_batch(&mut batch, txn_id, log_index)?;
+        }
+
+        // Abort all index storages
+        for index_storage in self.index_storages.values_mut() {
+            index_storage.abort_transaction_to_batch(&mut batch, txn_id, log_index)?;
+        }
+
+        // Remove predicates (on abort)
+        self.predicate_store.remove_all(&mut batch, txn_id)?;
+
+        // Atomic abort across ALL entities!
+        batch.commit()?;
+
+        // Cleanup old buckets if needed (throttled internally by each storage)
+        for table_storage in self.table_storages.values_mut() {
+            table_storage.maybe_cleanup(txn_id).ok();
+        }
+        for index_storage in self.index_storages.values_mut() {
+            index_storage.maybe_cleanup(txn_id).ok();
+        }
+
+        Ok(())
+    }
+
+    /// Get log index (for crash recovery)
+    pub fn get_log_index(&self) -> u64 {
+        // Get log index from any table storage (they should all be in sync)
+        // If no tables, return 0
+        self.table_storages
+            .values()
+            .next()
+            .map(|s| s.get_log_index())
+            .unwrap_or(0)
+    }
+
+    // ========================================================================
+    // Predicate Persistence (for crash recovery)
+    // ========================================================================
+
+    /// Add predicates to batch (atomic with data operations)
+    pub fn add_predicates_to_batch(
+        &self,
+        batch: &mut fjall::Batch,
+        txn_id: HlcTimestamp,
+        predicates: &QueryPredicates,
+    ) -> Result<()> {
+        // Add read predicates
+        for predicate in &predicates.reads {
+            self.predicate_store
+                .add_to_batch(batch, txn_id, predicate, false)?;
+        }
+
+        // Add write predicates
+        for predicate in &predicates.writes {
+            self.predicate_store
+                .add_to_batch(batch, txn_id, predicate, true)?;
+        }
+
+        // Add insert predicates as write predicates
+        for predicate in &predicates.inserts {
+            self.predicate_store
+                .add_to_batch(batch, txn_id, predicate, true)?;
+        }
+
+        Ok(())
+    }
+
+    /// Persist predicates (for read-only transactions)
+    pub fn persist_predicates(
+        &self,
+        txn_id: HlcTimestamp,
+        predicates: &QueryPredicates,
+    ) -> Result<()> {
+        let mut batch = self.keyspace.batch();
+        self.add_predicates_to_batch(&mut batch, txn_id, predicates)?;
+        batch.commit()?;
+        Ok(())
+    }
+
+    /// Prepare transaction (release read predicates)
+    pub fn prepare_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
+        let mut batch = self.keyspace.batch();
+        self.predicate_store.remove_reads(&mut batch, txn_id)?;
+        batch.commit()?;
+        Ok(())
+    }
+
+    /// Get active transactions from storage (for recovery)
+    pub fn get_active_transactions(&self) -> Result<HashMap<HlcTimestamp, Vec<Predicate>>> {
+        self.predicate_store.get_all_active_transactions()
+    }
+
+    // ========================================================================
+    // Helper Methods for Executors
+    // ========================================================================
+
+    /// Generate next row ID for a table (thread-safe)
+    pub fn generate_row_id(&self, table: &str) -> Result<u64> {
+        self.next_row_ids
+            .get(table)
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))
+            .map(|counter| counter.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Get all indexes for a table
+    pub fn get_table_indexes(&self, table: &str) -> Vec<&IndexMetadata> {
+        self.index_metadata
+            .values()
+            .filter(|meta| meta.table == table)
+            .collect()
+    }
+
+    /// Get all unique indexes for a table
+    pub fn get_unique_indexes(&self, table: &str) -> Vec<&IndexMetadata> {
+        self.get_table_indexes(table)
+            .into_iter()
+            .filter(|meta| meta.unique)
+            .collect()
+    }
+
+    // ========================================================================
+    // Index Operations
+    // ========================================================================
+
+    /// Create a new index
     pub fn create_index(
         &mut self,
-        txn_id: HlcTimestamp,
         index_name: String,
         table_name: String,
         columns: Vec<String>,
         unique: bool,
     ) -> Result<()> {
+        // Check if index already exists
+        if self.index_metadata.contains_key(&index_name) {
+            return Err(Error::Other(format!("Index {} already exists", index_name)));
+        }
+
         // Verify table exists
-        let tables = &self.tables;
-        let table_meta = tables
-            .get(&table_name)
-            .ok_or_else(|| Error::TableNotFound(table_name.clone()))?;
-
-        // Verify columns exist in table
-        for column in &columns {
-            if !table_meta.schema.has_column(column) {
-                return Err(Error::Other(format!(
-                    "Column {} not found in table {}",
-                    column, table_name
-                )));
-            }
+        if !self.schemas.contains_key(&table_name) {
+            return Err(Error::TableNotFound(table_name));
         }
 
-        // Get column indices for the index
-        let column_indices: Vec<usize> = columns
-            .iter()
-            .filter_map(|col| table_meta.schema.column_index(col))
-            .collect();
+        // Create MvccStorage for this index
+        let mvcc_config = MvccConfig {
+            data_dir: self.config.data_dir.clone(),
+            block_cache_size: self.config.block_cache_size as u64,
+            compression: self.config.compression,
+            persist_mode: self.config.persist_mode,
+            history_bucket_duration: std::time::Duration::from_secs(60),
+            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
+            history_retention_window: std::time::Duration::from_secs(300),
+            uncommitted_retention_window: std::time::Duration::from_secs(120),
+            cleanup_interval: std::time::Duration::from_secs(30),
+        };
 
-        if column_indices.len() != columns.len() {
-            return Err(Error::Other(
-                "Failed to resolve all column indices".to_string(),
-            ));
-        }
-
-        // Create the index
-        self.index_manager.create_index(
-            &self.keyspace,
+        let index_storage = MvccStorage::<IndexEntity>::with_shared_keyspace(
+            self.keyspace.clone(),
             index_name.clone(),
-            table_name.clone(),
-            columns.clone(),
-            unique,
+            mvcc_config,
         )?;
 
-        // Build index from existing data
-        // Collect all existing rows
-        let mut rows_to_index = Vec::new();
-        for row_result in self.iter(txn_id, &table_name)? {
-            let row = row_result?;
-            rows_to_index.push((row.id, row));
-        }
-
-        // Build the index
-        self.index_manager.build_index(
-            &mut self.uncommitted_index,
-            &index_name,
-            &rows_to_index,
-            &column_indices,
-            txn_id,
-        )?;
-
-        // Persist metadata about the index
-        let index_meta_key = format!("index:{}", index_name);
-        let index_metadata = IndexMetadata {
+        // Create metadata
+        let metadata = IndexMetadata {
             name: index_name.clone(),
             table: table_name,
             columns,
             index_type: if unique {
-                crate::storage::index::IndexType::Unique
+                crate::types::index::IndexType::Unique
             } else {
-                crate::storage::index::IndexType::BTree
+                crate::types::index::IndexType::BTree
             },
             unique,
         };
 
-        self.metadata_partition.insert(
-            index_meta_key,
-            bincode::serialize(&index_metadata).map_err(|e| Error::Serialization(e.to_string()))?,
+        // Persist metadata
+        let metadata_partition = self.keyspace.open_partition(
+            "_metadata",
+            PartitionCreateOptions::default()
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
         )?;
 
-        // Invalidate cache for this table
-        self.invalidate_table_indexes_cache(&index_metadata.table);
+        let index_key = format!("index_{}", index_name);
+        let index_bytes =
+            bincode::serialize(&metadata).map_err(|e| Error::Serialization(e.to_string()))?;
 
-        self.keyspace.persist(self.config.persist_mode)?;
+        metadata_partition.insert(index_key, index_bytes)?;
+
+        // Store in memory
+        self.index_storages
+            .insert(index_name.clone(), index_storage);
+        self.index_metadata.insert(index_name, metadata);
+
         Ok(())
     }
 
     /// Drop an index
-    /// TODO: This needs integrating with the DDL methods (probably needs thinging about MVCC more)
-    #[allow(dead_code)]
     pub fn drop_index(&mut self, index_name: &str) -> Result<()> {
-        // Get table name before removing metadata
-        let index_meta_key = format!("index:{}", index_name);
-        let table_name = if let Some(meta_bytes) = self.metadata_partition.get(&index_meta_key)? {
-            let index_meta: IndexMetadata = bincode::deserialize(&meta_bytes)
-                .map_err(|e| Error::Serialization(e.to_string()))?;
-            Some(index_meta.table)
-        } else {
-            None
-        };
-
-        // Remove the index
-        self.index_manager.drop_index(index_name)?;
+        // Remove from in-memory state
+        self.index_storages.remove(index_name);
+        self.index_metadata.remove(index_name);
 
         // Remove metadata
-        self.metadata_partition.remove(index_meta_key)?;
+        let metadata_partition = self.keyspace.open_partition(
+            "_metadata",
+            PartitionCreateOptions::default()
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
+        )?;
 
-        // Invalidate cache if we found the table name
-        if let Some(table) = table_name {
-            self.invalidate_table_indexes_cache(&table);
-        }
+        let index_key = format!("index_{}", index_name);
+        metadata_partition.remove(index_key)?;
 
-        self.keyspace.persist(self.config.persist_mode)?;
+        // Note: MvccStorage partitions will be cleaned up when dropped
+
         Ok(())
     }
 
-    /// Insert multiple rows atomically - all validation checks are done before any inserts
-    pub fn insert_batch(
+    /// Insert an entry into an index
+    pub fn insert_index_entry(
         &mut self,
-        tx_ctx: &mut crate::types::context::ExecutionContext,
-        table: &str,
-        values_batch: Vec<Vec<crate::types::value::Value>>,
-    ) -> Result<Vec<RowId>> {
-        let txn_id = tx_ctx.txn_id;
-        let log_index = tx_ctx.log_index;
-        // Get table metadata
-        let table_meta = self
-            .tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?
-            .clone();
-
-        // Phase 1: Validate all rows and prepare data structures
-        let mut prepared_rows = Vec::new();
-        for values in values_batch {
-            // Validate values against schema
-            table_meta.schema.validate_row(&values)?;
-
-            // Generate row ID
-            let row_id = table_meta.next_row_id.fetch_add(1, Ordering::SeqCst);
-
-            // Create row with schema_id
-            let row = Arc::new(
-                Row::new(row_id, values).with_schema_version(table_meta.schema.schema_version),
-            );
-            prepared_rows.push((row_id, row));
-        }
-
-        // Phase 2: Check for duplicates within the batch itself
-        let indexes_to_update = self.get_indexes_for_table(table)?;
-        let mut batch_unique_values: HashMap<String, HashSet<Vec<Value>>> = HashMap::new();
-
-        for (_row_id, row) in &prepared_rows {
-            for (index_name, index_meta) in &indexes_to_update {
-                if !index_meta.unique {
-                    continue;
-                }
-
-                // Get column indices for the index
-                let column_indices: Vec<usize> = index_meta
-                    .columns
-                    .iter()
-                    .filter_map(|col| table_meta.schema.column_index(col))
-                    .collect();
-
-                // Extract values for index columns
-                let index_values: Vec<Value> = column_indices
-                    .iter()
-                    .filter_map(|&idx| row.values.get(idx).cloned())
-                    .collect();
-
-                if index_values.len() == column_indices.len() {
-                    // Check if we've seen these values before in this batch
-                    let values_set = batch_unique_values.entry(index_name.clone()).or_default();
-                    if !values_set.insert(index_values.clone()) {
-                        return Err(Error::UniqueConstraintViolation(format!(
-                            "Duplicate value within batch for unique index {}",
-                            index_name
-                        )));
-                    }
-                }
-            }
-        }
-
-        // Phase 3: Check unique constraints against existing data
-        for (_row_id, row) in &prepared_rows {
-            for (index_name, index_meta) in &indexes_to_update {
-                if !index_meta.unique {
-                    continue;
-                }
-
-                // Get column indices for the index
-                let column_indices: Vec<usize> = index_meta
-                    .columns
-                    .iter()
-                    .filter_map(|col| table_meta.schema.column_index(col))
-                    .collect();
-
-                // Extract values for index columns
-                let index_values: Vec<Value> = column_indices
-                    .iter()
-                    .filter_map(|&idx| row.values.get(idx).cloned())
-                    .collect();
-
-                if index_values.len() == column_indices.len() {
-                    // Check against existing committed and uncommitted data
-                    if self.index_manager.check_unique(
-                        &self.uncommitted_index,
-                        &self.index_history,
-                        index_name,
-                        &index_values,
-                        txn_id,
-                    )? {
-                        return Err(Error::UniqueConstraintViolation(format!(
-                            "Duplicate value for unique index {}",
-                            index_name
-                        )));
-                    }
-                }
-            }
-        }
-
-        // Phase 4: All validations passed - now insert all rows and update indexes atomically
-        let mut batch = self.keyspace.batch();
-        let mut inserted_row_ids = Vec::new();
-
-        for (row_id, row) in prepared_rows {
-            // Add to uncommitted data batch
-            let write_op = WriteOp::Insert {
-                table: table.to_string(),
-                row_id,
-                row: row.clone(),
-            };
-
-            self.uncommitted_data
-                .add_write_to_batch(&mut batch, txn_id, write_op.clone())?;
-
-            // Update indexes for this table
-            self.update_indexes_on_insert_unchecked(table, &row, &table_meta, txn_id)?;
-
-            inserted_row_ids.push(row_id);
-        }
-
-        // Add log_index to the same batch for atomicity
-        batch.insert(
-            &self.metadata_partition,
-            "log_index",
-            log_index.to_be_bytes(),
-        );
-
-        // Update in-memory log_index
-        self.log_index.store(log_index, Ordering::SeqCst);
-
-        // Add predicates to the same batch
-        let _predicate_keys =
-            self.add_predicates_to_batch(&mut batch, txn_id, &tx_ctx.predicates)?;
-        // Note: We don't need to track predicate_keys anymore - we use prefix scan for cleanup
-
-        // Commit the entire batch atomically (data + log_index + predicates)
-        batch.commit()?;
-
-        Ok(inserted_row_ids)
-    }
-
-    /// Update a row
-    pub fn update(
-        &mut self,
-        tx_ctx: &mut crate::types::context::ExecutionContext,
-        table: &str,
-        row_id: RowId,
-        values: Vec<crate::types::value::Value>,
+        batch: &mut fjall::Batch,
+        index_name: &str,
+        index_values: Vec<Value>,
+        row_id: u64,
+        txn_id: HlcTimestamp,
+        log_index: u64,
     ) -> Result<()> {
-        let txn_id = tx_ctx.txn_id;
-        let log_index = tx_ctx.log_index;
-        // Get table metadata
-        let table_meta = self
-            .tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?
-            .clone();
+        // Get index storage
+        let index_storage = self
+            .index_storages
+            .get_mut(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
-        // Validate values against schema
-        table_meta.schema.validate_row(&values)?;
-
-        // Read current row
-        let old_row = self
-            .read(txn_id, table, row_id)?
-            .ok_or(Error::RowNotFound(row_id))?;
-
-        // Create new row with schema_version
-        let new_row = Arc::new(
-            Row::new(row_id, values).with_schema_version(table_meta.schema.schema_version),
-        );
-
-        // Create write operation
-        let write_op = WriteOp::Update {
-            table: table.to_string(),
+        // Create index key
+        let key = IndexKey {
+            values: index_values,
             row_id,
-            old_row: old_row.clone(),
-            new_row: new_row.clone(),
         };
 
-        // Update indexes for this table (remove old, add new)
-        // This checks unique constraints and will error if violated
-        // IMPORTANT: Do this BEFORE adding to uncommitted data so that
-        // if constraint check fails, the write is not committed
-        self.update_indexes_on_update(table, &old_row, &new_row, &table_meta, txn_id)?;
+        // Create insert delta
+        let delta = IndexDelta::Insert { key };
 
-        // Create batch for atomic write
-        let mut batch = self.keyspace.batch();
-
-        // Add to uncommitted data batch AFTER all validations pass
-        self.uncommitted_data
-            .add_write_to_batch(&mut batch, txn_id, write_op.clone())?;
-
-        // Add log_index to the same batch for atomicity
-        batch.insert(
-            &self.metadata_partition,
-            "log_index",
-            log_index.to_be_bytes(),
-        );
-
-        // Update in-memory log_index
-        self.log_index.store(log_index, Ordering::SeqCst);
-
-        // Add predicates to the same batch
-        let _predicate_keys =
-            self.add_predicates_to_batch(&mut batch, txn_id, &tx_ctx.predicates)?;
-        // Note: We don't need to track predicate_keys anymore - we use prefix scan for cleanup
-
-        // Commit the batch atomically (data + log_index + predicates)
-        batch.commit()?;
+        // Write to MVCC storage via batch
+        index_storage.write_to_batch(batch, delta, txn_id, log_index)?;
 
         Ok(())
     }
 
-    /// Delete a row
-    pub fn delete(
+    /// Delete an entry from an index
+    pub fn delete_index_entry(
         &mut self,
-        tx_ctx: &mut crate::types::context::ExecutionContext,
-        table: &str,
-        row_id: RowId,
+        batch: &mut fjall::Batch,
+        index_name: &str,
+        index_values: Vec<Value>,
+        row_id: u64,
+        txn_id: HlcTimestamp,
+        log_index: u64,
     ) -> Result<()> {
-        let txn_id = tx_ctx.txn_id;
-        let log_index = tx_ctx.log_index;
-        // Read current row
-        let row = self
-            .read(txn_id, table, row_id)?
-            .ok_or(Error::RowNotFound(row_id))?;
+        // Get index storage
+        let index_storage = self
+            .index_storages
+            .get_mut(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
-        // Mark as deleted
-        let deleted_row = Arc::new(Row {
-            id: row_id,
-            values: row.values.clone(),
-            deleted: true,
-            schema_version: row.schema_version,
-        });
-
-        // Update indexes for this table (remove entries) BEFORE creating the batch
-        if let Some(table_meta) = self.tables.get(table) {
-            let table_meta = table_meta.clone();
-            self.update_indexes_on_delete(table, &row, &table_meta, txn_id)?;
-        }
-
-        // Create batch for atomic write
-        let mut batch = self.keyspace.batch();
-
-        // Add to uncommitted data batch
-        let write_op = WriteOp::Delete {
-            table: table.to_string(),
+        // Create index key
+        let key = IndexKey {
+            values: index_values,
             row_id,
-            row: deleted_row.clone(),
         };
 
-        self.uncommitted_data
-            .add_write_to_batch(&mut batch, txn_id, write_op.clone())?;
+        // Create delete delta
+        let delta = IndexDelta::Delete { key };
 
-        // Add log_index to the same batch for atomicity
-        batch.insert(
-            &self.metadata_partition,
-            "log_index",
-            log_index.to_be_bytes(),
-        );
-
-        // Update in-memory log_index
-        self.log_index.store(log_index, Ordering::SeqCst);
-
-        // Add predicates to the same batch
-        let _predicate_keys =
-            self.add_predicates_to_batch(&mut batch, txn_id, &tx_ctx.predicates)?;
-        // Note: We don't need to track predicate_keys anymore - we use prefix scan for cleanup
-
-        // Commit the batch atomically (data + log_index + predicates)
-        batch.commit()?;
+        // Write to MVCC storage via batch
+        index_storage.write_to_batch(batch, delta, txn_id, log_index)?;
 
         Ok(())
     }
 
-    /// Read a row
-    pub fn read(
-        &self,
+    /// Update index entries for a row (delete old, insert new)
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_index_entries(
+        &mut self,
+        batch: &mut fjall::Batch,
+        index_name: &str,
+        old_values: Vec<Value>,
+        new_values: Vec<Value>,
+        row_id: u64,
         txn_id: HlcTimestamp,
-        table: &str,
-        row_id: RowId,
-    ) -> Result<Option<Arc<Row>>> {
-        // L1: Check uncommitted transaction writes
-        use crate::storage::uncommitted_data::RowState;
-        match self.uncommitted_data.get_row(txn_id, table, row_id) {
-            RowState::Exists(row) => {
-                // Row exists in uncommitted transaction
-                if !row.deleted {
-                    return Ok(Some(row));
-                } else {
-                    return Ok(None); // Marked as deleted
-                }
-            }
-            RowState::Deleted => {
-                // Row was deleted in uncommitted transaction
-                return Ok(None);
-            }
-            RowState::NoOps => {
-                // No operations for this row in uncommitted data, check disk
-            }
-        }
+        log_index: u64,
+    ) -> Result<()> {
+        // Delete old entry
+        self.delete_index_entry(batch, index_name, old_values, row_id, txn_id, log_index)?;
 
-        // L2: Read from disk with time-travel support
-        let tables = &self.tables;
-        let table_meta = tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
+        // Insert new entry
+        self.insert_index_entry(batch, index_name, new_values, row_id, txn_id, log_index)?;
 
-        // Try to read the row from disk
-        let row_key = row_id.to_be_bytes();
-        if let Some(row_bytes) = table_meta.data_partition.get(row_key)? {
-            // Decode using compact encoding
-            let values = encoding::decode_row(&row_bytes, &table_meta.schema)?;
-            let row = Row {
-                id: row_id,
-                values,
-                deleted: false,
-                schema_version: table_meta.schema.schema_version,
-            };
-
-            // Check if this row has been modified in history window (< 5 minutes)
-            // If not, it's visible (committed > 5 minutes ago)
-            if !self.data_history.is_empty() {
-                // Get all history ops for this table and filter by row_id
-                let table_ops = self.data_history.get_table_ops_after(txn_id, table)?;
-
-                if let Some(ops_for_row) = table_ops.get(&row_id) {
-                    let mut historical_row = row.clone();
-
-                    // Apply operations in reverse to reconstruct historical state
-                    for op in ops_for_row.iter().rev() {
-                        match op {
-                            WriteOp::Update {
-                                old_row, new_row, ..
-                            } => {
-                                // If current row matches new_row, revert to old_row
-                                if historical_row.values == new_row.values {
-                                    historical_row = (**old_row).clone();
-                                }
-                            }
-                            WriteOp::Insert { .. } => {
-                                // Row was inserted after our snapshot, so it shouldn't exist
-                                return Ok(None);
-                            }
-                            WriteOp::Delete {
-                                row: deleted_row, ..
-                            } => {
-                                // Row was deleted after our snapshot, restore it
-                                historical_row = (**deleted_row).clone();
-                            }
-                        }
-                    }
-                    return Ok(Some(Arc::new(historical_row)));
-                }
-            }
-
-            // Row exists and hasn't been modified in history window - it's visible
-            return Ok(Some(Arc::new(row)));
-        }
-
-        // Row doesn't exist in data partition
-        Ok(None)
+        Ok(())
     }
 
-    /// Get an iterator over all visible rows in a table
-    /// The iterator holds necessary locks for its lifetime
-    pub fn iter<'a>(
-        &'a self,
-        txn_id: HlcTimestamp,
-        table: &str,
-    ) -> Result<crate::storage::iterator::TableIterator<'a>> {
-        // Pre-load all data (both use &self - read-only)
-        let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
-        let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
-
-        crate::storage::iterator::TableIterator::new(
-            &self.tables,
-            table,
-            active_data,
-            history_ops,
-            false,
-        )
-    }
-
-    /// Get an iterator with row IDs (for UPDATE/DELETE operations)
-    pub fn iter_with_ids<'a>(
-        &'a self,
-        txn_id: HlcTimestamp,
-        table: &str,
-    ) -> Result<crate::storage::iterator::TableIteratorWithIds<'a>> {
-        // Pre-load all data (both use &self - read-only)
-        let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
-        let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
-
-        crate::storage::iterator::TableIteratorWithIds::new(
-            &self.tables,
-            table,
-            active_data,
-            history_ops,
-            false,
-        )
-    }
-
-    /// Get a reverse iterator (scanning backwards)
-    #[allow(dead_code)]
-    pub fn iter_reverse<'a>(
-        &'a self,
-        txn_id: HlcTimestamp,
-        table: &str,
-    ) -> Result<crate::storage::iterator::TableIterator<'a>> {
-        // Pre-load all data (both use &self - read-only)
-        let active_data = self.uncommitted_data.get_table_active_data(txn_id, table);
-        let history_ops = self.data_history.get_table_ops_after(txn_id, table)?;
-
-        crate::storage::iterator::TableIterator::new(
-            &self.tables,
-            table,
-            active_data,
-            history_ops,
-            true,
-        )
-    }
-
-    /// Get all table schemas
-    pub fn get_schemas(&self) -> HashMap<String, TableSchema> {
-        let tables = &self.tables;
-        tables
-            .iter()
-            .map(|(name, meta)| (name.clone(), meta.schema.clone()))
-            .collect()
-    }
-
-    /// Get all index metadata
-    pub fn get_index_metadata(&self) -> HashMap<String, crate::storage::index::IndexMetadata> {
-        self.index_manager.get_all_metadata().into_iter().collect()
-    }
-
-    /// Get index columns for a specific index
-    pub fn get_index_columns(&self, table_name: &str, index_name: &str) -> Option<Vec<String>> {
-        self.index_manager
-            .get_index_metadata(index_name)
-            .filter(|meta| meta.table == table_name)
-            .map(|meta| meta.columns.clone())
-    }
-
-    /// Check if an index exists on a table
-    pub fn has_index(&self, table_name: &str, index_name: &str) -> bool {
-        // Check both the direct index name and the primary key index name
-        let pk_index_name = format!("{}_{}_pkey", table_name, index_name);
-
-        self.index_manager
-            .get_index_metadata(index_name)
-            .map(|meta| meta.table == table_name)
-            .unwrap_or(false)
-            || self
-                .index_manager
-                .get_index_metadata(&pk_index_name)
-                .map(|meta| meta.table == table_name)
-                .unwrap_or(false)
-    }
-
-    /// Streaming index lookup - returns iterator of rows (MVCC-aware)
-    pub fn index_lookup_rows_streaming<'a>(
+    /// Lookup rows by exact index values (point query)
+    ///
+    /// Returns an iterator over rows that match the indexed values.
+    /// Example: SELECT * FROM users WHERE name = 'Alice'
+    pub fn index_lookup<'a>(
         &'a self,
         index_name: &str,
         values: Vec<Value>,
         txn_id: HlcTimestamp,
-    ) -> Result<impl Iterator<Item = Result<Arc<Row>>> + 'a> {
+    ) -> Result<impl Iterator<Item = Result<(u64, Vec<Value>)>> + 'a> {
         // Get index metadata
-        let index_meta_key = format!("index:{}", index_name);
-        let meta_bytes = self
-            .metadata_partition
-            .get(&index_meta_key)?
+        let index_meta = self
+            .index_metadata
+            .get(index_name)
             .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-        let index_meta: IndexMetadata =
-            bincode::deserialize(&meta_bytes).map_err(|e| Error::Serialization(e.to_string()))?;
         let table_name = index_meta.table.clone();
 
-        // Get streaming row IDs (MVCC-aware)
-        let row_ids = self.index_manager.lookup_iter_mvcc(
-            &self.uncommitted_index,
-            &self.index_history,
-            index_name,
-            values,
+        // Get index storage
+        let index_storage = self
+            .index_storages
+            .get(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
+
+        // For point lookup, use range scan from row_id=0 to row_id=MAX
+        // This ensures we only get exact matches for the values
+        use std::ops::Bound;
+        let start_key = crate::storage::encoding::encode_index_key(&values, 0);
+        let end_key = crate::storage::encoding::encode_index_key(&values, u64::MAX);
+
+        // Use range scan to find all matching entries
+        let index_iter = index_storage.range(
+            (Bound::Included(start_key), Bound::Included(end_key)),
             txn_id,
         )?;
 
-        // Map row IDs to rows (streaming)
-        Ok(
-            row_ids.filter_map(move |row_id_result| match row_id_result {
-                Ok(row_id) => match self.read(txn_id, &table_name, row_id) {
-                    Ok(Some(row)) => Some(Ok(row)),
-                    Ok(None) => None,
-                    Err(e) => Some(Err(e)),
-                },
-                Err(e) => Some(Err(e)),
-            }),
-        )
+        // Extract row IDs and map to rows
+        let row_iter = IndexLookupIterator {
+            index_iter,
+            storage: self,
+            table_name,
+            txn_id,
+        };
+
+        Ok(row_iter)
     }
 
-    /// Streaming index range scan - returns iterator of rows (MVCC-aware)
-    pub fn index_range_lookup_rows_streaming<'a>(
+    /// Range scan over index (range query)
+    ///
+    /// Returns an iterator over rows within the value range.
+    /// Example: SELECT * FROM users WHERE age >= 18 AND age <= 65
+    pub fn index_range_scan<'a>(
         &'a self,
         index_name: &str,
         start_values: Option<Vec<Value>>,
         end_values: Option<Vec<Value>>,
-        _reverse: bool,
         txn_id: HlcTimestamp,
-    ) -> Result<impl Iterator<Item = Result<Arc<Row>>> + 'a> {
+    ) -> Result<impl Iterator<Item = Result<(u64, Vec<Value>)>> + 'a> {
         // Get index metadata
-        let index_meta_key = format!("index:{}", index_name);
-        let meta_bytes = self
-            .metadata_partition
-            .get(&index_meta_key)?
+        let index_meta = self
+            .index_metadata
+            .get(index_name)
             .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
-        let index_meta: IndexMetadata =
-            bincode::deserialize(&meta_bytes).map_err(|e| Error::Serialization(e.to_string()))?;
         let table_name = index_meta.table.clone();
 
-        // Get streaming row IDs (MVCC-aware)
-        let row_ids = self.index_manager.range_scan_iter_mvcc(
-            &self.uncommitted_index,
-            &self.index_history,
-            index_name,
-            start_values,
-            end_values,
+        // Get index storage
+        let index_storage = self
+            .index_storages
+            .get(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
+
+        // Build range bounds
+        use std::ops::Bound;
+        let start_bound = match start_values {
+            Some(values) => {
+                let key = crate::storage::encoding::encode_index_key(&values, 0);
+                let prefix_len = key.len() - 8; // Remove row_id
+                Bound::Included(key[..prefix_len].to_vec())
+            }
+            None => Bound::Unbounded,
+        };
+
+        let end_bound = match end_values {
+            Some(values) => {
+                let key = crate::storage::encoding::encode_index_key(&values, u64::MAX);
+                Bound::Included(key)
+            }
+            None => Bound::Unbounded,
+        };
+
+        // Use range scan
+        let index_iter = index_storage.range((start_bound, end_bound), txn_id)?;
+
+        // Extract row IDs and map to rows
+        let row_iter = IndexLookupIterator {
+            index_iter,
+            storage: self,
+            table_name,
+            txn_id,
+        };
+
+        Ok(row_iter)
+    }
+
+    /// Check if a unique index would be violated by a value
+    ///
+    /// Returns true if the value already exists in the index (for a different row)
+    pub fn check_unique_violation(
+        &self,
+        index_name: &str,
+        values: Vec<Value>,
+        exclude_row_id: Option<u64>,
+        txn_id: HlcTimestamp,
+    ) -> Result<bool> {
+        // Get index metadata
+        let index_meta = self
+            .index_metadata
+            .get(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
+
+        if !index_meta.unique {
+            // Not a unique index, no violation possible
+            return Ok(false);
+        }
+
+        // Get index storage
+        let index_storage = self
+            .index_storages
+            .get(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
+
+        // Use range scan for exact value match
+        use std::ops::Bound;
+        let start_key = crate::storage::encoding::encode_index_key(&values, 0);
+        let end_key = crate::storage::encoding::encode_index_key(&values, u64::MAX);
+
+        // Scan for any matching entries
+        let index_iter = index_storage.range(
+            (Bound::Included(start_key), Bound::Included(end_key)),
             txn_id,
         )?;
 
-        // Map row IDs to rows (streaming)
-        Ok(
-            row_ids.filter_map(move |row_id_result| match row_id_result {
-                Ok(row_id) => match self.read(txn_id, &table_name, row_id) {
-                    Ok(Some(row)) => Some(Ok(row)),
-                    Ok(None) => None,
+        // Check if any entry exists (excluding the specified row if provided)
+        for result in index_iter {
+            let (index_key, _) = result?;
+
+            // If we should exclude a specific row, check the row_id
+            if let Some(exclude_id) = exclude_row_id
+                && index_key.row_id == exclude_id
+            {
+                continue; // Skip this row
+            }
+
+            // Found a matching entry - violation!
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+}
+
+/// Iterator over table rows with schema-aware decoding
+pub struct TableScanIterator<'a> {
+    mvcc_iter: proven_mvcc::MvccIterator<'a, TableEntity>,
+    schema: Arc<crate::types::schema::Table>,
+}
+
+impl<'a> Iterator for TableScanIterator<'a> {
+    type Item = Result<(u64, Vec<Value>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.mvcc_iter.next() {
+            Some(Ok((row_id, encoded_bytes))) => {
+                // Decode row with schema
+                match decode_row(&encoded_bytes, &self.schema) {
+                    Ok(values) => Some(Ok((row_id, values))),
                     Err(e) => Some(Err(e)),
+                }
+            }
+            Some(Err(e)) => Some(Err(e.into())),
+            None => None,
+        }
+    }
+}
+
+/// Iterator for index lookups - maps index keys to table rows
+struct IndexLookupIterator<'a> {
+    index_iter: proven_mvcc::MvccIterator<'a, IndexEntity>,
+    storage: &'a SqlStorage,
+    table_name: String,
+    txn_id: HlcTimestamp,
+}
+
+impl<'a> Iterator for IndexLookupIterator<'a> {
+    type Item = Result<(u64, Vec<Value>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Get next index entry
+        loop {
+            match self.index_iter.next() {
+                Some(Ok((index_key, _))) => {
+                    // Extract row_id from index key
+                    let row_id = index_key.row_id;
+
+                    // Look up the row
+                    match self.storage.read_row(&self.table_name, row_id, self.txn_id) {
+                        Ok(Some(values)) => return Some(Ok((row_id, values))),
+                        Ok(None) => continue, // Row was deleted, skip to next
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                Some(Err(e)) => return Some(Err(e.into())),
+                None => return None,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::data_type::DataType;
+    use crate::types::schema::{Column, Table};
+    use proven_hlc::NodeId;
+
+    fn test_config() -> SqlStorageConfig {
+        SqlStorageConfig {
+            data_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
+            ..Default::default()
+        }
+    }
+
+    fn create_test_schema() -> TableSchema {
+        Table {
+            name: "users".to_string(),
+            columns: vec![
+                Column {
+                    name: "id".to_string(),
+                    data_type: DataType::I64,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
                 },
-                Err(e) => Some(Err(e)),
-            }),
-        )
-    }
-
-    /// Execute DDL operations
-    pub fn execute_ddl(
-        &mut self,
-        plan: &crate::planning::plan::Plan,
-        txn_id: HlcTimestamp,
-    ) -> Result<String> {
-        use crate::planning::plan::Plan;
-
-        match plan {
-            Plan::CreateTable {
-                name,
-                schema,
-                foreign_keys: _,
-                if_not_exists,
-            } => {
-                // TODO: Store and validate foreign key constraints
-                // For now, just create the table without FK validation
-                match self.create_table(name.clone(), schema.clone()) {
-                    Ok(_) => {
-                        // Create indexes for PRIMARY KEY columns
-                        if let Some(pk_idx) = schema.primary_key
-                            && pk_idx < schema.columns.len()
-                        {
-                            let pk_column = &schema.columns[pk_idx];
-                            let index_name = format!("{}_{}_pkey", name, pk_column.name);
-                            // Create a unique index for the primary key
-                            self.create_index(
-                                txn_id,
-                                index_name,
-                                name.clone(),
-                                vec![pk_column.name.clone()],
-                                true, // unique
-                            )?;
-                        }
-
-                        // Create indexes for columns with UNIQUE constraints
-                        for (col_idx, column) in schema.columns.iter().enumerate() {
-                            // Skip if this is the primary key (already handled above)
-                            if Some(col_idx) == schema.primary_key {
-                                continue;
-                            }
-
-                            // Create unique index if column has UNIQUE constraint
-                            if column.unique {
-                                let index_name = format!("{}_{}_unique", name, column.name);
-                                self.create_index(
-                                    txn_id,
-                                    index_name,
-                                    name.clone(),
-                                    vec![column.name.clone()],
-                                    true, // unique
-                                )?;
-                            } else if column.index {
-                                // Create regular (non-unique) index if column has INDEX constraint
-                                let index_name = format!("{}_{}_idx", name, column.name);
-                                self.create_index(
-                                    txn_id,
-                                    index_name,
-                                    name.clone(),
-                                    vec![column.name.clone()],
-                                    false, // not unique
-                                )?;
-                            }
-                        }
-                        Ok(format!("Table '{}' created", name))
-                    }
-                    Err(Error::DuplicateTable(_)) if *if_not_exists => Ok(format!(
-                        "Table '{}' already exists (IF NOT EXISTS specified)",
-                        name
-                    )),
-                    Err(e) => Err(e),
-                }
-            }
-
-            Plan::DropTable {
-                names,
-                if_exists,
-                cascade: _,
-            } => {
-                let mut dropped_count = 0;
-                let mut errors = Vec::new();
-
-                for name in names {
-                    match self.drop_table(name) {
-                        Ok(_) => dropped_count += 1,
-                        Err(Error::TableNotFound(_)) if *if_exists => {
-                            // Ignore if IF EXISTS is specified
-                        }
-                        Err(e) => errors.push((name.clone(), e)),
-                    }
-                }
-
-                if !errors.is_empty() {
-                    // Return first error
-                    let (_name, err) = errors.into_iter().next().unwrap();
-                    return Err(err);
-                }
-
-                if dropped_count == 0 && *if_exists {
-                    Ok("No tables dropped (IF EXISTS specified)".to_string())
-                } else if dropped_count == 1 {
-                    Ok("Table dropped".to_string())
-                } else {
-                    Ok(format!("{} tables dropped", dropped_count))
-                }
-            }
-
-            Plan::CreateIndex {
-                name,
-                table,
-                columns,
-                unique,
-                included_columns: _,
-            } => {
-                // Check if table exists
-                if !&self.tables.contains_key(table) {
-                    return Err(Error::TableNotFound(table.clone()));
-                }
-
-                // Extract column names from IndexColumn structs
-                // For now, we'll just use the expression as a string
-                // TODO: Properly evaluate IndexColumn expressions
-                let column_names: Vec<String> = columns
-                    .iter()
-                    .map(|_col| {
-                        // Simplified: just use a placeholder for now
-                        // In a full implementation, we'd parse the expression
-                        "column".to_string()
-                    })
-                    .collect();
-
-                // Try to create the index
-                match self.index_manager.create_index(
-                    &self.keyspace,
-                    name.clone(),
-                    table.clone(),
-                    column_names,
-                    *unique,
-                ) {
-                    Ok(_) => Ok(format!("Index '{}' created", name)),
-                    Err(Error::Other(msg)) if msg.contains("already exists") => {
-                        Ok(format!("Index '{}' already exists", name))
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-
-            Plan::DropIndex { name, if_exists } => match self.index_manager.drop_index(name) {
-                Ok(_) => Ok(format!("Index '{}' dropped", name)),
-                Err(Error::IndexNotFound(_)) if *if_exists => Ok(format!(
-                    "Index '{}' does not exist (IF EXISTS specified)",
-                    name
-                )),
-                Err(e) => Err(e),
-            },
-
-            _ => Err(Error::InvalidOperation(
-                "Unsupported DDL operation".to_string(),
-            )),
+                Column {
+                    name: "name".to_string(),
+                    data_type: DataType::Str,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
+                },
+            ],
+            primary_key: Some(0), // id column
+            foreign_keys: vec![],
+            schema_version: 1,
         }
     }
 
-    /// Commit a transaction
-    pub fn commit_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
-        // Update in-memory log_index
-        self.log_index.store(log_index, Ordering::SeqCst);
-        // Get writes for this transaction
-        let writes = self.uncommitted_data.get_transaction_writes(txn_id);
-
-        // Create batch for atomic commit (even if no writes, we might have index ops)
-        let mut batch = self.keyspace.batch();
-
-        // Separate data and index operations
-        let mut data_ops = Vec::new();
-
-        if !writes.is_empty() {
-            for write in &writes {
-                match write {
-                    WriteOp::Insert { table, row_id, row } => {
-                        self.persist_insert(&mut batch, table, *row_id, row.clone())?;
-                        data_ops.push(write.clone());
-                    }
-                    WriteOp::Update {
-                        table,
-                        row_id,
-                        new_row,
-                        ..
-                    } => {
-                        self.persist_update(&mut batch, table, *row_id, new_row.clone())?;
-                        data_ops.push(write.clone());
-                    }
-                    WriteOp::Delete { table, row_id, .. } => {
-                        self.persist_delete(&mut batch, table, *row_id)?;
-                        data_ops.push(write.clone());
-                    }
-                }
-            }
+    fn create_test_schema_with_city() -> TableSchema {
+        Table {
+            name: "users".to_string(),
+            columns: vec![
+                Column {
+                    name: "id".to_string(),
+                    data_type: DataType::I64,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
+                },
+                Column {
+                    name: "name".to_string(),
+                    data_type: DataType::Str,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
+                },
+                Column {
+                    name: "city".to_string(),
+                    data_type: DataType::Str,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
+                },
+            ],
+            primary_key: Some(0),
+            foreign_keys: vec![],
+            schema_version: 1,
         }
+    }
 
-        // Get index operations before committing (so we can move to index_history)
-        let index_ops = self.uncommitted_index.get_transaction_ops(txn_id);
-
-        // Commit index operations to the batch
-        self.index_manager
-            .commit_transaction(&mut self.uncommitted_index, &mut batch, txn_id)?;
-
-        // Add data operations to data_history (in the same batch)
-        // OPTIMIZED: Uses commit_time-first key design for efficient range queries
-        if !writes.is_empty() {
-            self.data_history
-                .add_committed_ops_to_batch(&mut batch, txn_id, writes)?;
+    fn create_test_schema_with_age() -> TableSchema {
+        Table {
+            name: "users".to_string(),
+            columns: vec![
+                Column {
+                    name: "id".to_string(),
+                    data_type: DataType::I64,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
+                },
+                Column {
+                    name: "name".to_string(),
+                    data_type: DataType::Str,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
+                },
+                Column {
+                    name: "age".to_string(),
+                    data_type: DataType::I64,
+                    nullable: false,
+                    default: None,
+                    primary_key: false,
+                    index: false,
+                    unique: false,
+                    references: None,
+                },
+            ],
+            primary_key: Some(0),
+            foreign_keys: vec![],
+            schema_version: 1,
         }
+    }
 
-        // Add index operations to index_history (in the same batch)
-        // OPTIMIZED: Uses commit_time-first key design for efficient range queries
-        if !index_ops.is_empty() {
-            self.index_history
-                .add_committed_ops_to_batch(&mut batch, txn_id, index_ops)?;
-        }
+    #[test]
+    fn test_create_table() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
 
-        // Persist log_index atomically with the commit
-        batch.insert(
-            &self.metadata_partition,
-            "log_index",
-            log_index.to_be_bytes(),
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        assert!(storage.schemas.contains_key("users"));
+        assert!(storage.table_storages.contains_key("users"));
+    }
+
+    #[test]
+    fn test_write_and_read_row() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let values = vec![Value::integer(123), Value::string("Alice")];
+
+        // Write row
+        let mut batch = storage.batch();
+        storage
+            .write_row(&mut batch, "users", 1, &values, txn_id, 1)
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Read row
+        let read_values = storage.read_row("users", 1, txn_id).unwrap();
+        assert_eq!(read_values, Some(values));
+    }
+
+    #[test]
+    fn test_delete_row() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let values = vec![Value::integer(123), Value::string("Alice")];
+
+        // Write row
+        let mut batch = storage.batch();
+        storage
+            .write_row(&mut batch, "users", 1, &values, txn_id, 1)
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Delete row
+        let mut batch = storage.batch();
+        let deleted = storage
+            .delete_row(&mut batch, "users", 1, txn_id, 2)
+            .unwrap();
+        batch.commit().unwrap();
+
+        assert!(deleted);
+
+        // Verify deleted
+        let read_values = storage.read_row("users", 1, txn_id).unwrap();
+        assert_eq!(read_values, None);
+    }
+
+    #[test]
+    fn test_create_index() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        // Create index
+        storage
+            .create_index(
+                "idx_name".to_string(),
+                "users".to_string(),
+                vec!["name".to_string()],
+                false,
+            )
+            .unwrap();
+
+        assert!(storage.index_metadata.contains_key("idx_name"));
+        assert!(storage.index_storages.contains_key("idx_name"));
+    }
+
+    #[test]
+    fn test_index_entries() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        // Create index
+        storage
+            .create_index(
+                "idx_name".to_string(),
+                "users".to_string(),
+                vec!["name".to_string()],
+                false,
+            )
+            .unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Insert index entry
+        let mut batch = storage.batch();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_name",
+                vec![Value::string("Alice")],
+                1,
+                txn_id,
+                1,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Delete index entry
+        let mut batch = storage.batch();
+        storage
+            .delete_index_entry(
+                &mut batch,
+                "idx_name",
+                vec![Value::string("Alice")],
+                1,
+                txn_id,
+                2,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+    }
+
+    #[test]
+    fn test_commit_abort_atomic() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let values = vec![Value::integer(123), Value::string("Alice")];
+
+        // Write row
+        let mut batch = storage.batch();
+        storage
+            .write_row(&mut batch, "users", 1, &values, txn_id, 1)
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Commit transaction
+        storage.commit_transaction(txn_id, 2).unwrap();
+
+        // Verify readable by LATER transaction (committed data)
+        let later_txn = HlcTimestamp::new(2000, 0, NodeId::new(1));
+        let read_values = storage.read_row("users", 1, later_txn).unwrap();
+        assert_eq!(read_values, Some(values));
+    }
+
+    #[test]
+    fn test_table_scan() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Insert multiple rows
+        let mut batch = storage.batch();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                1,
+                &[Value::integer(1), Value::string("Alice")],
+                txn_id,
+                1,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                2,
+                &[Value::integer(2), Value::string("Bob")],
+                txn_id,
+                2,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                5,
+                &[Value::integer(5), Value::string("Charlie")],
+                txn_id,
+                3,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Scan table
+        let rows: Vec<_> = storage
+            .scan_table("users", txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        // Should find 3 rows
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[0].1, vec![Value::integer(1), Value::string("Alice")]);
+        assert_eq!(rows[1].0, 2);
+        assert_eq!(rows[1].1, vec![Value::integer(2), Value::string("Bob")]);
+        assert_eq!(rows[2].0, 5);
+        assert_eq!(rows[2].1, vec![Value::integer(5), Value::string("Charlie")]);
+    }
+
+    #[test]
+    fn test_table_scan_range() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Insert multiple rows
+        let mut batch = storage.batch();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                1,
+                &[Value::integer(1), Value::string("Alice")],
+                txn_id,
+                1,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                3,
+                &[Value::integer(3), Value::string("Bob")],
+                txn_id,
+                2,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                5,
+                &[Value::integer(5), Value::string("Charlie")],
+                txn_id,
+                3,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                7,
+                &[Value::integer(7), Value::string("Diana")],
+                txn_id,
+                4,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                10,
+                &[Value::integer(10), Value::string("Eve")],
+                txn_id,
+                5,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Scan range 3..=7 (inclusive)
+        let rows: Vec<_> = storage
+            .scan_table_range("users", 3..=7, txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        // Should find 3 rows: 3, 5, 7
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, 3);
+        assert_eq!(rows[0].1, vec![Value::integer(3), Value::string("Bob")]);
+        assert_eq!(rows[1].0, 5);
+        assert_eq!(rows[1].1, vec![Value::integer(5), Value::string("Charlie")]);
+        assert_eq!(rows[2].0, 7);
+        assert_eq!(rows[2].1, vec![Value::integer(7), Value::string("Diana")]);
+
+        // Scan range 5.. (from 5 onwards)
+        let rows: Vec<_> = storage
+            .scan_table_range("users", 5.., txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        // Should find 3 rows: 5, 7, 10
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, 5);
+        assert_eq!(rows[1].0, 7);
+        assert_eq!(rows[2].0, 10);
+
+        // Scan range ..5 (up to but not including 5)
+        let rows: Vec<_> = storage
+            .scan_table_range("users", ..5, txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        // Should find 2 rows: 1, 3
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[1].0, 3);
+    }
+
+    #[test]
+    fn test_index_lookup() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema_with_city();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Create non-unique index on city
+        storage
+            .create_index(
+                "idx_city".to_string(),
+                "users".to_string(),
+                vec!["city".to_string()],
+                false, // non-unique
+            )
+            .unwrap();
+
+        // Insert multiple rows with same city
+        let mut batch = storage.batch();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                1,
+                &[
+                    Value::integer(1),
+                    Value::string("Alice"),
+                    Value::string("Seattle"),
+                ],
+                txn_id,
+                1,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                2,
+                &[
+                    Value::integer(2),
+                    Value::string("Bob"),
+                    Value::string("Seattle"),
+                ],
+                txn_id,
+                2,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                3,
+                &[
+                    Value::integer(3),
+                    Value::string("Charlie"),
+                    Value::string("Portland"),
+                ],
+                txn_id,
+                3,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                4,
+                &[
+                    Value::integer(4),
+                    Value::string("Diana"),
+                    Value::string("Seattle"),
+                ],
+                txn_id,
+                4,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Add index entries
+        let mut batch = storage.batch();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_city",
+                vec![Value::string("Seattle")],
+                1,
+                txn_id,
+                1,
+            )
+            .unwrap();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_city",
+                vec![Value::string("Seattle")],
+                2,
+                txn_id,
+                2,
+            )
+            .unwrap();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_city",
+                vec![Value::string("Portland")],
+                3,
+                txn_id,
+                3,
+            )
+            .unwrap();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_city",
+                vec![Value::string("Seattle")],
+                4,
+                txn_id,
+                4,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Lookup by city = Seattle (should find 3 rows)
+        let results: Vec<_> = storage
+            .index_lookup("idx_city", vec![Value::string("Seattle")], txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, 1); // row_id
+        assert_eq!(results[0].1[1], Value::string("Alice")); // name
+        assert_eq!(results[1].0, 2);
+        assert_eq!(results[1].1[1], Value::string("Bob"));
+        assert_eq!(results[2].0, 4);
+        assert_eq!(results[2].1[1], Value::string("Diana"));
+
+        // Lookup by city = Portland (should find 1 row)
+        let results: Vec<_> = storage
+            .index_lookup("idx_city", vec![Value::string("Portland")], txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 3);
+        assert_eq!(results[0].1[1], Value::string("Charlie"));
+
+        // Lookup by city = New York (should find 0 rows)
+        let results: Vec<_> = storage
+            .index_lookup("idx_city", vec![Value::string("New York")], txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_index_range_scan() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema_with_age();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Create index on age
+        storage
+            .create_index(
+                "idx_age".to_string(),
+                "users".to_string(),
+                vec!["age".to_string()],
+                false,
+            )
+            .unwrap();
+
+        // Insert rows with different ages
+        let mut batch = storage.batch();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                1,
+                &[
+                    Value::integer(1),
+                    Value::string("Alice"),
+                    Value::integer(25),
+                ],
+                txn_id,
+                1,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                2,
+                &[Value::integer(2), Value::string("Bob"), Value::integer(30)],
+                txn_id,
+                2,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                3,
+                &[
+                    Value::integer(3),
+                    Value::string("Charlie"),
+                    Value::integer(35),
+                ],
+                txn_id,
+                3,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                4,
+                &[
+                    Value::integer(4),
+                    Value::string("Diana"),
+                    Value::integer(40),
+                ],
+                txn_id,
+                4,
+            )
+            .unwrap();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                5,
+                &[Value::integer(5), Value::string("Eve"), Value::integer(45)],
+                txn_id,
+                5,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Add index entries
+        let mut batch = storage.batch();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_age",
+                vec![Value::integer(25)],
+                1,
+                txn_id,
+                1,
+            )
+            .unwrap();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_age",
+                vec![Value::integer(30)],
+                2,
+                txn_id,
+                2,
+            )
+            .unwrap();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_age",
+                vec![Value::integer(35)],
+                3,
+                txn_id,
+                3,
+            )
+            .unwrap();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_age",
+                vec![Value::integer(40)],
+                4,
+                txn_id,
+                4,
+            )
+            .unwrap();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_age",
+                vec![Value::integer(45)],
+                5,
+                txn_id,
+                5,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Range scan: age >= 30 AND age <= 40
+        let results: Vec<_> = storage
+            .index_range_scan(
+                "idx_age",
+                Some(vec![Value::integer(30)]),
+                Some(vec![Value::integer(40)]),
+                txn_id,
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].1[1], Value::string("Bob")); // age 30
+        assert_eq!(results[1].1[1], Value::string("Charlie")); // age 35
+        assert_eq!(results[2].1[1], Value::string("Diana")); // age 40
+
+        // Range scan: age >= 35 (no upper bound)
+        let results: Vec<_> = storage
+            .index_range_scan("idx_age", Some(vec![Value::integer(35)]), None, txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].1[1], Value::string("Charlie")); // age 35
+        assert_eq!(results[1].1[1], Value::string("Diana")); // age 40
+        assert_eq!(results[2].1[1], Value::string("Eve")); // age 45
+
+        // Range scan: age <= 30 (no lower bound)
+        let results: Vec<_> = storage
+            .index_range_scan("idx_age", None, Some(vec![Value::integer(30)]), txn_id)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].1[1], Value::string("Alice")); // age 25
+        assert_eq!(results[1].1[1], Value::string("Bob")); // age 30
+    }
+
+    #[test]
+    fn test_check_unique_violation() {
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Create unique index on name
+        storage
+            .create_index(
+                "idx_name_unique".to_string(),
+                "users".to_string(),
+                vec!["name".to_string()],
+                true, // unique
+            )
+            .unwrap();
+
+        // Insert first row
+        let mut batch = storage.batch();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                1,
+                &[Value::integer(1), Value::string("Alice")],
+                txn_id,
+                1,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Add index entry
+        let mut batch = storage.batch();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_name_unique",
+                vec![Value::string("Alice")],
+                1,
+                txn_id,
+                1,
+            )
+            .unwrap();
+        batch.commit().unwrap();
+
+        // Check if "Alice" would violate (should return true - already exists)
+        let violation = storage
+            .check_unique_violation(
+                "idx_name_unique",
+                vec![Value::string("Alice")],
+                None,
+                txn_id,
+            )
+            .unwrap();
+        assert!(violation, "Should detect violation - Alice already exists");
+
+        // Check if "Bob" would violate (should return false - doesn't exist)
+        let violation = storage
+            .check_unique_violation("idx_name_unique", vec![Value::string("Bob")], None, txn_id)
+            .unwrap();
+        assert!(
+            !violation,
+            "Should not detect violation - Bob doesn't exist"
         );
 
-        // Remove from uncommitted stores (this is fast, no disk I/O)
-        self.uncommitted_data
-            .remove_transaction(&mut batch, txn_id)?;
-
-        // Remove predicates from storage (transaction committed)
-        self.predicate_store
-            .remove_all_predicates(&mut batch, txn_id)?;
-
-        // Commit single atomic batch (includes data, indexes, history, predicate cleanup)
-        batch.commit()?;
-
-        // Cleanup old buckets AFTER commit (since it drops partitions)
-        let should_cleanup = match self.last_cleanup {
-            None => true,
-            Some(last) => {
-                let cleanup_interval_micros = self.config.cleanup_interval.as_micros() as u64;
-                txn_id.physical.saturating_sub(last.physical) >= cleanup_interval_micros
-            }
-        };
-
-        if should_cleanup {
-            self.data_history.cleanup_old_buckets(txn_id)?;
-            self.index_history.cleanup_old_buckets(txn_id)?;
-            // Also cleanup uncommitted stores (to catch orphaned transactions)
-            self.uncommitted_data.cleanup_old_buckets(txn_id)?;
-            self.uncommitted_index.cleanup_old_buckets(txn_id)?;
-            // Cleanup orphaned predicates
-            self.predicate_store.cleanup_old_buckets(txn_id)?;
-            self.last_cleanup = Some(txn_id);
-        }
-
-        // Persist to disk once
-        if should_cleanup {
-            self.keyspace.persist(fjall::PersistMode::SyncAll)?;
-        } else {
-            self.keyspace.persist(self.config.persist_mode)?;
-        }
-
-        Ok(())
-    }
-
-    /// Abort a transaction
-    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
-        // Update in-memory log_index
-        self.log_index.store(log_index, Ordering::SeqCst);
-
-        // Create batch for atomic commit (even if no writes, we might have index ops)
-        let mut batch = self.keyspace.batch();
-
-        // Remove from uncommitted data
-        self.uncommitted_data
-            .remove_transaction(&mut batch, txn_id)?;
-
-        // Abort index operations (uses batch now)
-        self.index_manager
-            .abort_transaction(&mut self.uncommitted_index, &mut batch, txn_id)?;
-
-        // Persist log_index atomically with the abort
-        batch.insert(
-            &self.metadata_partition,
-            "log_index",
-            log_index.to_be_bytes(),
+        // Check if "Alice" would violate excluding row_id 1 (should return false - same row)
+        let violation = storage
+            .check_unique_violation(
+                "idx_name_unique",
+                vec![Value::string("Alice")],
+                Some(1),
+                txn_id,
+            )
+            .unwrap();
+        assert!(
+            !violation,
+            "Should not detect violation - excluding the same row"
         );
 
-        // Remove predicates from storage (transaction aborted)
-        self.predicate_store
-            .remove_all_predicates(&mut batch, txn_id)?;
+        // Insert another row with different name
+        let mut batch = storage.batch();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                2,
+                &[Value::integer(2), Value::string("Bob")],
+                txn_id,
+                2,
+            )
+            .unwrap();
+        batch.commit().unwrap();
 
-        // Commit the batch (includes uncommitted data removal, index abort, predicate cleanup)
-        batch.commit()?;
+        let mut batch = storage.batch();
+        storage
+            .insert_index_entry(
+                &mut batch,
+                "idx_name_unique",
+                vec![Value::string("Bob")],
+                2,
+                txn_id,
+                2,
+            )
+            .unwrap();
+        batch.commit().unwrap();
 
-        // Cleanup old buckets AFTER commit (since it drops partitions)
-        let should_cleanup = match self.last_cleanup {
-            None => true,
-            Some(last) => {
-                let cleanup_interval_micros = self.config.cleanup_interval.as_micros() as u64;
-                txn_id.physical.saturating_sub(last.physical) >= cleanup_interval_micros
-            }
+        // Now check if "Bob" would violate (should return true)
+        let violation = storage
+            .check_unique_violation("idx_name_unique", vec![Value::string("Bob")], None, txn_id)
+            .unwrap();
+        assert!(violation, "Should detect violation - Bob already exists");
+
+        // Check if "Bob" would violate excluding row_id 2 (should return false)
+        let violation = storage
+            .check_unique_violation(
+                "idx_name_unique",
+                vec![Value::string("Bob")],
+                Some(2),
+                txn_id,
+            )
+            .unwrap();
+        assert!(
+            !violation,
+            "Should not detect violation - excluding the same row"
+        );
+
+        // Test non-unique index (should never report violations)
+        storage
+            .create_index(
+                "idx_name_regular".to_string(),
+                "users".to_string(),
+                vec!["name".to_string()],
+                false, // NOT unique
+            )
+            .unwrap();
+
+        let violation = storage
+            .check_unique_violation(
+                "idx_name_regular",
+                vec![Value::string("Alice")],
+                None,
+                txn_id,
+            )
+            .unwrap();
+        assert!(
+            !violation,
+            "Non-unique index should never report violations"
+        );
+    }
+
+    #[test]
+    fn test_predicate_persistence() {
+        use crate::semantic::predicate::{Predicate, QueryPredicates};
+
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
+
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+
+        // Create some predicates
+        let read_pred = Predicate::full_table("users".to_string());
+        let write_pred = Predicate::full_table("users".to_string());
+
+        let predicates = QueryPredicates {
+            reads: vec![read_pred.clone()],
+            writes: vec![write_pred.clone()],
+            inserts: vec![],
         };
 
-        if should_cleanup {
-            self.data_history.cleanup_old_buckets(txn_id)?;
-            self.index_history.cleanup_old_buckets(txn_id)?;
-            // Also cleanup uncommitted stores (to catch orphaned transactions)
-            self.uncommitted_data.cleanup_old_buckets(txn_id)?;
-            self.uncommitted_index.cleanup_old_buckets(txn_id)?;
-            // Cleanup orphaned predicates
-            self.predicate_store.cleanup_old_buckets(txn_id)?;
-            self.last_cleanup = Some(txn_id);
-        }
+        // Persist predicates
+        storage.persist_predicates(txn_id, &predicates).unwrap();
 
-        // Persist to disk once
-        if should_cleanup {
-            self.keyspace.persist(fjall::PersistMode::SyncAll)?;
-        } else {
-            self.keyspace.persist(self.config.persist_mode)?;
-        }
+        // Verify predicates are persisted
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(active_txns.len(), 1, "Should have one active transaction");
+        assert!(
+            active_txns.contains_key(&txn_id),
+            "Should contain our transaction"
+        );
 
-        Ok(())
+        let stored_predicates = &active_txns[&txn_id];
+        assert_eq!(stored_predicates.len(), 2, "Should have 2 predicates");
+
+        // Cleanup
+        storage.commit_transaction(txn_id, 1).unwrap();
+
+        // Verify predicates are removed
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(active_txns.len(), 0, "Should have no active transactions");
     }
 
-    // Helper methods for persisting operations
+    #[test]
+    fn test_predicate_atomic_persistence() {
+        use crate::semantic::predicate::{Predicate, QueryPredicates};
 
-    fn persist_insert(
-        &self,
-        batch: &mut Batch,
-        table: &str,
-        row_id: RowId,
-        row: Arc<Row>,
-    ) -> Result<()> {
-        let tables = &self.tables;
-        let table_meta = tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
 
-        // Write row data using compact encoding
-        let row_key = row_id.to_be_bytes();
-        let encoded = encoding::encode_row(&row.values, &table_meta.schema)?;
-        batch.insert(&table_meta.data_partition, row_key, encoded);
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
-        Ok(())
-    }
+        // Create predicate
+        let read_pred = Predicate::full_table("users".to_string());
 
-    fn persist_update(
-        &self,
-        batch: &mut Batch,
-        table: &str,
-        row_id: RowId,
-        row: Arc<Row>,
-    ) -> Result<()> {
-        let tables = &self.tables;
-        let table_meta = tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
+        let predicates = QueryPredicates {
+            reads: vec![read_pred.clone()],
+            writes: vec![],
+            inserts: vec![],
+        };
 
-        // Update row data using compact encoding
-        let row_key = row_id.to_be_bytes();
-        let encoded = encoding::encode_row(&row.values, &table_meta.schema)?;
-        batch.insert(&table_meta.data_partition, row_key, encoded);
-
-        Ok(())
-    }
-
-    fn persist_delete(&mut self, batch: &mut Batch, table: &str, row_id: RowId) -> Result<()> {
-        let tables = &self.tables;
-        let table_meta = tables
-            .get(table)
-            .ok_or_else(|| Error::TableNotFound(table.to_string()))?;
-
-        // Delete the actual row data
-        let row_key = row_id.to_be_bytes();
-        batch.remove(&table_meta.data_partition, row_key);
-
-        Ok(())
-    }
-
-    /// Update indexes on insert without unique constraint checking (used in batch operations)
-    fn update_indexes_on_insert_unchecked(
-        &mut self,
-        table_name: &str,
-        row: &Arc<Row>,
-        table_meta: &TableMetadata,
-        txn_id: HlcTimestamp,
-    ) -> Result<()> {
-        // Get all indexes for this table
-        let indexes_to_update = self.get_indexes_for_table(table_name)?;
-
-        for (index_name, index_meta) in indexes_to_update {
-            // Get column indices for the index
-            let column_indices: Vec<usize> = index_meta
-                .columns
-                .iter()
-                .filter_map(|col| table_meta.schema.column_index(col))
-                .collect();
-
-            // Extract values for index columns
-            let index_values: Vec<Value> = column_indices
-                .iter()
-                .filter_map(|&idx| row.values.get(idx).cloned())
-                .collect();
-
-            if index_values.len() == column_indices.len() {
-                // Skip unique constraint checking - add to index directly
-                self.index_manager.add_entry(
-                    &mut self.uncommitted_index,
-                    &index_name,
-                    index_values,
-                    row.id,
-                    txn_id,
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn update_indexes_on_update(
-        &mut self,
-        table_name: &str,
-        old_row: &Arc<Row>,
-        new_row: &Arc<Row>,
-        table_meta: &TableMetadata,
-        txn_id: HlcTimestamp,
-    ) -> Result<()> {
-        // Get all indexes for this table
-        let indexes_to_update = self.get_indexes_for_table(table_name)?;
-
-        // Collect all index updates that need to be made
-        let mut updates = Vec::new();
-
-        for (index_name, index_meta) in &indexes_to_update {
-            // Get column indices for the index
-            let column_indices: Vec<usize> = index_meta
-                .columns
-                .iter()
-                .filter_map(|col| table_meta.schema.column_index(col))
-                .collect();
-
-            // Extract old values for index columns
-            let old_index_values: Vec<Value> = column_indices
-                .iter()
-                .filter_map(|&idx| old_row.values.get(idx).cloned())
-                .collect();
-
-            // Extract new values for index columns
-            let new_index_values: Vec<Value> = column_indices
-                .iter()
-                .filter_map(|&idx| new_row.values.get(idx).cloned())
-                .collect();
-
-            // Only update if values actually changed
-            if old_index_values != new_index_values
-                && old_index_values.len() == column_indices.len()
-                && new_index_values.len() == column_indices.len()
-            {
-                updates.push((
-                    index_name.clone(),
-                    index_meta.clone(),
-                    old_index_values,
-                    new_index_values,
-                ));
-            }
-        }
-
-        // Phase 1: Check all unique constraints BEFORE making any changes
-        for (index_name, index_meta, _old_values, new_values) in &updates {
-            if index_meta.unique
-                && self.index_manager.check_unique(
-                    &self.uncommitted_index,
-                    &self.index_history,
-                    index_name,
-                    new_values,
-                    txn_id,
-                )?
-            {
-                return Err(Error::UniqueConstraintViolation(format!(
-                    "Duplicate value for unique index {}",
-                    index_name
-                )));
-            }
-        }
-
-        // Phase 2: All constraints passed - now apply the changes
-        for (index_name, _index_meta, old_values, new_values) in updates {
-            // Remove old entry
-            self.index_manager.remove_entry(
-                &mut self.uncommitted_index,
-                &index_name,
-                &old_values,
-                old_row.id,
+        // Insert data and predicates atomically
+        let mut batch = storage.batch();
+        storage
+            .write_row(
+                &mut batch,
+                "users",
+                1,
+                &[Value::integer(1), Value::string("Alice")],
                 txn_id,
-            )?;
+                1,
+            )
+            .unwrap();
+        storage
+            .add_predicates_to_batch(&mut batch, txn_id, &predicates)
+            .unwrap();
+        batch.commit().unwrap();
 
-            // Add new entry
-            self.index_manager.add_entry(
-                &mut self.uncommitted_index,
-                &index_name,
-                new_values,
-                new_row.id,
-                txn_id,
-            )?;
-        }
+        // Verify both data and predicates persisted
+        let row = storage.read_row("users", 1, txn_id).unwrap();
+        assert!(row.is_some(), "Row should be persisted");
 
-        Ok(())
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(active_txns.len(), 1, "Should have one active transaction");
+        assert_eq!(active_txns[&txn_id].len(), 1, "Should have 1 predicate");
+
+        // Commit and verify cleanup
+        storage.commit_transaction(txn_id, 2).unwrap();
+
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(active_txns.len(), 0, "Should have no active transactions");
     }
 
-    fn update_indexes_on_delete(
-        &mut self,
-        table_name: &str,
-        row: &Arc<Row>,
-        table_meta: &TableMetadata,
-        txn_id: HlcTimestamp,
-    ) -> Result<()> {
-        // Get all indexes for this table
-        let indexes_to_update = self.get_indexes_for_table(table_name)?;
+    #[test]
+    fn test_predicate_prepare_transaction() {
+        use crate::semantic::predicate::{Predicate, QueryPredicates};
 
-        for (index_name, index_meta) in indexes_to_update {
-            // Get column indices for the index
-            let column_indices: Vec<usize> = index_meta
-                .columns
-                .iter()
-                .filter_map(|col| table_meta.schema.column_index(col))
-                .collect();
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
 
-            // Extract values for index columns
-            let index_values: Vec<Value> = column_indices
-                .iter()
-                .filter_map(|&idx| row.values.get(idx).cloned())
-                .collect();
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
-            if index_values.len() == column_indices.len() {
-                // Remove from index
-                self.index_manager.remove_entry(
-                    &mut self.uncommitted_index,
-                    &index_name,
-                    &index_values,
-                    row.id,
-                    txn_id,
-                )?;
-            }
-        }
+        // Create both read and write predicates
+        let read_pred = Predicate::full_table("users".to_string());
+        let write_pred = Predicate::full_table("users".to_string());
 
-        Ok(())
+        let predicates = QueryPredicates {
+            reads: vec![read_pred.clone()],
+            writes: vec![write_pred.clone()],
+            inserts: vec![],
+        };
+
+        // Persist predicates
+        storage.persist_predicates(txn_id, &predicates).unwrap();
+
+        // Verify both predicates exist
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(
+            active_txns[&txn_id].len(),
+            2,
+            "Should have 2 predicates before prepare"
+        );
+
+        // Prepare transaction (removes read predicates only)
+        storage.prepare_transaction(txn_id).unwrap();
+
+        // Verify only write predicate remains
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(
+            active_txns[&txn_id].len(),
+            1,
+            "Should have 1 predicate after prepare (write only)"
+        );
+
+        // Cleanup
+        storage.commit_transaction(txn_id, 1).unwrap();
+
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(active_txns.len(), 0, "Should have no active transactions");
     }
 
-    fn get_indexes_for_table(&mut self, table_name: &str) -> Result<Vec<(String, IndexMetadata)>> {
-        // Check cache first
-        {
-            let cache = &self.table_indexes_cache;
-            if let Some(indexes) = cache.get(table_name) {
-                return Ok(indexes.clone());
-            }
-        }
+    #[test]
+    fn test_predicate_abort_cleanup() {
+        use crate::semantic::predicate::{Predicate, QueryPredicates};
 
-        // Cache miss - scan metadata partition for indexes
-        let mut indexes = Vec::new();
-        let prefix = "index:".as_bytes();
-        for entry in self.metadata_partition.prefix(prefix) {
-            let (key, value) = entry?;
-            let index_meta: IndexMetadata =
-                bincode::deserialize(&value).map_err(|e| Error::Serialization(e.to_string()))?;
-            if index_meta.table == table_name {
-                let index_name = String::from_utf8_lossy(&key[prefix.len()..]).to_string();
-                indexes.push((index_name, index_meta));
-            }
-        }
+        let mut storage = SqlStorage::new(test_config()).unwrap();
+        let schema = create_test_schema();
+        storage.create_table("users".to_string(), schema).unwrap();
 
-        // Store in cache
-        self.table_indexes_cache
-            .insert(table_name.to_string(), indexes.clone());
+        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
-        Ok(indexes)
-    }
+        // Create predicates
+        let read_pred = Predicate::full_table("users".to_string());
 
-    fn invalidate_table_indexes_cache(&mut self, table_name: &str) {
-        self.table_indexes_cache.remove(table_name);
-    }
+        let predicates = QueryPredicates {
+            reads: vec![read_pred.clone()],
+            writes: vec![],
+            inserts: vec![],
+        };
 
-    /// Get the last processed log index
-    pub fn get_log_index(&self) -> u64 {
-        self.log_index.load(Ordering::SeqCst)
-    }
+        // Persist predicates
+        storage.persist_predicates(txn_id, &predicates).unwrap();
 
-    /// Add predicates to a batch for atomic persistence (internal use only)
-    /// Returns the predicate keys (not used anymore - we use prefix scan for cleanup)
-    fn add_predicates_to_batch(
-        &mut self,
-        batch: &mut Batch,
-        txn_id: HlcTimestamp,
-        predicates: &crate::semantic::predicate::QueryPredicates,
-    ) -> Result<Vec<Vec<u8>>> {
-        let mut predicate_keys = Vec::new();
+        // Verify predicates exist
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(active_txns.len(), 1, "Should have one active transaction");
 
-        // Add read predicates (shared locks)
-        for pred in &predicates.reads {
-            let key = self.predicate_store.add_predicate_to_batch(
-                batch, txn_id, pred, false, // shared lock
-            )?;
-            predicate_keys.push(key);
-        }
+        // Abort transaction
+        storage.abort_transaction(txn_id, 1).unwrap();
 
-        // Add write predicates (exclusive locks)
-        for pred in &predicates.writes {
-            let key = self.predicate_store.add_predicate_to_batch(
-                batch, txn_id, pred, true, // exclusive lock
-            )?;
-            predicate_keys.push(key);
-        }
-
-        // Add insert predicates (exclusive locks)
-        for pred in &predicates.inserts {
-            let key = self.predicate_store.add_predicate_to_batch(
-                batch, txn_id, pred, true, // exclusive lock
-            )?;
-            predicate_keys.push(key);
-        }
-
-        Ok(predicate_keys)
-    }
-
-    /// Persist read predicates (for SELECT operations that don't write data)
-    pub fn persist_read_predicates(
-        &mut self,
-        tx_ctx: &mut crate::types::context::ExecutionContext,
-    ) -> Result<()> {
-        let mut batch = self.keyspace.batch();
-
-        // Add predicates to batch
-        let _predicate_keys =
-            self.add_predicates_to_batch(&mut batch, tx_ctx.txn_id, &tx_ctx.predicates)?;
-
-        // Commit the batch
-        batch.commit()?;
-
-        Ok(())
-    }
-
-    /// Get all active transactions from predicate storage (for recovery)
-    pub fn get_active_transactions_from_predicates(
-        &self,
-        current_time: HlcTimestamp,
-    ) -> Result<HashMap<HlcTimestamp, Vec<crate::semantic::predicate::Predicate>>> {
-        self.predicate_store
-            .get_all_active_transactions(current_time)
-    }
-
-    /// Prepare transaction by releasing read predicates from storage
-    pub fn prepare_transaction(&mut self, txn_id: HlcTimestamp) -> Result<()> {
-        let mut batch = self.keyspace.batch();
-
-        // Remove read predicates from storage
-        self.predicate_store
-            .remove_read_predicates(&mut batch, txn_id)?;
-
-        // Commit the batch
-        batch.commit()?;
-
-        // Persist to disk to ensure crash safety
-        self.keyspace.persist(self.config.persist_mode)?;
-
-        Ok(())
+        // Verify predicates are cleaned up
+        let active_txns = storage.get_active_transactions().unwrap();
+        assert_eq!(
+            active_txns.len(),
+            0,
+            "Should have no active transactions after abort"
+        );
     }
 }

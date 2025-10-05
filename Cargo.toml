@@ -6,6 +6,7 @@ members = [
     "crates/hlc",
     "crates/kv",
     "crates/kv-client",
+    "crates/mvcc",
     "crates/queue",
     "crates/queue-client",
     "crates/resource",
@@ -26,6 +27,7 @@ default-members = [
     "crates/hlc",
     "crates/kv",
     "crates/kv-client",
+    "crates/mvcc",
     "crates/queue",
     "crates/queue-client",
     "crates/resource",
@@ -57,7 +59,7 @@ flume = "0.11.1"
 futures = "0.3"
 hex = "0.4"
 lru = "0.16.1"
-parking_lot = "0.12"
+parking_lot = "0.12.5"
 regex = "1.11.3"
 rust_decimal = { version = "1.38.0", features = ["serde-str"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }

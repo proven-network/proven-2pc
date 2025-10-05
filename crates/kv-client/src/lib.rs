@@ -1,7 +1,7 @@
 //! KV client for coordinator-based transactions
 
 use proven_coordinator::Executor;
-use proven_kv::{stream::operation::KvOperation, stream::response::KvResponse, types::Value};
+use proven_kv::{KvOperation, KvResponse, Value};
 use std::sync::Arc;
 
 /// KV client that works with coordinator executors

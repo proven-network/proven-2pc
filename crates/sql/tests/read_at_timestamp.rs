@@ -1,7 +1,7 @@
 //! Tests for SQL snapshot read functionality
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine, StorageConfig};
+use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,7 +18,7 @@ fn make_timestamp(n: u64) -> HlcTimestamp {
 
 #[test]
 fn test_snapshot_read_doesnt_block_later_write() {
-    let mut engine = SqlTransactionEngine::new(StorageConfig::for_testing());
+    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
@@ -75,7 +75,7 @@ fn test_snapshot_read_doesnt_block_later_write() {
 
 #[test]
 fn test_snapshot_read_blocks_on_earlier_write() {
-    let mut engine = SqlTransactionEngine::new(StorageConfig::for_testing());
+    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
@@ -139,7 +139,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
 
 #[test]
 fn test_snapshot_read_ignores_uncommitted_changes() {
-    let mut engine = SqlTransactionEngine::new(StorageConfig::for_testing());
+    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
@@ -210,7 +210,7 @@ fn test_snapshot_read_ignores_uncommitted_changes() {
 
 #[test]
 fn test_snapshot_read_consistency_across_tables() {
-    let mut engine = SqlTransactionEngine::new(StorageConfig::for_testing());
+    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
 
     // Create tables and initial data
     let tx1 = make_timestamp(100);
@@ -334,7 +334,7 @@ fn test_snapshot_read_consistency_across_tables() {
 
 #[test]
 fn test_snapshot_read_with_index_scan() {
-    let mut engine = SqlTransactionEngine::new(StorageConfig::for_testing());
+    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
 
     // Create indexed table
     let tx1 = make_timestamp(100);
@@ -407,7 +407,7 @@ fn test_snapshot_read_with_index_scan() {
 #[test]
 #[should_panic(expected = "Must be read-only operation")]
 fn test_snapshot_read_only_operations_allowed() {
-    let mut engine = SqlTransactionEngine::new(StorageConfig::for_testing());
+    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
 
     // Create table
     let tx1 = make_timestamp(100);

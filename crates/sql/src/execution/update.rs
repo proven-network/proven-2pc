@@ -4,23 +4,22 @@
 //! MVCC transaction support and type coercion.
 
 use crate::error::{Error, Result};
-use crate::execution::{ExecutionResult, expression};
-use crate::parsing::ast::ddl::ReferentialAction;
+use crate::execution::{ExecutionResult, expression, helpers};
 use crate::planning::plan::Node;
-use crate::storage::Storage;
+use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
-use crate::types::value::{Row, Value};
+use crate::types::value::Value;
 
 /// Validate foreign key constraints for an updated row
 fn validate_foreign_keys_on_update(
-    row: &Row,
-    _old_row: &Row,
+    row: &[Value],
+    _old_row: &[Value],
     schema: &Table,
-    storage: &mut Storage,
-    tx_ctx: &mut ExecutionContext,
-) -> Result<Vec<UpdateCascadeOp>> {
+    storage: &SqlStorage,
+    tx_ctx: &ExecutionContext,
+) -> Result<()> {
     // Check each foreign key constraint on this table
     let schemas = storage.get_schemas();
     for fk in &schema.foreign_keys {
@@ -57,11 +56,10 @@ fn validate_foreign_keys_on_update(
 
         // Scan the referenced table to check if the value exists
         let mut found = false;
-        let ref_iter = storage.iter(tx_ctx.txn_id, &fk.referenced_table)?;
+        let ref_iter = storage.scan_table(&fk.referenced_table, tx_ctx.txn_id)?;
 
         for ref_row_result in ref_iter {
-            let ref_row = ref_row_result?;
-            let ref_values = &ref_row.values;
+            let (_, ref_values) = ref_row_result?;
 
             // Check if all referenced columns match
             let mut all_match = true;
@@ -91,172 +89,7 @@ fn validate_foreign_keys_on_update(
         }
     }
 
-    // Check for cascade operations if we're updating a primary key
-    let cascade_ops = check_and_collect_update_cascades(row, row, schema, storage, tx_ctx)?;
-
-    Ok(cascade_ops)
-}
-
-/// Cascading operation for UPDATE
-#[derive(Debug, Clone)]
-enum UpdateCascadeOp {
-    Update {
-        table: String,
-        row_id: u64,
-        col_idx: usize,
-        new_value: Value,
-    },
-    SetNull {
-        table: String,
-        row_id: u64,
-        col_idx: usize,
-    },
-    SetDefault {
-        table: String,
-        row_id: u64,
-        col_idx: usize,
-        default: Value,
-    },
-}
-
-/// Helper function to update a single column value
-fn update_column_value(
-    storage: &mut Storage,
-    tx_ctx: &mut ExecutionContext,
-    table: &str,
-    row_id: u64,
-    col_idx: usize,
-    new_value: Value,
-) -> Result<()> {
-    // Get the current row
-    let current_row = {
-        let iter = storage.iter_with_ids(tx_ctx.txn_id, table)?;
-        let mut found_row = None;
-        for result in iter {
-            let (rid, row) = result?;
-            if rid == row_id {
-                found_row = Some(row.values.clone());
-                break;
-            }
-        }
-        found_row.ok_or_else(|| {
-            Error::ExecutionError(format!("Row {} not found in table {}", row_id, table))
-        })?
-    };
-
-    // Update the specific column
-    let mut updated_row = current_row;
-    updated_row[col_idx] = new_value;
-
-    // Write the updated row
-    storage.update(tx_ctx, table, row_id, updated_row)?;
     Ok(())
-}
-
-/// Check if updating this table would violate foreign keys and collect cascade operations
-fn check_and_collect_update_cascades(
-    old_row: &Row,
-    new_row: &Row,
-    schema: &Table,
-    storage: &mut Storage,
-    tx_ctx: &mut ExecutionContext,
-) -> Result<Vec<UpdateCascadeOp>> {
-    let mut cascade_ops = Vec::new();
-
-    // If this table doesn't have a primary key, no other table can reference it
-    let pk_idx = match schema.primary_key {
-        Some(idx) => idx,
-        None => return Ok(cascade_ops),
-    };
-
-    // Check if the primary key is being changed
-    let pk_changed = old_row[pk_idx] != new_row[pk_idx];
-    if !pk_changed {
-        // If PK isn't changing, no cascades needed
-        return Ok(cascade_ops);
-    }
-
-    let old_pk_value = &old_row[pk_idx];
-    let new_pk_value = &new_row[pk_idx];
-
-    // Check all tables that might have foreign keys pointing to this table
-    let schemas = storage.get_schemas();
-    for (other_table_name, other_schema) in schemas.iter() {
-        for fk in &other_schema.foreign_keys {
-            if fk.referenced_table == schema.name {
-                // Find the foreign key column index
-                let fk_col_idx = other_schema
-                    .get_column(&fk.columns[0])
-                    .ok_or_else(|| Error::ColumnNotFound(fk.columns[0].clone()))?
-                    .0;
-
-                // Find all rows that reference the old primary key value
-                let ref_iter = storage.iter_with_ids(tx_ctx.txn_id, other_table_name)?;
-                for result in ref_iter {
-                    let (ref_row_id, ref_row) = result?;
-                    if &ref_row.values[fk_col_idx] == old_pk_value
-                        && !ref_row.values[fk_col_idx].is_null()
-                    {
-                        // Found a referencing row - apply the referential action
-                        match fk.on_update {
-                            ReferentialAction::Restrict | ReferentialAction::NoAction => {
-                                return Err(Error::ForeignKeyViolation(format!(
-                                    "Cannot update primary key in '{}': referenced by foreign key in '{}'",
-                                    schema.name, other_table_name
-                                )));
-                            }
-                            ReferentialAction::Cascade => {
-                                // CASCADE the update to the foreign key
-                                cascade_ops.push(UpdateCascadeOp::Update {
-                                    table: other_table_name.clone(),
-                                    row_id: ref_row_id,
-                                    col_idx: fk_col_idx,
-                                    new_value: new_pk_value.clone(),
-                                });
-                            }
-                            ReferentialAction::SetNull => {
-                                // Set the foreign key column to NULL
-                                cascade_ops.push(UpdateCascadeOp::SetNull {
-                                    table: other_table_name.clone(),
-                                    row_id: ref_row_id,
-                                    col_idx: fk_col_idx,
-                                });
-                            }
-                            ReferentialAction::SetDefault => {
-                                // Set the foreign key column to its default value
-                                let default_expr =
-                                    other_schema.columns[fk_col_idx].default.clone().unwrap_or(
-                                        crate::types::expression::DefaultExpression::Constant(
-                                            Value::Null,
-                                        ),
-                                    );
-
-                                // Convert to Expression and evaluate
-                                let expr: Expression = default_expr.into();
-                                let default_value =
-                                    crate::execution::expression::evaluate_with_storage(
-                                        &expr,
-                                        None,
-                                        tx_ctx,
-                                        None,
-                                        Some(storage),
-                                    )?;
-
-                                cascade_ops.push(UpdateCascadeOp::SetDefault {
-                                    table: other_table_name.clone(),
-                                    row_id: ref_row_id,
-                                    col_idx: fk_col_idx,
-                                    default: default_value,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(cascade_ops)
 }
 
 /// Execute UPDATE with phased read-then-write approach
@@ -264,19 +97,26 @@ pub fn execute_update(
     table: String,
     assignments: Vec<(usize, Expression)>,
     source: Node,
-    storage: &mut Storage,
+    storage: &mut SqlStorage,
+    batch: &mut fjall::Batch,
     tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
-    // Phase 1: Read rows with IDs that match the WHERE clause
-    let rows_to_update = {
-        let iter = storage.iter_with_ids(tx_ctx.txn_id, &table)?;
-        let mut to_update = Vec::new();
+    // Get schema
+    let schemas = storage.get_schemas();
+    let schema = schemas
+        .get(&table)
+        .ok_or_else(|| Error::TableNotFound(table.clone()))?
+        .clone();
 
-        for result in iter {
-            let (row_id, row) = result?;
-            let row_arc = std::sync::Arc::new(row.values.clone());
-            let matches = match &source {
+    // Phase 1: Scan to find matching rows
+    let matching_rows: Vec<(u64, Vec<Value>)> = {
+        let mut matches = Vec::new();
+        for result in storage.scan_table(&table, tx_ctx.txn_id)? {
+            let (row_id, values) = result?;
+            let row_arc = std::sync::Arc::new(values.clone());
+
+            let is_match = match &source {
                 Node::Filter { predicate, .. } => {
                     expression::evaluate_with_arc(predicate, Some(&row_arc), tx_ctx, params)?
                         .to_bool()
@@ -286,92 +126,87 @@ pub fn execute_update(
                 _ => true,
             };
 
-            if matches {
-                to_update.push((row_id, row_arc));
+            if is_match {
+                matches.push((row_id, values));
             }
         }
-        to_update
-    }; // Immutable borrow ends here
+        matches
+    };
 
-    // Phase 2: Apply updates
-    // Get table schema for type coercion
-    let schemas = storage.get_schemas();
-    let schema = schemas
-        .get(&table)
-        .ok_or_else(|| Error::TableNotFound(table.clone()))?
-        .clone();
+    // Phase 2: Compute updated values and check unique constraints
+    let mut updates = Vec::new();
+    for (row_id, old_values) in matching_rows {
+        let current_arc = std::sync::Arc::new(old_values.clone());
+        let mut new_values = old_values.clone();
 
-    let mut all_cascade_ops = Vec::new();
-    let mut count = 0;
-
-    // Phase 3: Update rows and collect cascade operations
-    for (row_id, current) in rows_to_update {
-        let mut updated = current.to_vec();
         for &(col_idx, ref expr) in &assignments {
-            updated[col_idx] = expression::evaluate_with_arc(expr, Some(&current), tx_ctx, params)?;
+            new_values[col_idx] =
+                expression::evaluate_with_arc(expr, Some(&current_arc), tx_ctx, params)?;
         }
 
-        // Apply type coercion to match schema
-        let coerced_row = crate::coercion::coerce_row(updated, &schema)?;
+        // Apply type coercion
+        let coerced_row = crate::coercion::coerce_row(new_values, &schema)?;
 
-        // Validate foreign key constraints and collect cascade operations
-        let cascade_ops =
-            validate_foreign_keys_on_update(&coerced_row, &current, &schema, storage, tx_ctx)?;
-        all_cascade_ops.extend(cascade_ops);
+        // Check unique constraints for updated row
+        let unique_indexes = storage.get_unique_indexes(&table);
+        for index in &unique_indexes {
+            let new_index_values = helpers::extract_index_values(&coerced_row, index, &schema)?;
+            if storage.check_unique_violation(
+                &index.name,
+                new_index_values.clone(),
+                Some(row_id), // Exclude current row from check
+                tx_ctx.txn_id,
+            )? {
+                return Err(Error::UniqueConstraintViolation(format!(
+                    "Duplicate value for unique index '{}': {:?}",
+                    index.name, new_index_values
+                )));
+            }
+        }
 
-        storage.update(tx_ctx, &table, row_id, coerced_row)?;
-        count += 1;
+        // Validate foreign keys (simplified - no cascades for now)
+        validate_foreign_keys_on_update(&coerced_row, &old_values, &schema, storage, tx_ctx)?;
+
+        updates.push((row_id, old_values, coerced_row));
     }
 
-    // Phase 4: Execute cascade operations
-    for op in all_cascade_ops {
-        match op {
-            UpdateCascadeOp::Update {
-                table: cascade_table,
-                row_id: cascade_row_id,
-                col_idx,
-                new_value,
-            } => {
-                update_column_value(
-                    storage,
-                    tx_ctx,
-                    &cascade_table,
-                    cascade_row_id,
-                    col_idx,
-                    new_value,
-                )?;
-            }
-            UpdateCascadeOp::SetNull {
-                table: cascade_table,
-                row_id: cascade_row_id,
-                col_idx,
-            } => {
-                update_column_value(
-                    storage,
-                    tx_ctx,
-                    &cascade_table,
-                    cascade_row_id,
-                    col_idx,
-                    Value::Null,
-                )?;
-            }
-            UpdateCascadeOp::SetDefault {
-                table: cascade_table,
-                row_id: cascade_row_id,
-                col_idx,
-                default,
-            } => {
-                update_column_value(
-                    storage,
-                    tx_ctx,
-                    &cascade_table,
-                    cascade_row_id,
-                    col_idx,
-                    default,
+    // Phase 3: Write updates to batch (engine will commit with predicates)
+    let all_indexes: Vec<_> = storage
+        .get_table_indexes(&table)
+        .into_iter()
+        .cloned()
+        .collect();
+
+    for (row_id, old_values, new_values) in &updates {
+        // Update row
+        storage.write_row(
+            batch,
+            &table,
+            *row_id,
+            new_values,
+            tx_ctx.txn_id,
+            tx_ctx.log_index,
+        )?;
+
+        // Update indexes if values changed
+        for index in &all_indexes {
+            let old_index_values = helpers::extract_index_values(old_values, index, &schema)?;
+            let new_index_values = helpers::extract_index_values(new_values, index, &schema)?;
+
+            if old_index_values != new_index_values {
+                storage.update_index_entries(
+                    batch,
+                    &index.name,
+                    old_index_values,
+                    new_index_values,
+                    *row_id,
+                    tx_ctx.txn_id,
+                    tx_ctx.log_index,
                 )?;
             }
         }
     }
 
-    Ok(ExecutionResult::Modified(count))
+    // Engine will add predicates and commit batch
+    Ok(ExecutionResult::Modified(updates.len()))
 }

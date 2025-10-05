@@ -6,20 +6,26 @@
 use crate::error::Result;
 use crate::execution::ExecutionResult;
 use crate::planning::plan::Node;
-use crate::storage::Storage;
+use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::value::Value;
 
 /// Execute a SELECT query using immutable storage reference
 pub fn execute_select(
     node: Node,
-    storage: &mut Storage,
+    storage: &mut SqlStorage,
     tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
     column_names_override: Option<Vec<String>>,
 ) -> Result<ExecutionResult> {
     // Get schemas from storage
-    let schemas = storage.get_schemas();
+    let schemas_arc = storage.get_schemas();
+
+    // Convert Arc<Table> to Table for get_column_names
+    let schemas: std::collections::HashMap<String, crate::types::schema::Table> = schemas_arc
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_ref().clone()))
+        .collect();
 
     // Get column names - use override from semantic analysis if available and non-empty,
     // otherwise reconstruct from node tree (handles aggregates, expressions, etc.)

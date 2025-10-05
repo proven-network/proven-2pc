@@ -6,7 +6,6 @@
 use crate::error::{Error, Result};
 use crate::operators;
 use crate::planning::plan::AggregateFunc;
-use crate::storage::Storage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::value::Value;
@@ -80,17 +79,12 @@ impl Aggregator {
     }
 
     /// Add a row to the aggregator with MVCC context
-    pub fn add(
-        &mut self,
-        row: &Arc<Vec<Value>>,
-        context: &ExecutionContext,
-        storage: &Storage,
-    ) -> Result<()> {
+    pub fn add(&mut self, row: &Arc<Vec<Value>>, context: &ExecutionContext) -> Result<()> {
         // Evaluate the group key
         let key = self
             .group_by
             .iter()
-            .map(|expr| evaluate_expression(expr, Some(row), context, storage))
+            .map(|expr| evaluate_expression(expr, Some(row), context))
             .collect::<Result<Vec<_>>>()?;
 
         // Get or create the bucket for this key
@@ -100,7 +94,7 @@ impl Aggregator {
             .or_insert_with(|| GroupAccumulator::new(self.aggregates.clone()));
 
         // Add row to the bucket
-        bucket.add_row(row, context, storage)?;
+        bucket.add_row(row, context)?;
 
         Ok(())
     }
@@ -145,14 +139,9 @@ impl GroupAccumulator {
         }
     }
 
-    fn add_row(
-        &mut self,
-        row: &Arc<Vec<Value>>,
-        context: &ExecutionContext,
-        storage: &Storage,
-    ) -> Result<()> {
+    fn add_row(&mut self, row: &Arc<Vec<Value>>, context: &ExecutionContext) -> Result<()> {
         for (agg, acc) in self.aggregates.iter().zip(self.accumulators.iter_mut()) {
-            acc.add(row, agg, context, storage)?;
+            acc.add(row, agg, context)?;
         }
         Ok(())
     }
@@ -173,7 +162,6 @@ trait Accumulator: Send {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()>;
 
     /// Finalize and return the aggregate result
@@ -193,7 +181,6 @@ impl Accumulator for CountAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Count(expr) | AggregateFunc::CountDistinct(expr) => expr,
@@ -208,7 +195,7 @@ impl Accumulator for CountAccumulator {
                 self.count += 1;
             }
         } else {
-            let val = evaluate_expression(expr, Some(row), context, storage)?;
+            let val = evaluate_expression(expr, Some(row), context)?;
             if val != Value::Null {
                 if self.distinct {
                     if self.seen_values.insert(HashableValue(val)) {
@@ -240,14 +227,13 @@ impl Accumulator for SumAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Sum(expr) | AggregateFunc::SumDistinct(expr) => expr,
             _ => return Ok(()),
         };
 
-        let val = evaluate_expression(expr, Some(row), context, storage)?;
+        let val = evaluate_expression(expr, Some(row), context)?;
         if val != Value::Null {
             if self.distinct {
                 if self.seen_values.insert(HashableValue(val.clone())) {
@@ -287,14 +273,13 @@ impl Accumulator for AvgAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Avg(expr) | AggregateFunc::AvgDistinct(expr) => expr,
             _ => return Ok(()),
         };
 
-        let val = evaluate_expression(expr, Some(row), context, storage)?;
+        let val = evaluate_expression(expr, Some(row), context)?;
         if val != Value::Null {
             if self.distinct {
                 if self.seen_values.insert(HashableValue(val.clone())) {
@@ -365,14 +350,13 @@ impl Accumulator for MinAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Min(expr) | AggregateFunc::MinDistinct(expr) => expr,
             _ => return Ok(()),
         };
 
-        let val = evaluate_expression(expr, Some(row), context, storage)?;
+        let val = evaluate_expression(expr, Some(row), context)?;
         if val != Value::Null {
             // For MIN with DISTINCT, we still need to track seen values but
             // MIN itself naturally handles duplicates (min of duplicates is same)
@@ -406,14 +390,13 @@ impl Accumulator for MaxAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Max(expr) | AggregateFunc::MaxDistinct(expr) => expr,
             _ => return Ok(()),
         };
 
-        let val = evaluate_expression(expr, Some(row), context, storage)?;
+        let val = evaluate_expression(expr, Some(row), context)?;
         if val != Value::Null {
             // For MAX with DISTINCT, we still need to track seen values but
             // MAX itself naturally handles duplicates (max of duplicates is same)
@@ -447,14 +430,13 @@ impl Accumulator for StDevAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::StDev(expr) | AggregateFunc::StDevDistinct(expr) => expr,
             _ => return Ok(()),
         };
 
-        let val = evaluate_expression(expr, Some(row), context, storage)?;
+        let val = evaluate_expression(expr, Some(row), context)?;
         if val != Value::Null {
             // Convert to f64
             let num_val = match &val {
@@ -518,14 +500,13 @@ impl Accumulator for VarianceAccumulator {
         row: &Arc<Vec<Value>>,
         agg: &AggregateFunc,
         context: &ExecutionContext,
-        storage: &Storage,
     ) -> Result<()> {
         let expr = match agg {
             AggregateFunc::Variance(expr) | AggregateFunc::VarianceDistinct(expr) => expr,
             _ => return Ok(()),
         };
 
-        let val = evaluate_expression(expr, Some(row), context, storage)?;
+        let val = evaluate_expression(expr, Some(row), context)?;
         if val != Value::Null {
             // Convert to f64
             let num_val = match &val {
@@ -660,7 +641,6 @@ pub(crate) fn evaluate_expression(
     expr: &Expression,
     row: Option<&Arc<Vec<Value>>>,
     _context: &ExecutionContext,
-    _storage: &Storage,
 ) -> Result<Value> {
     match expr {
         Expression::Constant(val) => Ok(val.clone()),
@@ -685,26 +665,26 @@ pub(crate) fn evaluate_expression(
 
         // Basic arithmetic operations
         Expression::Add(left, right) => {
-            let l = evaluate_expression(left, row, _context, _storage)?;
-            let r = evaluate_expression(right, row, _context, _storage)?;
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
             operators::execute_add(&l, &r)
         }
 
         Expression::Subtract(left, right) => {
-            let l = evaluate_expression(left, row, _context, _storage)?;
-            let r = evaluate_expression(right, row, _context, _storage)?;
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
             operators::execute_subtract(&l, &r)
         }
 
         Expression::Multiply(left, right) => {
-            let l = evaluate_expression(left, row, _context, _storage)?;
-            let r = evaluate_expression(right, row, _context, _storage)?;
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
             operators::execute_multiply(&l, &r)
         }
 
         Expression::Divide(left, right) => {
-            let l = evaluate_expression(left, row, _context, _storage)?;
-            let r = evaluate_expression(right, row, _context, _storage)?;
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
             operators::execute_divide(&l, &r)
         }
 
@@ -712,7 +692,7 @@ pub(crate) fn evaluate_expression(
             // Evaluate function arguments
             let arg_values: Result<Vec<_>> = args
                 .iter()
-                .map(|arg| evaluate_expression(arg, row, _context, _storage))
+                .map(|arg| evaluate_expression(arg, row, _context))
                 .collect();
             // Call the function evaluator
             crate::functions::execute_function(name, &arg_values?, _context)
@@ -727,21 +707,18 @@ pub(crate) fn evaluate_expression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Storage, config::StorageConfig};
     use proven_hlc::{HlcClock, NodeId};
     use rust_decimal::Decimal;
 
-    fn setup_test() -> (Storage, ExecutionContext) {
-        let storage = Storage::new(StorageConfig::default()).expect("Failed to create storage");
+    fn setup_test() -> ExecutionContext {
         let clock = HlcClock::new(NodeId::new(1));
         let timestamp = clock.now();
-        let context = ExecutionContext::new(timestamp, 0);
-        (storage, context)
+        ExecutionContext::new(timestamp, 0)
     }
 
     #[test]
     fn test_count_aggregation() -> Result<()> {
-        let (storage, context) = setup_test();
+        let context = setup_test();
 
         let mut aggregator = Aggregator::new(
             vec![],
@@ -751,9 +728,9 @@ mod tests {
         );
 
         // Add some rows
-        aggregator.add(&Arc::new(vec![Value::integer(1)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(2)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(3)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::integer(1)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(2)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(3)]), &context)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);
@@ -764,14 +741,14 @@ mod tests {
 
     #[test]
     fn test_sum_aggregation() -> Result<()> {
-        let (storage, context) = setup_test();
+        let context = setup_test();
 
         let mut aggregator =
             Aggregator::new(vec![], vec![AggregateFunc::Sum(Expression::Column(0))]);
 
-        aggregator.add(&Arc::new(vec![Value::integer(10)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(20)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(30)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::integer(10)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(20)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(30)]), &context)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);
@@ -782,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_group_by_aggregation() -> Result<()> {
-        let (storage, context) = setup_test();
+        let context = setup_test();
 
         // GROUP BY category (column 0), COUNT(*)
         let mut aggregator = Aggregator::new(
@@ -796,27 +773,22 @@ mod tests {
         aggregator.add(
             &Arc::new(vec![Value::string("A"), Value::integer(10)]),
             &context,
-            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::string("B"), Value::integer(20)]),
             &context,
-            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::string("A"), Value::integer(30)]),
             &context,
-            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::string("B"), Value::integer(40)]),
             &context,
-            &storage,
         )?;
         aggregator.add(
             &Arc::new(vec![Value::string("A"), Value::integer(50)]),
             &context,
-            &storage,
         )?;
 
         let mut results = aggregator.finalize()?;
@@ -835,7 +807,7 @@ mod tests {
 
     #[test]
     fn test_min_max_aggregation() -> Result<()> {
-        let (storage, context) = setup_test();
+        let context = setup_test();
 
         let mut aggregator = Aggregator::new(
             vec![],
@@ -845,10 +817,10 @@ mod tests {
             ],
         );
 
-        aggregator.add(&Arc::new(vec![Value::integer(5)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(2)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(8)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(1)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::integer(5)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(2)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(8)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(1)]), &context)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);
@@ -860,14 +832,14 @@ mod tests {
 
     #[test]
     fn test_avg_aggregation() -> Result<()> {
-        let (storage, context) = setup_test();
+        let context = setup_test();
 
         let mut aggregator =
             Aggregator::new(vec![], vec![AggregateFunc::Avg(Expression::Column(0))]);
 
-        aggregator.add(&Arc::new(vec![Value::integer(10)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(20)]), &context, &storage)?;
-        aggregator.add(&Arc::new(vec![Value::integer(30)]), &context, &storage)?;
+        aggregator.add(&Arc::new(vec![Value::integer(10)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(20)]), &context)?;
+        aggregator.add(&Arc::new(vec![Value::integer(30)]), &context)?;
 
         let results = aggregator.finalize()?;
         assert_eq!(results.len(), 1);

@@ -6,7 +6,7 @@
 
 use super::expression;
 use crate::error::{Error, Result};
-use crate::storage::Storage;
+use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::query::{JoinType, RowRef, Rows};
@@ -400,7 +400,7 @@ pub fn execute_nested_loop_join<'a>(
     right_columns: usize,
     predicate: Expression,
     join_type: JoinType,
-    _storage: &Storage,
+    _storage: &SqlStorage,
 ) -> Result<Rows<'a>> {
     // For now, create a dummy context - this should come from the transaction context
     use proven_hlc::{HlcTimestamp, NodeId};

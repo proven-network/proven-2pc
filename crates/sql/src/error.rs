@@ -146,3 +146,13 @@ impl From<bincode::Error> for Error {
         Error::Serialization(err.to_string())
     }
 }
+
+impl From<proven_mvcc::Error> for Error {
+    fn from(err: proven_mvcc::Error) -> Self {
+        match err {
+            proven_mvcc::Error::Encoding(msg) => Error::Serialization(msg),
+            proven_mvcc::Error::Fjall(e) => Error::FjallError(e.to_string()),
+            proven_mvcc::Error::Other(msg) => Error::Other(msg),
+        }
+    }
+}

@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlResponse, SqlTransactionEngine, StorageConfig};
+use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
 use std::collections::HashMap;
 
@@ -25,7 +25,7 @@ impl TestContext {
             .as_micros() as u64;
 
         Self {
-            engine: SqlTransactionEngine::new(StorageConfig::for_testing()),
+            engine: SqlTransactionEngine::new(SqlStorageConfig::default()),
             current_timestamp: now_micros,
             current_log_index: 0,
             in_transaction: false,

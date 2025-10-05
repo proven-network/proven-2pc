@@ -4,19 +4,19 @@
 //! MVCC transaction support and type coercion.
 
 use crate::error::{Error, Result};
-use crate::execution::ExecutionResult;
+use crate::execution::{ExecutionResult, helpers};
 use crate::planning::plan::Node;
-use crate::storage::Storage;
+use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::{DefaultExpression, Expression};
 use crate::types::schema::Table;
-use crate::types::value::{Row, Value};
+use crate::types::value::Value;
 
 /// Evaluate a DEFAULT expression at INSERT time with transaction context
 fn evaluate_default(
     expr: &DefaultExpression,
     tx_ctx: &ExecutionContext,
-    storage: &Storage,
+    storage: &SqlStorage,
 ) -> Result<Value> {
     // Convert DefaultExpression to Expression and evaluate using the general evaluator
     let full_expr: Expression = expr.clone().into();
@@ -31,10 +31,10 @@ fn evaluate_default(
 
 /// Validate foreign key constraints for a row before insertion
 fn validate_foreign_keys(
-    row: &Row,
+    row: &[Value],
     schema: &Table,
-    storage: &mut Storage,
-    tx_ctx: &mut ExecutionContext,
+    storage: &SqlStorage,
+    tx_ctx: &ExecutionContext,
 ) -> Result<()> {
     // Check each foreign key constraint
     let schemas = storage.get_schemas();
@@ -72,11 +72,10 @@ fn validate_foreign_keys(
 
         // Scan the referenced table to check if the value exists
         let mut found = false;
-        let ref_iter = storage.iter(tx_ctx.txn_id, &fk.referenced_table)?;
+        let ref_iter = storage.scan_table(&fk.referenced_table, tx_ctx.txn_id)?;
 
         for ref_row_result in ref_iter {
-            let ref_row = ref_row_result?;
-            let ref_values = &ref_row.values;
+            let (_, ref_values) = ref_row_result?;
 
             // Check if all referenced columns match
             let mut all_match = true;
@@ -114,7 +113,8 @@ pub fn execute_insert(
     table: String,
     columns: Option<Vec<usize>>,
     source: Node,
-    storage: &mut Storage,
+    storage: &mut SqlStorage,
+    batch: &mut fjall::Batch,
     tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
@@ -191,8 +191,56 @@ pub fn execute_insert(
         final_rows.push(coerced_row);
     }
 
-    // Perform atomic batch insert
-    let inserted_row_ids = storage.insert_batch(tx_ctx, &table, final_rows)?;
+    // Phase 3: Generate row IDs
+    let mut row_ids = Vec::with_capacity(final_rows.len());
+    for _ in &final_rows {
+        row_ids.push(storage.generate_row_id(&table)?);
+    }
 
-    Ok(ExecutionResult::Modified(inserted_row_ids.len()))
+    // Phase 4: Check unique constraints
+    let unique_indexes = storage.get_unique_indexes(&table);
+    for (row, _) in final_rows.iter().zip(&row_ids) {
+        for index in &unique_indexes {
+            let index_values = helpers::extract_index_values(row, index, schema)?;
+            if storage.check_unique_violation(
+                &index.name,
+                index_values.clone(),
+                None,
+                tx_ctx.txn_id,
+            )? {
+                return Err(Error::UniqueConstraintViolation(format!(
+                    "Duplicate value for unique index '{}': {:?}",
+                    index.name, index_values
+                )));
+            }
+        }
+    }
+
+    // Phase 5: Write data + indexes to batch (engine will commit with predicates)
+    let all_indexes: Vec<_> = storage
+        .get_table_indexes(&table)
+        .into_iter()
+        .cloned()
+        .collect();
+
+    for (row, row_id) in final_rows.iter().zip(&row_ids) {
+        // Insert row
+        storage.write_row(batch, &table, *row_id, row, tx_ctx.txn_id, tx_ctx.log_index)?;
+
+        // Update all indexes for this table
+        for index in &all_indexes {
+            let index_values = helpers::extract_index_values(row, index, schema)?;
+            storage.insert_index_entry(
+                batch,
+                &index.name,
+                index_values,
+                *row_id,
+                tx_ctx.txn_id,
+                tx_ctx.log_index,
+            )?;
+        }
+    }
+
+    // Engine will add predicates and commit batch
+    Ok(ExecutionResult::Modified(row_ids.len()))
 }

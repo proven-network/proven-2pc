@@ -5,7 +5,7 @@
 //! non-conflicting transactions to proceed.
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_sql::{SqlOperation, SqlTransactionEngine, StorageConfig};
+use proven_sql::{SqlOperation, SqlStorageConfig, SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,7 +18,7 @@ fn next_log_index() -> u64 {
 
 /// Helper to create a test engine
 fn create_engine() -> SqlTransactionEngine {
-    SqlTransactionEngine::new(StorageConfig::for_testing())
+    SqlTransactionEngine::new(SqlStorageConfig::default())
 }
 
 /// Helper to create a timestamp
@@ -1975,11 +1975,8 @@ fn test_nested_subquery_predicates() {
 // ==================== CRASH RECOVERY TESTS ====================
 
 /// Helper to create a crash-safe storage config with persistent data directory
-fn persistent_storage_config(data_path: std::path::PathBuf) -> StorageConfig {
-    let mut config = StorageConfig::for_testing();
-    config.data_dir = data_path;
-    config.persist_mode = proven_sql::StorageConfig::default().persist_mode; // Enable disk persistence
-    config
+fn persistent_storage_config(data_path: std::path::PathBuf) -> SqlStorageConfig {
+    SqlStorageConfig::with_data_dir(data_path)
 }
 
 #[test]

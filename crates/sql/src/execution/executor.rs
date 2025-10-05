@@ -3,14 +3,15 @@
 //! This executor properly integrates with the planner, executing Plan/Node trees
 //! using MVCC transactions for proper isolation and rollback support.
 
-use super::{aggregator::Aggregator, expression, join};
+use super::{aggregator::Aggregator, expression, helpers, join};
 use crate::error::{Error, Result};
 use crate::operators;
 use crate::planning::plan::{Node, Plan};
-use crate::storage::Storage;
+use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::query::Rows;
 use crate::types::value::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Result of executing a SQL statement
@@ -27,10 +28,11 @@ pub enum ExecutionResult {
     Ddl(String),
 }
 
-/// Execute a query plan with parameters
+/// Execute a query plan with parameters and batch
 pub fn execute_with_params(
     plan: Plan,
-    storage: &mut Storage,
+    storage: &mut SqlStorage,
+    batch: &mut fjall::Batch,
     tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<ExecutionResult> {
@@ -50,7 +52,7 @@ pub fn execute_with_params(
             source,
         } => {
             // INSERT uses write execution with phased approach
-            super::insert::execute_insert(table, columns, *source, storage, tx_ctx, params)
+            super::insert::execute_insert(table, columns, *source, storage, batch, tx_ctx, params)
         }
 
         Plan::Update {
@@ -59,21 +61,147 @@ pub fn execute_with_params(
             source,
         } => {
             // UPDATE uses write execution with phased approach
-            super::update::execute_update(table, assignments, *source, storage, tx_ctx, params)
+            super::update::execute_update(
+                table,
+                assignments,
+                *source,
+                storage,
+                batch,
+                tx_ctx,
+                params,
+            )
         }
 
         Plan::Delete { table, source } => {
             // DELETE uses write execution with phased approach
-            super::delete::execute_delete(table, *source, storage, tx_ctx, params)
+            super::delete::execute_delete(table, *source, storage, batch, tx_ctx, params)
         }
 
-        // DDL operations are delegated to storage
-        Plan::CreateTable { .. }
-        | Plan::DropTable { .. }
-        | Plan::CreateIndex { .. }
-        | Plan::DropIndex { .. } => {
-            let result_msg = storage.execute_ddl(&plan, tx_ctx.txn_id)?;
-            Ok(ExecutionResult::Ddl(result_msg))
+        // DDL operations - execute directly (no execute_ddl wrapper!)
+        Plan::CreateTable {
+            name,
+            schema,
+            if_not_exists,
+            ..
+        } => {
+            // Check if table exists
+            if storage.get_schemas().contains_key(&name) {
+                if if_not_exists {
+                    return Ok(ExecutionResult::Ddl(format!(
+                        "Table {} already exists (skipped)",
+                        name
+                    )));
+                } else {
+                    return Err(Error::DuplicateTable(name));
+                }
+            }
+
+            storage.create_table(name.clone(), schema)?;
+            Ok(ExecutionResult::Ddl(format!("Created table {}", name)))
+        }
+
+        Plan::DropTable {
+            names,
+            if_exists,
+            cascade: _,
+        } => {
+            // For now, only handle single table (names should have length 1)
+            let name = &names[0];
+
+            if !storage.get_schemas().contains_key(name) {
+                if if_exists {
+                    return Ok(ExecutionResult::Ddl(format!(
+                        "Table {} does not exist (skipped)",
+                        name
+                    )));
+                } else {
+                    return Err(Error::TableNotFound(name.clone()));
+                }
+            }
+
+            storage.drop_table(name)?;
+            Ok(ExecutionResult::Ddl(format!("Dropped table {}", name)))
+        }
+
+        Plan::CreateIndex {
+            name,
+            table,
+            columns,
+            unique,
+            included_columns: _,
+        } => {
+            // Check if index exists (for now, ignore if_not_exists - always create)
+            if storage.get_index_metadata().contains_key(&name) {
+                return Err(Error::Other(format!("Index {} already exists", name)));
+            }
+
+            // Create the index structure (extract column names from IndexColumn)
+            let column_names: Vec<String> = columns
+                .iter()
+                .filter_map(|col| {
+                    // Extract column name from expression (assuming it's a simple column reference)
+                    if let crate::parsing::ast::Expression::Column(_, col_name) = &col.expression {
+                        Some(col_name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            storage.create_index(name.clone(), table.clone(), column_names.clone(), unique)?;
+
+            // Backfill index with existing data
+            let schema = storage
+                .get_schemas()
+                .get(&table)
+                .ok_or_else(|| Error::TableNotFound(table.clone()))?
+                .clone();
+
+            // Collect all rows first to avoid borrow conflicts
+            let rows: Vec<_> = storage
+                .scan_table(&table, tx_ctx.txn_id)?
+                .collect::<Result<Vec<_>>>()?;
+
+            let mut batch = storage.batch();
+            for (row_id, values) in rows {
+                let index_values = helpers::extract_index_values(
+                    &values,
+                    &crate::types::index::IndexMetadata {
+                        name: name.clone(),
+                        table: table.clone(),
+                        columns: column_names.clone(),
+                        unique,
+                        index_type: crate::types::index::IndexType::BTree,
+                    },
+                    &schema,
+                )?;
+                storage.insert_index_entry(
+                    &mut batch,
+                    &name,
+                    index_values,
+                    row_id,
+                    tx_ctx.txn_id,
+                    tx_ctx.log_index,
+                )?;
+            }
+            batch.commit()?;
+
+            Ok(ExecutionResult::Ddl(format!("Created index {}", name)))
+        }
+
+        Plan::DropIndex { name, if_exists } => {
+            if !storage.get_index_metadata().contains_key(&name) {
+                if if_exists {
+                    return Ok(ExecutionResult::Ddl(format!(
+                        "Index {} does not exist (skipped)",
+                        name
+                    )));
+                } else {
+                    return Err(Error::IndexNotFound(name));
+                }
+            }
+
+            storage.drop_index(&name)?;
+            Ok(ExecutionResult::Ddl(format!("Dropped index {}", name)))
         }
 
         Plan::CreateTableAsValues {
@@ -82,29 +210,34 @@ pub fn execute_with_params(
             values_plan,
             if_not_exists,
         } => {
-            // First execute CREATE TABLE
-            let create_plan = Plan::CreateTable {
-                name: name.clone(),
-                schema: schema.clone(),
-                foreign_keys: Vec::new(), // TODO: Handle foreign keys for CREATE TABLE AS VALUES
-                if_not_exists,
-            };
-            let create_msg = storage.execute_ddl(&create_plan, tx_ctx.txn_id)?;
+            // First create the table
+            if storage.get_schemas().contains_key(&name) {
+                if if_not_exists {
+                    return Ok(ExecutionResult::Ddl(format!(
+                        "Table {} already exists (skipped)",
+                        name
+                    )));
+                } else {
+                    return Err(Error::DuplicateTable(name));
+                }
+            }
+
+            storage.create_table(name.clone(), schema)?;
+            let create_msg = format!("Created table {}", name);
 
             // Then execute the VALUES insertion
-            // Convert VALUES plan to INSERT
             if let Plan::Query {
                 root,
                 params: _,
                 column_names: _,
             } = values_plan.as_ref()
             {
-                // Execute the insert directly with the VALUES source
                 let insert_result = super::insert::execute_insert(
                     name.clone(),
                     None,
                     *root.clone(),
                     storage,
+                    batch,
                     tx_ctx,
                     params,
                 )?;
@@ -128,7 +261,7 @@ pub fn execute_with_params(
 /// Execute a plan node for reading with immutable storage reference
 pub fn execute_node_read<'a>(
     node: Node,
-    storage: &'a Storage,
+    storage: &'a SqlStorage,
     tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<Rows<'a>> {
@@ -136,8 +269,8 @@ pub fn execute_node_read<'a>(
         Node::Scan { table, .. } => {
             // True streaming with immutable storage!
             let iter = storage
-                .iter(tx_ctx.txn_id, &table)?
-                .map(|result| result.map(|row| row.values.clone().into()));
+                .scan_table(&table, tx_ctx.txn_id)?
+                .map(|result| result.map(|(_, values)| Arc::new(values)));
 
             Ok(Box::new(iter))
         }
@@ -155,7 +288,7 @@ pub fn execute_node_read<'a>(
             }
 
             // Try to use index lookup first
-            if storage.has_index(&table, &index_name) {
+            if storage.get_index_metadata().contains_key(&index_name) {
                 // Type-coerce filter values based on column schema
                 let schemas = storage.get_schemas();
                 let mut coerced_values = filter_values.clone();
@@ -170,15 +303,11 @@ pub fn execute_node_read<'a>(
                     }
                 }
 
-                // Use streaming index lookup for O(log n) performance + O(1) memory
-                let rows = storage.index_lookup_rows_streaming(
-                    &index_name,
-                    coerced_values,
-                    tx_ctx.txn_id,
-                )?;
+                // Use streaming index lookup - already returns complete rows!
+                let rows = storage.index_lookup(&index_name, coerced_values, tx_ctx.txn_id)?;
 
-                // Convert to iterator format (already streaming!)
-                let iter = rows.map(|result| result.map(|row| row.values.clone().into()));
+                // Convert (row_id, values) to Arc<Vec<Value>>
+                let iter = rows.map(|result| result.map(|(_, values)| Arc::new(values)));
                 return Ok(Box::new(iter));
             }
 
@@ -190,14 +319,18 @@ pub fn execute_node_read<'a>(
                 .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
             // Check if we can get column info from the index metadata
-            let column_names = storage.get_index_columns(&table, &index_name).or_else(|| {
-                // Fallback: assume index_name is a column name for backward compatibility
-                if schema.columns.iter().any(|c| c.name == index_name) {
-                    Some(vec![index_name.clone()])
-                } else {
-                    None
-                }
-            });
+            let column_names = storage
+                .get_index_metadata()
+                .get(&index_name)
+                .map(|meta| meta.columns.clone())
+                .or_else(|| {
+                    // Fallback: assume index_name is a column name for backward compatibility
+                    if schema.columns.iter().any(|c| c.name == index_name) {
+                        Some(vec![index_name.clone()])
+                    } else {
+                        None
+                    }
+                });
 
             if let Some(columns) = column_names {
                 // Get column indices
@@ -208,41 +341,42 @@ pub fn execute_node_read<'a>(
                     } else {
                         // Column not found, can't filter
                         let iter = storage
-                            .iter(tx_ctx.txn_id, &table)?
-                            .map(|result| result.map(|row| row.values.clone().into()));
+                            .scan_table(&table, tx_ctx.txn_id)?
+                            .map(|result| result.map(|(_, values)| Arc::new(values)));
                         return Ok(Box::new(iter));
                     }
                 }
 
                 // Filter by checking all column values match
                 if col_indices.len() == filter_values.len() {
-                    let iter = storage
-                        .iter(tx_ctx.txn_id, &table)?
-                        .filter_map(move |result| {
-                            match result {
-                                Ok(row) => {
-                                    let values: Arc<Vec<Value>> = row.values.clone().into();
-                                    // Check if all indexed columns match the filter values
-                                    for (idx, expected_val) in
-                                        col_indices.iter().zip(&filter_values)
-                                    {
-                                        if values.get(*idx) != Some(expected_val) {
-                                            return None;
+                    let iter =
+                        storage
+                            .scan_table(&table, tx_ctx.txn_id)?
+                            .filter_map(move |result| {
+                                match result {
+                                    Ok((_, row_values)) => {
+                                        let values: Arc<Vec<Value>> = Arc::new(row_values);
+                                        // Check if all indexed columns match the filter values
+                                        for (idx, expected_val) in
+                                            col_indices.iter().zip(&filter_values)
+                                        {
+                                            if values.get(*idx) != Some(expected_val) {
+                                                return None;
+                                            }
                                         }
+                                        Some(Ok(values))
                                     }
-                                    Some(Ok(values))
+                                    Err(e) => Some(Err(e)),
                                 }
-                                Err(e) => Some(Err(e)),
-                            }
-                        });
+                            });
                     return Ok(Box::new(iter));
                 }
             }
 
             // Can't determine columns, fall back to full scan
             let iter = storage
-                .iter(tx_ctx.txn_id, &table)?
-                .map(|result| result.map(|row| row.values.clone().into()));
+                .scan_table(&table, tx_ctx.txn_id)?
+                .map(|result| result.map(|(_, values)| Arc::new(values)));
             Ok(Box::new(iter))
         }
 
@@ -253,7 +387,6 @@ pub fn execute_node_read<'a>(
             start_inclusive,
             end,
             end_inclusive,
-            reverse,
             ..
         } => {
             // Evaluate range bounds
@@ -276,19 +409,19 @@ pub fn execute_node_read<'a>(
                 })
                 .transpose()?;
 
-            // Try to use index range lookup
-            if storage.has_index(&table, &index_name) {
-                // Use streaming index range lookup for O(log n) performance + O(1) memory
-                let rows = storage.index_range_lookup_rows_streaming(
+            // Try to use index range scan
+            if storage.get_index_metadata().contains_key(&index_name) {
+                // Use streaming index range scan
+                let rows = storage.index_range_scan(
                     &index_name,
                     start_values,
                     end_values,
-                    reverse,
                     tx_ctx.txn_id,
                 )?;
 
-                // Convert to iterator format (already streaming!)
-                let iter = rows.map(|result| result.map(|row| row.values.clone().into()));
+                // Convert to iterator format (already returns rows!)
+                let iter = rows.map(|result| result.map(|(_, values)| Arc::new(values)));
+                // TODO: Handle reverse ordering
                 return Ok(Box::new(iter));
             }
 
@@ -299,14 +432,18 @@ pub fn execute_node_read<'a>(
                 .ok_or_else(|| Error::TableNotFound(table.clone()))?;
 
             // Get column info from the index metadata
-            let column_names = storage.get_index_columns(&table, &index_name).or_else(|| {
-                // Fallback: assume index_name is a column name
-                if schema.columns.iter().any(|c| c.name == index_name) {
-                    Some(vec![index_name.clone()])
-                } else {
-                    None
-                }
-            });
+            let column_names = storage
+                .get_index_metadata()
+                .get(&index_name)
+                .map(|meta| meta.columns.clone())
+                .or_else(|| {
+                    // Fallback: assume index_name is a column name
+                    if schema.columns.iter().any(|c| c.name == index_name) {
+                        Some(vec![index_name.clone()])
+                    } else {
+                        None
+                    }
+                });
 
             if let Some(columns) = column_names {
                 // Get column indices
@@ -317,8 +454,8 @@ pub fn execute_node_read<'a>(
                     } else {
                         // Column not found, can't filter
                         let iter = storage
-                            .iter(tx_ctx.txn_id, &table)?
-                            .map(|result| result.map(|row| row.values.clone().into()));
+                            .scan_table(&table, tx_ctx.txn_id)?
+                            .map(|result| result.map(|(_, values)| Arc::new(values)));
                         return Ok(Box::new(iter));
                     }
                 }
@@ -330,11 +467,11 @@ pub fn execute_node_read<'a>(
                 let end_incl = end_inclusive;
 
                 let iter = storage
-                    .iter(tx_ctx.txn_id, &table)?
+                    .scan_table(&table, tx_ctx.txn_id)?
                     .filter_map(move |result| {
                         match result {
-                            Ok(row) => {
-                                let values: Arc<Vec<Value>> = row.values.clone().into();
+                            Ok((_, row_values_vec)) => {
+                                let values: Arc<Vec<Value>> = Arc::new(row_values_vec);
                                 // Extract values for the indexed columns
                                 let mut row_values = Vec::new();
                                 for &idx in &col_indices {
@@ -377,8 +514,8 @@ pub fn execute_node_read<'a>(
 
             // Can't determine columns, fall back to full scan
             let iter = storage
-                .iter(tx_ctx.txn_id, &table)?
-                .map(|result| result.map(|row| row.values.clone().into()));
+                .scan_table(&table, tx_ctx.txn_id)?
+                .map(|result| result.map(|(_, values)| Arc::new(values)));
             Ok(Box::new(iter))
         }
 
@@ -388,20 +525,14 @@ pub fn execute_node_read<'a>(
             // Clone transaction context and params for use in closure
             let tx_ctx_clone = tx_ctx.clone();
             let params_clone = params.cloned();
-            // We need storage for subquery evaluation - capture a raw pointer
-            // SAFETY: We know storage lives for the entire query execution
-            let storage_ptr = storage as *const Storage;
 
             let filtered = source_rows.filter_map(move |row| match row {
                 Ok(row) => {
-                    // SAFETY: storage outlives the iterator since it's borrowed for 'a
-                    let storage_ref = unsafe { &*storage_ptr };
-                    match expression::evaluate_with_arc_and_storage(
+                    match expression::evaluate_with_arc(
                         &predicate,
                         Some(&row),
                         &tx_ctx_clone,
                         params_clone.as_ref(),
-                        Some(storage_ref),
                     ) {
                         Ok(v) if v.to_bool().unwrap_or(false) => Some(Ok(row)),
                         Ok(_) => None,
@@ -490,7 +621,7 @@ pub fn execute_node_read<'a>(
             for row in rows {
                 let row = row?;
                 // Use the transaction context for the aggregator
-                aggregator.add(&row, tx_ctx, storage)?;
+                aggregator.add(&row, tx_ctx)?;
             }
 
             // Get aggregated results
@@ -507,7 +638,11 @@ pub fn execute_node_read<'a>(
             join_type,
         } => {
             // Get column counts from both nodes for outer join NULL padding
-            let schemas = storage.get_schemas();
+            let schemas_arc = storage.get_schemas();
+            let schemas: HashMap<String, crate::types::schema::Table> = schemas_arc
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_ref().clone()))
+                .collect();
             let left_columns = left.column_count(&schemas);
             let right_columns = right.column_count(&schemas);
 
@@ -534,7 +669,11 @@ pub fn execute_node_read<'a>(
             join_type,
         } => {
             // Get column counts from both nodes for outer join NULL padding
-            let schemas = storage.get_schemas();
+            let schemas_arc = storage.get_schemas();
+            let schemas: HashMap<String, crate::types::schema::Table> = schemas_arc
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_ref().clone()))
+                .collect();
             let left_columns = left.column_count(&schemas);
             let right_columns = right.column_count(&schemas);
 

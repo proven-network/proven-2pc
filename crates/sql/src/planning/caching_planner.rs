@@ -7,7 +7,7 @@ use super::plan::Plan;
 use super::planner::Planner;
 use crate::error::Result;
 use crate::semantic::statement::AnalyzedStatement;
-use crate::storage::index::IndexMetadata;
+use crate::types::index::IndexMetadata;
 use crate::types::schema::Table;
 use lru::LruCache;
 use std::collections::HashMap;

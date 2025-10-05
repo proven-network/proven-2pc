@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::operators;
-use crate::storage::Storage;
+use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::value::{Row, Value};
@@ -29,7 +29,7 @@ pub fn evaluate_with_storage(
     row: Option<&Row>,
     context: &ExecutionContext,
     params: Option<&Vec<Value>>,
-    storage: Option<&Storage>,
+    storage: Option<&SqlStorage>,
 ) -> Result<Value> {
     use Expression::*;
     Ok(match expr {
@@ -463,15 +463,4 @@ pub fn evaluate_with_arc(
     params: Option<&Vec<Value>>,
 ) -> Result<Value> {
     evaluate(expr, row.map(|r| r.as_ref()), context, params)
-}
-
-/// Helper to evaluate with both arc row and storage
-pub fn evaluate_with_arc_and_storage(
-    expr: &Expression,
-    row: Option<&Arc<Vec<Value>>>,
-    context: &ExecutionContext,
-    params: Option<&Vec<Value>>,
-    storage: Option<&Storage>,
-) -> Result<Value> {
-    evaluate_with_storage(expr, row.map(|r| r.as_ref()), context, params, storage)
 }

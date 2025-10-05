@@ -14,9 +14,9 @@ use crate::parsing::ast::{
 };
 use crate::semantic::AnalyzedStatement;
 use crate::semantic::analyzer::SemanticAnalyzer;
-use crate::storage::index::IndexMetadata;
 use crate::types::DataType;
 use crate::types::expression::Expression;
+use crate::types::index::IndexMetadata;
 use crate::types::schema::Table;
 use std::collections::{BTreeMap, HashMap};
 

@@ -1,8 +1,7 @@
 //! Integration tests for the KV engine
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_kv::stream::{KvOperation, KvResponse, KvTransactionEngine};
-use proven_kv::types::Value;
+use proven_kv::{KvOperation, KvResponse, KvTransactionEngine, Value};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 fn timestamp(n: u64) -> HlcTimestamp {
