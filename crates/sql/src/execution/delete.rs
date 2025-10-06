@@ -34,11 +34,15 @@ pub fn execute_delete(
             let row_arc = std::sync::Arc::new(values.clone());
 
             let is_match = match &source {
-                Node::Filter { predicate, .. } => {
-                    expression::evaluate(predicate, Some(&row_arc), tx_ctx, params)?
-                        .to_bool()
-                        .unwrap_or(false)
-                }
+                Node::Filter { predicate, .. } => expression::evaluate_with_arc_and_storage(
+                    predicate,
+                    Some(&row_arc),
+                    tx_ctx,
+                    params,
+                    Some(storage),
+                )?
+                .to_bool()
+                .unwrap_or(false),
                 Node::Scan { .. } => true,
                 _ => true,
             };

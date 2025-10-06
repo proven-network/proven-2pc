@@ -117,11 +117,15 @@ pub fn execute_update(
             let row_arc = std::sync::Arc::new(values.clone());
 
             let is_match = match &source {
-                Node::Filter { predicate, .. } => {
-                    expression::evaluate_with_arc(predicate, Some(&row_arc), tx_ctx, params)?
-                        .to_bool()
-                        .unwrap_or(false)
-                }
+                Node::Filter { predicate, .. } => expression::evaluate_with_arc_and_storage(
+                    predicate,
+                    Some(&row_arc),
+                    tx_ctx,
+                    params,
+                    Some(storage),
+                )?
+                .to_bool()
+                .unwrap_or(false),
                 Node::Scan { .. } => true,
                 _ => true,
             };
@@ -140,8 +144,13 @@ pub fn execute_update(
         let mut new_values = old_values.clone();
 
         for &(col_idx, ref expr) in &assignments {
-            new_values[col_idx] =
-                expression::evaluate_with_arc(expr, Some(&current_arc), tx_ctx, params)?;
+            new_values[col_idx] = expression::evaluate_with_arc_and_storage(
+                expr,
+                Some(&current_arc),
+                tx_ctx,
+                params,
+                Some(storage),
+            )?;
         }
 
         // Apply type coercion

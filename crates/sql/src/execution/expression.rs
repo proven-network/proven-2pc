@@ -464,3 +464,14 @@ pub fn evaluate_with_arc(
 ) -> Result<Value> {
     evaluate(expr, row.map(|r| r.as_ref()), context, params)
 }
+
+/// Evaluate an expression with Arc row and optional storage access (for subqueries)
+pub fn evaluate_with_arc_and_storage(
+    expr: &Expression,
+    row: Option<&Arc<Vec<Value>>>,
+    context: &ExecutionContext,
+    params: Option<&Vec<Value>>,
+    storage: Option<&SqlStorage>,
+) -> Result<Value> {
+    evaluate_with_storage(expr, row.map(|r| r.as_ref()), context, params, storage)
+}

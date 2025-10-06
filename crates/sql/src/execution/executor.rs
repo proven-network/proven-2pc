@@ -284,7 +284,13 @@ pub fn execute_node_read<'a>(
             // Evaluate the lookup values
             let mut filter_values = Vec::new();
             for value_expr in &values {
-                filter_values.push(expression::evaluate(value_expr, None, tx_ctx, params)?);
+                filter_values.push(expression::evaluate_with_storage(
+                    value_expr,
+                    None,
+                    tx_ctx,
+                    params,
+                    Some(storage),
+                )?);
             }
 
             // Try to use index lookup first
@@ -395,7 +401,15 @@ pub fn execute_node_read<'a>(
                 .map(|exprs| {
                     exprs
                         .iter()
-                        .map(|e| expression::evaluate(e, None, tx_ctx, params))
+                        .map(|e| {
+                            expression::evaluate_with_storage(
+                                e,
+                                None,
+                                tx_ctx,
+                                params,
+                                Some(storage),
+                            )
+                        })
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?;
@@ -404,7 +418,15 @@ pub fn execute_node_read<'a>(
                 .map(|exprs| {
                     exprs
                         .iter()
-                        .map(|e| expression::evaluate(e, None, tx_ctx, params))
+                        .map(|e| {
+                            expression::evaluate_with_storage(
+                                e,
+                                None,
+                                tx_ctx,
+                                params,
+                                Some(storage),
+                            )
+                        })
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?;
@@ -528,11 +550,12 @@ pub fn execute_node_read<'a>(
 
             let filtered = source_rows.filter_map(move |row| match row {
                 Ok(row) => {
-                    match expression::evaluate_with_arc(
+                    match expression::evaluate_with_arc_and_storage(
                         &predicate,
                         Some(&row),
                         &tx_ctx_clone,
                         params_clone.as_ref(),
+                        Some(storage),
                     ) {
                         Ok(v) if v.to_bool().unwrap_or(false) => Some(Ok(row)),
                         Ok(_) => None,
@@ -553,11 +576,12 @@ pub fn execute_node_read<'a>(
             let values_iter = rows.into_iter().map(move |row| {
                 let mut value_row = Vec::new();
                 for expr in row {
-                    value_row.push(expression::evaluate(
+                    value_row.push(expression::evaluate_with_storage(
                         &expr,
                         None,
                         &tx_ctx_clone,
                         params_clone.as_ref(),
+                        Some(storage),
                     )?);
                 }
                 Ok(Arc::new(value_row))
@@ -581,11 +605,12 @@ pub fn execute_node_read<'a>(
                 Ok(row) => {
                     let mut result = Vec::with_capacity(expressions.len());
                     for expr in &expressions {
-                        result.push(expression::evaluate_with_arc(
+                        result.push(expression::evaluate_with_arc_and_storage(
                             expr,
                             Some(&row),
                             &tx_ctx_clone,
                             params_clone.as_ref(),
+                            Some(storage),
                         )?);
                     }
                     Ok(Arc::new(result))
@@ -702,10 +727,22 @@ pub fn execute_node_read<'a>(
             // Sort based on order_by expressions
             collected.sort_by(|a, b| {
                 for (expr, direction) in &order_by {
-                    let val_a = expression::evaluate_with_arc(expr, Some(a), tx_ctx, params)
-                        .unwrap_or(Value::Null);
-                    let val_b = expression::evaluate_with_arc(expr, Some(b), tx_ctx, params)
-                        .unwrap_or(Value::Null);
+                    let val_a = expression::evaluate_with_arc_and_storage(
+                        expr,
+                        Some(a),
+                        tx_ctx,
+                        params,
+                        Some(storage),
+                    )
+                    .unwrap_or(Value::Null);
+                    let val_b = expression::evaluate_with_arc_and_storage(
+                        expr,
+                        Some(b),
+                        tx_ctx,
+                        params,
+                        Some(storage),
+                    )
+                    .unwrap_or(Value::Null);
 
                     let cmp = val_a
                         .partial_cmp(&val_b)
