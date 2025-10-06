@@ -286,8 +286,24 @@ impl SqlStorage {
         // Store in memory
         self.table_storages
             .insert(table_name.clone(), table_storage);
-        self.schemas.insert(table_name.clone(), Arc::new(schema));
-        self.next_row_ids.insert(table_name, AtomicU64::new(1));
+        let schema_arc = Arc::new(schema.clone());
+        self.schemas.insert(table_name.clone(), schema_arc);
+        self.next_row_ids
+            .insert(table_name.clone(), AtomicU64::new(1));
+
+        // Create unique indexes for columns marked with unique constraint
+        for column in &schema.columns {
+            if column.unique {
+                let index_name = format!("{}_{}_unique", table_name, column.name);
+                // Create the index using the existing create_index method
+                self.create_index(
+                    index_name,
+                    table_name.clone(),
+                    vec![column.name.clone()],
+                    true, // unique
+                )?;
+            }
+        }
 
         Ok(())
     }

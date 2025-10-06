@@ -147,14 +147,51 @@ pub fn execute_update(
         // Apply type coercion
         let coerced_row = crate::coercion::coerce_row(new_values, &schema)?;
 
-        // Check unique constraints for updated row
-        let unique_indexes = storage.get_unique_indexes(&table);
+        // Validate foreign keys (simplified - no cascades for now)
+        validate_foreign_keys_on_update(&coerced_row, &old_values, &schema, storage, tx_ctx)?;
+
+        updates.push((row_id, old_values, coerced_row));
+    }
+
+    // Phase 2.5: Check unique constraints - both within batch and against storage
+    let unique_indexes = storage.get_unique_indexes(&table);
+
+    // First, check for duplicates within the batch itself
+    use std::collections::HashMap;
+    for index in &unique_indexes {
+        let mut seen_values: HashMap<Vec<Value>, u64> = HashMap::new();
+        for (row_id, _, new_values) in &updates {
+            let index_values = helpers::extract_index_values(new_values, index, &schema)?;
+
+            // Skip NULL values in unique constraint checks (SQL standard)
+            if index_values.iter().any(|v| v.is_null()) {
+                continue;
+            }
+
+            if let Some(first_row_id) = seen_values.get(&index_values) {
+                return Err(Error::UniqueConstraintViolation(format!(
+                    "Duplicate value for unique index '{}' in batch (rows {} and {}): {:?}",
+                    index.name, first_row_id, row_id, index_values
+                )));
+            }
+            seen_values.insert(index_values, *row_id);
+        }
+    }
+
+    // Then, check each update against existing data (excluding its own row_id)
+    for (row_id, _, new_values) in &updates {
         for index in &unique_indexes {
-            let new_index_values = helpers::extract_index_values(&coerced_row, index, &schema)?;
+            let new_index_values = helpers::extract_index_values(new_values, index, &schema)?;
+
+            // Skip NULL values in unique constraint checks (SQL standard)
+            if new_index_values.iter().any(|v| v.is_null()) {
+                continue;
+            }
+
             if storage.check_unique_violation(
                 &index.name,
                 new_index_values.clone(),
-                Some(row_id), // Exclude current row from check
+                Some(*row_id), // Exclude current row from check
                 tx_ctx.txn_id,
             )? {
                 return Err(Error::UniqueConstraintViolation(format!(
@@ -163,11 +200,6 @@ pub fn execute_update(
                 )));
             }
         }
-
-        // Validate foreign keys (simplified - no cascades for now)
-        validate_foreign_keys_on_update(&coerced_row, &old_values, &schema, storage, tx_ctx)?;
-
-        updates.push((row_id, old_values, coerced_row));
     }
 
     // Phase 3: Write updates to batch (engine will commit with predicates)

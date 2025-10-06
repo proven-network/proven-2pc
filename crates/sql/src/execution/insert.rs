@@ -199,9 +199,39 @@ pub fn execute_insert(
 
     // Phase 4: Check unique constraints
     let unique_indexes = storage.get_unique_indexes(&table);
+
+    // First, check for duplicates within the batch itself
+    use std::collections::HashMap;
+    for index in &unique_indexes {
+        let mut seen_values: HashMap<Vec<Value>, usize> = HashMap::new();
+        for (i, row) in final_rows.iter().enumerate() {
+            let index_values = helpers::extract_index_values(row, index, schema)?;
+
+            // Skip NULL values in unique constraint checks (SQL standard)
+            if index_values.iter().any(|v| v.is_null()) {
+                continue;
+            }
+
+            if let Some(first_idx) = seen_values.get(&index_values) {
+                return Err(Error::UniqueConstraintViolation(format!(
+                    "Duplicate value for unique index '{}' in batch (rows {} and {}): {:?}",
+                    index.name, first_idx, i, index_values
+                )));
+            }
+            seen_values.insert(index_values, i);
+        }
+    }
+
+    // Then, check against existing data in storage
     for (row, _) in final_rows.iter().zip(&row_ids) {
         for index in &unique_indexes {
             let index_values = helpers::extract_index_values(row, index, schema)?;
+
+            // Skip NULL values in unique constraint checks (SQL standard)
+            if index_values.iter().any(|v| v.is_null()) {
+                continue;
+            }
+
             if storage.check_unique_violation(
                 &index.name,
                 index_values.clone(),
