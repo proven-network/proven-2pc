@@ -156,6 +156,9 @@ pub fn execute_update(
         // Apply type coercion
         let coerced_row = crate::coercion::coerce_row(new_values, &schema)?;
 
+        // Validate row against schema constraints (NULL, type checks)
+        schema.validate_row(&coerced_row)?;
+
         // Validate foreign keys (simplified - no cascades for now)
         validate_foreign_keys_on_update(&coerced_row, &old_values, &schema, storage, tx_ctx)?;
 

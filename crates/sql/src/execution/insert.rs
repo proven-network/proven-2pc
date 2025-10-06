@@ -185,6 +185,9 @@ pub fn execute_insert(
         // Apply type coercion to match schema
         let coerced_row = crate::coercion::coerce_row(final_row, schema)?;
 
+        // Validate row against schema constraints (NULL, type checks)
+        schema.validate_row(&coerced_row)?;
+
         // Validate foreign key constraints before insertion
         validate_foreign_keys(&coerced_row, schema, storage, tx_ctx)?;
 
