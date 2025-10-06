@@ -443,55 +443,6 @@ impl SqlStorage {
         })
     }
 
-    /// Scan rows in a table within a row_id range using MVCC iterator
-    ///
-    /// Returns an iterator over (row_id, values) pairs visible at the snapshot time
-    /// for row_ids within the specified range.
-    /// Supports all Rust range types: .., a.., ..b, a..b, a..=b
-    pub fn scan_table_range<'a, R>(
-        &'a self,
-        table_name: &str,
-        range: R,
-        txn_id: HlcTimestamp,
-    ) -> Result<TableScanIterator<'a>>
-    where
-        R: std::ops::RangeBounds<u64> + 'a,
-    {
-        // Get table storage
-        let table_storage = self
-            .table_storages
-            .get(table_name)
-            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-
-        // Get schema for decoding
-        let schema = self
-            .schemas
-            .get(table_name)
-            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?
-            .clone();
-
-        // Convert u64 range to Vec<u8> range for MVCC storage
-        use std::ops::Bound;
-        let start_bound = match range.start_bound() {
-            Bound::Included(&start) => Bound::Included(start.to_be_bytes().to_vec()),
-            Bound::Excluded(&start) => Bound::Excluded(start.to_be_bytes().to_vec()),
-            Bound::Unbounded => Bound::Unbounded,
-        };
-        let end_bound = match range.end_bound() {
-            Bound::Included(&end) => Bound::Included(end.to_be_bytes().to_vec()),
-            Bound::Excluded(&end) => Bound::Excluded(end.to_be_bytes().to_vec()),
-            Bound::Unbounded => Bound::Unbounded,
-        };
-
-        // Use MVCC range iterator
-        let iter = table_storage.range((start_bound, end_bound), txn_id)?;
-
-        Ok(TableScanIterator {
-            mvcc_iter: iter,
-            schema,
-        })
-    }
-
     /// Delete a row from a table
     pub fn delete_row(
         &mut self,
@@ -631,18 +582,6 @@ impl SqlStorage {
                 .add_to_batch(batch, txn_id, predicate, true)?;
         }
 
-        Ok(())
-    }
-
-    /// Persist predicates (for read-only transactions)
-    pub fn persist_predicates(
-        &self,
-        txn_id: HlcTimestamp,
-        predicates: &QueryPredicates,
-    ) -> Result<()> {
-        let mut batch = self.keyspace.batch();
-        self.add_predicates_to_batch(&mut batch, txn_id, predicates)?;
-        batch.commit()?;
         Ok(())
     }
 
@@ -1426,110 +1365,6 @@ mod tests {
     }
 
     #[test]
-    fn test_table_scan_range() {
-        let mut storage = SqlStorage::new(test_config()).unwrap();
-        let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
-
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
-
-        // Insert multiple rows
-        let mut batch = storage.batch();
-        storage
-            .write_row(
-                &mut batch,
-                "users",
-                1,
-                &[Value::integer(1), Value::string("Alice")],
-                txn_id,
-                1,
-            )
-            .unwrap();
-        storage
-            .write_row(
-                &mut batch,
-                "users",
-                3,
-                &[Value::integer(3), Value::string("Bob")],
-                txn_id,
-                2,
-            )
-            .unwrap();
-        storage
-            .write_row(
-                &mut batch,
-                "users",
-                5,
-                &[Value::integer(5), Value::string("Charlie")],
-                txn_id,
-                3,
-            )
-            .unwrap();
-        storage
-            .write_row(
-                &mut batch,
-                "users",
-                7,
-                &[Value::integer(7), Value::string("Diana")],
-                txn_id,
-                4,
-            )
-            .unwrap();
-        storage
-            .write_row(
-                &mut batch,
-                "users",
-                10,
-                &[Value::integer(10), Value::string("Eve")],
-                txn_id,
-                5,
-            )
-            .unwrap();
-        batch.commit().unwrap();
-
-        // Scan range 3..=7 (inclusive)
-        let rows: Vec<_> = storage
-            .scan_table_range("users", 3..=7, txn_id)
-            .unwrap()
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        // Should find 3 rows: 3, 5, 7
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].0, 3);
-        assert_eq!(rows[0].1, vec![Value::integer(3), Value::string("Bob")]);
-        assert_eq!(rows[1].0, 5);
-        assert_eq!(rows[1].1, vec![Value::integer(5), Value::string("Charlie")]);
-        assert_eq!(rows[2].0, 7);
-        assert_eq!(rows[2].1, vec![Value::integer(7), Value::string("Diana")]);
-
-        // Scan range 5.. (from 5 onwards)
-        let rows: Vec<_> = storage
-            .scan_table_range("users", 5.., txn_id)
-            .unwrap()
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        // Should find 3 rows: 5, 7, 10
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].0, 5);
-        assert_eq!(rows[1].0, 7);
-        assert_eq!(rows[2].0, 10);
-
-        // Scan range ..5 (up to but not including 5)
-        let rows: Vec<_> = storage
-            .scan_table_range("users", ..5, txn_id)
-            .unwrap()
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-
-        // Should find 2 rows: 1, 3
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, 1);
-        assert_eq!(rows[1].0, 3);
-    }
-
-    #[test]
     fn test_index_lookup() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema_with_city();
@@ -2038,7 +1873,11 @@ mod tests {
         };
 
         // Persist predicates
-        storage.persist_predicates(txn_id, &predicates).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .add_predicates_to_batch(&mut batch, txn_id, &predicates)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Verify predicates are persisted
         let active_txns = storage.get_active_transactions().unwrap();
@@ -2131,7 +1970,11 @@ mod tests {
         };
 
         // Persist predicates
-        storage.persist_predicates(txn_id, &predicates).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .add_predicates_to_batch(&mut batch, txn_id, &predicates)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Verify both predicates exist
         let active_txns = storage.get_active_transactions().unwrap();
@@ -2179,7 +2022,11 @@ mod tests {
         };
 
         // Persist predicates
-        storage.persist_predicates(txn_id, &predicates).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .add_predicates_to_batch(&mut batch, txn_id, &predicates)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Verify predicates exist
         let active_txns = storage.get_active_transactions().unwrap();

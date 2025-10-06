@@ -455,16 +455,6 @@ pub fn evaluate_with_storage(
     })
 }
 
-/// Helper to evaluate an expression with an Arc<Vec<Value>> row (used by executor)
-pub fn evaluate_with_arc(
-    expr: &Expression,
-    row: Option<&Arc<Vec<Value>>>,
-    context: &ExecutionContext,
-    params: Option<&Vec<Value>>,
-) -> Result<Value> {
-    evaluate(expr, row.map(|r| r.as_ref()), context, params)
-}
-
 /// Evaluate an expression with Arc row and optional storage access (for subqueries)
 pub fn evaluate_with_arc_and_storage(
     expr: &Expression,

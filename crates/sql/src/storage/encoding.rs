@@ -212,18 +212,6 @@ pub fn encode_value_sortable(value: &Value, output: &mut Vec<u8>) {
     }
 }
 
-/// Decode an index key to extract the row_id
-pub fn decode_row_id_from_index_key(bytes: &[u8]) -> Option<u64> {
-    if bytes.len() >= 8 {
-        let start = bytes.len() - 8;
-        let mut row_id_bytes = [0u8; 8];
-        row_id_bytes.copy_from_slice(&bytes[start..]);
-        Some(u64::from_be_bytes(row_id_bytes))
-    } else {
-        None
-    }
-}
-
 // ============================================================================
 // Row Value Encoding (Schema-Aware Compact Format)
 // ============================================================================
