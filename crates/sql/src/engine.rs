@@ -3,6 +3,9 @@
 //! This engine uses predicates for conflict detection at planning time,
 //! eliminating the need for row-level locks.
 
+pub mod predicate_index;
+// pub mod stats_cache;
+
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::BlockingInfo;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
@@ -12,12 +15,10 @@ use crate::parsing::CachingParser;
 use crate::planning::caching_planner::CachingPlanner;
 use crate::semantic::CachingSemanticAnalyzer;
 use crate::storage::{SqlStorage, SqlStorageConfig};
-use crate::stream::{
-    operation::SqlOperation,
-    predicate_index::PredicateIndex,
-    response::{SqlResponse, convert_execution_result},
-};
 use crate::types::context::{ExecutionContext, TransactionContext, TransactionState};
+use crate::types::operation::SqlOperation;
+use crate::types::response::{SqlResponse, convert_execution_result};
+use predicate_index::PredicateIndex;
 
 use std::collections::HashMap;
 

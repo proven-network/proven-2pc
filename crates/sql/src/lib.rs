@@ -7,6 +7,7 @@
 //! - Ensures deterministic execution for Raft consensus
 
 mod coercion;
+mod engine;
 mod error;
 mod execution;
 mod functions;
@@ -15,13 +16,12 @@ mod parsing;
 mod planning;
 mod semantic;
 mod storage;
-mod stream;
 mod types;
 
+pub use engine::SqlTransactionEngine;
 pub use error::{Error, Result};
 pub use fjall::{CompressionType, PersistMode};
 pub use storage::SqlStorageConfig;
-pub use stream::engine::SqlTransactionEngine;
-pub use stream::operation::SqlOperation;
-pub use stream::response::SqlResponse;
+pub use types::operation::SqlOperation;
+pub use types::response::SqlResponse;
 pub use types::value::Value;
