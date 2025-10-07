@@ -77,8 +77,15 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
         // String to collections (JSON parsing)
         (
             DataType::Str,
-            DataType::List(_) | DataType::Array(_, _) | DataType::Map(_, _) | DataType::Struct(_),
+            DataType::List(_)
+            | DataType::Array(_, _)
+            | DataType::Map(_, _)
+            | DataType::Struct(_)
+            | DataType::Json,
         ) => true,
+
+        // JSON to String conversion
+        (DataType::Json, DataType::Str | DataType::Text) => true,
 
         // List/Array interchangeability
         (DataType::List(_), DataType::Array(_, _)) => true,

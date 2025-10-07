@@ -489,6 +489,18 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
                 } else {
                     Err(Error::ExecutionError("Failed to parse as array".into()))
                 }
+            } else if target_type.to_uppercase() == "JSON" {
+                // CAST to JSON - parse the string as JSON
+                match value {
+                    Value::Str(s) => serde_json::from_str(s)
+                        .map(Value::Json)
+                        .map_err(|e| Error::InvalidValue(format!("Invalid JSON: {}", e))),
+                    Value::Json(j) => Ok(Value::Json(j.clone())),
+                    _ => Err(Error::TypeMismatch {
+                        expected: "string or JSON".into(),
+                        found: value.data_type().to_string(),
+                    }),
+                }
             } else {
                 // For other complex types, return an error
                 Err(Error::ExecutionError(format!(

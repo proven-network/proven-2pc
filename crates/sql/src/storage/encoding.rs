@@ -216,6 +216,14 @@ pub fn encode_value_sortable(value: &Value, output: &mut Vec<u8>) {
                 encode_value_sortable(value, output);
             }
         }
+        Value::Json(j) => {
+            output.push(0x1B);
+            // For sorting, encode JSON as its string representation
+            let json_str = j.to_string();
+            let bytes = json_str.as_bytes();
+            output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            output.extend_from_slice(bytes);
+        }
     }
 }
 
@@ -534,13 +542,17 @@ fn encode_value_compact(value: &Value, expected_type: &DataType, buf: &mut Vec<u
 
             // Encode non-null values in schema order
             for (field_name, field_type) in field_types {
-                if let Some(value) = field_map.get(field_name.as_str()) {
-                    if !value.is_null() {
-                        encode_value_compact(value, field_type, buf)?;
-                    }
+                if let Some(value) = field_map.get(field_name.as_str())
+                    && !value.is_null()
+                {
+                    encode_value_compact(value, field_type, buf)?;
                 }
-                // Skip null/missing fields (already in bitmap)
             }
+        }
+
+        // JSON: encode using compact binary format
+        (Value::Json(j), DataType::Json) => {
+            encode_json_compact(j, buf)?;
         }
 
         _ => {
@@ -551,6 +563,56 @@ fn encode_value_compact(value: &Value, expected_type: &DataType, buf: &mut Vec<u
         }
     }
 
+    Ok(())
+}
+
+/// Encode JSON value in compact binary format
+fn encode_json_compact(json: &serde_json::Value, buf: &mut Vec<u8>) -> Result<()> {
+    match json {
+        serde_json::Value::Null => {
+            buf.push(0x00); // Null tag
+        }
+        serde_json::Value::Bool(b) => {
+            buf.push(0x01); // Bool tag
+            buf.push(if *b { 1 } else { 0 });
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                buf.push(0x02); // i64 tag
+                buf.extend_from_slice(&i.to_le_bytes());
+            } else if let Some(f) = n.as_f64() {
+                buf.push(0x03); // f64 tag
+                buf.extend_from_slice(&f.to_bits().to_le_bytes());
+            } else {
+                return Err(Error::InvalidValue(format!("Invalid JSON number: {}", n)));
+            }
+        }
+        serde_json::Value::String(s) => {
+            buf.push(0x04); // String tag
+            let bytes = s.as_bytes();
+            buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(bytes);
+        }
+        serde_json::Value::Array(arr) => {
+            buf.push(0x05); // Array tag
+            buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+            for val in arr {
+                encode_json_compact(val, buf)?;
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            buf.push(0x06); // Object tag
+            buf.extend_from_slice(&(obj.len() as u32).to_le_bytes());
+            for (key, val) in obj {
+                // Encode key
+                let key_bytes = key.as_bytes();
+                buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(key_bytes);
+                // Encode value
+                encode_json_compact(val, buf)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -873,12 +935,96 @@ fn decode_value_compact(cursor: &mut Cursor<&[u8]>, expected_type: &DataType) ->
             Value::Struct(fields)
         }
 
+        DataType::Json => {
+            let json = decode_json_compact(cursor)?;
+            Value::Json(json)
+        }
+
         DataType::Nullable(inner) => decode_value_compact(cursor, inner)?,
 
         DataType::Null => Value::Null,
     };
 
     Ok(value)
+}
+
+/// Decode JSON value from compact binary format
+fn decode_json_compact(cursor: &mut Cursor<&[u8]>) -> Result<serde_json::Value> {
+    let mut tag = [0u8; 1];
+    cursor.read_exact(&mut tag)?;
+
+    match tag[0] {
+        0x00 => Ok(serde_json::Value::Null),
+        0x01 => {
+            let mut b = [0u8; 1];
+            cursor.read_exact(&mut b)?;
+            Ok(serde_json::Value::Bool(b[0] != 0))
+        }
+        0x02 => {
+            let mut bytes = [0u8; 8];
+            cursor.read_exact(&mut bytes)?;
+            let i = i64::from_le_bytes(bytes);
+            Ok(serde_json::Value::Number(i.into()))
+        }
+        0x03 => {
+            let mut bytes = [0u8; 8];
+            cursor.read_exact(&mut bytes)?;
+            let f = f64::from_bits(u64::from_le_bytes(bytes));
+            Ok(serde_json::Number::from_f64(f)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null))
+        }
+        0x04 => {
+            let mut len_bytes = [0u8; 4];
+            cursor.read_exact(&mut len_bytes)?;
+            let len = u32::from_le_bytes(len_bytes) as usize;
+
+            let mut bytes = vec![0u8; len];
+            cursor.read_exact(&mut bytes)?;
+            let s = String::from_utf8(bytes)
+                .map_err(|e| Error::InvalidValue(format!("Invalid UTF-8 in JSON string: {}", e)))?;
+            Ok(serde_json::Value::String(s))
+        }
+        0x05 => {
+            let mut len_bytes = [0u8; 4];
+            cursor.read_exact(&mut len_bytes)?;
+            let len = u32::from_le_bytes(len_bytes) as usize;
+
+            let mut arr = Vec::with_capacity(len);
+            for _ in 0..len {
+                arr.push(decode_json_compact(cursor)?);
+            }
+            Ok(serde_json::Value::Array(arr))
+        }
+        0x06 => {
+            let mut len_bytes = [0u8; 4];
+            cursor.read_exact(&mut len_bytes)?;
+            let len = u32::from_le_bytes(len_bytes) as usize;
+
+            let mut obj = serde_json::Map::new();
+            for _ in 0..len {
+                // Decode key
+                let mut key_len_bytes = [0u8; 4];
+                cursor.read_exact(&mut key_len_bytes)?;
+                let key_len = u32::from_le_bytes(key_len_bytes) as usize;
+
+                let mut key_bytes = vec![0u8; key_len];
+                cursor.read_exact(&mut key_bytes)?;
+                let key = String::from_utf8(key_bytes).map_err(|e| {
+                    Error::InvalidValue(format!("Invalid UTF-8 in JSON key: {}", e))
+                })?;
+
+                // Decode value
+                let val = decode_json_compact(cursor)?;
+                obj.insert(key, val);
+            }
+            Ok(serde_json::Value::Object(obj))
+        }
+        tag => Err(Error::InvalidValue(format!(
+            "Invalid JSON type tag: {}",
+            tag
+        ))),
+    }
 }
 
 // ============================================================================

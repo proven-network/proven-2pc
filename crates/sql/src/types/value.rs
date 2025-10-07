@@ -58,6 +58,8 @@ pub enum Value {
     List(Vec<Value>),             // Variable-size list
     Map(HashMap<String, Value>),  // Key-value pairs
     Struct(Vec<(String, Value)>), // Named fields
+    // JSON type (schemaless)
+    Json(serde_json::Value), // Schemaless JSON
 }
 
 // Backward compatibility - map old names to new format
@@ -243,6 +245,7 @@ impl Value {
                     .collect();
                 DataType::Struct(field_types)
             }
+            Value::Json(_) => DataType::Json,
         }
     }
 
@@ -418,6 +421,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Json(j) => write!(f, "{}", j),
         }
     }
 }
@@ -491,6 +495,7 @@ impl fmt::Debug for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Json(j) => write!(f, "Json({})", j),
         }
     }
 }
@@ -538,6 +543,7 @@ impl std::hash::Hash for Value {
                 }
             }
             Value::Struct(s) => s.hash(state),
+            Value::Json(j) => j.to_string().hash(state), // Hash JSON as string for consistency
         }
     }
 }
@@ -616,6 +622,9 @@ impl Ord for Value {
 
             // Struct comparisons - compare fields in order
             (Value::Struct(a), Value::Struct(b)) => a.cmp(b),
+
+            // JSON comparisons - compare as strings
+            (Value::Json(a), Value::Json(b)) => a.to_string().cmp(&b.to_string()),
 
             // Different types - consider them equal for total ordering
             _ => Ordering::Equal,
@@ -715,6 +724,7 @@ impl Value {
                     .collect();
                 format!("{{{}}}", items.join(", "))
             }
+            Value::Json(j) => j.to_string(),
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Str(s) => format!("\"{}\"", s.replace('\"', "\\\"")),

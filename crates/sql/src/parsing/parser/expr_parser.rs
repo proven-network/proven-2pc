@@ -871,6 +871,7 @@ fn data_type_to_cast_string(data_type: &DataType) -> String {
         },
         DataType::Inet => "INET".to_string(),
         DataType::Point => "POINT".to_string(),
+        DataType::Json => "JSON".to_string(),
         DataType::Nullable(inner) => format!("{}?", data_type_to_cast_string(inner)),
         DataType::Null => "NULL".to_string(),
     }

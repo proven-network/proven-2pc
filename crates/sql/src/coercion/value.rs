@@ -744,6 +744,14 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
                 })
         }
 
+        // String to JSON (parse JSON string)
+        (Value::Str(s), DataType::Json) => serde_json::from_str(s)
+            .map(Value::Json)
+            .map_err(|e| Error::InvalidValue(format!("Invalid JSON: {}", e))),
+
+        // JSON to String (serialize JSON to string)
+        (Value::Json(j), DataType::Str | DataType::Text) => Ok(Value::Str(j.to_string())),
+
         // No coercion possible
         _ => Err(Error::TypeMismatch {
             expected: target_type.to_string(),

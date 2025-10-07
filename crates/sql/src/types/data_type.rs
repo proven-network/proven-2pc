@@ -43,6 +43,8 @@ pub enum DataType {
     List(Box<DataType>),                 // Variable-size list (e.g., INTEGER[])
     Map(Box<DataType>, Box<DataType>),   // Key-value pairs
     Struct(Vec<(String, DataType)>),     // Named fields like records
+    // JSON type (schemaless)
+    Json, // Schemaless JSON type
     // Null handling
     Nullable(Box<DataType>),
     // Explicit Null type (for NULL literals)
@@ -148,6 +150,7 @@ impl fmt::Display for DataType {
                     .collect();
                 write!(f, "STRUCT({})", field_strs.join(", "))
             }
+            DataType::Json => write!(f, "JSON"),
             DataType::Nullable(inner) => write!(f, "{} NULL", inner),
             DataType::Null => write!(f, "NULL"),
         }

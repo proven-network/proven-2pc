@@ -80,6 +80,7 @@ pub trait TypeParser: TokenHelper {
             }
             Token::Ident(s) if s.to_uppercase() == "INET" => DataType::Inet,
             Token::Ident(s) if s.to_uppercase() == "POINT" => DataType::Point,
+            Token::Ident(s) if s.to_uppercase() == "JSON" => DataType::Json,
             Token::Ident(s) if s.to_uppercase() == "ANY" => DataType::I64, // ANY defaults to I64
 
             // Collection types can be recursive
