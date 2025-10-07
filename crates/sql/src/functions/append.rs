@@ -1,6 +1,7 @@
 //! APPEND function
 
 use super::{Function, FunctionRegistry, FunctionSignature};
+use crate::coercion::coerce_value;
 use crate::error::{Error, Result};
 use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
@@ -39,7 +40,18 @@ impl Function for AppendFunction {
         match &args[0] {
             Value::List(l) => {
                 let mut new_list = l.clone();
-                new_list.push(args[1].clone());
+
+                // Infer element type from existing list elements
+                let element_type = if let Some(first) = l.first() {
+                    first.data_type()
+                } else {
+                    // Empty list - use the element's type as-is
+                    args[1].data_type()
+                };
+
+                // Coerce the new element to match the list's element type
+                let coerced_element = coerce_value(args[1].clone(), &element_type)?;
+                new_list.push(coerced_element);
                 Ok(Value::List(new_list))
             }
             Value::Array(_) => Err(Error::ExecutionError(

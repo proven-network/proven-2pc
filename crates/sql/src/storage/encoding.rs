@@ -184,30 +184,37 @@ pub fn encode_value_sortable(value: &Value, output: &mut Vec<u8>) {
             output.extend_from_slice(&p.x.to_bits().to_be_bytes());
             output.extend_from_slice(&p.y.to_bits().to_be_bytes());
         }
-        // Collection types - for indexes, we just use bincode (not commonly indexed)
+        // Collection types - encode recursively for proper sorting
         Value::Array(arr) | Value::List(arr) => {
             output.push(0x18);
-            let bytes = bincode::serialize(arr)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .unwrap();
-            output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-            output.extend_from_slice(&bytes);
+            output.extend_from_slice(&(arr.len() as u32).to_be_bytes());
+            for value in arr {
+                encode_value_sortable(value, output);
+            }
         }
         Value::Map(m) => {
             output.push(0x19);
-            let bytes = bincode::serialize(m)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .unwrap();
-            output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-            output.extend_from_slice(&bytes);
+            output.extend_from_slice(&(m.len() as u32).to_be_bytes());
+            // Sort keys for deterministic ordering
+            let mut sorted_keys: Vec<_> = m.keys().collect();
+            sorted_keys.sort();
+            for key in sorted_keys {
+                let key_bytes = key.as_bytes();
+                output.extend_from_slice(&(key_bytes.len() as u32).to_be_bytes());
+                output.extend_from_slice(key_bytes);
+                encode_value_sortable(&m[key], output);
+            }
         }
-        Value::Struct(s) => {
+        Value::Struct(fields) => {
             output.push(0x1A);
-            let bytes = bincode::serialize(s)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .unwrap();
-            output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-            output.extend_from_slice(&bytes);
+            output.extend_from_slice(&(fields.len() as u32).to_be_bytes());
+            // Encode fields in the order they appear (assumes consistent ordering)
+            for (name, value) in fields {
+                let name_bytes = name.as_bytes();
+                output.extend_from_slice(&(name_bytes.len() as u32).to_be_bytes());
+                output.extend_from_slice(name_bytes);
+                encode_value_sortable(value, output);
+            }
         }
     }
 }
@@ -413,37 +420,127 @@ fn encode_value_compact(value: &Value, expected_type: &DataType, buf: &mut Vec<u
             buf.extend_from_slice(&p.y.to_bits().to_le_bytes());
         }
 
-        // For complex nested types, use bincode (less common in OLTP)
-        (Value::Array(arr), DataType::Array(_, _) | DataType::List(_)) => {
-            let bytes = bincode::serialize(arr)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .map_err(|e| Error::Serialization(e.to_string()))?;
-            buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&bytes);
+        // Array/List: encode count + null bitmap + elements recursively
+        (Value::Array(arr), DataType::Array(elem_type, _)) => {
+            buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+
+            // Encode null bitmap for array elements
+            let num_bytes = arr.len().div_ceil(8);
+            let mut null_bitmap = vec![0u8; num_bytes];
+            for (i, value) in arr.iter().enumerate() {
+                if value.is_null() {
+                    let byte_idx = i / 8;
+                    let bit_idx = i % 8;
+                    null_bitmap[byte_idx] |= 1 << bit_idx;
+                }
+            }
+            buf.extend_from_slice(&null_bitmap);
+
+            // Encode non-null values
+            for value in arr {
+                if !value.is_null() {
+                    encode_value_compact(value, elem_type, buf)?;
+                }
+            }
         }
 
-        (Value::List(arr), DataType::List(_)) => {
-            let bytes = bincode::serialize(arr)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .map_err(|e| Error::Serialization(e.to_string()))?;
-            buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&bytes);
+        (Value::List(arr), DataType::List(elem_type)) => {
+            buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+
+            // Encode null bitmap for list elements
+            let num_bytes = arr.len().div_ceil(8);
+            let mut null_bitmap = vec![0u8; num_bytes];
+            for (i, value) in arr.iter().enumerate() {
+                if value.is_null() {
+                    let byte_idx = i / 8;
+                    let bit_idx = i % 8;
+                    null_bitmap[byte_idx] |= 1 << bit_idx;
+                }
+            }
+            buf.extend_from_slice(&null_bitmap);
+
+            // Encode non-null values
+            for value in arr {
+                if !value.is_null() {
+                    encode_value_compact(value, elem_type, buf)?;
+                }
+            }
         }
 
-        (Value::Map(m), DataType::Map(_, _)) => {
-            let bytes = bincode::serialize(m)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .map_err(|e| Error::Serialization(e.to_string()))?;
-            buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&bytes);
+        // Handle Array value with List type (should not happen but be defensive)
+        (Value::Array(arr), DataType::List(elem_type)) => {
+            buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+
+            // Encode null bitmap for array elements
+            let num_bytes = arr.len().div_ceil(8);
+            let mut null_bitmap = vec![0u8; num_bytes];
+            for (i, value) in arr.iter().enumerate() {
+                if value.is_null() {
+                    let byte_idx = i / 8;
+                    let bit_idx = i % 8;
+                    null_bitmap[byte_idx] |= 1 << bit_idx;
+                }
+            }
+            buf.extend_from_slice(&null_bitmap);
+
+            // Encode non-null values
+            for value in arr {
+                if !value.is_null() {
+                    encode_value_compact(value, elem_type, buf)?;
+                }
+            }
         }
 
-        (Value::Struct(fields), DataType::Struct(_)) => {
-            let bytes = bincode::serialize(fields)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .map_err(|e| Error::Serialization(e.to_string()))?;
-            buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&bytes);
+        // Map: encode count + key-value pairs recursively
+        (Value::Map(m), DataType::Map(_key_type, value_type)) => {
+            buf.extend_from_slice(&(m.len() as u32).to_le_bytes());
+            for (key, value) in m {
+                // Keys are always strings in our Map type
+                let key_bytes = key.as_bytes();
+                buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(key_bytes);
+                encode_value_compact(value, value_type, buf)?;
+            }
+        }
+
+        // Struct: encode values in schema order (no field names needed!)
+        (Value::Struct(fields), DataType::Struct(field_types)) => {
+            // Build a null bitmap for struct fields
+            let num_bytes = field_types.len().div_ceil(8);
+            let mut null_bitmap = vec![0u8; num_bytes];
+
+            // Create a map for fast lookup
+            let field_map: HashMap<&str, &Value> =
+                fields.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+            // Check which fields are null
+            for (i, (field_name, _field_type)) in field_types.iter().enumerate() {
+                if let Some(value) = field_map.get(field_name.as_str()) {
+                    if value.is_null() {
+                        let byte_idx = i / 8;
+                        let bit_idx = i % 8;
+                        null_bitmap[byte_idx] |= 1 << bit_idx;
+                    }
+                } else {
+                    // Missing field is treated as null
+                    let byte_idx = i / 8;
+                    let bit_idx = i % 8;
+                    null_bitmap[byte_idx] |= 1 << bit_idx;
+                }
+            }
+
+            // Write null bitmap
+            buf.extend_from_slice(&null_bitmap);
+
+            // Encode non-null values in schema order
+            for (field_name, field_type) in field_types {
+                if let Some(value) = field_map.get(field_name.as_str()) {
+                    if !value.is_null() {
+                        encode_value_compact(value, field_type, buf)?;
+                    }
+                }
+                // Skip null/missing fields (already in bitmap)
+            }
         }
 
         _ => {
@@ -671,52 +768,107 @@ fn decode_value_compact(cursor: &mut Cursor<&[u8]>, expected_type: &DataType) ->
             Value::Point(Point { x, y })
         }
 
-        // Complex nested types - use bincode
-        DataType::Array(_, _) | DataType::List(_) => {
+        // Array/List: decode count + null bitmap + elements recursively
+        DataType::Array(elem_type, _) => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_le_bytes(len_bytes) as usize;
 
-            let mut bytes = vec![0u8; len];
-            cursor.read_exact(&mut bytes)?;
+            // Read null bitmap
+            let num_bytes = len.div_ceil(8);
+            let mut null_bitmap = vec![0u8; num_bytes];
+            cursor.read_exact(&mut null_bitmap)?;
 
-            let arr: Vec<Value> = bincode::deserialize(&bytes)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .map_err(|e| Error::Serialization(e.to_string()))?;
+            // Decode values
+            let mut arr = Vec::with_capacity(len);
+            for i in 0..len {
+                let byte_idx = i / 8;
+                let bit_idx = i % 8;
+                let is_null = (null_bitmap[byte_idx] & (1 << bit_idx)) != 0;
 
-            if matches!(expected_type.base_type(), DataType::Array(_, _)) {
-                Value::Array(arr)
-            } else {
-                Value::List(arr)
+                if is_null {
+                    arr.push(Value::Null);
+                } else {
+                    arr.push(decode_value_compact(cursor, elem_type)?);
+                }
             }
+
+            Value::Array(arr)
         }
 
-        DataType::Map(_, _) => {
+        DataType::List(elem_type) => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_le_bytes(len_bytes) as usize;
 
-            let mut bytes = vec![0u8; len];
-            cursor.read_exact(&mut bytes)?;
+            // Read null bitmap
+            let num_bytes = len.div_ceil(8);
+            let mut null_bitmap = vec![0u8; num_bytes];
+            cursor.read_exact(&mut null_bitmap)?;
 
-            let map: HashMap<String, Value> = bincode::deserialize(&bytes)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .map_err(|e| Error::Serialization(e.to_string()))?;
+            // Decode values
+            let mut arr = Vec::with_capacity(len);
+            for i in 0..len {
+                let byte_idx = i / 8;
+                let bit_idx = i % 8;
+                let is_null = (null_bitmap[byte_idx] & (1 << bit_idx)) != 0;
+
+                if is_null {
+                    arr.push(Value::Null);
+                } else {
+                    arr.push(decode_value_compact(cursor, elem_type)?);
+                }
+            }
+
+            Value::List(arr)
+        }
+
+        DataType::Map(_key_type, value_type) => {
+            let mut len_bytes = [0u8; 4];
+            cursor.read_exact(&mut len_bytes)?;
+            let len = u32::from_le_bytes(len_bytes) as usize;
+
+            let mut map = HashMap::with_capacity(len);
+            for _ in 0..len {
+                // Decode key (always string)
+                let mut key_len_bytes = [0u8; 4];
+                cursor.read_exact(&mut key_len_bytes)?;
+                let key_len = u32::from_le_bytes(key_len_bytes) as usize;
+
+                let mut key_bytes = vec![0u8; key_len];
+                cursor.read_exact(&mut key_bytes)?;
+                let key = String::from_utf8(key_bytes)
+                    .map_err(|e| Error::InvalidValue(format!("Invalid UTF-8 in map key: {}", e)))?;
+
+                // Decode value
+                let value = decode_value_compact(cursor, value_type)?;
+                map.insert(key, value);
+            }
 
             Value::Map(map)
         }
 
-        DataType::Struct(_) => {
-            let mut len_bytes = [0u8; 4];
-            cursor.read_exact(&mut len_bytes)?;
-            let len = u32::from_le_bytes(len_bytes) as usize;
+        DataType::Struct(field_types) => {
+            // Read null bitmap
+            let num_bytes = field_types.len().div_ceil(8);
+            let mut null_bitmap = vec![0u8; num_bytes];
+            cursor.read_exact(&mut null_bitmap)?;
 
-            let mut bytes = vec![0u8; len];
-            cursor.read_exact(&mut bytes)?;
+            // Decode values in schema order
+            let mut fields = Vec::with_capacity(field_types.len());
 
-            let fields: Vec<(String, Value)> = bincode::deserialize(&bytes)
-                .map_err(|e| Error::Serialization(e.to_string()))
-                .map_err(|e| Error::Serialization(e.to_string()))?;
+            for (i, (field_name, field_type)) in field_types.iter().enumerate() {
+                let byte_idx = i / 8;
+                let bit_idx = i % 8;
+                let is_null = (null_bitmap[byte_idx] & (1 << bit_idx)) != 0;
+
+                if is_null {
+                    fields.push((field_name.clone(), Value::Null));
+                } else {
+                    let value = decode_value_compact(cursor, field_type)?;
+                    fields.push((field_name.clone(), value));
+                }
+            }
 
             Value::Struct(fields)
         }
