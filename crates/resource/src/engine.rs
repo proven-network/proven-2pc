@@ -1,8 +1,7 @@
 //! Resource engine implementation
 
 use crate::storage::{ReservationManager, ReservationType, ResourceStorage};
-use crate::stream::{ResourceOperation, ResourceResponse};
-use crate::types::Amount;
+use crate::types::{Amount, ResourceOperation, ResourceResponse};
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::BlockingInfo;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};

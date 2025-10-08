@@ -1,8 +1,8 @@
 //! Integration tests for resource engine
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_resource::stream::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
 use proven_resource::types::Amount;
+use proven_resource::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 fn make_timestamp(n: u64) -> HlcTimestamp {
