@@ -4,8 +4,7 @@
 //! 1 million items directly using the engine.
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_queue::stream::{engine::QueueTransactionEngine, operation::QueueOperation};
-use proven_queue::types::QueueValue;
+use proven_queue::{QueueOperation, QueueTransactionEngine, QueueValue};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};

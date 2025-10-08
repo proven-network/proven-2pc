@@ -1,9 +1,7 @@
 //! Queue client for coordinator-based transactions
 
 use proven_coordinator::Executor;
-use proven_queue::stream::operation::QueueOperation;
-use proven_queue::stream::response::QueueResponse;
-use proven_queue::types::QueueValue;
+use proven_queue::types::{QueueOperation, QueueResponse, QueueValue};
 use std::sync::Arc;
 
 /// Queue client that works with coordinator executors

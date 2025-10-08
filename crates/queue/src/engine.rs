@@ -4,7 +4,7 @@
 //! queue operations with MVCC and eager locking.
 
 use crate::storage::{LockAttemptResult, LockManager, LockMode, MvccStorage};
-use crate::stream::{QueueOperation, QueueResponse};
+use crate::types::{QueueOperation, QueueResponse};
 use proven_hlc::HlcTimestamp;
 use proven_stream::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
 

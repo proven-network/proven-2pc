@@ -1,8 +1,8 @@
 //! Integration tests for the queue crate
 
 use proven_hlc::{HlcTimestamp, NodeId};
-use proven_queue::stream::{QueueOperation, QueueResponse, QueueTransactionEngine};
-use proven_queue::types::QueueValue;
+use proven_queue::engine::QueueTransactionEngine;
+use proven_queue::types::{QueueOperation, QueueResponse, QueueValue};
 use proven_stream::RetryOn;
 use proven_stream::engine::{OperationResult, TransactionEngine};
 
