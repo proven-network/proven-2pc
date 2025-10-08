@@ -1,0 +1,19 @@
+[package]
+name = "proven-value"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono.workspace = true
+proven-mvcc = { path = "../mvcc", optional = true }
+rust_decimal = "1.36"
+serde.workspace = true
+serde_json.workspace = true
+uuid = { version = "1.11", features = ["serde", "v4"] }
+thiserror.workspace = true
+
+[features]
+default = []
+mvcc = ["proven-mvcc"]
+
+[dev-dependencies]

@@ -42,11 +42,11 @@ fn main() {
 
         // Create enqueue operation with various value types to simulate real usage
         let value = match i % 6 {
-            0 => QueueValue::Integer(i as i64),
-            1 => QueueValue::String(format!("message_{}", i)),
-            2 => QueueValue::Boolean(i % 2 == 0),
-            3 => QueueValue::Float(i as f64 * 1.5),
-            4 => QueueValue::Bytes(format!("data_{}", i % 1000).into_bytes()),
+            0 => QueueValue::I64(i as i64),
+            1 => QueueValue::Str(format!("message_{}", i)),
+            2 => QueueValue::Bool(i % 2 == 0),
+            3 => QueueValue::F64(i as f64 * 1.5),
+            4 => QueueValue::Bytea(format!("data_{}", i % 1000).into_bytes()),
             _ => QueueValue::Json(serde_json::json!({
                 "id": i,
                 "timestamp": 2000000000 + i,

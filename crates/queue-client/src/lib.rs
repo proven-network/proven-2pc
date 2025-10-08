@@ -40,7 +40,7 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
         value: Vec<u8>,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, QueueValue::Bytes(value)).await
+        self.enqueue(stream_name, QueueValue::Bytea(value)).await
     }
 
     /// Enqueue a string
@@ -49,7 +49,7 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
         value: impl Into<String>,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, QueueValue::String(value.into()))
+        self.enqueue(stream_name, QueueValue::Str(value.into()))
             .await
     }
 
@@ -85,7 +85,7 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
     ) -> Result<Option<Vec<u8>>, QueueError> {
         match self.dequeue(stream_name).await? {
-            Some(QueueValue::Bytes(b)) => Ok(Some(b)),
+            Some(QueueValue::Bytea(b)) => Ok(Some(b)),
             Some(_) => Err(QueueError::TypeMismatch),
             None => Ok(None),
         }
@@ -97,7 +97,7 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
     ) -> Result<Option<String>, QueueError> {
         match self.dequeue(stream_name).await? {
-            Some(QueueValue::String(s)) => Ok(Some(s)),
+            Some(QueueValue::Str(s)) => Ok(Some(s)),
             Some(_) => Err(QueueError::TypeMismatch),
             None => Ok(None),
         }

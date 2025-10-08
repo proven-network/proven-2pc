@@ -1048,14 +1048,18 @@ dependencies = [
 name = "proven-queue"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "ciborium",
  "parking_lot",
  "proven-common",
  "proven-engine",
  "proven-hlc",
+ "proven-mvcc",
  "proven-stream",
+ "proven-value",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "zstd",
@@ -1211,6 +1215,19 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tracing",
+]
+
+[[package]]
+name = "proven-value"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "proven-mvcc",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
 ]
 
 [[package]]

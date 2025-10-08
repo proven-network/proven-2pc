@@ -124,6 +124,14 @@ impl LockManager {
     pub fn has_locks(&self, tx_id: TxId) -> bool {
         self.locks.iter().any(|lock| lock.holder == tx_id)
     }
+
+    /// Get all lock holders (for checking snapshot read conflicts)
+    pub fn get_all_holders(&self) -> Vec<(TxId, LockMode)> {
+        self.locks
+            .iter()
+            .map(|lock| (lock.holder, lock.mode))
+            .collect()
+    }
 }
 
 impl Default for LockManager {

@@ -339,9 +339,9 @@ mod tests {
         storage.begin_transaction(tx1);
 
         // Enqueue some values
-        storage.enqueue(QueueValue::String("first".to_string()), tx1, tx1);
+        storage.enqueue(QueueValue::Str("first".to_string()), tx1, tx1);
         storage.enqueue(
-            QueueValue::String("second".to_string()),
+            QueueValue::Str("second".to_string()),
             tx1,
             create_timestamp(101),
         );
@@ -349,17 +349,17 @@ mod tests {
         // Should be able to peek without removing
         assert_eq!(
             storage.peek(tx1).map(|arc| (*arc).clone()),
-            Some(QueueValue::String("first".to_string()))
+            Some(QueueValue::Str("first".to_string()))
         );
 
         // Dequeue should return FIFO order
         assert_eq!(
             storage.dequeue(tx1),
-            Some(QueueValue::String("first".to_string()))
+            Some(QueueValue::Str("first".to_string()))
         );
         assert_eq!(
             storage.dequeue(tx1),
-            Some(QueueValue::String("second".to_string()))
+            Some(QueueValue::Str("second".to_string()))
         );
         assert_eq!(storage.dequeue(tx1), None);
     }
@@ -374,7 +374,7 @@ mod tests {
         storage.begin_transaction(tx2);
 
         // tx1 enqueues some values
-        storage.enqueue(QueueValue::String("tx1_value".to_string()), tx1, tx1);
+        storage.enqueue(QueueValue::Str("tx1_value".to_string()), tx1, tx1);
 
         // tx2 shouldn't see uncommitted values
         assert_eq!(storage.size(tx2), 0);
@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(storage.size(tx2), 1);
         assert_eq!(
             storage.peek(tx2).map(|arc| (*arc).clone()),
-            Some(QueueValue::String("tx1_value".to_string()))
+            Some(QueueValue::Str("tx1_value".to_string()))
         );
     }
 
@@ -398,12 +398,12 @@ mod tests {
 
         // tx1 creates a queue and commits
         storage.begin_transaction(tx1);
-        storage.enqueue(QueueValue::String("committed".to_string()), tx1, tx1);
+        storage.enqueue(QueueValue::Str("committed".to_string()), tx1, tx1);
         storage.commit_transaction(tx1);
 
         // tx2 modifies the queue but aborts
         storage.begin_transaction(tx2);
-        storage.enqueue(QueueValue::String("aborted".to_string()), tx2, tx2);
+        storage.enqueue(QueueValue::Str("aborted".to_string()), tx2, tx2);
         assert_eq!(storage.size(tx2), 2);
 
         // Abort tx2
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(storage.size(tx3), 1);
         assert_eq!(
             storage.peek(tx3).map(|arc| (*arc).clone()),
-            Some(QueueValue::String("committed".to_string()))
+            Some(QueueValue::Str("committed".to_string()))
         );
     }
 
@@ -428,11 +428,7 @@ mod tests {
 
         // Add some values
         for i in 0..5 {
-            storage.enqueue(
-                QueueValue::Integer(i),
-                tx1,
-                create_timestamp(100 + i as u64),
-            );
+            storage.enqueue(QueueValue::I64(i), tx1, create_timestamp(100 + i as u64));
         }
 
         assert_eq!(storage.size(tx1), 5);

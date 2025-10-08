@@ -18,6 +18,7 @@ members = [
     "crates/sql",
     "crates/sql-client",
     "crates/stream",
+    "crates/value",
 ]
 default-members = [
     ".",  # Include root package for examples
@@ -39,6 +40,7 @@ default-members = [
     "crates/sql",
     "crates/sql-client",
     "crates/stream",
+    "crates/value",
 ]
 resolver = "2"
 
@@ -92,6 +94,7 @@ proven-snapshot-memory = { path = "crates/snapshot-memory" }
 proven-sql = { path = "crates/sql" }
 proven-sql-client = { path = "crates/sql-client" }
 proven-stream = { path = "crates/stream" }
+proven-value = { path = "crates/value" }
 
 [package]
 name = "proven-examples"

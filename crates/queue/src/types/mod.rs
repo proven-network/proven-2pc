@@ -1,7 +1,8 @@
 pub mod operation;
 pub mod response;
-pub mod value;
 
 pub use operation::QueueOperation;
 pub use response::QueueResponse;
-pub use value::QueueValue;
+
+// Re-export Value from proven-value
+pub use proven_value::Value as QueueValue;

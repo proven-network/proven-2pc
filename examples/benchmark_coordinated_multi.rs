@@ -535,7 +535,7 @@ where
 
     // 2. Queue Enqueue operation - using message from args
     queue
-        .enqueue("queue_stream", QueueValue::String(message.to_string()))
+        .enqueue("queue_stream", QueueValue::Str(message.to_string()))
         .await?;
 
     // 3. Resource Transfer operation - using accounts and amount from args

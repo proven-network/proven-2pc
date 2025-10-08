@@ -46,16 +46,31 @@ impl PartialEq for QueueOperation {
 
 impl Eq for QueueOperation {}
 
-// Helper to compare QueueValues treating f64 specially
+// Helper to compare QueueValues treating floats specially
 fn values_equal(v1: &QueueValue, v2: &QueueValue) -> bool {
     match (v1, v2) {
-        (QueueValue::String(s1), QueueValue::String(s2)) => s1 == s2,
-        (QueueValue::Integer(i1), QueueValue::Integer(i2)) => i1 == i2,
-        (QueueValue::Float(f1), QueueValue::Float(f2)) => f1.to_bits() == f2.to_bits(),
-        (QueueValue::Boolean(b1), QueueValue::Boolean(b2)) => b1 == b2,
-        (QueueValue::Bytes(b1), QueueValue::Bytes(b2)) => b1 == b2,
+        // Strings
+        (QueueValue::Str(s1), QueueValue::Str(s2)) => s1 == s2,
+        // Integers (check all integer types)
+        (QueueValue::I64(i1), QueueValue::I64(i2)) => i1 == i2,
+        (QueueValue::I32(i1), QueueValue::I32(i2)) => i1 == i2,
+        (QueueValue::I16(i1), QueueValue::I16(i2)) => i1 == i2,
+        (QueueValue::I8(i1), QueueValue::I8(i2)) => i1 == i2,
+        (QueueValue::U64(i1), QueueValue::U64(i2)) => i1 == i2,
+        (QueueValue::U32(i1), QueueValue::U32(i2)) => i1 == i2,
+        (QueueValue::U16(i1), QueueValue::U16(i2)) => i1 == i2,
+        (QueueValue::U8(i1), QueueValue::U8(i2)) => i1 == i2,
+        // Floats (bitwise comparison)
+        (QueueValue::F64(f1), QueueValue::F64(f2)) => f1.to_bits() == f2.to_bits(),
+        (QueueValue::F32(f1), QueueValue::F32(f2)) => f1.to_bits() == f2.to_bits(),
+        // Booleans
+        (QueueValue::Bool(b1), QueueValue::Bool(b2)) => b1 == b2,
+        // Bytes
+        (QueueValue::Bytea(b1), QueueValue::Bytea(b2)) => b1 == b2,
+        // JSON
         (QueueValue::Json(j1), QueueValue::Json(j2)) => j1 == j2,
-        _ => false,
+        // Default: use structural equality
+        _ => v1 == v2,
     }
 }
 
