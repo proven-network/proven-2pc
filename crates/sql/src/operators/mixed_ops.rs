@@ -4,7 +4,7 @@
 //! especially unsigned + signed combinations, preserving the smallest type that can hold the result.
 
 use crate::error::{Error, Result};
-use crate::types::Value;
+use crate::types::{Value, ValueExt};
 
 /// Add two integer values with proper type promotion
 pub fn add_integers(left: &Value, right: &Value) -> Result<Value> {

@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_float64_columns() {
     let mut ctx = setup_test();
@@ -21,8 +21,8 @@ fn test_create_table_with_float64_columns() {
     let y = results[0].get("y").unwrap();
 
     // F64 has much better precision than F32
-    assert!(x.starts_with("F64(0.123456789"));
-    assert!(y.starts_with("F64(0.987654321"));
+    assert!(x.to_string().starts_with("0.123456789"));
+    assert!(y.to_string().starts_with("0.987654321"));
 
     ctx.commit();
 }
@@ -48,21 +48,29 @@ fn test_insert_float64_values() {
         results[0]
             .get("value")
             .unwrap()
-            .starts_with("F64(3.14159265")
+            .to_string()
+            .starts_with("3.14159265")
     );
     assert!(
         results[1]
             .get("value")
             .unwrap()
-            .starts_with("F64(-2.71828182")
+            .to_string()
+            .starts_with("-2.71828182")
     );
 
     // Zero might be displayed as 0 or 0.0
     let zero = results[2].get("value").unwrap();
-    assert!(zero == "F64(0)" || zero == "F64(0.0)");
+    assert!(zero == &Value::F64(0.0) || zero.to_string().contains("0"));
 
-    assert!(results[3].get("value").unwrap().contains("1234567890"));
-    assert!(results[4].get("value").unwrap().starts_with("F64("));
+    assert!(
+        results[3]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("1234567890")
+    );
+    assert!(results[4].get("value").unwrap().is_float());
 
     ctx.commit();
 }
@@ -81,7 +89,8 @@ fn test_float64_arithmetic_operations() {
         results[0]
             .get("sum")
             .unwrap()
-            .starts_with("F64(13.11111111")
+            .to_string()
+            .starts_with("13.11111111")
     );
 
     // Test subtraction
@@ -91,7 +100,8 @@ fn test_float64_arithmetic_operations() {
         results[0]
             .get("diff")
             .unwrap()
-            .starts_with("F64(7.135802468")
+            .to_string()
+            .starts_with("7.135802468")
     );
 
     // Test multiplication
@@ -101,7 +111,8 @@ fn test_float64_arithmetic_operations() {
         results[0]
             .get("product")
             .unwrap()
-            .starts_with("F64(30.2453894")
+            .to_string()
+            .starts_with("30.2453894")
     );
 
     // Test division
@@ -111,7 +122,8 @@ fn test_float64_arithmetic_operations() {
         results[0]
             .get("quotient")
             .unwrap()
-            .starts_with("F64(3.3884297")
+            .to_string()
+            .starts_with("3.3884297")
     );
 
     ctx.commit();
@@ -129,20 +141,20 @@ fn test_float64_comparison_operations() {
     // Test equality with high precision
     let results = ctx.query("SELECT x, y FROM float64_data WHERE x = 2.123456789");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("y").unwrap().contains("1.98765"));
+    assert!(results[0].get("y").unwrap().to_string().contains("1.98765"));
 
     // Test greater than
     let results = ctx.query("SELECT x FROM float64_data WHERE x > 2.0 ORDER BY x");
     assert_eq!(results.len(), 2);
-    assert!(results[0].get("x").unwrap().contains("2.12345"));
-    assert!(results[1].get("x").unwrap().contains("3.55555"));
+    assert!(results[0].get("x").unwrap().to_string().contains("2.12345"));
+    assert!(results[1].get("x").unwrap().to_string().contains("3.55555"));
 
     // Test UPDATE with WHERE using precise values
     ctx.exec("UPDATE float64_data SET x = 5.999999999, y = 4.888888888 WHERE x = 2.123456789");
 
     let results = ctx.query("SELECT x, y FROM float64_data WHERE x = 5.999999999");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("y").unwrap().contains("4.88888"));
+    assert!(results[0].get("y").unwrap().to_string().contains("4.88888"));
 
     ctx.commit();
 }
@@ -163,11 +175,41 @@ fn test_float64_ordering() {
     assert_eq!(results.len(), 5);
 
     // Check values maintain precision in ordering
-    assert!(results[0].get("value").unwrap().contains("0.57721"));
-    assert!(results[1].get("value").unwrap().contains("1.41421"));
-    assert!(results[2].get("value").unwrap().contains("1.61803"));
-    assert!(results[3].get("value").unwrap().contains("2.71828"));
-    assert!(results[4].get("value").unwrap().contains("3.14159"));
+    assert!(
+        results[0]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("0.57721")
+    );
+    assert!(
+        results[1]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("1.41421")
+    );
+    assert!(
+        results[2]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("1.61803")
+    );
+    assert!(
+        results[3]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("2.71828")
+    );
+    assert!(
+        results[4]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("3.14159")
+    );
 
     ctx.commit();
 }
@@ -187,13 +229,13 @@ fn test_float64_special_values() {
     assert_eq!(results.len(), 3);
 
     // NaN
-    assert!(results[0].get("value").unwrap().contains("NaN"));
+    assert!(results[0].get("value").unwrap().to_string().contains("NaN"));
 
     // Infinity
-    assert!(results[1].get("value").unwrap().contains("inf"));
+    assert!(results[1].get("value").unwrap().to_string().contains("inf"));
 
     // -Infinity
-    assert!(results[2].get("value").unwrap().contains("inf"));
+    assert!(results[2].get("value").unwrap().to_string().contains("inf"));
 
     ctx.commit();
 }
@@ -207,13 +249,19 @@ fn test_cast_to_float64() {
     assert_eq!(results.len(), 1);
 
     let value = results[0].get("float64").unwrap();
-    assert!(value.starts_with("F64("));
-    assert!(value.contains("-123.45678"));
+    assert!(value.is_float());
+    assert!(value.to_string().contains("-123.45678"));
 
     // Test CAST from integer to DOUBLE
     let results = ctx.query("SELECT CAST(42 AS DOUBLE) AS float64");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("float64").unwrap().contains("42"));
+    assert!(
+        results[0]
+            .get("float64")
+            .unwrap()
+            .to_string()
+            .contains("42")
+    );
 
     // Test CAST from REAL (F32) to DOUBLE (F64)
     ctx.exec("CREATE TABLE test_cast (r REAL)");
@@ -222,7 +270,13 @@ fn test_cast_to_float64() {
     let results = ctx.query("SELECT CAST(r AS DOUBLE) AS float64 FROM test_cast");
     assert_eq!(results.len(), 1);
     // F32 to F64 conversion preserves the F32 precision
-    assert!(results[0].get("float64").unwrap().starts_with("F64(3.14"));
+    assert!(
+        results[0]
+            .get("float64")
+            .unwrap()
+            .to_string()
+            .starts_with("3.14")
+    );
 
     ctx.commit();
 }
@@ -237,16 +291,40 @@ fn test_float64_with_null() {
     let results =
         ctx.query("SELECT id, value FROM float64_nulls WHERE value IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert!(results[0].get("value").unwrap().contains("1.12345"));
-    assert!(results[1].get("value").unwrap().contains("2.98765"));
+    assert!(
+        results[0]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("1.12345")
+    );
+    assert!(
+        results[1]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("2.98765")
+    );
 
     // Test NULL propagation in arithmetic
     let results =
         ctx.query("SELECT id, value + 1.111111111 as result FROM float64_nulls ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert!(results[0].get("result").unwrap().contains("2.234567"));
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert!(results[2].get("result").unwrap().contains("4.098765"));
+    assert!(
+        results[0]
+            .get("result")
+            .unwrap()
+            .to_string()
+            .contains("2.234567")
+    );
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert!(
+        results[2]
+            .get("result")
+            .unwrap()
+            .to_string()
+            .contains("4.098765")
+    );
 
     ctx.commit();
 }
@@ -269,11 +347,18 @@ fn test_float64_precision() {
         results[0]
             .get("value")
             .unwrap()
-            .starts_with("F64(0.123456789")
+            .to_string()
+            .starts_with("0.123456789")
     );
 
     // Large number maintains more digits than F32
-    assert!(results[1].get("value").unwrap().contains("123456789012345"));
+    assert!(
+        results[1]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("123456789012345")
+    );
 
     ctx.commit();
 }
@@ -290,8 +375,20 @@ fn test_float_vs_double_keywords() {
     assert_eq!(results.len(), 1);
 
     // Both should be F64
-    assert!(results[0].get("f").unwrap().starts_with("F64(1.23456789"));
-    assert!(results[0].get("d").unwrap().starts_with("F64(9.87654321"));
+    assert!(
+        results[0]
+            .get("f")
+            .unwrap()
+            .to_string()
+            .starts_with("1.23456789")
+    );
+    assert!(
+        results[0]
+            .get("d")
+            .unwrap()
+            .to_string()
+            .starts_with("9.87654321")
+    );
 
     ctx.commit();
 }
@@ -315,9 +412,27 @@ fn test_float64_mixed_operations() {
     );
 
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("f_plus_int").unwrap().contains("3.5"));
-    assert!(results[0].get("f_times_decimal").unwrap().contains("5"));
-    assert!(results[0].get("f_div_int").unwrap().contains("0.833"));
+    assert!(
+        results[0]
+            .get("f_plus_int")
+            .unwrap()
+            .to_string()
+            .contains("3.5")
+    );
+    assert!(
+        results[0]
+            .get("f_times_decimal")
+            .unwrap()
+            .to_string()
+            .contains("5")
+    );
+    assert!(
+        results[0]
+            .get("f_div_int")
+            .unwrap()
+            .to_string()
+            .contains("0.833")
+    );
 
     ctx.commit();
 }
@@ -331,7 +446,7 @@ fn test_float64_nan_comparison_behavior() {
 
     // First check what NaN = NaN evaluates to
     let results = ctx.query("SELECT NaN = NaN as result");
-    assert_eq!(results[0].get("result").unwrap(), "Bool(false)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::Bool(false));
 
     // NaN = NaN should return false (no matches)
     let results = ctx.query("SELECT id FROM nan64_test WHERE value = NaN");
@@ -340,8 +455,8 @@ fn test_float64_nan_comparison_behavior() {
     // Regular comparisons should exclude NaN
     let results = ctx.query("SELECT id FROM nan64_test WHERE value > 0 ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(4)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(4));
 
     // NaN is not NULL
     let results = ctx.query("SELECT id FROM nan64_test WHERE value IS NOT NULL");

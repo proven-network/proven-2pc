@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, TestContext, setup_test, setup_with_tables};
+use proven_value::Value;
 
 fn setup_test_tables(ctx: &mut TestContext) {
     // Use TableBuilder for cleaner setup
@@ -31,10 +32,10 @@ fn test_update_all_rows() {
 
     // Check each row has id=2
     for i in 1..=4 {
-        ctx.assert_query_contains(
+        ctx.assert_query_value(
             &format!("SELECT id FROM TableA LIMIT 1 OFFSET {}", i - 1),
             "id",
-            "I32(2)",
+            Value::I32(2),
         );
     }
 
@@ -51,7 +52,7 @@ fn test_update_with_where_clause() {
 
     // Verify only the matching row was updated
     assert_rows!(ctx, "SELECT * FROM TableA", 4);
-    ctx.assert_query_contains("SELECT id FROM TableA WHERE num = 9", "id", "I32(99)");
+    ctx.assert_query_value("SELECT id FROM TableA WHERE num = 9", "id", Value::I32(99));
 
     // Verify only one row has the new id
     assert_rows!(ctx, "SELECT * FROM TableA WHERE id = 99", 1);
@@ -69,10 +70,10 @@ fn test_update_with_function_in_set() {
     ctx.exec("UPDATE TableA SET name = SUBSTR('John', 1) WHERE num = 9");
 
     // Verify the name was updated
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT name FROM TableA WHERE num = 9",
         "name",
-        "Str(\"John\")",
+        Value::Str("\"John\"".to_string()),
     );
 
     ctx.commit();
@@ -90,7 +91,11 @@ fn test_update_with_subquery_in_set() {
     );
 
     // Verify num2 was updated to 9 for the row with num=9
-    ctx.assert_query_contains("SELECT num2 FROM TableA WHERE num = 9", "num2", "I32(9)");
+    ctx.assert_query_value(
+        "SELECT num2 FROM TableA WHERE num = 9",
+        "num2",
+        Value::I32(9),
+    );
 
     ctx.commit();
 }
@@ -107,7 +112,11 @@ fn test_update_with_correlated_subquery() {
     );
 
     // Verify num2 was updated to 4 (rank from TableB where num=7)
-    ctx.assert_query_contains("SELECT num2 FROM TableA WHERE num = 7", "num2", "I32(4)");
+    ctx.assert_query_value(
+        "SELECT num2 FROM TableA WHERE num = 7",
+        "num2",
+        Value::I32(4),
+    );
 
     ctx.commit();
 }
@@ -122,7 +131,11 @@ fn test_update_with_complex_where_subquery() {
     ctx.exec("UPDATE TableA SET num2 = (SELECT rank FROM TableB WHERE num = TableA.num) WHERE num = (SELECT MIN(num) FROM TableA)");
 
     // Verify num2 was updated for the row with minimum num value (2)
-    ctx.assert_query_contains("SELECT num2 FROM TableA WHERE num = 2", "num2", "I32(1)");
+    ctx.assert_query_value(
+        "SELECT num2 FROM TableA WHERE num = 2",
+        "num2",
+        Value::I32(1),
+    );
 
     ctx.commit();
 }
@@ -206,11 +219,11 @@ fn test_update_multiple_columns() {
     ctx.exec("UPDATE TableA SET id = 10, name = 'Updated' WHERE num = 2");
 
     // Verify both columns were updated
-    ctx.assert_query_contains("SELECT id FROM TableA WHERE num = 2", "id", "I32(10)");
-    ctx.assert_query_contains(
+    ctx.assert_query_value("SELECT id FROM TableA WHERE num = 2", "id", Value::I32(10));
+    ctx.assert_query_value(
         "SELECT name FROM TableA WHERE num = 2",
         "name",
-        "Str(Updated)",
+        Value::Str("Updated".to_string()),
     );
 
     ctx.commit();
@@ -228,15 +241,15 @@ fn test_update_with_arithmetic_expression() {
     assert_rows!(ctx, "SELECT * FROM TableA WHERE id = 1", 2);
 
     // Check the calculations
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT num2 FROM TableA WHERE id = 1 AND num = 2",
         "num2",
-        "I32(4)",
+        Value::I32(4),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT num2 FROM TableA WHERE id = 1 AND num = 9",
         "num2",
-        "I32(18)",
+        Value::I32(18),
     );
 
     ctx.commit();
@@ -251,14 +264,18 @@ fn test_update_with_predefined_tables() {
     ctx.exec("UPDATE users SET age = age + 1 WHERE name = 'Alice'");
 
     // Verify the update
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT age FROM users WHERE name = 'Alice'",
         "age",
-        "I32(26)",
+        Value::I32(26),
     );
 
     // Other users should be unchanged
-    ctx.assert_query_contains("SELECT age FROM users WHERE name = 'Bob'", "age", "I32(30)");
+    ctx.assert_query_value(
+        "SELECT age FROM users WHERE name = 'Bob'",
+        "age",
+        Value::I32(30),
+    );
 
     ctx.commit();
 }
@@ -276,32 +293,32 @@ fn test_update_using_standard_table() {
     ctx.exec("UPDATE StandardTest SET value = value * 2 WHERE id <= 3");
 
     // Verify updates
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT value FROM StandardTest WHERE id = 1",
         "value",
-        "I32(20)",
+        Value::I32(20),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT value FROM StandardTest WHERE id = 2",
         "value",
-        "I32(40)",
+        Value::I32(40),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT value FROM StandardTest WHERE id = 3",
         "value",
-        "I32(60)",
+        Value::I32(60),
     );
 
     // Verify non-updated rows
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT value FROM StandardTest WHERE id = 4",
         "value",
-        "I32(40)",
+        Value::I32(40),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT value FROM StandardTest WHERE id = 5",
         "value",
-        "I32(50)",
+        Value::I32(50),
     );
 
     ctx.commit();

@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_variance_with_null_values() {
@@ -29,14 +30,10 @@ fn test_variance_with_null_values() {
     assert_eq!(results.len(), 1);
     let var_val = results[0].get("VARIANCE(age)").unwrap();
 
-    if let Some(num_str) = var_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_val {
         assert!((val - 2011.5).abs() < 0.1, "Expected ~2011.5, got {}", val);
     } else {
-        panic!("Expected F64 value, got {}", var_val);
+        panic!("Expected F64 value, got {:?}", var_val);
     }
 
     ctx.commit();
@@ -66,33 +63,28 @@ fn test_variance_multiple_columns() {
     // Variance = ((1-4)^2 + (2-4)^2 + (3-4)^2 + (4-4)^2 + (5-4)^2 + (6-4)^2 + (7-4)^2) / 6
     //          = (9 + 4 + 1 + 0 + 1 + 4 + 9) / 6 = 28/6 = 4.667
     let var_id = results[0].get("VARIANCE(id)").unwrap();
-    if let Some(num_str) = var_id
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_id {
         assert!(
             (val - 4.666667).abs() < 0.01,
             "Expected ~4.667, got {}",
             val
         );
     } else {
-        panic!("Expected F64 value for VARIANCE(id), got {}", var_id);
+        panic!("Expected F64 value for VARIANCE(id), got {:?}", var_id);
     }
 
     // VARIANCE(quantity) = VARIANCE([10, 0, 9, 3, 25, 10, 25])
     // Mean = 82/7 = 11.714...
     // Sample variance = 96.57
     let var_qty = results[0].get("VARIANCE(quantity)").unwrap();
-    if let Some(num_str) = var_qty
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_qty {
         // Allow some tolerance for floating point calculations
         assert!((val - 96.57).abs() < 0.1, "Expected ~96.57, got {}", val);
     } else {
-        panic!("Expected F64 value for VARIANCE(quantity), got {}", var_qty);
+        panic!(
+            "Expected F64 value for VARIANCE(quantity), got {:?}",
+            var_qty
+        );
     }
 
     ctx.commit();
@@ -120,18 +112,14 @@ fn test_variance_distinct_values() {
     assert_eq!(results.len(), 1);
     let var_val = results[0].get("VARIANCE(DISTINCT id)").unwrap();
 
-    if let Some(num_str) = var_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_val {
         assert!(
             (val - 4.666667).abs() < 0.01,
             "Expected ~4.667, got {}",
             val
         );
     } else {
-        panic!("Expected F64 value, got {}", var_val);
+        panic!("Expected F64 value, got {:?}", var_val);
     }
 
     ctx.commit();
@@ -161,14 +149,10 @@ fn test_variance_distinct_with_nulls() {
     assert_eq!(results.len(), 1);
     let var_val = results[0].get("VARIANCE(DISTINCT age)").unwrap();
 
-    if let Some(num_str) = var_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_val {
         assert!((val - 2312.5).abs() < 1.0, "Expected ~2312.5, got {}", val);
     } else {
-        panic!("Expected F64 value, got {}", var_val);
+        panic!("Expected F64 value, got {:?}", var_val);
     }
 
     ctx.commit();
@@ -195,11 +179,7 @@ fn test_variance_comparison_distinct_vs_all() {
 
     // VARIANCE(quantity) = VARIANCE([10, 0, 9, 3, 25, 10, 25])
     let var_all = results[0].get("VARIANCE(quantity)").unwrap();
-    if let Some(num_str) = var_all
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_all {
         // Sample variance = 96.57
         assert!(
             (val - 96.57).abs() < 0.1,
@@ -207,7 +187,10 @@ fn test_variance_comparison_distinct_vs_all() {
             val
         );
     } else {
-        panic!("Expected F64 value for VARIANCE(quantity), got {}", var_all);
+        panic!(
+            "Expected F64 value for VARIANCE(quantity), got {:?}",
+            var_all
+        );
     }
 
     // VARIANCE(DISTINCT quantity) = VARIANCE([10, 0, 9, 3, 25])
@@ -215,11 +198,7 @@ fn test_variance_comparison_distinct_vs_all() {
     // Variance = ((10-9.4)^2 + (0-9.4)^2 + (9-9.4)^2 + (3-9.4)^2 + (25-9.4)^2) / 4
     //          = (0.36 + 88.36 + 0.16 + 40.96 + 243.36) / 4 = 373.2 / 4 = 93.3
     let var_distinct = results[0].get("VARIANCE(DISTINCT quantity)").unwrap();
-    if let Some(num_str) = var_distinct
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_distinct {
         assert!(
             (val - 93.3).abs() < 0.1,
             "Expected ~93.3 for VARIANCE(DISTINCT quantity), got {}",
@@ -227,7 +206,7 @@ fn test_variance_comparison_distinct_vs_all() {
         );
     } else {
         panic!(
-            "Expected F64 value for VARIANCE(DISTINCT quantity), got {}",
+            "Expected F64 value for VARIANCE(DISTINCT quantity), got {:?}",
             var_distinct
         );
     }
@@ -244,10 +223,10 @@ fn test_variance_requires_multiple_values() {
         .insert_values("(1, 10)");
 
     // VARIANCE with only one value should return NULL
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT VARIANCE(value) FROM Item",
         "VARIANCE(value)",
-        "Null",
+        Value::Null,
     );
 
     ctx.commit();
@@ -266,10 +245,10 @@ fn test_variance_all_nulls() {
         );
 
     // VARIANCE of all NULLs should return NULL
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT VARIANCE(value) FROM Item",
         "VARIANCE(value)",
-        "Null",
+        Value::Null,
     );
 
     ctx.commit();
@@ -297,14 +276,10 @@ fn test_variance_basic() {
     assert_eq!(results.len(), 1);
     let var_val = results[0].get("VARIANCE(value)").unwrap();
 
-    if let Some(num_str) = var_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = var_val {
         assert!((val - 10.0).abs() < 0.01, "Expected 10.0, got {}", val);
     } else {
-        panic!("Expected F64 value, got {}", var_val);
+        panic!("Expected F64 value, got {:?}", var_val);
     }
 
     ctx.commit();

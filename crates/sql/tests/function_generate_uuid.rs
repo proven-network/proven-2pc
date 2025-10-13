@@ -15,7 +15,7 @@ fn test_generate_uuid_no_arguments() {
     let value = results[0].get("uuid").unwrap();
 
     // Should return a UUID value
-    assert!(value.contains("Uuid"));
+    assert!(value.to_string().len() == 36); // UUID is 36 chars
 
     ctx.commit();
 }
@@ -61,7 +61,7 @@ fn test_generate_uuid_return_type() {
     let value = results[0].get("uuid").unwrap();
 
     // Should return Uuid type
-    assert!(value.contains("Uuid"));
+    assert!(value.to_string().len() == 36); // UUID is 36 chars
 
     ctx.commit();
 }
@@ -92,11 +92,10 @@ fn test_generate_uuid_format_validity() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("uuid").unwrap();
 
-    // Should contain Uuid and have proper format
-    assert!(value.contains("Uuid"));
+    // Should contain UUID and have proper format
+    assert!(value.to_string().len() == 36); // UUID is 36 chars
     // UUID format: 8-4-4-4-12 hex digits
-    // The debug format should show something like Uuid(...)
-    assert!(value.contains("(") && value.contains(")"));
+    assert!(value.to_string().contains("-")); // UUIDs have hyphens
 
     ctx.commit();
 }
@@ -112,7 +111,7 @@ fn test_generate_uuid_in_insert() {
 
     let results = ctx.query("SELECT id FROM Items");
     let uuid_value = results[0].get("id").unwrap();
-    assert!(uuid_value.contains("Uuid"));
+    assert!(uuid_value.to_string().len() == 36); // UUID is 36 chars
 
     ctx.commit();
 }
@@ -134,9 +133,9 @@ fn test_generate_uuid_multiple_inserts_unique_uuids() {
     let results = ctx.query("SELECT id FROM Items");
     assert_eq!(results.len(), 3);
 
-    let uuid1 = results[0].get("id").unwrap();
-    let uuid2 = results[1].get("id").unwrap();
-    let uuid3 = results[2].get("id").unwrap();
+    let uuid1 = &results[0].get("id").unwrap();
+    let uuid2 = &results[1].get("id").unwrap();
+    let uuid3 = &results[2].get("id").unwrap();
 
     assert_ne!(uuid1, uuid2, "UUIDs should be unique");
     assert_ne!(uuid2, uuid3, "UUIDs should be unique");
@@ -176,7 +175,7 @@ fn test_generate_uuid_in_select_list() {
     assert_eq!(results.len(), 3);
 
     for result in results {
-        assert!(result.get("uuid").unwrap().contains("Uuid"));
+        assert!(result.get("uuid").unwrap().to_string().len() == 36); // UUID is 36 chars
     }
 
     ctx.commit();
@@ -194,7 +193,7 @@ fn test_generate_uuid_multiple_calls_same_statement() {
     let uuid2 = results[0].get("uuid2").unwrap();
 
     // Even within the same statement, UUIDs should be unique
-    assert_ne!(uuid1, uuid2, "UUIDs in same statement should be unique");
+    assert_ne!(&uuid1, &uuid2, "UUIDs in same statement should be unique");
 
     ctx.commit();
 }

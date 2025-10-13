@@ -2,9 +2,9 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
+use crate::types::Value;
 use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
-use crate::types::value::Value;
 use chrono::NaiveDate;
 
 /// CURRENT_DATE function

@@ -4,7 +4,7 @@
 //! results back to coordinators.
 
 use crate::execution::ExecutionResult;
-use crate::types::value::Value;
+use crate::types::Value;
 use proven_common::Response;
 use serde::{Deserialize, Serialize};
 

@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_coalesce_no_arguments() {
@@ -18,7 +19,7 @@ fn test_coalesce_no_arguments() {
 fn test_coalesce_single_null() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains("SELECT COALESCE(NULL) AS coalesce", "coalesce", "Null");
+    ctx.assert_query_value("SELECT COALESCE(NULL) AS coalesce", "coalesce", Value::Null);
 
     ctx.commit();
 }
@@ -27,10 +28,10 @@ fn test_coalesce_single_null() {
 fn test_coalesce_null_and_value() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE(NULL, 42) AS coalesce",
         "coalesce",
-        "I32(42)",
+        Value::I32(42),
     );
 
     ctx.commit();
@@ -41,10 +42,10 @@ fn test_coalesce_null_and_value() {
 fn test_coalesce_with_subqueries() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE((SELECT NULL), (SELECT 42)) as coalesce",
         "coalesce",
-        "I32(42)",
+        Value::I32(42),
     );
 
     ctx.commit();
@@ -54,10 +55,10 @@ fn test_coalesce_with_subqueries() {
 fn test_coalesce_nested() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE(COALESCE(NULL), COALESCE(NULL, 'Answer to the Ultimate Question of Life')) as coalesce",
         "coalesce",
-        "Str(Answer to the Ultimate Question of Life)",
+        Value::Str("Answer to the Ultimate Question of Life".to_string()),
     );
 
     ctx.commit();
@@ -67,10 +68,10 @@ fn test_coalesce_nested() {
 fn test_coalesce_non_null_first() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE('Hitchhiker', NULL) AS coalesce",
         "coalesce",
-        "Str(Hitchhiker)",
+        Value::Str("Hitchhiker".to_string()),
     );
 
     ctx.commit();
@@ -80,10 +81,10 @@ fn test_coalesce_non_null_first() {
 fn test_coalesce_all_nulls() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE(NULL, NULL, NULL) AS coalesce",
         "coalesce",
-        "Null",
+        Value::Null,
     );
 
     ctx.commit();
@@ -93,10 +94,10 @@ fn test_coalesce_all_nulls() {
 fn test_coalesce_multiple_integers() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE(NULL, 42, 84) AS coalesce",
         "coalesce",
-        "I32(42)",
+        Value::I32(42),
     );
 
     ctx.commit();
@@ -106,10 +107,10 @@ fn test_coalesce_multiple_integers() {
 fn test_coalesce_multiple_floats() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE(NULL, 1.23, 4.56) AS coalesce",
         "coalesce",
-        "F64(1.23)",
+        Value::F64(1.23),
     );
 
     ctx.commit();
@@ -119,10 +120,10 @@ fn test_coalesce_multiple_floats() {
 fn test_coalesce_multiple_booleans() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COALESCE(NULL, TRUE, FALSE) AS coalesce",
         "coalesce",
-        "Bool(true)",
+        Value::Bool(true),
     );
 
     ctx.commit();
@@ -159,10 +160,23 @@ fn test_coalesce_with_table_columns() {
         results[0]
             .get("coalesce_text")
             .unwrap()
+            .to_string()
             .contains("Hitchhiker")
     );
-    assert!(results[1].get("coalesce_text").unwrap().contains("Default"));
-    assert!(results[1].get("coalesce_integer").unwrap().contains("42"));
+    assert!(
+        results[1]
+            .get("coalesce_text")
+            .unwrap()
+            .to_string()
+            .contains("Default")
+    );
+    assert!(
+        results[1]
+            .get("coalesce_integer")
+            .unwrap()
+            .to_string()
+            .contains("42")
+    );
 
     ctx.commit();
 }
@@ -180,11 +194,41 @@ fn test_coalesce_multiple_table_columns() {
     );
 
     assert_eq!(results.len(), 5);
-    assert!(results[0].get("coalesce").unwrap().contains("Hitchhiker"));
-    assert!(results[1].get("coalesce").unwrap().contains("42"));
-    assert!(results[2].get("coalesce").unwrap().contains("1.11"));
-    assert!(results[3].get("coalesce").unwrap().contains("true"));
-    assert!(results[4].get("coalesce").unwrap().contains("Universe"));
+    assert!(
+        results[0]
+            .get("coalesce")
+            .unwrap()
+            .to_string()
+            .contains("Hitchhiker")
+    );
+    assert!(
+        results[1]
+            .get("coalesce")
+            .unwrap()
+            .to_string()
+            .contains("42")
+    );
+    assert!(
+        results[2]
+            .get("coalesce")
+            .unwrap()
+            .to_string()
+            .contains("1.11")
+    );
+    assert!(
+        results[3]
+            .get("coalesce")
+            .unwrap()
+            .to_string()
+            .contains("true")
+    );
+    assert!(
+        results[4]
+            .get("coalesce")
+            .unwrap()
+            .to_string()
+            .contains("Universe")
+    );
 
     ctx.commit();
 }

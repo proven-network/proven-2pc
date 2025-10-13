@@ -5,7 +5,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_float32_columns() {
     let mut ctx = setup_test();
@@ -22,8 +22,8 @@ fn test_create_table_with_float32_columns() {
     let y = results[0].get("y").unwrap();
 
     // F32 values might have slight precision differences
-    assert!(x.starts_with("F32(0.3134"));
-    assert!(y.starts_with("F32(0.156"));
+    assert!(x.to_string().starts_with("0.3134"));
+    assert!(y.to_string().starts_with("0.156"));
 
     ctx.commit();
 }
@@ -45,13 +45,31 @@ fn test_insert_float32_values() {
     assert_eq!(results.len(), 5);
 
     // F32 has limited precision, so exact matches might not work
-    assert!(results[0].get("value").unwrap().starts_with("F32(3.14"));
-    assert!(results[1].get("value").unwrap().starts_with("F32(-2.71"));
+    assert!(
+        results[0]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .starts_with("3.14")
+    );
+    assert!(
+        results[1]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .starts_with("-2.71")
+    );
     // F32 might display 0 as either "F32(0)" or "F32(0.0)"
     let zero = results[2].get("value").unwrap();
-    assert!(zero == "F32(0)" || zero == "F32(0.0)");
-    assert!(results[3].get("value").unwrap().contains("1000000"));
-    assert!(results[4].get("value").unwrap().starts_with("F32("));
+    assert!(zero == &Value::F32(0.0) || zero.to_string().contains("0"));
+    assert!(
+        results[3]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("1000000")
+    );
+    assert!(results[4].get("value").unwrap().is_float());
 
     ctx.commit();
 }
@@ -67,8 +85,8 @@ fn test_select_float32_values() {
     assert_eq!(results.len(), 1);
 
     // Verify values can be selected correctly
-    assert!(results[0].get("x").unwrap().starts_with("F32("));
-    assert!(results[0].get("y").unwrap().starts_with("F32("));
+    assert!(results[0].get("x").unwrap().is_float());
+    assert!(results[0].get("y").unwrap().is_float());
 
     ctx.commit();
 }
@@ -83,22 +101,34 @@ fn test_float32_arithmetic_operations() {
     // Test addition
     let results = ctx.query("SELECT a + b AS sum FROM floats");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("sum").unwrap().contains("13"));
+    assert!(results[0].get("sum").unwrap().to_string().contains("13"));
 
     // Test subtraction
     let results = ctx.query("SELECT a - b AS diff FROM floats");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("diff").unwrap().contains("8"));
+    assert!(results[0].get("diff").unwrap().to_string().contains("8"));
 
     // Test multiplication
     let results = ctx.query("SELECT a * b AS product FROM floats");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("product").unwrap().contains("26.25"));
+    assert!(
+        results[0]
+            .get("product")
+            .unwrap()
+            .to_string()
+            .contains("26.25")
+    );
 
     // Test division
     let results = ctx.query("SELECT a / b AS quotient FROM floats");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("quotient").unwrap().contains("4.2"));
+    assert!(
+        results[0]
+            .get("quotient")
+            .unwrap()
+            .to_string()
+            .contains("4.2")
+    );
 
     ctx.commit();
 }
@@ -115,30 +145,30 @@ fn test_float32_comparison_operations() {
     // Test equality
     let results = ctx.query("SELECT x, y FROM line WHERE x = 2.0");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("y").unwrap().contains("1"));
+    assert!(results[0].get("y").unwrap().to_string().contains("1"));
 
     // Test greater than
     let results = ctx.query("SELECT x FROM line WHERE x > 2.0 ORDER BY x");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("x").unwrap().contains("3.5"));
+    assert!(results[0].get("x").unwrap().to_string().contains("3.5"));
 
     // Test less than
     let results = ctx.query("SELECT x FROM line WHERE x < 2.0");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("x").unwrap().contains("1"));
+    assert!(results[0].get("x").unwrap().to_string().contains("1"));
 
     // Test UPDATE with WHERE
     ctx.exec("UPDATE line SET x = 5.0, y = 4.0 WHERE x = 2.0 AND y = 1.0");
 
     let results = ctx.query("SELECT x, y FROM line WHERE x = 5.0");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("y").unwrap().contains("4"));
+    assert!(results[0].get("y").unwrap().to_string().contains("4"));
 
     // Test DELETE with WHERE
     ctx.exec("DELETE FROM line WHERE x = 5.0 AND y = 4.0");
 
     let results = ctx.query("SELECT COUNT(*) as cnt FROM line");
-    assert_eq!(results[0].get("cnt").unwrap(), "I64(2)");
+    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(2));
 
     ctx.commit();
 }
@@ -155,17 +185,17 @@ fn test_float32_ordering() {
     assert_eq!(results.len(), 5);
 
     // Check order (values should be 0.5, 1.2, 2.8, 3.5, 4.1)
-    assert!(results[0].get("value").unwrap().contains("0.5"));
-    assert!(results[1].get("value").unwrap().contains("1.2"));
-    assert!(results[2].get("value").unwrap().contains("2.8"));
-    assert!(results[3].get("value").unwrap().contains("3.5"));
-    assert!(results[4].get("value").unwrap().contains("4.1"));
+    assert!(results[0].get("value").unwrap().to_string().contains("0.5"));
+    assert!(results[1].get("value").unwrap().to_string().contains("1.2"));
+    assert!(results[2].get("value").unwrap().to_string().contains("2.8"));
+    assert!(results[3].get("value").unwrap().to_string().contains("3.5"));
+    assert!(results[4].get("value").unwrap().to_string().contains("4.1"));
 
     // Test descending order
     let results = ctx.query("SELECT value FROM floats ORDER BY value DESC");
     assert_eq!(results.len(), 5);
-    assert!(results[0].get("value").unwrap().contains("4.1"));
-    assert!(results[4].get("value").unwrap().contains("0.5"));
+    assert!(results[0].get("value").unwrap().to_string().contains("4.1"));
+    assert!(results[4].get("value").unwrap().to_string().contains("0.5"));
 
     ctx.commit();
 }
@@ -185,13 +215,13 @@ fn test_float32_special_values() {
     assert_eq!(results.len(), 3);
 
     // NaN
-    assert!(results[0].get("value").unwrap().contains("NaN"));
+    assert!(results[0].get("value").unwrap().to_string().contains("NaN"));
 
     // Infinity
-    assert!(results[1].get("value").unwrap().contains("inf"));
+    assert!(results[1].get("value").unwrap().to_string().contains("inf"));
 
     // -Infinity
-    assert!(results[2].get("value").unwrap().contains("inf"));
+    assert!(results[2].get("value").unwrap().to_string().contains("inf"));
 
     ctx.commit();
 }
@@ -205,13 +235,19 @@ fn test_cast_to_float32() {
     assert_eq!(results.len(), 1);
 
     let value = results[0].get("float32").unwrap();
-    assert!(value.starts_with("F32("));
-    assert!(value.contains("-71.06"));
+    assert!(value.is_float());
+    assert!(value.to_string().contains("-71.06"));
 
     // Test CAST from integer to REAL
     let results = ctx.query("SELECT CAST(42 AS REAL) AS float32");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("float32").unwrap().contains("42"));
+    assert!(
+        results[0]
+            .get("float32")
+            .unwrap()
+            .to_string()
+            .contains("42")
+    );
 
     // Test CAST from decimal to REAL
     ctx.exec("CREATE TABLE test (d DECIMAL)");
@@ -219,7 +255,13 @@ fn test_cast_to_float32() {
 
     let results = ctx.query("SELECT CAST(d AS REAL) AS float32 FROM test");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("float32").unwrap().starts_with("F32(3.14"));
+    assert!(
+        results[0]
+            .get("float32")
+            .unwrap()
+            .to_string()
+            .starts_with("3.14")
+    );
 
     ctx.commit();
 }
@@ -234,15 +276,27 @@ fn test_float32_with_null() {
     let results =
         ctx.query("SELECT id, value FROM float_nulls WHERE value IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert!(results[0].get("value").unwrap().contains("1.5"));
-    assert!(results[1].get("value").unwrap().contains("2.5"));
+    assert!(results[0].get("value").unwrap().to_string().contains("1.5"));
+    assert!(results[1].get("value").unwrap().to_string().contains("2.5"));
 
     // Test NULL propagation in arithmetic
     let results = ctx.query("SELECT id, value + 1.0 as result FROM float_nulls ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert!(results[0].get("result").unwrap().contains("2.5"));
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert!(results[2].get("result").unwrap().contains("3.5"));
+    assert!(
+        results[0]
+            .get("result")
+            .unwrap()
+            .to_string()
+            .contains("2.5")
+    );
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert!(
+        results[2]
+            .get("result")
+            .unwrap()
+            .to_string()
+            .contains("3.5")
+    );
 
     ctx.commit();
 }
@@ -261,10 +315,22 @@ fn test_float32_precision() {
     assert_eq!(results.len(), 2);
 
     // Small number should maintain some precision
-    assert!(results[0].get("value").unwrap().starts_with("F32(0.123"));
+    assert!(
+        results[0]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .starts_with("0.123")
+    );
 
     // Large number might lose precision in least significant digits
-    assert!(results[1].get("value").unwrap().contains("1234567"));
+    assert!(
+        results[1]
+            .get("value")
+            .unwrap()
+            .to_string()
+            .contains("1234567")
+    );
 
     ctx.commit();
 }
@@ -287,7 +353,7 @@ fn test_nan_comparison_behavior() {
         1,
         "Only regular numbers should match comparisons"
     );
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     // IS NULL vs IS NOT NULL for NaN
     let results = ctx.query("SELECT id FROM nan_test WHERE value IS NULL");

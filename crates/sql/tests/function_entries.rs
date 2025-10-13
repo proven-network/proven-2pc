@@ -40,9 +40,9 @@ fn test_entries_returns_key_value_pairs() {
 
     // Should return a list containing key-value pairs
     // Expected: [["name", "Proven"]]
-    assert!(value.contains("List"));
-    assert!(value.contains("name"));
-    assert!(value.contains("Proven"));
+    assert!(value.to_string().contains("List"));
+    assert!(value.to_string().contains("name"));
+    assert!(value.to_string().contains("Proven"));
 
     ctx.commit();
 }
@@ -82,11 +82,11 @@ fn test_entries_with_multiple_keys() {
     let value = results[0].get("test").unwrap();
 
     // Should contain all key-value pairs
-    assert!(value.contains("name"));
-    assert!(value.contains("Proven"));
-    assert!(value.contains("version"));
-    assert!(value.contains("1.0"));
-    assert!(value.contains("active"));
+    assert!(value.to_string().contains("name"));
+    assert!(value.to_string().contains("Proven"));
+    assert!(value.to_string().contains("version"));
+    assert!(value.to_string().contains("1.0"));
+    assert!(value.to_string().contains("active"));
 
     ctx.commit();
 }
@@ -104,7 +104,7 @@ fn test_entries_with_empty_map() {
     let value = results[0].get("test").unwrap();
 
     // Should return empty list
-    assert!(value.contains("List"));
+    assert!(value.to_string().contains("List"));
 
     ctx.commit();
 }
@@ -122,9 +122,9 @@ fn test_entries_preserves_value_types() {
     let value = results[0].get("test").unwrap();
 
     // Should preserve values as strings in MAP(VARCHAR, VARCHAR)
-    assert!(value.contains("42"));
-    assert!(value.contains("test"));
-    assert!(value.contains("true"));
+    assert!(value.to_string().contains("42"));
+    assert!(value.to_string().contains("test"));
+    assert!(value.to_string().contains("true"));
 
     ctx.commit();
 }
@@ -142,8 +142,8 @@ fn test_entries_nested_values() {
     let value = results[0].get("test").unwrap();
 
     // Should contain the entries
-    assert!(value.contains("user"));
-    assert!(value.contains("nested"));
+    assert!(value.to_string().contains("user"));
+    assert!(value.to_string().contains("nested"));
 
     ctx.commit();
 }

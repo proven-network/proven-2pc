@@ -13,7 +13,7 @@ fn test_least_integers() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("result").unwrap();
-    assert!(value.contains("0"));
+    assert!(value.to_string().contains("0"));
 
     ctx.commit();
 }
@@ -26,7 +26,7 @@ fn test_least_floats() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("result").unwrap();
-    assert!(value.contains("0.1"));
+    assert!(value.to_string().contains("0.1"));
 
     ctx.commit();
 }
@@ -40,7 +40,7 @@ fn test_least_strings() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("result").unwrap();
     // 'babamba' is least lexicographically
-    assert!(value.contains("babamba"));
+    assert!(value.to_string().contains("babamba"));
 
     ctx.commit();
 }
@@ -62,7 +62,7 @@ fn test_least_dates() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("result").unwrap();
     // 2022-07-17 is the least date
-    assert!(value.contains("2022-07-17"));
+    assert!(value.to_string().contains("2022-07-17"));
 
     ctx.commit();
 }
@@ -149,7 +149,7 @@ fn test_least_booleans() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("result").unwrap();
     // false < true
-    assert!(value.contains("false") || value.contains("Bool(false)"));
+    assert!(value.to_string().contains("false") || value.to_string().contains("Bool(false)"));
 
     ctx.commit();
 }
@@ -180,7 +180,7 @@ fn test_least_two_arguments() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("result").unwrap();
-    assert!(value.contains("50"));
+    assert!(value.to_string().contains("50"));
 
     ctx.commit();
 }
@@ -196,11 +196,11 @@ fn test_least_with_table_data() {
 
     assert_eq!(results.len(), 3);
     // Row 1: min(1, 5, 3) = 1
-    assert!(results[0].get("min_val").unwrap().contains("1"));
+    assert!(results[0].get("min_val").unwrap().to_string().contains("1"));
     // Row 2: min(10, 2, 8) = 2
-    assert!(results[1].get("min_val").unwrap().contains("2"));
+    assert!(results[1].get("min_val").unwrap().to_string().contains("2"));
     // Row 3: min(4, 9, 6) = 4
-    assert!(results[2].get("min_val").unwrap().contains("4"));
+    assert!(results[2].get("min_val").unwrap().to_string().contains("4"));
 
     ctx.commit();
 }
@@ -216,8 +216,8 @@ fn test_least_and_greatest_together() {
         ctx.query("SELECT LEAST(x, y, z) AS min, GREATEST(x, y, z) AS max FROM TestValues");
 
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("min").unwrap().contains("3"));
-    assert!(results[0].get("max").unwrap().contains("10"));
+    assert!(results[0].get("min").unwrap().to_string().contains("3"));
+    assert!(results[0].get("max").unwrap().to_string().contains("10"));
 
     ctx.commit();
 }

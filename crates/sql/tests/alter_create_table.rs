@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_basic() {
     let mut ctx = setup_test();
@@ -18,12 +18,18 @@ fn test_create_table_basic() {
 
     let results = ctx.query("SELECT id, num, name FROM CreateTable1 ORDER BY num");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "Null");
-    assert_eq!(results[0].get("num").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(test)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("name").unwrap(), "Str(test2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::Null);
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(1));
+    assert_eq!(
+        results[0].get("name").unwrap(),
+        &Value::Str("test".to_string())
+    );
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(2));
+    assert_eq!(
+        results[1].get("name").unwrap(),
+        &Value::Str("test2".to_string())
+    );
 
     ctx.commit();
 }
@@ -91,9 +97,9 @@ fn test_insert_into_created_table() {
     assert_eq!(results.len(), 3);
 
     // Verify NULL handling - SQL standard: NULLs sort last in ASC order
-    assert_eq!(results[0].get("num").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(2)");
-    assert_eq!(results[2].get("num").unwrap(), "Null");
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(2));
+    assert_eq!(results[2].get("num").unwrap(), &Value::Null);
 
     ctx.commit();
 }
@@ -175,12 +181,18 @@ fn test_create_table_as_select_with_data() {
     // Verify data was copied
     let results = ctx.query("SELECT * FROM TargetTableWithData ORDER BY num");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "Null");
-    assert_eq!(results[0].get("num").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"1\")");
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("name").unwrap(), "Str(\"2\")");
+    assert_eq!(results[0].get("id").unwrap(), &Value::Null);
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(1));
+    assert_eq!(
+        results[0].get("name").unwrap(),
+        &Value::Str("\"1\"".to_string())
+    );
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(2));
+    assert_eq!(
+        results[1].get("name").unwrap(),
+        &Value::Str("\"2\"".to_string())
+    );
 
     ctx.commit();
 }
@@ -201,9 +213,12 @@ fn test_create_table_as_select_with_limit() {
     // Verify only one row was copied
     let results = ctx.query("SELECT * FROM TargetTableWithLimit");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "Null");
-    assert_eq!(results[0].get("num").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"1\")");
+    assert_eq!(results[0].get("id").unwrap(), &Value::Null);
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(1));
+    assert_eq!(
+        results[0].get("name").unwrap(),
+        &Value::Str("\"1\"".to_string())
+    );
 
     ctx.commit();
 }
@@ -224,9 +239,12 @@ fn test_create_table_as_select_with_offset() {
     // Verify only second row was copied
     let results = ctx.query("SELECT * FROM TargetTableWithOffset");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[0].get("num").unwrap(), "I32(2)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"2\")");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(2));
+    assert_eq!(
+        results[0].get("name").unwrap(),
+        &Value::Str("\"2\"".to_string())
+    );
 
     ctx.commit();
 }

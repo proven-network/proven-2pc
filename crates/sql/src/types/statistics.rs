@@ -4,7 +4,7 @@
 //! to make better decisions about index usage and join ordering.
 //! They are separate from schemas to allow independent updates.
 
-use crate::types::value::Value;
+use crate::types::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

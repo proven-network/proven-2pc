@@ -4,6 +4,7 @@
 mod common;
 
 use common::setup_test;
+use proven_value::Value;
 
 #[test]
 fn test_create_table_for_values() {
@@ -27,7 +28,7 @@ fn test_values_single_column() {
     assert_eq!(results.len(), 3);
 
     // Check values
-    ctx.assert_query_contains("VALUES (1), (2), (3) LIMIT 1", "column1", "I32(1)");
+    ctx.assert_query_value("VALUES (1), (2), (3) LIMIT 1", "column1", Value::I32(1));
 
     ctx.commit();
 }
@@ -195,20 +196,20 @@ fn test_select_from_values_table() {
     assert_rows!(ctx, "SELECT * FROM TableFromValues", 2);
 
     // Verify specific values
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT column1 FROM TableFromValues WHERE column1 = 1",
         "column1",
-        "I32(1)",
+        Value::I32(1),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT column2 FROM TableFromValues WHERE column1 = 1",
         "column2",
-        "Str(a)",
+        Value::Str("a".to_string()),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT column3 FROM TableFromValues WHERE column1 = 1",
         "column3",
-        "Bool(true)",
+        Value::Bool(true),
     );
 
     ctx.commit();
@@ -267,7 +268,7 @@ fn test_insert_with_values() {
     ctx.exec("INSERT INTO Items (id) VALUES (1)");
 
     assert_rows!(ctx, "SELECT * FROM Items", 1);
-    ctx.assert_query_contains("SELECT id FROM Items", "id", "I32(1)");
+    ctx.assert_query_value("SELECT id FROM Items", "id", Value::I32(1));
     // status should have default value 'ACTIVE'
 
     ctx.commit();

@@ -10,9 +10,6 @@ use std::fmt;
 use std::net::IpAddr;
 use uuid::Uuid;
 
-/// A row of values (useful for SQL contexts)
-pub type Row = Vec<Value>;
-
 /// Point type for geometric data
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Point {
@@ -23,6 +20,33 @@ pub struct Point {
 impl Point {
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
+    }
+}
+
+impl Eq for Point {}
+
+impl PartialOrd for Point {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Point {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.x.partial_cmp(&other.x) {
+            Some(std::cmp::Ordering::Equal) | None => self
+                .y
+                .partial_cmp(&other.y)
+                .unwrap_or(std::cmp::Ordering::Equal),
+            Some(ord) => ord,
+        }
+    }
+}
+
+impl std::hash::Hash for Point {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.x.to_bits().hash(state);
+        self.y.to_bits().hash(state);
     }
 }
 
@@ -114,6 +138,71 @@ impl Value {
     }
 
     // ========================================================================
+    // JSON Parsing Utilities
+    // ========================================================================
+
+    /// Convert serde_json::Value to our Value type
+    fn from_json_value(json: serde_json::Value) -> Value {
+        match json {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::I64(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::F64(f)
+                } else {
+                    // Fallback for very large numbers
+                    Value::Json(serde_json::Value::Number(n))
+                }
+            }
+            serde_json::Value::String(s) => Value::Str(s),
+            serde_json::Value::Array(arr) => {
+                let values: Vec<Value> = arr.into_iter().map(Value::from_json_value).collect();
+                Value::List(values)
+            }
+            serde_json::Value::Object(obj) => {
+                let map: std::collections::HashMap<String, Value> = obj
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::from_json_value(v)))
+                    .collect();
+                Value::Map(map)
+            }
+        }
+    }
+
+    /// Parse a JSON array from a string, returning a Value::List
+    pub fn parse_json_array(s: &str) -> Result<Value, String> {
+        let json_value: serde_json::Value =
+            serde_json::from_str(s).map_err(|e| format!("Failed to parse JSON array: {}", e))?;
+
+        match json_value {
+            serde_json::Value::Array(arr) => {
+                let values: Vec<Value> = arr.into_iter().map(Value::from_json_value).collect();
+                Ok(Value::List(values))
+            }
+            _ => Err("Expected JSON array".to_string()),
+        }
+    }
+
+    /// Parse a JSON object from a string, returning a Value::Map
+    pub fn parse_json_object(s: &str) -> Result<Value, String> {
+        let json_value: serde_json::Value =
+            serde_json::from_str(s).map_err(|e| format!("Failed to parse JSON object: {}", e))?;
+
+        match json_value {
+            serde_json::Value::Object(obj) => {
+                let map: std::collections::HashMap<String, Value> = obj
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::from_json_value(v)))
+                    .collect();
+                Ok(Value::Map(map))
+            }
+            _ => Err("Expected JSON object".to_string()),
+        }
+    }
+
+    // ========================================================================
     // Type Checks
     // ========================================================================
 
@@ -178,8 +267,45 @@ impl Value {
     }
 
     // ========================================================================
-    // Type Name
+    // Type Name and Tag
     // ========================================================================
+
+    /// Get a numeric tag for this value type (for Ord implementation)
+    /// Note: NULL has the highest tag (255) so it sorts last in ASC order,
+    /// which follows SQL standard behavior.
+    fn type_tag(&self) -> u8 {
+        match self {
+            Value::Bool(_) => 0,
+            Value::I8(_) => 1,
+            Value::I16(_) => 2,
+            Value::I32(_) => 3,
+            Value::I64(_) => 4,
+            Value::I128(_) => 5,
+            Value::U8(_) => 6,
+            Value::U16(_) => 7,
+            Value::U32(_) => 8,
+            Value::U64(_) => 9,
+            Value::U128(_) => 10,
+            Value::F32(_) => 11,
+            Value::F64(_) => 12,
+            Value::Decimal(_) => 13,
+            Value::Str(_) => 14,
+            Value::Date(_) => 15,
+            Value::Time(_) => 16,
+            Value::Timestamp(_) => 17,
+            Value::Interval(_) => 18,
+            Value::Uuid(_) => 19,
+            Value::Bytea(_) => 20,
+            Value::Inet(_) => 21,
+            Value::Point(_) => 22,
+            Value::Array(_) => 23,
+            Value::List(_) => 24,
+            Value::Map(_) => 25,
+            Value::Struct(_) => 26,
+            Value::Json(_) => 27,
+            Value::Null => 255, // NULL sorts last (SQL standard)
+        }
+    }
 
     /// Get the type name of this value
     pub fn type_name(&self) -> &'static str {
@@ -236,14 +362,32 @@ impl fmt::Debug for Value {
             Value::U32(u) => write!(f, "U32({:?})", u),
             Value::U64(u) => write!(f, "U64({:?})", u),
             Value::U128(u) => write!(f, "U128({:?})", u),
-            Value::F32(fl) => write!(f, "F32({:?})", fl),
-            Value::F64(fl) => write!(f, "F64({:?})", fl),
+            Value::F32(fl) => {
+                // Format whole numbers without decimal point (2.0 -> 2)
+                if fl.fract() == 0.0 && fl.is_finite() {
+                    write!(f, "F32({})", *fl as i64)
+                } else {
+                    write!(f, "F32({:?})", fl)
+                }
+            }
+            Value::F64(fl) => {
+                // Format whole numbers without decimal point (1.0 -> 1)
+                if fl.fract() == 0.0 && fl.is_finite() {
+                    write!(f, "F64({})", *fl as i64)
+                } else {
+                    write!(f, "F64({:?})", fl)
+                }
+            }
             Value::Decimal(d) => write!(f, "Decimal({:?})", d),
-            Value::Str(s) => write!(f, "Str({:?})", s),
+            Value::Str(s) => write!(f, "Str({})", s),
             Value::Date(d) => write!(f, "Date({:?})", d),
             Value::Time(t) => write!(f, "Time({:?})", t),
             Value::Timestamp(ts) => write!(f, "Timestamp({:?})", ts),
-            Value::Interval(i) => write!(f, "Interval({:?})", i),
+            Value::Interval(i) => write!(
+                f,
+                "Interval({} months, {} days, {} us)",
+                i.months, i.days, i.microseconds
+            ),
             Value::Uuid(u) => write!(f, "Uuid({:?})", u),
             Value::Bytea(b) => write!(f, "Bytea({} bytes)", b.len()),
             Value::Inet(ip) => write!(f, "Inet({:?})", ip),
@@ -288,6 +432,160 @@ impl fmt::Display for Value {
                 write!(f, "{:?}", self)
             }
             Value::Json(j) => write!(f, "{}", j),
+        }
+    }
+}
+
+// ============================================================================
+// Trait Implementations (Eq, Hash, Ord)
+// ============================================================================
+
+// Implement Eq even though we have floats - we use bitwise comparison for floats
+impl Eq for Value {}
+
+// Implement Hash using bitwise representation for floats
+impl std::hash::Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Hash the discriminant first
+        std::mem::discriminant(self).hash(state);
+
+        match self {
+            Value::Null => {}
+            Value::Bool(b) => b.hash(state),
+            Value::I8(i) => i.hash(state),
+            Value::I16(i) => i.hash(state),
+            Value::I32(i) => i.hash(state),
+            Value::I64(i) => i.hash(state),
+            Value::I128(i) => i.hash(state),
+            Value::U8(u) => u.hash(state),
+            Value::U16(u) => u.hash(state),
+            Value::U32(u) => u.hash(state),
+            Value::U64(u) => u.hash(state),
+            Value::U128(u) => u.hash(state),
+            Value::F32(f) => f.to_bits().hash(state),
+            Value::F64(f) => f.to_bits().hash(state),
+            Value::Decimal(d) => {
+                d.mantissa().hash(state);
+                d.scale().hash(state);
+            }
+            Value::Str(s) => s.hash(state),
+            Value::Date(d) => d.hash(state),
+            Value::Time(t) => t.hash(state),
+            Value::Timestamp(ts) => ts.hash(state),
+            Value::Interval(i) => i.hash(state),
+            Value::Uuid(u) => u.hash(state),
+            Value::Bytea(b) => b.hash(state),
+            Value::Inet(ip) => ip.hash(state),
+            Value::Point(p) => {
+                p.x.to_bits().hash(state);
+                p.y.to_bits().hash(state);
+            }
+            Value::Array(arr) => arr.hash(state),
+            Value::List(list) => list.hash(state),
+            Value::Map(map) => {
+                // Hash map as sorted key-value pairs for consistency
+                let mut pairs: Vec<_> = map.iter().collect();
+                pairs.sort_by_key(|(k, _)| *k);
+                pairs.hash(state);
+            }
+            Value::Struct(fields) => fields.hash(state),
+            Value::Json(j) => j.to_string().hash(state),
+        }
+    }
+}
+
+// Implement PartialOrd with special handling for floats
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// Implement Ord with consistent ordering even for floats
+impl Ord for Value {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        // First compare type tags for consistent ordering across types
+        let self_tag = self.type_tag();
+        let other_tag = other.type_tag();
+        match self_tag.cmp(&other_tag) {
+            Ordering::Equal => {}
+            other => return other,
+        }
+
+        // Same type, compare values
+        match (self, other) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::I8(a), Value::I8(b)) => a.cmp(b),
+            (Value::I16(a), Value::I16(b)) => a.cmp(b),
+            (Value::I32(a), Value::I32(b)) => a.cmp(b),
+            (Value::I64(a), Value::I64(b)) => a.cmp(b),
+            (Value::I128(a), Value::I128(b)) => a.cmp(b),
+            (Value::U8(a), Value::U8(b)) => a.cmp(b),
+            (Value::U16(a), Value::U16(b)) => a.cmp(b),
+            (Value::U32(a), Value::U32(b)) => a.cmp(b),
+            (Value::U64(a), Value::U64(b)) => a.cmp(b),
+            (Value::U128(a), Value::U128(b)) => a.cmp(b),
+            // For floats, use total ordering via bits
+            (Value::F32(a), Value::F32(b)) => {
+                let a_bits = a.to_bits();
+                let b_bits = b.to_bits();
+                // Handle sign: negative floats sort before positive
+                let a_signed = if a.is_sign_negative() {
+                    !a_bits
+                } else {
+                    a_bits ^ (1u32 << 31)
+                };
+                let b_signed = if b.is_sign_negative() {
+                    !b_bits
+                } else {
+                    b_bits ^ (1u32 << 31)
+                };
+                a_signed.cmp(&b_signed)
+            }
+            (Value::F64(a), Value::F64(b)) => {
+                let a_bits = a.to_bits();
+                let b_bits = b.to_bits();
+                let a_signed = if a.is_sign_negative() {
+                    !a_bits
+                } else {
+                    a_bits ^ (1u64 << 63)
+                };
+                let b_signed = if b.is_sign_negative() {
+                    !b_bits
+                } else {
+                    b_bits ^ (1u64 << 63)
+                };
+                a_signed.cmp(&b_signed)
+            }
+            (Value::Decimal(a), Value::Decimal(b)) => a.cmp(b),
+            (Value::Str(a), Value::Str(b)) => a.cmp(b),
+            (Value::Date(a), Value::Date(b)) => a.cmp(b),
+            (Value::Time(a), Value::Time(b)) => a.cmp(b),
+            (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
+            (Value::Interval(a), Value::Interval(b)) => a.cmp(b),
+            (Value::Uuid(a), Value::Uuid(b)) => a.cmp(b),
+            (Value::Bytea(a), Value::Bytea(b)) => a.cmp(b),
+            (Value::Inet(a), Value::Inet(b)) => a.cmp(b),
+            (Value::Point(a), Value::Point(b)) => match a.x.partial_cmp(&b.x) {
+                Some(Ordering::Equal) | None => a.y.partial_cmp(&b.y).unwrap_or(Ordering::Equal),
+                Some(ord) => ord,
+            },
+            (Value::Array(a), Value::Array(b)) => a.cmp(b),
+            (Value::List(a), Value::List(b)) => a.cmp(b),
+            (Value::Map(a), Value::Map(b)) => {
+                // Compare maps as sorted key-value pairs
+                let mut a_pairs: Vec<_> = a.iter().collect();
+                let mut b_pairs: Vec<_> = b.iter().collect();
+                a_pairs.sort_by_key(|(k, _)| *k);
+                b_pairs.sort_by_key(|(k, _)| *k);
+                a_pairs.cmp(&b_pairs)
+            }
+            (Value::Struct(a), Value::Struct(b)) => a.cmp(b),
+            (Value::Json(a), Value::Json(b)) => a.to_string().cmp(&b.to_string()),
+            _ => Ordering::Equal, // Should never reach here due to discriminant check
         }
     }
 }

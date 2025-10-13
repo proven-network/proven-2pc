@@ -58,7 +58,7 @@ pub enum Literal {
     Date(chrono::NaiveDate),
     Time(chrono::NaiveTime),
     Timestamp(chrono::NaiveDateTime),
-    Interval(crate::types::data_type::Interval),
+    Interval(proven_value::Interval),
 }
 
 /// Expression operators.

@@ -138,7 +138,7 @@ impl BinaryOperator for AddOperator {
 
             // Interval + Interval
             (Value::Interval(a), Value::Interval(b)) => {
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: a.months + b.months,
                     days: a.days + b.days,
                     microseconds: a.microseconds + b.microseconds,

@@ -2,9 +2,9 @@
 
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::Result;
+use crate::types::Value;
 use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
-use crate::types::value::Value;
 
 /// IFNULL function
 pub struct IfnullFunction;

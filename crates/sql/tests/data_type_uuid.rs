@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_uuid_primary_key() {
     let mut ctx = setup_test();
@@ -18,7 +18,9 @@ fn test_create_table_with_uuid_primary_key() {
     let results = ctx.query(&format!("SELECT id FROM posts WHERE id = '{}'", uuid));
     assert_eq!(results.len(), 1);
     // UUID values are formatted as their standard representation
-    assert!(results[0].get("id").unwrap().starts_with("Uuid("));
+    assert!(
+        results[0].get("id").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     ctx.commit();
 }
@@ -82,9 +84,15 @@ fn test_insert_various_uuid_formats() {
 
     // Check the values are properly parsed and stored
     // UUIDs are stored and can be compared
-    assert!(results[0].get("uuid_field").unwrap().starts_with("Uuid("));
-    assert!(results[1].get("uuid_field").unwrap().starts_with("Uuid("));
-    assert!(results[2].get("uuid_field").unwrap().starts_with("Uuid("));
+    assert!(
+        results[0].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
+    assert!(
+        results[1].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
+    assert!(
+        results[2].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     ctx.commit();
 }
@@ -104,11 +112,15 @@ fn test_select_uuid_values() {
     let results = ctx.query("SELECT id, uuid_field FROM uuid_table ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert!(results[0].get("uuid_field").unwrap().starts_with("Uuid("));
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert!(
+        results[0].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
 
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert!(results[1].get("uuid_field").unwrap().starts_with("Uuid("));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert!(
+        results[1].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     ctx.commit();
 }
@@ -132,7 +144,9 @@ fn test_update_uuid_value() {
 
     let results = ctx.query("SELECT uuid_field FROM uuid_table");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("uuid_field").unwrap().starts_with("Uuid("));
+    assert!(
+        results[0].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     ctx.commit();
 }
@@ -153,19 +167,19 @@ fn test_uuid_comparisons() {
         "SELECT id FROM uuid_table WHERE uuid_field = '00000000-0000-0000-0000-000000000002'",
     );
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     // Test greater than
     let results = ctx.query("SELECT id FROM uuid_table WHERE uuid_field > '00000000-0000-0000-0000-000000000001' ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     // Test less than
     let results = ctx.query("SELECT id FROM uuid_table WHERE uuid_field < '00000000-0000-0000-0000-000000000003' ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -198,16 +212,20 @@ fn test_group_by_uuid() {
 
     // Just check that we have one with count 1 and one with count 2
     assert!(
-        (first_count == "I64(1)" && second_count == "I64(2)")
-            || (first_count == "I64(2)" && second_count == "I64(1)"),
+        (first_count == &Value::I64(1) && second_count == &Value::I64(2))
+            || (first_count == &Value::I64(2) && second_count == &Value::I64(1)),
         "Expected one row with count 1 and one with count 2, got {} and {}",
         first_count,
         second_count
     );
 
     // Both should be valid UUIDs
-    assert!(results[0].get("uuid_field").unwrap().starts_with("Uuid("));
-    assert!(results[1].get("uuid_field").unwrap().starts_with("Uuid("));
+    assert!(
+        results[0].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
+    assert!(
+        results[1].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     ctx.commit();
 }
@@ -239,7 +257,7 @@ fn test_delete_uuid() {
 
     // Check that nothing was deleted
     let results = ctx.query("SELECT COUNT(*) as cnt FROM uuid_table");
-    assert_eq!(results[0].get("cnt").unwrap(), "I64(3)");
+    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(3));
 
     // Delete uuid2 (should delete all 3 records)
     ctx.exec(&format!(
@@ -248,7 +266,7 @@ fn test_delete_uuid() {
     ));
 
     let results = ctx.query("SELECT COUNT(*) as cnt FROM uuid_table");
-    assert_eq!(results[0].get("cnt").unwrap(), "I64(0)");
+    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(0));
 
     ctx.commit();
 }
@@ -266,14 +284,18 @@ fn test_uuid_with_null() {
     let results =
         ctx.query("SELECT id, uuid_field FROM uuid_nulls WHERE uuid_field IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert!(results[0].get("uuid_field").unwrap().starts_with("Uuid("));
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
-    assert!(results[1].get("uuid_field").unwrap().starts_with("Uuid("));
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert!(
+        results[0].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
+    assert!(
+        results[1].get("uuid_field").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     let results = ctx.query("SELECT id FROM uuid_nulls WHERE uuid_field IS NULL");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -286,13 +308,17 @@ fn test_cast_to_uuid() {
     let results =
         ctx.query("SELECT CAST('550e8400-e29b-41d4-a716-446655440000' AS UUID) AS uuid_val");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("uuid_val").unwrap().starts_with("Uuid("));
+    assert!(
+        results[0].get("uuid_val").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     // Test with URN format
     let results = ctx
         .query("SELECT CAST('urn:uuid:F9168C5E-CEB2-4faa-B6BF-329BF39FA1E4' AS UUID) AS uuid_val");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("uuid_val").unwrap().starts_with("Uuid("));
+    assert!(
+        results[0].get("uuid_val").unwrap().to_string().len() == 36 // UUID format)
+    );
 
     ctx.commit();
 }

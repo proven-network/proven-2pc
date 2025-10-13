@@ -10,7 +10,7 @@ use crate::planning::plan::{Node, Plan};
 use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::query::Rows;
-use crate::types::value::Value;
+use crate::types::{Value, ValueExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 

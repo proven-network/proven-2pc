@@ -21,10 +21,22 @@ fn test_primary_key_basic_operations() {
     // Check specific rows
     let results = ctx.query("SELECT id, name FROM Allegro ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("hello"));
-    assert!(results[1].get("id").unwrap().contains("3"));
-    assert!(results[1].get("name").unwrap().contains("world"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("hello")
+    );
+    assert!(results[1].get("id").unwrap().to_string().contains("3"));
+    assert!(
+        results[1]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("world")
+    );
 
     ctx.commit();
 }
@@ -39,8 +51,14 @@ fn test_primary_key_where_equality() {
     // Test WHERE clause with equality on PRIMARY KEY
     let results = ctx.query("SELECT id, name FROM Allegro WHERE id = 1");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("hello"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("hello")
+    );
 
     ctx.commit();
 }
@@ -55,8 +73,14 @@ fn test_primary_key_where_comparison() {
     // Test WHERE clause with comparison operator on PRIMARY KEY
     let results = ctx.query("SELECT id, name FROM Allegro WHERE id < 2");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("hello"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("hello")
+    );
 
     ctx.commit();
 }
@@ -75,7 +99,7 @@ fn test_primary_key_self_join() {
     // Check that we get both ids
     let ids: Vec<String> = results
         .iter()
-        .map(|row| row.get("id").unwrap().clone())
+        .map(|row| row.get("id").unwrap().to_string())
         .collect();
     assert!(ids.iter().any(|id| id.contains("1")));
     assert!(ids.iter().any(|id| id.contains("3")));
@@ -115,16 +139,28 @@ fn test_primary_key_ordering() {
     assert_eq!(results.len(), 5);
 
     // Check order
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("hello"));
-    assert!(results[1].get("id").unwrap().contains("2"));
-    assert!(results[1].get("name").unwrap().contains("foo"));
-    assert!(results[2].get("id").unwrap().contains("3"));
-    assert!(results[2].get("name").unwrap().contains("world"));
-    assert!(results[3].get("id").unwrap().contains("4"));
-    assert!(results[3].get("name").unwrap().contains("bar"));
-    assert!(results[4].get("id").unwrap().contains("5"));
-    assert!(results[4].get("name").unwrap().contains("neon"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("hello")
+    );
+    assert!(results[1].get("id").unwrap().to_string().contains("2"));
+    assert!(results[1].get("name").unwrap().to_string().contains("foo"));
+    assert!(results[2].get("id").unwrap().to_string().contains("3"));
+    assert!(
+        results[2]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("world")
+    );
+    assert!(results[3].get("id").unwrap().to_string().contains("4"));
+    assert!(results[3].get("name").unwrap().to_string().contains("bar"));
+    assert!(results[4].get("id").unwrap().to_string().contains("5"));
+    assert!(results[4].get("name").unwrap().to_string().contains("neon"));
 
     ctx.commit();
 }
@@ -141,10 +177,10 @@ fn test_primary_key_modulo_operator() {
     assert_eq!(results.len(), 2);
 
     // Check that we only get even ids
-    assert!(results[0].get("id").unwrap().contains("2"));
-    assert!(results[0].get("name").unwrap().contains("foo"));
-    assert!(results[1].get("id").unwrap().contains("4"));
-    assert!(results[1].get("name").unwrap().contains("bar"));
+    assert!(results[0].get("id").unwrap().to_string().contains("2"));
+    assert!(results[0].get("name").unwrap().to_string().contains("foo"));
+    assert!(results[1].get("id").unwrap().to_string().contains("4"));
+    assert!(results[1].get("name").unwrap().to_string().contains("bar"));
 
     ctx.commit();
 }
@@ -163,12 +199,24 @@ fn test_primary_key_delete_operations() {
     let results = ctx.query("SELECT id, name FROM Allegro ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("hello"));
-    assert!(results[1].get("id").unwrap().contains("2"));
-    assert!(results[1].get("name").unwrap().contains("foo"));
-    assert!(results[2].get("id").unwrap().contains("3"));
-    assert!(results[2].get("name").unwrap().contains("world"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("hello")
+    );
+    assert!(results[1].get("id").unwrap().to_string().contains("2"));
+    assert!(results[1].get("name").unwrap().to_string().contains("foo"));
+    assert!(results[2].get("id").unwrap().to_string().contains("3"));
+    assert!(
+        results[2]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("world")
+    );
 
     ctx.commit();
 }
@@ -185,7 +233,7 @@ fn test_primary_key_with_function_result() {
     // Verify the result
     let results = ctx.query("SELECT name FROM Strslice");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("name").unwrap().contains("foo"));
+    assert!(results[0].get("name").unwrap().to_string().contains("foo"));
 
     ctx.commit();
 }
@@ -239,10 +287,16 @@ fn test_primary_key_update_valid() {
     // Verify the update worked
     let results = ctx.query("SELECT id, name FROM users ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert!(results[0].get("id").unwrap().contains("2"));
-    assert!(results[0].get("name").unwrap().contains("Bob"));
-    assert!(results[1].get("id").unwrap().contains("100"));
-    assert!(results[1].get("name").unwrap().contains("Alice"));
+    assert!(results[0].get("id").unwrap().to_string().contains("2"));
+    assert!(results[0].get("name").unwrap().to_string().contains("Bob"));
+    assert!(results[1].get("id").unwrap().to_string().contains("100"));
+    assert!(
+        results[1]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Alice")
+    );
 
     // Verify old id no longer exists
     assert_rows!(ctx, "SELECT * FROM users WHERE id = 1", 0);
@@ -288,8 +342,14 @@ fn test_primary_key_index_update_integrity() {
     // Verify we can find the row with new PRIMARY KEY
     let results = ctx.query("SELECT * FROM products WHERE sku = 150");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("name").unwrap().contains("Widget"));
-    assert!(results[0].get("price").unwrap().contains("10"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Widget")
+    );
+    assert!(results[0].get("price").unwrap().to_string().contains("10"));
 
     // Verify we cannot find it with old PRIMARY KEY
     assert_rows!(ctx, "SELECT * FROM products WHERE sku = 100", 0);

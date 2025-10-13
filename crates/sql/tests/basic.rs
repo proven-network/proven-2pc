@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_create_table_with_columns() {
@@ -63,7 +64,11 @@ fn test_insert_single_row() {
 
     // Verify insertion
     assert_rows!(ctx, "SELECT * FROM Test", 1);
-    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 1", "name", "Str(Hello)");
+    ctx.assert_query_value(
+        "SELECT name FROM Test WHERE id = 1",
+        "name",
+        Value::Str("Hello".to_string()),
+    );
 
     ctx.commit();
 }
@@ -94,8 +99,16 @@ fn test_insert_multiple_rows_in_one_statement() {
     assert_rows!(ctx, "SELECT * FROM Test", 2);
 
     // Verify specific values
-    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 3", "name", "Str(Great)");
-    ctx.assert_query_contains("SELECT name FROM Test WHERE id = 4", "name", "Str(Job)");
+    ctx.assert_query_value(
+        "SELECT name FROM Test WHERE id = 3",
+        "name",
+        Value::Str("Great".to_string()),
+    );
+    ctx.assert_query_value(
+        "SELECT name FROM Test WHERE id = 4",
+        "name",
+        Value::Str("Job".to_string()),
+    );
 
     ctx.commit();
 }
@@ -156,7 +169,7 @@ fn test_select_all_from_table() {
 
     // Select all and verify
     assert_rows!(ctx, "SELECT * FROM TestB", 4);
-    ctx.assert_query_contains("SELECT * FROM TestB LIMIT 1", "id", "I32(1)");
+    ctx.assert_query_value("SELECT * FROM TestB LIMIT 1", "id", Value::I32(1));
 
     ctx.commit();
 }
@@ -170,10 +183,10 @@ fn test_select_specific_columns() {
         .insert_values("(1, 2, 'Hello'), (1, 9, 'World'), (3, 4, 'Great'), (4, 7, 'Job')");
 
     assert_rows!(ctx, "SELECT id, num, name FROM TestA", 4);
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT name FROM TestA WHERE id = 1 LIMIT 1",
         "name",
-        "Str(Hello)",
+        Value::Str("Hello".to_string()),
     );
 
     ctx.commit();
@@ -227,7 +240,7 @@ fn test_update_all_rows() {
     // Verify all ids are now 2
     let results = ctx.query("SELECT id FROM Test");
     for row in results {
-        assert_eq!(row.get("id").unwrap(), "I32(2)");
+        assert_eq!(row.get("id").unwrap(), &Value::I32(2));
     }
 
     ctx.commit();
@@ -250,7 +263,7 @@ fn test_select_after_update() {
     let results = ctx.query("SELECT id FROM Test");
     assert_eq!(results.len(), 4);
     for row in &results {
-        assert_eq!(row.get("id").unwrap(), "I32(2)");
+        assert_eq!(row.get("id").unwrap(), &Value::I32(2));
     }
 
     ctx.commit();
@@ -271,10 +284,10 @@ fn test_select_multiple_columns_after_update() {
     assert_eq!(results.len(), 4);
 
     // Verify id is updated but num is unchanged
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[0].get("num").unwrap(), "I32(2)");
-    assert_eq!(results[3].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[3].get("num").unwrap(), "I32(9)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(2));
+    assert_eq!(results[3].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[3].get("num").unwrap(), &Value::I32(9));
 
     ctx.commit();
 }

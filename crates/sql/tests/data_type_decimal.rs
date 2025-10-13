@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_decimal_columns() {
     let mut ctx = setup_test();
@@ -14,7 +14,10 @@ fn test_create_table_with_decimal_columns() {
 
     let results = ctx.query("SELECT v FROM DECIMAL_ITEM");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("v").unwrap(), "Decimal(1)");
+    assert_eq!(
+        results[0].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("1").unwrap())
+    );
 
     ctx.commit();
 }
@@ -28,10 +31,22 @@ fn test_insert_decimal_values() {
 
     let results = ctx.query("SELECT v FROM DECIMAL_ITEM ORDER BY v");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("v").unwrap(), "Decimal(1)");
-    assert_eq!(results[1].get("v").unwrap(), "Decimal(1.5)");
-    assert_eq!(results[2].get("v").unwrap(), "Decimal(2)"); // Decimal normalizes 2.0 to 2
-    assert_eq!(results[3].get("v").unwrap(), "Decimal(25.12)");
+    assert_eq!(
+        results[0].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("1").unwrap())
+    );
+    assert_eq!(
+        results[1].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("1.5").unwrap())
+    );
+    assert_eq!(
+        results[2].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2").unwrap())
+    ); // Decimal normalizes 2.0 to 2
+    assert_eq!(
+        results[3].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("25.12").unwrap())
+    );
 
     ctx.commit();
 }
@@ -47,12 +62,12 @@ fn test_select_decimal_values() {
     assert_eq!(results.len(), 2);
 
     // Results should be 2.0 and 25.12 (in some order)
-    let values: Vec<String> = results
-        .iter()
-        .map(|r| r.get("v").unwrap().clone())
-        .collect();
-    assert!(values.contains(&"Decimal(2)".to_string())); // Decimal normalizes 2.0 to 2
-    assert!(values.contains(&"Decimal(25.12)".to_string()));
+    let values: Vec<&Value> = results.iter().map(|r| r.get("v").unwrap()).collect();
+    use std::str::FromStr;
+    let expected_2 = Value::Decimal(rust_decimal::Decimal::from_str("2").unwrap());
+    let expected_25_12 = Value::Decimal(rust_decimal::Decimal::from_str("25.12").unwrap());
+    assert!(values.contains(&&expected_2)); // Decimal normalizes 2.0 to 2
+    assert!(values.contains(&&expected_25_12));
 
     ctx.commit();
 }
@@ -67,24 +82,33 @@ fn test_decimal_arithmetic_operations() {
     // Test addition - Decimal + Integer always returns Decimal
     let results = ctx.query("SELECT v + 1 AS result FROM DECIMAL_ITEM");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("result").unwrap(), "Decimal(2)");
+    assert_eq!(
+        results[0].get("result").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2").unwrap())
+    );
 
     // Test subtraction - Decimal - Integer always returns Decimal
     let results = ctx.query("SELECT v - 1 AS result FROM DECIMAL_ITEM");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("result").unwrap(), "Decimal(0)");
+    assert_eq!(
+        results[0].get("result").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("0").unwrap())
+    );
 
     // Test multiplication - Decimal * Integer always returns Decimal
     let results = ctx.query("SELECT v * 2 AS result FROM DECIMAL_ITEM");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("result").unwrap(), "Decimal(2)");
+    assert_eq!(
+        results[0].get("result").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2").unwrap())
+    );
 
     // Test division - Decimal / Integer always returns Decimal
     let results = ctx.query("SELECT v / 2 AS result FROM DECIMAL_ITEM");
     assert_eq!(results.len(), 1);
     // Note: rust_decimal may format as 0.5 or 0.50
     let result = results[0].get("result").unwrap();
-    assert!(result == "Decimal(0.5)" || result == "Decimal(0.50)");
+    assert!(result.to_string().contains("0.5"));
 
     ctx.commit();
 }
@@ -99,18 +123,18 @@ fn test_decimal_comparison_operations() {
     // Test equality
     let results = ctx.query("SELECT id FROM DECIMAL_ITEM WHERE v = 10.50");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
 
     // Test greater than
     let results = ctx.query("SELECT id FROM DECIMAL_ITEM WHERE v > 50.00 ORDER BY id");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     // Test less than
     let results = ctx.query("SELECT id FROM DECIMAL_ITEM WHERE v < 100.00 ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }
@@ -125,18 +149,42 @@ fn test_decimal_ordering() {
     // Test ascending order
     let results = ctx.query("SELECT v FROM DECIMAL_ITEM ORDER BY v ASC");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("v").unwrap(), "Decimal(1)"); // Decimal normalizes 1.00 to 1
-    assert_eq!(results[1].get("v").unwrap(), "Decimal(10.25)");
-    assert_eq!(results[2].get("v").unwrap(), "Decimal(50.75)");
-    assert_eq!(results[3].get("v").unwrap(), "Decimal(100.5)"); // Decimal normalizes 100.50 to 100.5
+    assert_eq!(
+        results[0].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("1").unwrap())
+    ); // Decimal normalizes 1.00 to 1
+    assert_eq!(
+        results[1].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("10.25").unwrap())
+    );
+    assert_eq!(
+        results[2].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("50.75").unwrap())
+    );
+    assert_eq!(
+        results[3].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("100.5").unwrap())
+    ); // Decimal normalizes 100.50 to 100.5
 
     // Test descending order
     let results = ctx.query("SELECT v FROM DECIMAL_ITEM ORDER BY v DESC");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("v").unwrap(), "Decimal(100.5)"); // Decimal normalizes 100.50 to 100.5
-    assert_eq!(results[1].get("v").unwrap(), "Decimal(50.75)");
-    assert_eq!(results[2].get("v").unwrap(), "Decimal(10.25)");
-    assert_eq!(results[3].get("v").unwrap(), "Decimal(1)");
+    assert_eq!(
+        results[0].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("100.5").unwrap())
+    ); // Decimal normalizes 100.50 to 100.5
+    assert_eq!(
+        results[1].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("50.75").unwrap())
+    );
+    assert_eq!(
+        results[2].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("10.25").unwrap())
+    );
+    assert_eq!(
+        results[3].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("1").unwrap())
+    );
 
     ctx.commit();
 }
@@ -167,13 +215,34 @@ fn test_mixed_numeric_type_operations() {
     assert_eq!(results.len(), 1);
     let row = &results[0];
 
-    assert_eq!(row.get("a").unwrap(), "Decimal(1)");
-    assert_eq!(row.get("b").unwrap(), "Decimal(2)"); // v + 1
-    assert_eq!(row.get("c").unwrap(), "Decimal(2)"); // 1 + v (also Decimal, unlike gluesql)
-    assert_eq!(row.get("d").unwrap(), "Decimal(0)"); // v - 1
-    assert_eq!(row.get("e").unwrap(), "Decimal(0)"); // 1 - v (also Decimal, unlike gluesql)
-    assert_eq!(row.get("f").unwrap(), "Decimal(2)"); // v * 2
-    assert_eq!(row.get("g").unwrap(), "Decimal(2)"); // 2 * v (also Decimal, unlike gluesql)
+    assert_eq!(
+        row.get("a").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("1").unwrap())
+    );
+    assert_eq!(
+        row.get("b").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2").unwrap())
+    ); // v + 1
+    assert_eq!(
+        row.get("c").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2").unwrap())
+    ); // 1 + v (also Decimal, unlike gluesql)
+    assert_eq!(
+        row.get("d").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("0").unwrap())
+    ); // v - 1
+    assert_eq!(
+        row.get("e").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("0").unwrap())
+    ); // 1 - v (also Decimal, unlike gluesql)
+    assert_eq!(
+        row.get("f").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2").unwrap())
+    ); // v * 2
+    assert_eq!(
+        row.get("g").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2").unwrap())
+    ); // 2 * v (also Decimal, unlike gluesql)
 
     ctx.commit();
 }
@@ -187,16 +256,28 @@ fn test_decimal_with_null() {
 
     let results = ctx.query("SELECT v FROM DECIMAL_ITEM WHERE v IS NOT NULL ORDER BY v");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("v").unwrap(), "Decimal(1.5)");
-    assert_eq!(results[1].get("v").unwrap(), "Decimal(2.5)");
+    assert_eq!(
+        results[0].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("1.5").unwrap())
+    );
+    assert_eq!(
+        results[1].get("v").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2.5").unwrap())
+    );
 
     // Test NULL propagation in arithmetic
     let results = ctx.query("SELECT v + 1 as result FROM DECIMAL_ITEM ORDER BY v");
     assert_eq!(results.len(), 3);
     // SQL standard: NULL sorts last in ASC order
-    assert_eq!(results[0].get("result").unwrap(), "Decimal(2.5)"); // 1.5 + 1 = 2.5
-    assert_eq!(results[1].get("result").unwrap(), "Decimal(3.5)"); // 2.5 + 1 = 3.5
-    assert_eq!(results[2].get("result").unwrap(), "Null"); // NULL + 1 = NULL
+    assert_eq!(
+        results[0].get("result").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("2.5").unwrap())
+    ); // 1.5 + 1 = 2.5
+    assert_eq!(
+        results[1].get("result").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("3.5").unwrap())
+    ); // 2.5 + 1 = 3.5
+    assert_eq!(results[2].get("result").unwrap(), &Value::Null); // NULL + 1 = NULL
 
     ctx.commit();
 }

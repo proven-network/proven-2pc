@@ -107,7 +107,7 @@ impl BinaryOperator for SubtractOperator {
                     return Err(Error::InvalidValue("Date difference too large".into()));
                 }
                 // Return an Interval representing the number of days
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: 0,
                     days: days as i32,
                     microseconds: 0,
@@ -145,7 +145,7 @@ impl BinaryOperator for SubtractOperator {
                 let microseconds = diff
                     .num_microseconds()
                     .ok_or_else(|| Error::InvalidValue("Timestamp difference too large".into()))?;
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: 0,
                     days: 0,
                     microseconds,
@@ -158,7 +158,7 @@ impl BinaryOperator for SubtractOperator {
                 let microseconds = diff
                     .num_microseconds()
                     .ok_or_else(|| Error::InvalidValue("Time difference too large".into()))?;
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: 0,
                     days: 0,
                     microseconds,
@@ -167,7 +167,7 @@ impl BinaryOperator for SubtractOperator {
 
             // Interval - Interval
             (Value::Interval(a), Value::Interval(b)) => {
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: a.months - b.months,
                     days: a.days - b.days,
                     microseconds: a.microseconds - b.microseconds,
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(
             op.execute(&Value::Date(date1), &Value::Date(date2))
                 .unwrap(),
-            Value::Interval(crate::types::data_type::Interval {
+            Value::Interval(proven_value::Interval {
                 months: 0,
                 days: 5,
                 microseconds: 0,

@@ -15,11 +15,11 @@ fn test_dedup_integer_list() {
     let value = results[0].get("actual").unwrap();
 
     // Should contain deduplicated values [1, 2, 3, 4, 5]
-    assert!(value.contains("1"));
-    assert!(value.contains("2"));
-    assert!(value.contains("3"));
-    assert!(value.contains("4"));
-    assert!(value.contains("5"));
+    assert!(value.to_string().contains("1"));
+    assert!(value.to_string().contains("2"));
+    assert!(value.to_string().contains("3"));
+    assert!(value.to_string().contains("4"));
+    assert!(value.to_string().contains("5"));
 
     ctx.commit();
 }
@@ -35,7 +35,7 @@ fn test_dedup_mixed_types() {
 
     // Should deduplicate while preserving type differences
     // Expected: ["1", 1, "1"] - strings and integers are different types
-    assert!(value.contains("List"));
+    assert!(value.to_string().contains("List"));
 
     ctx.commit();
 }
@@ -48,7 +48,7 @@ fn test_dedup_non_list_should_error() {
 
     // Should error with ListTypeRequired
     assert!(
-        error.contains("ListTypeRequired") || error.contains("list"),
+        error.to_string().contains("ListTypeRequired") || error.to_string().contains("list"),
         "Expected ListTypeRequired error, got: {}",
         error
     );
@@ -67,7 +67,7 @@ fn test_dedup_preserves_order() {
     let value = results[0].get("actual").unwrap();
 
     // Should contain [5, 3, 1, 2] in that order
-    assert!(value.contains("List"));
+    assert!(value.to_string().contains("List"));
 
     ctx.commit();
 }
@@ -82,7 +82,7 @@ fn test_dedup_empty_list() {
     let value = results[0].get("actual").unwrap();
 
     // Should return empty list
-    assert!(value.contains("List"));
+    assert!(value.to_string().contains("List"));
 
     ctx.commit();
 }
@@ -97,7 +97,7 @@ fn test_dedup_single_element() {
     let value = results[0].get("actual").unwrap();
 
     // Should return the same single-element list
-    assert!(value.contains("42"));
+    assert!(value.to_string().contains("42"));
 
     ctx.commit();
 }
@@ -112,11 +112,11 @@ fn test_dedup_no_duplicates() {
     let value = results[0].get("actual").unwrap();
 
     // Should return the same list with no duplicates removed
-    assert!(value.contains("1"));
-    assert!(value.contains("2"));
-    assert!(value.contains("3"));
-    assert!(value.contains("4"));
-    assert!(value.contains("5"));
+    assert!(value.to_string().contains("1"));
+    assert!(value.to_string().contains("2"));
+    assert!(value.to_string().contains("3"));
+    assert!(value.to_string().contains("4"));
+    assert!(value.to_string().contains("5"));
 
     ctx.commit();
 }
@@ -131,7 +131,7 @@ fn test_dedup_all_same_values() {
     let value = results[0].get("actual").unwrap();
 
     // Should return list with single element [7]
-    assert!(value.contains("7"));
+    assert!(value.to_string().contains("7"));
 
     ctx.commit();
 }

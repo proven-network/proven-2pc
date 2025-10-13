@@ -29,7 +29,7 @@ fn test_extract_hour_from_timestamp() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("13"));
+    assert!(value.to_string().contains("13"));
 
     ctx.commit();
 }
@@ -43,7 +43,7 @@ fn test_extract_year_from_timestamp() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("2016"));
+    assert!(value.to_string().contains("2016"));
 
     ctx.commit();
 }
@@ -57,7 +57,7 @@ fn test_extract_month_from_timestamp() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("12"));
+    assert!(value.to_string().contains("12"));
 
     ctx.commit();
 }
@@ -71,7 +71,7 @@ fn test_extract_day_from_timestamp() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("31"));
+    assert!(value.to_string().contains("31"));
 
     ctx.commit();
 }
@@ -85,7 +85,7 @@ fn test_extract_minute_from_timestamp() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("30"));
+    assert!(value.to_string().contains("30"));
 
     ctx.commit();
 }
@@ -99,7 +99,7 @@ fn test_extract_second_from_timestamp() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("15"));
+    assert!(value.to_string().contains("15"));
 
     ctx.commit();
 }
@@ -112,7 +112,7 @@ fn test_extract_second_from_time() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("28"));
+    assert!(value.to_string().contains("28"));
 
     ctx.commit();
 }
@@ -125,7 +125,7 @@ fn test_extract_day_from_date() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("6"));
+    assert!(value.to_string().contains("6"));
 
     ctx.commit();
 }
@@ -138,7 +138,7 @@ fn test_extract_year_from_interval() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("3"));
+    assert!(value.to_string().contains("3"));
 
     ctx.commit();
 }
@@ -151,7 +151,7 @@ fn test_extract_month_from_interval() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("4"));
+    assert!(value.to_string().contains("4"));
 
     ctx.commit();
 }
@@ -164,7 +164,7 @@ fn test_extract_day_from_interval() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("5"));
+    assert!(value.to_string().contains("5"));
 
     ctx.commit();
 }
@@ -177,7 +177,7 @@ fn test_extract_hour_from_interval() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("6"));
+    assert!(value.to_string().contains("6"));
 
     ctx.commit();
 }
@@ -190,7 +190,7 @@ fn test_extract_minute_from_interval() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("7"));
+    assert!(value.to_string().contains("7"));
 
     ctx.commit();
 }
@@ -203,7 +203,7 @@ fn test_extract_second_from_interval() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
-    assert!(value.contains("8"));
+    assert!(value.to_string().contains("8"));
 
     ctx.commit();
 }
@@ -219,9 +219,9 @@ fn test_extract_format_not_matched_from_string() {
 
     // Should error - cannot extract HOUR from a text value that isn't a timestamp
     assert!(
-        error.contains("ExtractFormatNotMatched")
-            || error.contains("format")
-            || error.contains("HOUR"),
+        error.to_string().contains("ExtractFormatNotMatched")
+            || error.to_string().contains("format")
+            || error.to_string().contains("HOUR"),
         "Expected ExtractFormatNotMatched error, got: {}",
         error
     );
@@ -239,7 +239,7 @@ fn test_extract_hour_from_year_interval_returns_zero() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("extract").unwrap();
     // Should return 0 since YEAR intervals don't have hour components
-    assert!(value.contains("0"));
+    assert!(value.to_string().contains("0"));
 
     ctx.commit();
 }
@@ -252,9 +252,9 @@ fn test_extract_format_not_matched_from_integer() {
 
     // Should error - cannot extract HOUR from an integer
     assert!(
-        error.contains("Cannot extract")
-            || error.contains("INT")
-            || error.contains("expected TIMESTAMP"),
+        error.to_string().contains("Cannot extract")
+            || error.to_string().contains("INT")
+            || error.to_string().contains("expected TIMESTAMP"),
         "Expected type error for extracting from integer, got: {}",
         error
     );
@@ -270,9 +270,9 @@ fn test_extract_unsupported_datetime_field() {
 
     // Should error - microseconds is not a supported datetime field
     assert!(
-        error.contains("UnsupportedDateTimeField")
-            || error.contains("microseconds")
-            || error.contains("unsupported"),
+        error.to_string().contains("UnsupportedDateTimeField")
+            || error.to_string().contains("microseconds")
+            || error.to_string().contains("unsupported"),
         "Expected UnsupportedDateTimeField error, got: {}",
         error
     );
@@ -292,12 +292,12 @@ fn test_extract_with_plural_fields() {
     let r5 = ctx.query(r#"SELECT EXTRACT(MINUTES FROM TIMESTAMP '2016-12-31 13:30:15') as min"#);
     let r6 = ctx.query(r#"SELECT EXTRACT(SECONDS FROM TIMESTAMP '2016-12-31 13:30:15') as s"#);
 
-    assert!(r1[0].get("y").unwrap().contains("2016"));
-    assert!(r2[0].get("m").unwrap().contains("12"));
-    assert!(r3[0].get("d").unwrap().contains("31"));
-    assert!(r4[0].get("h").unwrap().contains("13"));
-    assert!(r5[0].get("min").unwrap().contains("30"));
-    assert!(r6[0].get("s").unwrap().contains("15"));
+    assert!(r1[0].get("y").unwrap().to_string().contains("2016"));
+    assert!(r2[0].get("m").unwrap().to_string().contains("12"));
+    assert!(r3[0].get("d").unwrap().to_string().contains("31"));
+    assert!(r4[0].get("h").unwrap().to_string().contains("13"));
+    assert!(r5[0].get("min").unwrap().to_string().contains("30"));
+    assert!(r6[0].get("s").unwrap().to_string().contains("15"));
 
     ctx.commit();
 }

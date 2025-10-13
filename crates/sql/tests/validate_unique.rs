@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-use proven_sql::SqlResponse;
+use proven_sql::{SqlResponse, Value};
 
 use crate::common::TestContext;
 
@@ -144,7 +144,7 @@ fn test_update_to_null_in_unique_column() {
     // Verify the update
     let results = ctx.query("SELECT id FROM TestC WHERE num = 1");
     assert_eq!(results.len(), 1);
-    assert!(results[0].values().next().unwrap().contains("Null"));
+    assert!(results[0].values().next().unwrap() == &Value::Null);
 
     ctx.commit();
 }

@@ -15,6 +15,7 @@ use crate::parsing::CachingParser;
 use crate::planning::caching_planner::CachingPlanner;
 use crate::semantic::CachingSemanticAnalyzer;
 use crate::storage::{SqlStorage, SqlStorageConfig};
+use crate::types::ValueExt;
 use crate::types::context::{ExecutionContext, TransactionContext, TransactionState};
 use crate::types::operation::SqlOperation;
 use crate::types::response::{SqlResponse, convert_execution_result};
@@ -129,7 +130,7 @@ impl SqlTransactionEngine {
     fn execute_sql_snapshot(
         &mut self,
         sql: &str,
-        params: Option<Vec<crate::types::value::Value>>,
+        params: Option<Vec<crate::types::Value>>,
         read_timestamp: HlcTimestamp,
         log_index: u64,
     ) -> OperationResult<SqlResponse> {
@@ -246,7 +247,7 @@ impl SqlTransactionEngine {
     fn execute_sql(
         &mut self,
         sql: &str,
-        params: Option<Vec<crate::types::value::Value>>,
+        params: Option<Vec<crate::types::Value>>,
         txn_id: HlcTimestamp,
         log_index: u64,
     ) -> OperationResult<SqlResponse> {

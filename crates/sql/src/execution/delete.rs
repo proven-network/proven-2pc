@@ -8,7 +8,7 @@ use crate::execution::{ExecutionResult, expression, helpers};
 use crate::planning::plan::Node;
 use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
-use crate::types::value::Value;
+use crate::types::{Value, ValueExt};
 
 /// Execute DELETE with phased read-then-write approach
 pub fn execute_delete(

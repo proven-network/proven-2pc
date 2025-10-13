@@ -4,7 +4,7 @@ use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
 use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
-use crate::types::value::Value;
+use crate::types::{Value, ValueExt};
 
 pub struct CastFunction;
 
@@ -451,7 +451,7 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
 
                 // Parse the input as a JSON array
                 let array_value = match value {
-                    Value::Str(s) => Value::parse_json_array(s)?,
+                    Value::Str(s) => Value::parse_json_array(s).map_err(Error::InvalidValue)?,
                     Value::List(_) => value.clone(),
                     _ => {
                         return Err(Error::TypeMismatch {

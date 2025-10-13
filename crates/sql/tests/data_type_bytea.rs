@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_bytea_column() {
     let mut ctx = setup_test();
@@ -28,9 +28,9 @@ fn test_insert_bytea_hex_format() {
     assert_eq!(results.len(), 3);
 
     // Check that the values are properly stored as Bytea
-    assert!(results[0].get("bytes").unwrap().starts_with("Bytea("));
-    assert!(results[1].get("bytes").unwrap().starts_with("Bytea("));
-    assert!(results[2].get("bytes").unwrap().starts_with("Bytea("));
+    assert!(results[0].get("bytes").unwrap().is_bytes());
+    assert!(results[1].get("bytes").unwrap().is_bytes());
+    assert!(results[2].get("bytes").unwrap().is_bytes());
 
     ctx.commit();
 }
@@ -47,8 +47,8 @@ fn test_insert_uppercase_hex() {
 
     let results = ctx.query("SELECT bytes FROM Bytea");
     assert_eq!(results.len(), 2);
-    assert!(results[0].get("bytes").unwrap().starts_with("Bytea("));
-    assert!(results[1].get("bytes").unwrap().starts_with("Bytea("));
+    assert!(results[0].get("bytes").unwrap().is_bytes());
+    assert!(results[1].get("bytes").unwrap().is_bytes());
 
     ctx.commit();
 }
@@ -87,14 +87,14 @@ fn test_select_bytea_values() {
     let results = ctx.query("SELECT id, data FROM BinaryData ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert!(results[0].get("data").unwrap().starts_with("Bytea("));
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert!(results[0].get("data").unwrap().is_bytes());
 
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert!(results[1].get("data").unwrap().starts_with("Bytea("));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert!(results[1].get("data").unwrap().is_bytes());
 
-    assert_eq!(results[2].get("id").unwrap(), "I32(3)");
-    assert!(results[2].get("data").unwrap().starts_with("Bytea("));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(3));
+    assert!(results[2].get("data").unwrap().is_bytes());
 
     ctx.commit();
 }
@@ -113,22 +113,22 @@ fn test_bytea_comparisons() {
     // Test equality
     let results = ctx.query("SELECT id FROM BinaryData WHERE data = X'02' ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(4)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(4));
 
     // Test greater than
     let results = ctx.query("SELECT id FROM BinaryData WHERE data > X'01' ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(4)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(4));
 
     // Test less than
     let results = ctx.query("SELECT id FROM BinaryData WHERE data < X'03' ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(4)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(4));
 
     ctx.commit();
 }
@@ -145,14 +145,14 @@ fn test_bytea_with_null() {
 
     let results = ctx.query("SELECT id, data FROM BinaryData WHERE data IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert!(results[0].get("data").unwrap().starts_with("Bytea("));
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
-    assert!(results[1].get("data").unwrap().starts_with("Bytea("));
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert!(results[0].get("data").unwrap().is_bytes());
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
+    assert!(results[1].get("data").unwrap().is_bytes());
 
     let results = ctx.query("SELECT id FROM BinaryData WHERE data IS NULL");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -172,13 +172,13 @@ fn test_bytea_update_and_delete() {
 
     let results = ctx.query("SELECT data FROM BinaryData WHERE id = 2");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("data").unwrap().starts_with("Bytea("));
+    assert!(results[0].get("data").unwrap().is_bytes());
 
     // Delete by BYTEA value
     ctx.exec("DELETE FROM BinaryData WHERE data = X'0506'");
 
     let results = ctx.query("SELECT COUNT(*) as cnt FROM BinaryData");
-    assert_eq!(results[0].get("cnt").unwrap(), "I64(2)");
+    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(2));
 
     ctx.commit();
 }

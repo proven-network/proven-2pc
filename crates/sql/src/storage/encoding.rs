@@ -1,14 +1,15 @@
 //! Encoding utilities for storage
 //!
-//! This module provides three types of encoding:
-//! 1. Index keys - Sortable encoding for index values
+//! This module provides two types of encoding:
+//! 1. Index keys - Sortable encoding for index values (delegates to proven_value)
 //! 2. Row values - Schema-aware compact encoding
 
 use crate::error::{Error, Result};
-use crate::types::data_type::{DataType, Interval, Point};
+use crate::types::data_type::DataType;
 use crate::types::schema::Table;
-use crate::types::value::Value;
+use crate::types::{Interval, Point, Value};
 use chrono::{NaiveDate, NaiveTime, Timelike};
+use proven_value::encoding::encode_value as encode_value_sortable_internal;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
@@ -16,14 +17,14 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 // ============================================================================
-// Index Key Encoding (Sortable)
+// Index Key Encoding (Sortable) - Delegates to proven_value
 // ============================================================================
 
 /// Encode an index key with row_id
 pub fn encode_index_key(index_values: &[Value], row_id: u64) -> Vec<u8> {
     let mut key = Vec::new();
 
-    // Encode each value in a sortable way
+    // Encode each value in a sortable way using proven_value
     for value in index_values {
         encode_value_sortable(value, &mut key);
     }
@@ -34,197 +35,10 @@ pub fn encode_index_key(index_values: &[Value], row_id: u64) -> Vec<u8> {
 }
 
 /// Encode a value in a sortable binary format (for index keys)
+/// This delegates to proven_value's efficient sortable encoding
 pub fn encode_value_sortable(value: &Value, output: &mut Vec<u8>) {
-    match value {
-        Value::Null => {
-            output.push(0x00); // NULL sorts first
-        }
-        Value::Bool(b) => {
-            output.push(0x01);
-            output.push(if *b { 1 } else { 0 });
-        }
-        // Integer types - sorted by type then value
-        Value::I8(i) => {
-            output.push(0x02);
-            let u = (*i as u8) ^ (1u8 << 7);
-            output.push(u);
-        }
-        Value::I16(i) => {
-            output.push(0x03);
-            let u = (*i as u16) ^ (1u16 << 15);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        Value::I32(i) => {
-            output.push(0x04);
-            let u = (*i as u32) ^ (1u32 << 31);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        Value::I64(i) => {
-            output.push(0x05);
-            let u = (*i as u64) ^ (1u64 << 63);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        Value::I128(i) => {
-            output.push(0x06);
-            let u = (*i as u128) ^ (1u128 << 127);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        Value::U8(u) => {
-            output.push(0x07);
-            output.push(*u);
-        }
-        Value::U16(u) => {
-            output.push(0x08);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        Value::U32(u) => {
-            output.push(0x09);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        Value::U64(u) => {
-            output.push(0x0A);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        Value::U128(u) => {
-            output.push(0x0B);
-            output.extend_from_slice(&u.to_be_bytes());
-        }
-        // Float types
-        Value::F32(f) => {
-            output.push(0x0C);
-            let bits = f.to_bits();
-            let sortable = if f.is_sign_negative() {
-                !bits
-            } else {
-                bits ^ (1u32 << 31)
-            };
-            output.extend_from_slice(&sortable.to_be_bytes());
-        }
-        Value::F64(f) => {
-            output.push(0x0D);
-            let bits = f.to_bits();
-            let sortable = if f.is_sign_negative() {
-                !bits
-            } else {
-                bits ^ (1u64 << 63)
-            };
-            output.extend_from_slice(&sortable.to_be_bytes());
-        }
-        // Decimal - encode mantissa and scale directly for sortability
-        Value::Decimal(d) => {
-            output.push(0x0E);
-            // For sorting, we need to handle sign and magnitude
-            let mantissa = d.mantissa();
-            let scale = d.scale();
-            // XOR with sign bit for proper signed sorting
-            let sortable = (mantissa as u128) ^ (1u128 << 127);
-            output.extend_from_slice(&sortable.to_be_bytes());
-            output.extend_from_slice(&scale.to_be_bytes());
-        }
-        // String
-        Value::Str(s) => {
-            output.push(0x0F);
-            let bytes = s.as_bytes();
-            output.extend_from_slice(bytes);
-            output.push(0x00); // Null terminator for sorting
-        }
-        // Date/Time types - encode as numeric values for sorting
-        Value::Date(d) => {
-            output.push(0x10);
-            let days = d
-                .signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
-                .num_days();
-            output.extend_from_slice(&days.to_be_bytes());
-        }
-        Value::Time(t) => {
-            output.push(0x11);
-            let nanos =
-                t.num_seconds_from_midnight() as i64 * 1_000_000_000 + t.nanosecond() as i64;
-            output.extend_from_slice(&nanos.to_be_bytes());
-        }
-        Value::Timestamp(ts) => {
-            output.push(0x12);
-            let timestamp = ts.and_utc().timestamp();
-            let nanos = ts.and_utc().timestamp_subsec_nanos();
-            output.extend_from_slice(&timestamp.to_be_bytes());
-            output.extend_from_slice(&nanos.to_be_bytes());
-        }
-        Value::Interval(i) => {
-            output.push(0x13);
-            // Intervals are complex - months, days, microseconds
-            output.extend_from_slice(&i.months.to_be_bytes());
-            output.extend_from_slice(&i.days.to_be_bytes());
-            output.extend_from_slice(&i.microseconds.to_be_bytes());
-        }
-        // Special types
-        Value::Uuid(u) => {
-            output.push(0x14);
-            output.extend_from_slice(u.as_bytes());
-        }
-        Value::Bytea(b) => {
-            output.push(0x15);
-            output.extend_from_slice(&(b.len() as u32).to_be_bytes());
-            output.extend_from_slice(b);
-        }
-        Value::Inet(ip) => {
-            output.push(0x16);
-            match ip {
-                IpAddr::V4(v4) => {
-                    output.push(4);
-                    output.extend_from_slice(&v4.octets());
-                }
-                IpAddr::V6(v6) => {
-                    output.push(6);
-                    output.extend_from_slice(&v6.octets());
-                }
-            }
-        }
-        Value::Point(p) => {
-            output.push(0x17);
-            output.extend_from_slice(&p.x.to_bits().to_be_bytes());
-            output.extend_from_slice(&p.y.to_bits().to_be_bytes());
-        }
-        // Collection types - encode recursively for proper sorting
-        Value::Array(arr) | Value::List(arr) => {
-            output.push(0x18);
-            output.extend_from_slice(&(arr.len() as u32).to_be_bytes());
-            for value in arr {
-                encode_value_sortable(value, output);
-            }
-        }
-        Value::Map(m) => {
-            output.push(0x19);
-            output.extend_from_slice(&(m.len() as u32).to_be_bytes());
-            // Sort keys for deterministic ordering
-            let mut sorted_keys: Vec<_> = m.keys().collect();
-            sorted_keys.sort();
-            for key in sorted_keys {
-                let key_bytes = key.as_bytes();
-                output.extend_from_slice(&(key_bytes.len() as u32).to_be_bytes());
-                output.extend_from_slice(key_bytes);
-                encode_value_sortable(&m[key], output);
-            }
-        }
-        Value::Struct(fields) => {
-            output.push(0x1A);
-            output.extend_from_slice(&(fields.len() as u32).to_be_bytes());
-            // Encode fields in the order they appear (assumes consistent ordering)
-            for (name, value) in fields {
-                let name_bytes = name.as_bytes();
-                output.extend_from_slice(&(name_bytes.len() as u32).to_be_bytes());
-                output.extend_from_slice(name_bytes);
-                encode_value_sortable(value, output);
-            }
-        }
-        Value::Json(j) => {
-            output.push(0x1B);
-            // For sorting, encode JSON as its string representation
-            let json_str = j.to_string();
-            let bytes = json_str.as_bytes();
-            output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-            output.extend_from_slice(bytes);
-        }
-    }
+    let encoded = encode_value_sortable_internal(value);
+    output.extend_from_slice(&encoded);
 }
 
 // ============================================================================

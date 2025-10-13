@@ -6,9 +6,10 @@
 use super::{Function, FunctionRegistry, FunctionSignature};
 use crate::error::{Error, Result};
 use crate::types::context::ExecutionContext;
-use crate::types::data_type::{DataType, Interval};
-use crate::types::value::Value;
+use crate::types::data_type::DataType;
+use crate::types::{Value, ValueExt};
 use chrono::{Datelike, Timelike};
+use proven_value::Interval;
 
 /// EXTRACT function - extracts datetime components
 pub struct ExtractFunction;

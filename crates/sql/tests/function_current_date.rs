@@ -44,7 +44,7 @@ fn test_filter_by_current_date() {
     // Verify at least one result contains the far future date
     let has_future_date = results.iter().any(|row| {
         let date_value = row.get("date").unwrap();
-        date_value.contains("9999")
+        date_value.to_string().contains("9999")
     });
     assert!(
         has_future_date,
@@ -64,7 +64,7 @@ fn test_current_date_basic() {
     assert_eq!(results.len(), 1);
     let date_str = results[0].get("today").unwrap();
     // Should contain a date value (basic validation)
-    assert!(date_str.contains("Date") || date_str.contains("-"));
+    assert!(date_str.to_string().contains("Date") || date_str.to_string().contains("-"));
 
     ctx.commit();
 }
@@ -79,7 +79,7 @@ fn test_current_date_with_parentheses() {
     assert_eq!(results.len(), 1);
     let date_str = results[0].get("today").unwrap();
     // Should contain a date value (basic validation)
-    assert!(date_str.contains("Date") || date_str.contains("-"));
+    assert!(date_str.to_string().contains("Date") || date_str.to_string().contains("-"));
 
     ctx.commit();
 }

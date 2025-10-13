@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_group_by_with_count() {
@@ -27,12 +28,12 @@ fn test_group_by_with_count() {
         let id = row.get("id").unwrap(); // GROUP BY columns now keep their names
         let count = row.get("COUNT(*)").unwrap();
 
-        if id == "I32(1)" {
-            assert_eq!(count, "I64(3)"); // id 1 appears 3 times
-        } else if id == "I32(2)" {
-            assert_eq!(count, "I64(1)"); // id 2 appears 1 time
-        } else if id == "I32(3)" {
-            assert_eq!(count, "I64(1)"); // id 3 appears 1 time
+        if id == &Value::I32(1) {
+            assert_eq!(count, &Value::I64(3)); // id 1 appears 3 times
+        } else if id == &Value::I32(2) {
+            assert_eq!(count, &Value::I64(1)); // id 2 appears 1 time
+        } else if id == &Value::I32(3) {
+            assert_eq!(count, &Value::I64(1)); // id 3 appears 1 time
         }
     }
 
@@ -57,12 +58,9 @@ fn test_group_by_select_column_only() {
     assert_eq!(results.len(), 3); // 3 distinct ids
 
     // Check that we have ids 1, 2, 3
-    let mut ids: Vec<String> = results
-        .iter()
-        .map(|row| row.get("id").unwrap().to_string())
-        .collect();
+    let mut ids: Vec<&Value> = results.iter().map(|row| row.get("id").unwrap()).collect();
     ids.sort();
-    assert_eq!(ids, vec!["I32(1)", "I32(2)", "I32(3)"]);
+    assert_eq!(ids, vec![&Value::I32(1), &Value::I32(2), &Value::I32(3)]);
 
     ctx.commit();
 }
@@ -93,22 +91,22 @@ fn test_group_by_with_multiple_aggregates() {
             .or_else(|| {
                 // Find the string column
                 row.values()
-                    .find(|&value| value.starts_with("Str("))
+                    .find(|&value| value.to_string().starts_with("Str("))
                     .map(|v| v as _)
             })
             .unwrap();
         let sum = row.get("SUM(quantity)").unwrap();
         let count = row.get("COUNT(*)").unwrap();
 
-        if city == "Str(\"New York\")" {
-            assert_eq!(sum, "I32(25)"); // 10 + 15
-            assert_eq!(count, "I64(2)");
-        } else if city == "Str(\"Boston\")" {
-            assert_eq!(sum, "I32(45)"); // 20 + 25
-            assert_eq!(count, "I64(2)");
-        } else if city == "Str(\"Chicago\")" {
-            assert_eq!(sum, "I32(30)");
-            assert_eq!(count, "I64(1)");
+        if city == &Value::Str("New York".to_string()) {
+            assert_eq!(sum, &Value::I32(25)); // 10 + 15
+            assert_eq!(count, &Value::I64(2));
+        } else if city == &Value::Str("Boston".to_string()) {
+            assert_eq!(sum, &Value::I32(45)); // 20 + 25
+            assert_eq!(count, &Value::I64(2));
+        } else if city == &Value::Str("Chicago".to_string()) {
+            assert_eq!(sum, &Value::I32(30));
+            assert_eq!(count, &Value::I64(1));
         }
     }
 
@@ -159,10 +157,10 @@ fn test_group_by_numeric_column() {
         let ratio = row.get("ratio").unwrap();
         let count = row.get("COUNT(*)").unwrap();
 
-        match ratio.as_str() {
-            "F64(1.5)" | "F64(2.5)" => assert_eq!(count, "I64(2)"),
-            "F64(3)" => assert_eq!(count, "I64(1)"),
-            _ => panic!("Unexpected ratio value: {}", ratio),
+        match ratio {
+            Value::F64(1.5) | Value::F64(2.5) => assert_eq!(count, &Value::I64(2)),
+            Value::F64(3.0) => assert_eq!(count, &Value::I64(1)),
+            _ => panic!("Unexpected ratio value: {:?}", ratio),
         }
     }
 
@@ -191,12 +189,12 @@ fn test_group_by_multiple_columns() {
         let city = row.get("city").unwrap(); // Second GROUP BY column keeps its name
         let count = row.get("COUNT(*)").unwrap();
 
-        if id == "I32(1)" && city == "Str(\"New York\")" {
-            assert_eq!(count, "I64(2)");
-        } else if id == "I32(1)" && city == "Str(\"Boston\")" {
-            assert_eq!(count, "I64(1)");
-        } else if id == "I32(2)" && city == "Str(\"Boston\")" {
-            assert_eq!(count, "I64(2)");
+        if id == &Value::I32(1) && city == &Value::Str("New York".to_string()) {
+            assert_eq!(count, &Value::I64(2));
+        } else if id == &Value::I32(1) && city == &Value::Str("Boston".to_string()) {
+            assert_eq!(count, &Value::I64(1));
+        } else if id == &Value::I32(2) && city == &Value::Str("Boston".to_string()) {
+            assert_eq!(count, &Value::I64(2));
         }
     }
 
@@ -290,12 +288,12 @@ fn test_group_by_handles_nulls() {
         let city = row.get("city").unwrap(); // GROUP BY column keeps its name
         let count = row.get("COUNT(*)").unwrap();
 
-        if city == "Null" {
-            assert_eq!(count, "I64(2)"); // 2 NULL values
-        } else if city == "Str(\"New York\")" {
-            assert_eq!(count, "I64(1)");
-        } else if city == "Str(\"Boston\")" {
-            assert_eq!(count, "I64(2)");
+        if city == &Value::Null {
+            assert_eq!(count, &Value::I64(2)); // 2 NULL values
+        } else if city == &Value::Str("New York".to_string()) {
+            assert_eq!(count, &Value::I64(1));
+        } else if city == &Value::Str("Boston".to_string()) {
+            assert_eq!(count, &Value::I64(2));
         }
     }
 

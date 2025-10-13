@@ -4,6 +4,7 @@
 mod common;
 
 use common::setup_test;
+use proven_value::Value;
 
 /// Helper function to set up test tables with type constraints
 fn setup_type_tables(ctx: &mut common::TestContext) {
@@ -36,13 +37,13 @@ fn test_insert_valid_data() {
     // Insert valid boolean value
     ctx.exec("INSERT INTO TableB VALUES (FALSE)");
     assert_rows!(ctx, "SELECT * FROM TableB", 1);
-    ctx.assert_query_contains("SELECT id FROM TableB", "id", "Bool(false)");
+    ctx.assert_query_value("SELECT id FROM TableB", "id", Value::Bool(false));
 
     // Insert valid integer with NULL
     ctx.exec("INSERT INTO TableC VALUES (1, NULL)");
     assert_rows!(ctx, "SELECT * FROM TableC", 1);
-    ctx.assert_query_contains("SELECT uid FROM TableC", "uid", "I32(1)");
-    ctx.assert_query_contains("SELECT null_val FROM TableC", "null_val", "Null");
+    ctx.assert_query_value("SELECT uid FROM TableC", "uid", Value::I32(1));
+    ctx.assert_query_value("SELECT null_val FROM TableC", "null_val", Value::Null);
 
     ctx.commit();
 }
@@ -129,7 +130,7 @@ fn test_update_with_incompatible_literal_type() {
     ctx.assert_error_contains("UPDATE TableC SET uid = TRUE", "TypeMismatch");
 
     // Value should remain unchanged
-    ctx.assert_query_contains("SELECT uid FROM TableC", "uid", "I32(1)");
+    ctx.assert_query_value("SELECT uid FROM TableC", "uid", Value::I32(1));
 
     ctx.commit();
 }
@@ -150,7 +151,7 @@ fn test_update_with_incompatible_data_type_from_subquery() {
     assert!(!error.is_empty(), "Should produce an error");
 
     // Value should remain unchanged
-    ctx.assert_query_contains("SELECT uid FROM TableC WHERE uid = 1", "uid", "I32(1)");
+    ctx.assert_query_value("SELECT uid FROM TableC WHERE uid = 1", "uid", Value::I32(1));
 
     ctx.commit();
 }
@@ -170,7 +171,7 @@ fn test_update_to_null_on_not_null_field() {
     );
 
     // Value should remain unchanged
-    ctx.assert_query_contains("SELECT uid FROM TableC", "uid", "I32(1)");
+    ctx.assert_query_value("SELECT uid FROM TableC", "uid", Value::I32(1));
 
     ctx.commit();
 }
@@ -189,7 +190,7 @@ fn test_update_to_null_from_subquery_on_not_null_field() {
     assert!(!error.is_empty(), "Should produce an error");
 
     // Value should remain unchanged
-    ctx.assert_query_contains("SELECT uid FROM TableC", "uid", "I32(1)");
+    ctx.assert_query_value("SELECT uid FROM TableC", "uid", Value::I32(1));
 
     ctx.commit();
 }
@@ -211,18 +212,18 @@ fn test_mixed_type_operations() {
 
     // Update with compatible types should work
     ctx.exec("UPDATE TableC SET null_val = 999 WHERE uid = 100");
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT null_val FROM TableC WHERE uid = 100",
         "null_val",
-        "I32(999)",
+        Value::I32(999),
     );
 
     // Update NULL column to NULL should work
     ctx.exec("UPDATE TableC SET null_val = NULL WHERE uid = 100");
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT null_val FROM TableC WHERE uid = 100",
         "null_val",
-        "Null",
+        Value::Null,
     );
 
     ctx.commit();
@@ -239,21 +240,21 @@ fn test_bulk_insert_with_nulls() {
     assert_rows!(ctx, "SELECT * FROM TableC", 3);
 
     // Verify each row
-    ctx.assert_query_contains("SELECT uid FROM TableC WHERE uid = 1", "uid", "I32(1)");
-    ctx.assert_query_contains(
+    ctx.assert_query_value("SELECT uid FROM TableC WHERE uid = 1", "uid", Value::I32(1));
+    ctx.assert_query_value(
         "SELECT null_val FROM TableC WHERE uid = 1",
         "null_val",
-        "I32(10)",
+        Value::I32(10),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT null_val FROM TableC WHERE uid = 2",
         "null_val",
-        "Null",
+        Value::Null,
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT null_val FROM TableC WHERE uid = 3",
         "null_val",
-        "I32(30)",
+        Value::I32(30),
     );
 
     // Try bulk insert with NULL in NOT NULL column - should fail entirely
@@ -285,30 +286,46 @@ fn test_default_values_with_types() {
 
     // Insert with defaults
     ctx.exec("INSERT INTO TableD (id) VALUES (1)");
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT flag FROM TableD WHERE id = 1",
         "flag",
-        "Bool(false)",
+        Value::Bool(false),
     );
-    ctx.assert_query_contains("SELECT count FROM TableD WHERE id = 1", "count", "I32(0)");
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
+        "SELECT count FROM TableD WHERE id = 1",
+        "count",
+        Value::I32(0),
+    );
+    ctx.assert_query_value(
         "SELECT nullable_count FROM TableD WHERE id = 1",
         "nullable_count",
-        "Null",
+        Value::Null,
     );
 
     // Insert with partial values
     ctx.exec("INSERT INTO TableD (id, flag) VALUES (2, TRUE)");
-    ctx.assert_query_contains("SELECT flag FROM TableD WHERE id = 2", "flag", "Bool(true)");
-    ctx.assert_query_contains("SELECT count FROM TableD WHERE id = 2", "count", "I32(0)");
+    ctx.assert_query_value(
+        "SELECT flag FROM TableD WHERE id = 2",
+        "flag",
+        Value::Bool(true),
+    );
+    ctx.assert_query_value(
+        "SELECT count FROM TableD WHERE id = 2",
+        "count",
+        Value::I32(0),
+    );
 
     // Insert with all values
     ctx.exec("INSERT INTO TableD VALUES (3, TRUE, 100, 200)");
-    ctx.assert_query_contains("SELECT count FROM TableD WHERE id = 3", "count", "I32(100)");
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
+        "SELECT count FROM TableD WHERE id = 3",
+        "count",
+        Value::I32(100),
+    );
+    ctx.assert_query_value(
         "SELECT nullable_count FROM TableD WHERE id = 3",
         "nullable_count",
-        "I32(200)",
+        Value::I32(200),
     );
 
     ctx.commit();

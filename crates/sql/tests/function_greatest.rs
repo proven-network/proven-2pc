@@ -13,7 +13,7 @@ fn test_greatest_integers() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("goat").unwrap();
-    assert!(value.contains("10"));
+    assert!(value.to_string().contains("10"));
 
     ctx.commit();
 }
@@ -26,7 +26,7 @@ fn test_greatest_floats() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("goat").unwrap();
-    assert!(value.contains("10.5"));
+    assert!(value.to_string().contains("10.5"));
 
     ctx.commit();
 }
@@ -40,7 +40,7 @@ fn test_greatest_strings() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("goat").unwrap();
     // 'melona' is greatest lexicographically
-    assert!(value.contains("melona"));
+    assert!(value.to_string().contains("melona"));
 
     ctx.commit();
 }
@@ -62,7 +62,7 @@ fn test_greatest_dates() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("goat").unwrap();
     // 2024-07-18 is the greatest date
-    assert!(value.contains("2024-07-18"));
+    assert!(value.to_string().contains("2024-07-18"));
 
     ctx.commit();
 }
@@ -149,7 +149,7 @@ fn test_greatest_booleans() {
     assert_eq!(results.len(), 1);
     let value = results[0].get("goat").unwrap();
     // true > false
-    assert!(value.contains("true") || value.contains("Bool(true)"));
+    assert!(value.to_string().contains("true") || value.to_string().contains("Bool(true)"));
 
     ctx.commit();
 }
@@ -180,7 +180,7 @@ fn test_greatest_two_arguments() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("goat").unwrap();
-    assert!(value.contains("100"));
+    assert!(value.to_string().contains("100"));
 
     ctx.commit();
 }
@@ -196,11 +196,17 @@ fn test_greatest_with_table_data() {
 
     assert_eq!(results.len(), 3);
     // Row 1: max(1, 5, 3) = 5
-    assert!(results[0].get("max_val").unwrap().contains("5"));
+    assert!(results[0].get("max_val").unwrap().to_string().contains("5"));
     // Row 2: max(10, 2, 8) = 10
-    assert!(results[1].get("max_val").unwrap().contains("10"));
+    assert!(
+        results[1]
+            .get("max_val")
+            .unwrap()
+            .to_string()
+            .contains("10")
+    );
     // Row 3: max(4, 9, 6) = 9
-    assert!(results[2].get("max_val").unwrap().contains("9"));
+    assert!(results[2].get("max_val").unwrap().to_string().contains("9"));
 
     ctx.commit();
 }

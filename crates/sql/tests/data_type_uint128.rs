@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_uint128_columns() {
     let mut ctx = setup_test();
@@ -14,14 +14,14 @@ fn test_create_table_with_uint128_columns() {
 
     let results = ctx.query("SELECT field_one, field_two FROM Item ORDER BY field_one");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("field_one").unwrap(), "U128(1)");
-    assert_eq!(results[0].get("field_two").unwrap(), "U128(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U128(2)");
-    assert_eq!(results[1].get("field_two").unwrap(), "U128(2)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U128(3)");
-    assert_eq!(results[2].get("field_two").unwrap(), "U128(3)");
-    assert_eq!(results[3].get("field_one").unwrap(), "U128(4)");
-    assert_eq!(results[3].get("field_two").unwrap(), "U128(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U128(1));
+    assert_eq!(results[0].get("field_two").unwrap(), &Value::U128(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U128(2));
+    assert_eq!(results[1].get("field_two").unwrap(), &Value::U128(2));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U128(3));
+    assert_eq!(results[2].get("field_two").unwrap(), &Value::U128(3));
+    assert_eq!(results[3].get("field_one").unwrap(), &Value::U128(4));
+    assert_eq!(results[3].get("field_two").unwrap(), &Value::U128(4));
 
     ctx.commit();
 }
@@ -43,27 +43,27 @@ fn test_insert_uint128_values() {
 
     let results = ctx.query("SELECT id, value FROM uint128_test ORDER BY id");
     assert_eq!(results.len(), 7);
-    assert_eq!(results[0].get("value").unwrap(), "U128(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U128(1)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U128(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U128(1));
     assert_eq!(
         results[2].get("value").unwrap(),
-        "U128(18446744073709551615)"
+        &Value::U128(18446744073709551615)
     );
     assert_eq!(
         results[3].get("value").unwrap(),
-        "U128(18446744073709551616)"
+        &Value::U128(18446744073709551616)
     );
     assert_eq!(
         results[4].get("value").unwrap(),
-        "U128(170141183460469231731687303715884105727)"
+        &Value::U128(170141183460469231731687303715884105727)
     );
     assert_eq!(
         results[5].get("value").unwrap(),
-        "U128(170141183460469231731687303715884105728)"
+        &Value::U128(170141183460469231731687303715884105728)
     );
     assert_eq!(
         results[6].get("value").unwrap(),
-        "U128(340282366920938463463374607431768211455)"
+        &Value::U128(340282366920938463463374607431768211455)
     );
 
     ctx.commit();
@@ -99,26 +99,26 @@ fn test_uint128_comparisons() {
     // Test greater than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one > 2 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U128(3)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U128(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U128(3));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U128(4));
 
     // Test greater than or equal
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one >= 2 ORDER BY field_one");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("field_one").unwrap(), "U128(2)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U128(3)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U128(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U128(2));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U128(3));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U128(4));
 
     // Test equality
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("field_one").unwrap(), "U128(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U128(2));
 
     // Test less than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one < 3 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U128(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U128(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U128(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U128(2));
 
     ctx.commit();
 }
@@ -133,32 +133,38 @@ fn test_uint128_arithmetic_operations() {
     // Test addition
     let results = ctx.query("SELECT a + b AS sum FROM uint128_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("sum").unwrap(), "U128(13000000000000000000)");
+    assert_eq!(
+        results[0].get("sum").unwrap(),
+        &Value::U128(13000000000000000000)
+    );
 
     // Test subtraction
     let results = ctx.query("SELECT a - b AS diff FROM uint128_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("diff").unwrap(), "U128(7000000000000000000)");
+    assert_eq!(
+        results[0].get("diff").unwrap(),
+        &Value::U128(7000000000000000000)
+    );
 
     // Test multiplication
     let results = ctx.query("SELECT a * b AS product FROM uint128_math");
     assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].get("product").unwrap(),
-        "U128(30000000000000000000000000000000000000)"
+        &Value::U128(30000000000000000000000000000000000000)
     );
 
     // Test division (integer division)
     let results = ctx.query("SELECT a / b AS quotient FROM uint128_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("quotient").unwrap(), "U128(3)");
+    assert_eq!(results[0].get("quotient").unwrap(), &Value::U128(3));
 
     // Test modulo
     let results = ctx.query("SELECT a % b AS remainder FROM uint128_math");
     assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].get("remainder").unwrap(),
-        "U128(1000000000000000000)"
+        &Value::U128(1000000000000000000)
     );
 
     ctx.commit();
@@ -178,10 +184,10 @@ fn test_uint128_range_boundaries() {
 
     let results = ctx.query("SELECT value FROM uint128_bounds ORDER BY value");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U128(0)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U128(0));
     assert_eq!(
         results[1].get("value").unwrap(),
-        "U128(340282366920938463463374607431768211455)"
+        &Value::U128(340282366920938463463374607431768211455)
     );
 
     // Test operations at boundaries
@@ -194,7 +200,7 @@ fn test_uint128_range_boundaries() {
     let results = ctx.query("SELECT a - b AS diff FROM uint128_boundary_ops");
     assert_eq!(
         results[0].get("diff").unwrap(),
-        "U128(340282366920938463463374607431768211455)"
+        &Value::U128(340282366920938463463374607431768211455)
     );
 
     ctx.commit();
@@ -236,11 +242,11 @@ fn test_uint128_with_null() {
     assert_eq!(results.len(), 2);
     assert_eq!(
         results[0].get("value").unwrap(),
-        "U128(100000000000000000000)"
+        &Value::U128(100000000000000000000)
     );
     assert_eq!(
         results[1].get("value").unwrap(),
-        "U128(200000000000000000000)"
+        &Value::U128(200000000000000000000)
     );
 
     // Test NULL propagation in arithmetic
@@ -249,12 +255,12 @@ fn test_uint128_with_null() {
     assert_eq!(results.len(), 3);
     assert_eq!(
         results[0].get("result").unwrap(),
-        "U128(150000000000000000000)"
+        &Value::U128(150000000000000000000)
     );
-    assert_eq!(results[1].get("result").unwrap(), "Null");
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
     assert_eq!(
         results[2].get("result").unwrap(),
-        "U128(250000000000000000000)"
+        &Value::U128(250000000000000000000)
     );
 
     ctx.commit();
@@ -270,7 +276,7 @@ fn test_cast_to_uint128() {
     assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].get("uint128_val").unwrap(),
-        "U128(123456789012345678901)"
+        &Value::U128(123456789012345678901)
     );
 
     // Test CAST from integer
@@ -278,7 +284,7 @@ fn test_cast_to_uint128() {
     assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].get("uint128_val").unwrap(),
-        "U128(42000000000000000000)"
+        &Value::U128(42000000000000000000)
     );
 
     // Test CAST from larger integer type
@@ -287,7 +293,10 @@ fn test_cast_to_uint128() {
 
     let results = ctx.query("SELECT CAST(i AS HUGEINT UNSIGNED) AS uint128_val FROM test_cast");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint128_val").unwrap(), "U128(1000000000)");
+    assert_eq!(
+        results[0].get("uint128_val").unwrap(),
+        &Value::U128(1000000000)
+    );
 
     ctx.commit();
 }

@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_create_table_for_case() {
@@ -27,12 +28,20 @@ fn test_insert_data_for_case() {
 
     // Verify 3 rows were inserted
     assert_rows!(ctx, "SELECT * FROM Item", 3);
-    ctx.assert_query_contains("SELECT name FROM Item WHERE id = 1", "name", "Str(Harry)");
-    ctx.assert_query_contains("SELECT name FROM Item WHERE id = 2", "name", "Str(Ron)");
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
+        "SELECT name FROM Item WHERE id = 1",
+        "name",
+        Value::Str("Harry".to_string()),
+    );
+    ctx.assert_query_value(
+        "SELECT name FROM Item WHERE id = 2",
+        "name",
+        Value::Str("Ron".to_string()),
+    );
+    ctx.assert_query_value(
         "SELECT name FROM Item WHERE id = 3",
         "name",
-        "Str(Hermione)",
+        Value::Str("Hermione".to_string()),
     );
 
     ctx.commit();
@@ -58,9 +67,21 @@ fn test_case_with_value_expression_and_else() {
     );
 
     assert_eq!(results.len(), 3);
-    assert!(results[0].get("case").unwrap().contains("Harry"));
-    assert!(results[1].get("case").unwrap().contains("Ron"));
-    assert!(results[2].get("case").unwrap().contains("Malfoy"));
+    assert!(
+        results[0]
+            .get("case")
+            .unwrap()
+            .to_string()
+            .contains("Harry")
+    );
+    assert!(results[1].get("case").unwrap().to_string().contains("Ron"));
+    assert!(
+        results[2]
+            .get("case")
+            .unwrap()
+            .to_string()
+            .contains("Malfoy")
+    );
 
     ctx.commit();
 }
@@ -85,9 +106,15 @@ fn test_case_with_value_expression_without_else() {
     );
 
     assert_eq!(results.len(), 3);
-    assert!(results[0].get("case").unwrap().contains("Harry"));
-    assert!(results[1].get("case").unwrap().contains("Ron"));
-    assert_eq!(results[2].get("case").unwrap(), "Null");
+    assert!(
+        results[0]
+            .get("case")
+            .unwrap()
+            .to_string()
+            .contains("Harry")
+    );
+    assert!(results[1].get("case").unwrap().to_string().contains("Ron"));
+    assert_eq!(results[2].get("case").unwrap(), &Value::Null);
 
     ctx.commit();
 }
@@ -111,9 +138,9 @@ fn test_case_with_boolean_expressions_and_else() {
     );
 
     assert_eq!(results.len(), 3);
-    assert!(results[0].get("case").unwrap().contains("1"));
-    assert!(results[1].get("case").unwrap().contains("2"));
-    assert!(results[2].get("case").unwrap().contains("3"));
+    assert!(results[0].get("case").unwrap().to_string().contains("1"));
+    assert!(results[1].get("case").unwrap().to_string().contains("2"));
+    assert!(results[2].get("case").unwrap().to_string().contains("3"));
 
     ctx.commit();
 }
@@ -138,9 +165,9 @@ fn test_case_with_boolean_expressions_without_else() {
     );
 
     assert_eq!(results.len(), 3);
-    assert!(results[0].get("case").unwrap().contains("1"));
-    assert!(results[1].get("case").unwrap().contains("2"));
-    assert_eq!(results[2].get("case").unwrap(), "Null");
+    assert!(results[0].get("case").unwrap().to_string().contains("1"));
+    assert!(results[1].get("case").unwrap().to_string().contains("2"));
+    assert_eq!(results[2].get("case").unwrap(), &Value::Null);
 
     ctx.commit();
 }
@@ -163,9 +190,9 @@ fn test_case_with_complex_expressions() {
     );
 
     assert_eq!(results.len(), 3);
-    assert!(results[0].get("case").unwrap().contains("2")); // id=1, 1+1=2
-    assert!(results[1].get("case").unwrap().contains("3")); // id=2, 2+1=3
-    assert!(results[2].get("case").unwrap().contains("5")); // id=3, 3+2=5
+    assert!(results[0].get("case").unwrap().to_string().contains("2")); // id=1, 1+1=2
+    assert!(results[1].get("case").unwrap().to_string().contains("3")); // id=2, 2+1=3
+    assert!(results[2].get("case").unwrap().to_string().contains("5")); // id=3, 3+2=5
 
     ctx.commit();
 }

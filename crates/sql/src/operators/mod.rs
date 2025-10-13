@@ -44,7 +44,7 @@ mod concat;
 pub use traits::{BinaryOperator, UnaryOperator};
 
 use crate::error::Result;
-use crate::types::{DataType, Value};
+use crate::types::{DataType, Value, ValueExt};
 use std::cmp::Ordering;
 
 // Arithmetic operators

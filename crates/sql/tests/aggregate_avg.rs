@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_avg_basic() {
@@ -20,13 +21,17 @@ fn test_avg_basic() {
         );
 
     // AVG(id) = (1+2+3+4+5)/5 = 3
-    ctx.assert_query_contains("SELECT AVG(id) FROM Item", "AVG(id)", "Decimal(3)");
+    ctx.assert_query_value(
+        "SELECT AVG(id) FROM Item",
+        "AVG(id)",
+        Value::Decimal(rust_decimal::Decimal::from(3)),
+    );
 
     // AVG(quantity) = (10+0+9+3+25)/5 = 9.4
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT AVG(quantity) FROM Item",
         "AVG(quantity)",
-        "Decimal(9.40)",
+        Value::Decimal(std::str::FromStr::from_str("9.40").unwrap()),
     );
 
     ctx.commit();
@@ -47,10 +52,10 @@ fn test_avg_with_null_values() {
         );
 
     // AVG(age) = (11+90+3)/3 = 34.666...
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT AVG(age) FROM Item",
         "AVG(age)",
-        "Decimal(34.666666666666666666666666667)",
+        Value::Decimal(std::str::FromStr::from_str("34.666666666666666666666666667").unwrap()),
     );
 
     ctx.commit();
@@ -72,8 +77,14 @@ fn test_avg_multiple_columns() {
 
     let results = ctx.query("SELECT AVG(id), AVG(quantity) FROM Item");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("AVG(id)").unwrap(), "Decimal(3)");
-    assert_eq!(results[0].get("AVG(quantity)").unwrap(), "Decimal(9.40)");
+    assert_eq!(
+        results[0].get("AVG(id)").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("3").unwrap())
+    );
+    assert_eq!(
+        results[0].get("AVG(quantity)").unwrap(),
+        &Value::Decimal(std::str::FromStr::from_str("9.40").unwrap())
+    );
 
     ctx.commit();
 }
@@ -94,10 +105,10 @@ fn test_avg_distinct() {
         );
 
     // AVG(DISTINCT value) = (10+20+30)/3 = 20
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT AVG(DISTINCT value) FROM Item",
         "AVG(DISTINCT value)",
-        "Decimal(20)",
+        Value::Decimal(std::str::FromStr::from_str("20").unwrap()),
     );
 
     ctx.commit();
@@ -120,10 +131,10 @@ fn test_avg_distinct_with_nulls() {
         );
 
     // AVG(DISTINCT age) = (11+90+3)/3 = 34.666...
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT AVG(DISTINCT age) FROM Item",
         "AVG(DISTINCT age)",
-        "Decimal(34.666666666666666666666666667)",
+        Value::Decimal(std::str::FromStr::from_str("34.666666666666666666666666667").unwrap()),
     );
 
     ctx.commit();
@@ -142,7 +153,7 @@ fn test_avg_all_nulls() {
         );
 
     // AVG of all NULLs should return NULL
-    ctx.assert_query_contains("SELECT AVG(value) FROM Item", "AVG(value)", "Null");
+    ctx.assert_query_value("SELECT AVG(value) FROM Item", "AVG(value)", Value::Null);
 
     ctx.commit();
 }
@@ -162,13 +173,17 @@ fn test_avg_with_expression() {
         );
 
     // AVG(id + 1) = (2+3+4+5+6)/5 = 4
-    ctx.assert_query_contains("SELECT AVG(id + 1) FROM Item", "AVG(id + 1)", "Decimal(4)");
+    ctx.assert_query_value(
+        "SELECT AVG(id + 1) FROM Item",
+        "AVG(id + 1)",
+        Value::Decimal(rust_decimal::Decimal::from(4)),
+    );
 
     // AVG(quantity * 2) = (20+0+18+6+50)/5 = 18.8
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT AVG(quantity * 2) FROM Item",
         "AVG(quantity * 2)",
-        "Decimal(18.80)",
+        Value::Decimal(std::str::FromStr::from_str("18.80").unwrap()),
     );
 
     ctx.commit();

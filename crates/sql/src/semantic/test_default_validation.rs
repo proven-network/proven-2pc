@@ -2,10 +2,10 @@
 mod tests {
     use crate::parsing::Parser;
     use crate::semantic::analyzer::SemanticAnalyzer;
+    use crate::types::Value;
     use crate::types::data_type::DataType;
     use crate::types::expression::DefaultExpression;
     use crate::types::schema::{Column, Table};
-    use crate::types::value::Value;
     use std::collections::HashMap;
 
     fn create_test_schema() -> HashMap<String, Table> {

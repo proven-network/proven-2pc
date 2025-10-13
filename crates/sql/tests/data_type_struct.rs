@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_struct_column() {
     let mut ctx = setup_test();
@@ -28,9 +28,27 @@ fn test_insert_struct_values() {
     let results = ctx.query("SELECT id, info FROM Persons ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert!(results[0].get("info").unwrap().contains("Struct"));
-    assert!(results[1].get("info").unwrap().contains("Struct"));
-    assert!(results[2].get("info").unwrap().contains("Struct"));
+    assert!(
+        results[0]
+            .get("info")
+            .unwrap()
+            .to_string()
+            .contains("Struct")
+    );
+    assert!(
+        results[1]
+            .get("info")
+            .unwrap()
+            .to_string()
+            .contains("Struct")
+    );
+    assert!(
+        results[2]
+            .get("info")
+            .unwrap()
+            .to_string()
+            .contains("Struct")
+    );
 
     ctx.commit();
 }
@@ -49,10 +67,16 @@ fn test_struct_field_access() {
     let results = ctx.query("SELECT id, details.name AS emp_name, details.salary AS emp_salary FROM Employees ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert_eq!(results[0].get("emp_name").unwrap(), "Str(Alice)");
-    assert_eq!(results[0].get("emp_salary").unwrap(), "F64(75000)");
-    assert_eq!(results[1].get("emp_name").unwrap(), "Str(Bob)");
-    assert_eq!(results[1].get("emp_salary").unwrap(), "F64(65000)");
+    assert_eq!(
+        results[0].get("emp_name").unwrap(),
+        &Value::Str("Alice".to_string())
+    );
+    assert_eq!(results[0].get("emp_salary").unwrap(), &Value::F64(75000.0));
+    assert_eq!(
+        results[1].get("emp_name").unwrap(),
+        &Value::Str("Bob".to_string())
+    );
+    assert_eq!(results[1].get("emp_salary").unwrap(), &Value::F64(65000.0));
 
     ctx.commit();
 }
@@ -70,8 +94,8 @@ fn test_struct_in_where_clause() {
     // Filter by struct field
     let results = ctx.query("SELECT id, details.name FROM Employees WHERE details.department = 'Engineering' ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     // Filter by boolean field
     let results = ctx.query("SELECT id FROM Employees WHERE details.active = true ORDER BY id");
@@ -114,7 +138,13 @@ fn test_nested_structs() {
 
     let results = ctx.query("SELECT info FROM Companies");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("info").unwrap().contains("Struct"));
+    assert!(
+        results[0]
+            .get("info")
+            .unwrap()
+            .to_string()
+            .contains("Struct")
+    );
 
     ctx.commit();
 }
@@ -145,7 +175,10 @@ fn test_nested_struct_field_access() {
     // Access nested struct fields
     let results = ctx.query("SELECT info.address.city AS city FROM Companies");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("city").unwrap(), "Str(SF)");
+    assert_eq!(
+        results[0].get("city").unwrap(),
+        &Value::Str("SF".to_string())
+    );
 
     ctx.commit();
 }
@@ -162,8 +195,8 @@ fn test_struct_with_nulls() {
 
     let results = ctx.query("SELECT id FROM Profiles WHERE data IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }
@@ -182,8 +215,8 @@ fn test_struct_comparison() {
     let results =
         ctx.query(r#"SELECT id FROM Points WHERE point = '{"x": 10, "y": 20}' ORDER BY id"#);
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }
@@ -231,7 +264,13 @@ fn test_struct_update() {
 
     let results = ctx.query("SELECT profile FROM Users WHERE id = 1");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("profile").unwrap().contains("Struct"));
+    assert!(
+        results[0]
+            .get("profile")
+            .unwrap()
+            .to_string()
+            .contains("Struct")
+    );
 
     ctx.commit();
 }

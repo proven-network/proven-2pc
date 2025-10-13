@@ -185,7 +185,7 @@ pub trait LiteralParser: TokenHelper {
 
     /// Parse a simple interval format like '5' DAY
     fn parse_simple_interval(&mut self, interval_str: &str, unit: &str) -> Result<Expression> {
-        use crate::types::data_type::Interval;
+        use proven_value::Interval;
 
         let value: i32 = interval_str.parse().map_err(|_| {
             Error::ParseError(format!(

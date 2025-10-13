@@ -92,14 +92,14 @@ impl BinaryOperator for MultiplyOperator {
 
             // Interval * integer (scale interval)
             (Value::Interval(interval), I32(scale)) | (I32(scale), Value::Interval(interval)) => {
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: interval.months * scale,
                     days: interval.days * scale,
                     microseconds: interval.microseconds * (*scale as i64),
                 }))
             }
             (Value::Interval(interval), I64(scale)) | (I64(scale), Value::Interval(interval)) => {
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: (interval.months as i64 * scale) as i32,
                     days: (interval.days as i64 * scale) as i32,
                     microseconds: interval.microseconds * scale,

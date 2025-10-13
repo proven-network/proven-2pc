@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_uint16_columns() {
     let mut ctx = setup_test();
@@ -14,14 +14,14 @@ fn test_create_table_with_uint16_columns() {
 
     let results = ctx.query("SELECT field_one, field_two FROM Item ORDER BY field_one");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("field_one").unwrap(), "U16(1)");
-    assert_eq!(results[0].get("field_two").unwrap(), "U16(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U16(2)");
-    assert_eq!(results[1].get("field_two").unwrap(), "U16(2)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U16(3)");
-    assert_eq!(results[2].get("field_two").unwrap(), "U16(3)");
-    assert_eq!(results[3].get("field_one").unwrap(), "U16(4)");
-    assert_eq!(results[3].get("field_two").unwrap(), "U16(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U16(1));
+    assert_eq!(results[0].get("field_two").unwrap(), &Value::U16(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U16(2));
+    assert_eq!(results[1].get("field_two").unwrap(), &Value::U16(2));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U16(3));
+    assert_eq!(results[2].get("field_two").unwrap(), &Value::U16(3));
+    assert_eq!(results[3].get("field_one").unwrap(), &Value::U16(4));
+    assert_eq!(results[3].get("field_two").unwrap(), &Value::U16(4));
 
     ctx.commit();
 }
@@ -43,13 +43,13 @@ fn test_insert_uint16_values() {
 
     let results = ctx.query("SELECT id, value FROM uint16_test ORDER BY id");
     assert_eq!(results.len(), 7);
-    assert_eq!(results[0].get("value").unwrap(), "U16(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U16(1)");
-    assert_eq!(results[2].get("value").unwrap(), "U16(255)");
-    assert_eq!(results[3].get("value").unwrap(), "U16(256)");
-    assert_eq!(results[4].get("value").unwrap(), "U16(32767)");
-    assert_eq!(results[5].get("value").unwrap(), "U16(32768)");
-    assert_eq!(results[6].get("value").unwrap(), "U16(65535)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U16(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U16(1));
+    assert_eq!(results[2].get("value").unwrap(), &Value::U16(255));
+    assert_eq!(results[3].get("value").unwrap(), &Value::U16(256));
+    assert_eq!(results[4].get("value").unwrap(), &Value::U16(32767));
+    assert_eq!(results[5].get("value").unwrap(), &Value::U16(32768));
+    assert_eq!(results[6].get("value").unwrap(), &Value::U16(65535));
 
     ctx.commit();
 }
@@ -84,26 +84,26 @@ fn test_uint16_comparisons() {
     // Test greater than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one > 2 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U16(3)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U16(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U16(3));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U16(4));
 
     // Test greater than or equal
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one >= 2 ORDER BY field_one");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("field_one").unwrap(), "U16(2)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U16(3)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U16(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U16(2));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U16(3));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U16(4));
 
     // Test equality
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("field_one").unwrap(), "U16(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U16(2));
 
     // Test less than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one < 3 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U16(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U16(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U16(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U16(2));
 
     ctx.commit();
 }
@@ -118,27 +118,27 @@ fn test_uint16_arithmetic_operations() {
     // Test addition
     let results = ctx.query("SELECT a + b AS sum FROM uint16_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("sum").unwrap(), "U16(130)");
+    assert_eq!(results[0].get("sum").unwrap(), &Value::U16(130));
 
     // Test subtraction
     let results = ctx.query("SELECT a - b AS diff FROM uint16_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("diff").unwrap(), "U16(70)");
+    assert_eq!(results[0].get("diff").unwrap(), &Value::U16(70));
 
     // Test multiplication
     let results = ctx.query("SELECT a * b AS product FROM uint16_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("product").unwrap(), "U16(3000)");
+    assert_eq!(results[0].get("product").unwrap(), &Value::U16(3000));
 
     // Test division (integer division)
     let results = ctx.query("SELECT a / b AS quotient FROM uint16_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("quotient").unwrap(), "U16(3)");
+    assert_eq!(results[0].get("quotient").unwrap(), &Value::U16(3));
 
     // Test modulo
     let results = ctx.query("SELECT a % b AS remainder FROM uint16_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("remainder").unwrap(), "U16(10)");
+    assert_eq!(results[0].get("remainder").unwrap(), &Value::U16(10));
 
     ctx.commit();
 }
@@ -157,8 +157,8 @@ fn test_uint16_range_boundaries() {
 
     let results = ctx.query("SELECT value FROM uint16_bounds ORDER BY value");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U16(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U16(65535)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U16(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U16(65535));
 
     // Test operations at boundaries
     ctx.exec("CREATE TABLE uint16_boundary_ops (a SMALLINT UNSIGNED, b SMALLINT UNSIGNED)");
@@ -166,7 +166,7 @@ fn test_uint16_range_boundaries() {
 
     // Test 65535 - 0 = 65535
     let results = ctx.query("SELECT a - b AS diff FROM uint16_boundary_ops");
-    assert_eq!(results[0].get("diff").unwrap(), "U16(65535)");
+    assert_eq!(results[0].get("diff").unwrap(), &Value::U16(65535));
 
     ctx.commit();
 }
@@ -205,15 +205,15 @@ fn test_uint16_with_null() {
     let results =
         ctx.query("SELECT id, value FROM uint16_nulls WHERE value IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U16(1000)");
-    assert_eq!(results[1].get("value").unwrap(), "U16(2000)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U16(1000));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U16(2000));
 
     // Test NULL propagation in arithmetic
     let results = ctx.query("SELECT id, value + 500 as result FROM uint16_nulls ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "U16(1500)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "U16(2500)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::U16(1500));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::U16(2500));
 
     ctx.commit();
 }
@@ -225,12 +225,12 @@ fn test_cast_to_uint16() {
     // Test CAST from string
     let results = ctx.query("SELECT CAST('12345' AS SMALLINT UNSIGNED) AS uint16_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint16_val").unwrap(), "U16(12345)");
+    assert_eq!(results[0].get("uint16_val").unwrap(), &Value::U16(12345));
 
     // Test CAST from integer
     let results = ctx.query("SELECT CAST(4200 AS SMALLINT UNSIGNED) AS uint16_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint16_val").unwrap(), "U16(4200)");
+    assert_eq!(results[0].get("uint16_val").unwrap(), &Value::U16(4200));
 
     // Test CAST from larger integer type
     ctx.exec("CREATE TABLE test_cast (i INT)");
@@ -238,7 +238,7 @@ fn test_cast_to_uint16() {
 
     let results = ctx.query("SELECT CAST(i AS SMALLINT UNSIGNED) AS uint16_val FROM test_cast");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint16_val").unwrap(), "U16(10000)");
+    assert_eq!(results[0].get("uint16_val").unwrap(), &Value::U16(10000));
 
     ctx.commit();
 }

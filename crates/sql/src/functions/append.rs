@@ -5,7 +5,7 @@ use crate::coercion::coerce_value;
 use crate::error::{Error, Result};
 use crate::types::context::ExecutionContext;
 use crate::types::data_type::DataType;
-use crate::types::value::Value;
+use crate::types::{Value, ValueExt};
 
 /// APPEND function
 pub struct AppendFunction;

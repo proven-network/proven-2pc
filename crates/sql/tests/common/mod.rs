@@ -4,6 +4,7 @@
 use proven_hlc::{HlcTimestamp, NodeId};
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
+use proven_value::Value;
 use std::collections::HashMap;
 
 /// Test context that manages engine, transactions, and provides helper methods
@@ -118,7 +119,7 @@ impl TestContext {
     }
 
     /// Query SQL and return raw results
-    pub fn query(&mut self, sql: &str) -> Vec<HashMap<String, String>> {
+    pub fn query(&mut self, sql: &str) -> Vec<HashMap<String, Value>> {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
         let log_index = self.next_log_index();
 
@@ -139,7 +140,7 @@ impl TestContext {
                         columns
                             .iter()
                             .zip(row.iter())
-                            .map(|(col, val)| (col.clone(), format!("{:?}", val)))
+                            .map(|(col, val)| (col.clone(), val.clone()))
                             .collect()
                     })
                     .collect()
@@ -185,7 +186,7 @@ impl TestContext {
     }
 
     /// Assert query result contains expected value
-    pub fn assert_query_contains(&mut self, sql: &str, column: &str, expected: &str) {
+    pub fn assert_query_value(&mut self, sql: &str, column: &str, expected: Value) {
         let results = self.query(sql);
         assert!(!results.is_empty(), "Query '{}' returned no results", sql);
 
@@ -194,8 +195,8 @@ impl TestContext {
             .unwrap_or_else(|| panic!("Column '{}' not found in results", column));
 
         assert_eq!(
-            value, expected,
-            "Query '{}' column '{}' = '{}', expected '{}'",
+            value, &expected,
+            "Query '{}' column '{}' = '{:?}', expected '{:?}'",
             sql, column, value, expected
         );
     }
@@ -267,66 +268,6 @@ pub fn setup_test() -> TestContext {
     let mut ctx = TestContext::new();
     ctx.begin();
     ctx
-}
-
-/// Test a query and verify the expected results
-pub fn test_query(sql: &str, expected: Vec<Vec<&str>>) {
-    let mut ctx = setup_test();
-    let results = ctx.query(sql);
-
-    // Check row count
-    assert_eq!(
-        results.len(),
-        expected.len(),
-        "Row count mismatch for query: {}",
-        sql
-    );
-
-    // Check each row
-    for (i, (result_row, expected_row)) in results.iter().zip(expected.iter()).enumerate() {
-        // For simple single-column results, check the first column
-        if expected_row.len() == 1 {
-            // The value is already a string (formatted from Value with Debug on line 122)
-            // Don't format it again with Debug
-            let actual = result_row.values().next().unwrap().clone();
-            let expected_val = expected_row[0];
-
-            // Handle different result formats
-            if expected_val == "true" {
-                assert!(
-                    actual == "Bool(true)" || actual == "true",
-                    "Row {} mismatch: expected 'true', got '{}'",
-                    i,
-                    actual
-                );
-            } else if expected_val == "false" {
-                assert!(
-                    actual == "Bool(false)" || actual == "false",
-                    "Row {} mismatch: expected 'false', got '{}'",
-                    i,
-                    actual
-                );
-            } else if expected_val == "NULL" {
-                assert!(
-                    actual == "Null" || actual == "NULL",
-                    "Row {} mismatch: expected 'NULL', got '{}'",
-                    i,
-                    actual
-                );
-            } else {
-                // For other values, just check if the expected value is contained
-                assert!(
-                    actual.contains(expected_val),
-                    "Row {} mismatch: expected '{}', got '{}'",
-                    i,
-                    expected_val,
-                    actual
-                );
-            }
-        }
-    }
-
-    ctx.commit();
 }
 
 /// Helper to create test context with tables

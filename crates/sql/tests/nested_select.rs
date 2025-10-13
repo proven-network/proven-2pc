@@ -199,7 +199,12 @@ fn test_select_subquery_with_series_nonexistent() {
 
     assert_eq!(results.len(), 1, "Should return one row");
     assert!(
-        results[0].values().next().unwrap().contains("Null"),
+        results[0]
+            .values()
+            .next()
+            .unwrap()
+            .to_string()
+            .contains("Null"),
         "Should return NULL"
     );
 

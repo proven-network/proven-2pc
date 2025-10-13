@@ -12,9 +12,9 @@ use crate::semantic::predicate::{Predicate, QueryPredicates};
 use crate::storage::encoding::{decode_row, encode_row};
 use crate::storage::entity::{IndexDelta, IndexEntity, IndexKey, TableDelta, TableEntity};
 use crate::storage::predicate_store::PredicateStore;
+use crate::types::Value;
 use crate::types::index::IndexMetadata;
 use crate::types::schema::Table as TableSchema;
-use crate::types::value::Value;
 
 use fjall::{Keyspace, PartitionCreateOptions};
 use proven_hlc::HlcTimestamp;

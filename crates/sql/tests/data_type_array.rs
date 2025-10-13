@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_array_column() {
     let mut ctx = setup_test();
@@ -29,9 +29,27 @@ fn test_insert_fixed_array() {
     assert_eq!(results.len(), 3);
 
     // All arrays have the same fixed size
-    assert!(results[0].get("position").unwrap().contains("Array"));
-    assert!(results[1].get("position").unwrap().contains("Array"));
-    assert!(results[2].get("position").unwrap().contains("Array"));
+    assert!(
+        results[0]
+            .get("position")
+            .unwrap()
+            .to_string()
+            .contains("Array")
+    );
+    assert!(
+        results[1]
+            .get("position")
+            .unwrap()
+            .to_string()
+            .contains("Array")
+    );
+    assert!(
+        results[2]
+            .get("position")
+            .unwrap()
+            .to_string()
+            .contains("Array")
+    );
 
     ctx.commit();
 }
@@ -89,13 +107,13 @@ fn test_array_bracket_access() {
         ctx.query("SELECT id, color[0] AS r, color[1] AS g, color[2] AS b FROM RGB ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert_eq!(results[0].get("r").unwrap(), "I32(255)");
-    assert_eq!(results[0].get("g").unwrap(), "I32(0)");
-    assert_eq!(results[0].get("b").unwrap(), "I32(0)");
+    assert_eq!(results[0].get("r").unwrap(), &Value::I32(255));
+    assert_eq!(results[0].get("g").unwrap(), &Value::I32(0));
+    assert_eq!(results[0].get("b").unwrap(), &Value::I32(0));
 
-    assert_eq!(results[1].get("r").unwrap(), "I32(0)");
-    assert_eq!(results[1].get("g").unwrap(), "I32(255)");
-    assert_eq!(results[1].get("b").unwrap(), "I32(0)");
+    assert_eq!(results[1].get("r").unwrap(), &Value::I32(0));
+    assert_eq!(results[1].get("g").unwrap(), &Value::I32(255));
+    assert_eq!(results[1].get("b").unwrap(), &Value::I32(0));
 
     ctx.commit();
 }
@@ -112,12 +130,12 @@ fn test_array_with_nulls() {
 
     let results = ctx.query("SELECT id FROM Vectors WHERE vec IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     let results = ctx.query("SELECT id FROM Vectors WHERE vec IS NULL");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -140,8 +158,8 @@ fn test_array_comparison() {
     let results = ctx.query("SELECT id FROM Vectors WHERE vec = '[1, 2]' ORDER BY id");
     eprintln!("Comparison results: {:?}", results);
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }
@@ -186,8 +204,8 @@ fn test_group_by_array() {
     let results =
         ctx.query("SELECT coord, COUNT(*) as cnt FROM Points GROUP BY coord ORDER BY cnt");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("cnt").unwrap(), "I64(2)");
-    assert_eq!(results[1].get("cnt").unwrap(), "I64(2)");
+    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(2));
+    assert_eq!(results[1].get("cnt").unwrap(), &Value::I64(2));
 
     ctx.commit();
 }
@@ -199,11 +217,20 @@ fn test_cast_to_array() {
     // CAST string to typed fixed-size array (DuckDB style)
     let results = ctx.query("SELECT CAST('[1, 2, 3]' AS INT[3]) AS my_array");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("my_array").unwrap().contains("Array"));
+    assert!(
+        results[0]
+            .get("my_array")
+            .unwrap()
+            .to_string()
+            .contains("Array")
+    );
 
     // Verify it rejects wrong size
     let error = ctx.exec_error("SELECT CAST('[1, 2]' AS INT[3])");
-    assert!(error.contains("array with 3 elements") || error.contains("array with 2 elements"));
+    assert!(
+        error.to_string().contains("array with 3 elements")
+            || error.to_string().contains("array with 2 elements")
+    );
 
     ctx.commit();
 }
@@ -223,7 +250,7 @@ fn test_array_update() {
     let results = ctx.query("SELECT rgb FROM Colors WHERE id = 1");
     assert_eq!(results.len(), 1);
     // Should be the updated gray color
-    assert!(results[0].get("rgb").unwrap().contains("Array"));
+    assert!(results[0].get("rgb").unwrap().to_string().contains("Array"));
 
     ctx.commit();
 }

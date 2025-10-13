@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 fn setup_int128_table(ctx: &mut common::TestContext) {
     ctx.exec("CREATE TABLE Item (field_one HUGEINT, field_two HUGEINT)");
 
@@ -64,11 +64,23 @@ fn test_select_int128_values() {
     assert_eq!(results.len(), 2);
 
     // Updated expectations based on new test data
-    assert_eq!(results[0].get("field_one").unwrap(), "I128(-3000000000000)");
-    assert_eq!(results[0].get("field_two").unwrap(), "I128(-4000000000000)");
+    assert_eq!(
+        results[0].get("field_one").unwrap(),
+        &Value::I128(-3000000000000)
+    );
+    assert_eq!(
+        results[0].get("field_two").unwrap(),
+        &Value::I128(-4000000000000)
+    );
 
-    assert_eq!(results[1].get("field_one").unwrap(), "I128(1000000000000)");
-    assert_eq!(results[1].get("field_two").unwrap(), "I128(2000000000000)");
+    assert_eq!(
+        results[1].get("field_one").unwrap(),
+        &Value::I128(1000000000000)
+    );
+    assert_eq!(
+        results[1].get("field_two").unwrap(),
+        &Value::I128(2000000000000)
+    );
 
     ctx.commit();
 }
@@ -94,9 +106,9 @@ fn test_int128_arithmetic_operations() {
     assert_eq!(results.len(), 2);
 
     // -3000000000000 + -4000000000000 = -7000000000000
-    assert_eq!(results[0].get("sum").unwrap(), "I128(-7000000000000)");
+    assert_eq!(results[0].get("sum").unwrap(), &Value::I128(-7000000000000));
     // 1000000000000 + 2000000000000 = 3000000000000
-    assert_eq!(results[1].get("sum").unwrap(), "I128(3000000000000)");
+    assert_eq!(results[1].get("sum").unwrap(), &Value::I128(3000000000000));
 
     ctx.commit();
 }
@@ -114,8 +126,8 @@ fn test_int128_large_values() {
     assert_rows!(ctx, "SELECT * FROM Item", 1);
 
     let results = ctx.query("SELECT field_one, field_two FROM Item");
-    assert!(results[0].get("field_one").unwrap().contains("I128"));
-    assert!(results[0].get("field_two").unwrap().contains("I128"));
+    assert!(results[0].get("field_one").unwrap().is_integer());
+    assert!(results[0].get("field_two").unwrap().is_integer());
 
     ctx.commit();
 }
@@ -138,11 +150,11 @@ fn test_int128_range_boundaries() {
     let results = ctx.query("SELECT field_one, field_two FROM Item");
     assert_eq!(
         results[0].get("field_one").unwrap(),
-        &format!("I128({})", i128::MAX)
+        &Value::I128(i128::MAX)
     );
     assert_eq!(
         results[0].get("field_two").unwrap(),
-        &format!("I128({})", i128::MIN + 1)
+        &Value::I128(i128::MIN + 1)
     );
 
     ctx.commit();

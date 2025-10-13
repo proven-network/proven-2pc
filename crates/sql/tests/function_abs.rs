@@ -4,14 +4,15 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_abs_with_integers() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains("SELECT ABS(1) AS abs1", "abs1", "I32(1)");
-    ctx.assert_query_contains("SELECT ABS(-1) AS abs2", "abs2", "I32(1)");
-    ctx.assert_query_contains("SELECT ABS(+1) AS abs3", "abs3", "I32(1)");
+    ctx.assert_query_value("SELECT ABS(1) AS abs1", "abs1", Value::I32(1));
+    ctx.assert_query_value("SELECT ABS(-1) AS abs2", "abs2", Value::I32(1));
+    ctx.assert_query_value("SELECT ABS(+1) AS abs3", "abs3", Value::I32(1));
 
     ctx.commit();
 }
@@ -20,9 +21,9 @@ fn test_abs_with_integers() {
 fn test_abs_with_floats() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains("SELECT ABS(1.5) AS abs1", "abs1", "F64(1.5)");
-    ctx.assert_query_contains("SELECT ABS(-1.5) AS abs2", "abs2", "F64(1.5)");
-    ctx.assert_query_contains("SELECT ABS(+1.5) AS abs3", "abs3", "F64(1.5)");
+    ctx.assert_query_value("SELECT ABS(1.5) AS abs1", "abs1", Value::F64(1.5));
+    ctx.assert_query_value("SELECT ABS(-1.5) AS abs2", "abs2", Value::F64(1.5));
+    ctx.assert_query_value("SELECT ABS(+1.5) AS abs3", "abs3", Value::F64(1.5));
 
     ctx.commit();
 }
@@ -31,9 +32,9 @@ fn test_abs_with_floats() {
 fn test_abs_with_zeros() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains("SELECT ABS(0) AS abs1", "abs1", "I32(0)");
-    ctx.assert_query_contains("SELECT ABS(-0) AS abs2", "abs2", "I32(0)");
-    ctx.assert_query_contains("SELECT ABS(+0) AS abs3", "abs3", "I32(0)");
+    ctx.assert_query_value("SELECT ABS(0) AS abs1", "abs1", Value::I32(0));
+    ctx.assert_query_value("SELECT ABS(-0) AS abs2", "abs2", Value::I32(0));
+    ctx.assert_query_value("SELECT ABS(+0) AS abs3", "abs3", Value::I32(0));
 
     ctx.commit();
 }
@@ -46,9 +47,21 @@ fn test_abs_with_table_columns() {
         .create_simple("id INTEGER, int8 INTEGER, dec REAL")
         .insert_values("(0, -1, -2.0)");
 
-    ctx.assert_query_contains("SELECT ABS(id) AS abs1 FROM SingleItem", "abs1", "I32(0)");
-    ctx.assert_query_contains("SELECT ABS(int8) AS abs2 FROM SingleItem", "abs2", "I32(1)");
-    ctx.assert_query_contains("SELECT ABS(dec) AS abs3 FROM SingleItem", "abs3", "F32(2)");
+    ctx.assert_query_value(
+        "SELECT ABS(id) AS abs1 FROM SingleItem",
+        "abs1",
+        Value::I32(0),
+    );
+    ctx.assert_query_value(
+        "SELECT ABS(int8) AS abs2 FROM SingleItem",
+        "abs2",
+        Value::I32(1),
+    );
+    ctx.assert_query_value(
+        "SELECT ABS(dec) AS abs3 FROM SingleItem",
+        "abs3",
+        Value::F32(2.0),
+    );
 
     ctx.commit();
 }
@@ -71,7 +84,7 @@ fn test_abs_with_string_input() {
 fn test_abs_with_null_input() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains("SELECT ABS(NULL) AS abs", "abs", "Null");
+    ctx.assert_query_value("SELECT ABS(NULL) AS abs", "abs", Value::Null);
 
     ctx.commit();
 }

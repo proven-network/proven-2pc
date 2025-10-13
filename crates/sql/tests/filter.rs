@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 fn setup_filter_test_table(ctx: &mut common::TestContext) {
     TableBuilder::new(ctx, "FilterTest")
@@ -33,10 +34,10 @@ fn test_where_equals() {
     assert_rows!(ctx, "SELECT * FROM FilterTest WHERE active = TRUE", 6);
     assert_rows!(ctx, "SELECT * FROM FilterTest WHERE value = 50", 1);
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT name FROM FilterTest WHERE id = 5",
         "name",
-        "Str(Eve)",
+        Value::Str("Eve".to_string()),
     );
 
     ctx.commit();
@@ -127,10 +128,10 @@ fn test_where_between() {
     );
 
     // Verify BETWEEN is inclusive
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT id FROM FilterTest WHERE id BETWEEN 3 AND 7 ORDER BY id LIMIT 1",
         "id",
-        "I64(3)",
+        Value::I64(3),
     );
 
     ctx.commit();
@@ -181,10 +182,10 @@ fn test_where_and() {
     );
 
     // Verify specific result
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT name FROM FilterTest WHERE id > 5 AND active = TRUE ORDER BY id LIMIT 1",
         "name",
-        "Str(\"Frank\")",
+        Value::Str("\"Frank\"".to_string()),
     );
 
     ctx.commit();

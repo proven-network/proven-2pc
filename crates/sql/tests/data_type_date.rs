@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_date_columns() {
     let mut ctx = setup_test();
@@ -33,17 +33,35 @@ fn test_insert_and_select_date_values() {
     let results = ctx.query("SELECT id, date1, date2 FROM DateLog ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("date1").unwrap(), "Date(2020-06-11)");
-    assert_eq!(results[0].get("date2").unwrap(), "Date(2021-03-01)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(
+        results[0].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2020, 6, 11).unwrap())
+    );
+    assert_eq!(
+        results[0].get("date2").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2021, 3, 1).unwrap())
+    );
 
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("date1").unwrap(), "Date(2020-09-30)");
-    assert_eq!(results[1].get("date2").unwrap(), "Date(1989-01-01)");
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(
+        results[1].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2020, 9, 30).unwrap())
+    );
+    assert_eq!(
+        results[1].get("date2").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(1989, 1, 1).unwrap())
+    );
 
-    assert_eq!(results[2].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[2].get("date1").unwrap(), "Date(2021-05-01)");
-    assert_eq!(results[2].get("date2").unwrap(), "Date(2021-05-01)");
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(
+        results[2].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2021, 5, 1).unwrap())
+    );
+    assert_eq!(
+        results[2].get("date2").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2021, 5, 1).unwrap())
+    );
 
     ctx.commit();
 }
@@ -60,18 +78,18 @@ fn test_date_comparisons() {
     // Test date1 > date2
     let results = ctx.query("SELECT * FROM DateLog WHERE date1 > date2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     // Test date1 <= date2
     let results = ctx.query("SELECT * FROM DateLog WHERE date1 <= date2 ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     // Test date1 = date2
     let results = ctx.query("SELECT * FROM DateLog WHERE date1 = date2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }
@@ -88,7 +106,7 @@ fn test_date_literal_comparisons() {
     // Test DATE literal comparison
     let results = ctx.query("SELECT * FROM DateLog WHERE date1 = DATE '2020-06-11'");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
 
     // Test string literal comparison (should coerce to date)
     let results = ctx.query("SELECT * FROM DateLog WHERE date2 < '2000-01-01'");
@@ -97,12 +115,15 @@ fn test_date_literal_comparisons() {
         println!("  Row: {:?}", row);
     }
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     // Test DATE literal in SELECT
     let results = ctx.query("SELECT DATE '2020-01-01' AS test_date");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("test_date").unwrap(), "Date(2020-01-01)");
+    assert_eq!(
+        results[0].get("test_date").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap())
+    );
 
     // Test DATE literal comparison in WHERE without table reference
     let results =
@@ -126,19 +147,37 @@ fn test_date_ordering() {
     let results = ctx.query("SELECT * FROM DateLog ORDER BY date1 ASC");
     assert_eq!(results.len(), 4);
     // SQL standard: NULL should come last in ASC order
-    assert_eq!(results[0].get("date1").unwrap(), "Date(1989-01-01)");
-    assert_eq!(results[1].get("date1").unwrap(), "Date(2020-06-11)");
-    assert_eq!(results[2].get("date1").unwrap(), "Date(2021-05-01)");
-    assert_eq!(results[3].get("date1").unwrap(), "Null");
+    assert_eq!(
+        results[0].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(1989, 1, 1).unwrap())
+    );
+    assert_eq!(
+        results[1].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2020, 6, 11).unwrap())
+    );
+    assert_eq!(
+        results[2].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2021, 5, 1).unwrap())
+    );
+    assert_eq!(results[3].get("date1").unwrap(), &Value::Null);
 
     // Test ORDER BY date DESC
     let results = ctx.query("SELECT * FROM DateLog ORDER BY date1 DESC");
     assert_eq!(results.len(), 4);
     // SQL standard: NULL should come first in DESC order
-    assert_eq!(results[0].get("date1").unwrap(), "Null");
-    assert_eq!(results[1].get("date1").unwrap(), "Date(2021-05-01)");
-    assert_eq!(results[2].get("date1").unwrap(), "Date(2020-06-11)");
-    assert_eq!(results[3].get("date1").unwrap(), "Date(1989-01-01)");
+    assert_eq!(results[0].get("date1").unwrap(), &Value::Null);
+    assert_eq!(
+        results[1].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2021, 5, 1).unwrap())
+    );
+    assert_eq!(
+        results[2].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(2020, 6, 11).unwrap())
+    );
+    assert_eq!(
+        results[3].get("date1").unwrap(),
+        &Value::Date(chrono::NaiveDate::from_ymd_opt(1989, 1, 1).unwrap())
+    );
 
     ctx.commit();
 }
@@ -155,13 +194,13 @@ fn test_date_with_null_values() {
     // Test IS NULL
     let results = ctx.query("SELECT * FROM DateLog WHERE date1 IS NULL");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     // Test IS NOT NULL
     let results = ctx.query("SELECT * FROM DateLog WHERE date1 IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }

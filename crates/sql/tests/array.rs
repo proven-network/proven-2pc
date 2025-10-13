@@ -4,6 +4,7 @@
 mod common;
 
 use common::setup_test;
+use proven_value::Value;
 
 #[test]
 fn test_create_table_with_list_column() {
@@ -26,8 +27,20 @@ fn test_insert_array_literal_single_row() {
 
     let results = ctx.query("SELECT * FROM Test");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("name").unwrap().contains("Seongbin"));
-    assert!(results[0].get("name").unwrap().contains("Bernie"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Seongbin")
+    );
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Bernie")
+    );
 
     ctx.commit();
 }
@@ -44,14 +57,44 @@ fn test_insert_array_literal_multiple_rows() {
     let results = ctx.query("SELECT * FROM Test ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert!(results[0].get("id").unwrap().contains("2"));
-    assert!(results[0].get("name").unwrap().contains("devgony"));
-    assert!(results[0].get("name").unwrap().contains("Henry"));
+    assert!(results[0].get("id").unwrap().to_string().contains("2"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("devgony")
+    );
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Henry")
+    );
 
-    assert!(results[1].get("id").unwrap().contains("3"));
-    assert!(results[1].get("name").unwrap().contains("Seongbin"));
-    assert!(results[1].get("name").unwrap().contains("Bernie"));
-    assert!(results[1].get("name").unwrap().contains("Chobobdev"));
+    assert!(results[1].get("id").unwrap().to_string().contains("3"));
+    assert!(
+        results[1]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Seongbin")
+    );
+    assert!(
+        results[1]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Bernie")
+    );
+    assert!(
+        results[1]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Chobobdev")
+    );
 
     ctx.commit();
 }
@@ -64,10 +107,10 @@ fn test_insert_array_literal_simple() {
     ctx.exec("INSERT INTO Test VALUES(5,['Jhon'])");
 
     assert_rows!(ctx, "SELECT * FROM Test", 1);
-    ctx.assert_query_contains("SELECT id FROM Test", "id", "I32(5)");
+    ctx.assert_query_value("SELECT id FROM Test", "id", Value::I32(5));
 
     let results = ctx.query("SELECT * FROM Test");
-    assert!(results[0].get("name").unwrap().contains("Jhon"));
+    assert!(results[0].get("name").unwrap().to_string().contains("Jhon"));
 
     ctx.commit();
 }
@@ -80,10 +123,10 @@ fn test_insert_array_with_default_id() {
     ctx.exec("INSERT INTO Test (name) VALUES (['Jane'])");
 
     assert_rows!(ctx, "SELECT * FROM Test", 1);
-    ctx.assert_query_contains("SELECT id FROM Test", "id", "I32(1)");
+    ctx.assert_query_value("SELECT id FROM Test", "id", Value::I32(1));
 
     let results = ctx.query("SELECT * FROM Test");
-    assert!(results[0].get("name").unwrap().contains("Jane"));
+    assert!(results[0].get("name").unwrap().to_string().contains("Jane"));
 
     ctx.commit();
 }
@@ -96,10 +139,16 @@ fn test_insert_another_array_with_default_id() {
     ctx.exec("INSERT INTO Test (name) VALUES (['Proven'])");
 
     assert_rows!(ctx, "SELECT * FROM Test", 1);
-    ctx.assert_query_contains("SELECT id FROM Test", "id", "I32(1)");
+    ctx.assert_query_value("SELECT id FROM Test", "id", Value::I32(1));
 
     let results = ctx.query("SELECT * FROM Test");
-    assert!(results[0].get("name").unwrap().contains("Proven"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Proven")
+    );
 
     ctx.commit();
 }
@@ -119,21 +168,63 @@ fn test_select_all_array_data() {
     let results = ctx.query("SELECT * FROM Test ORDER BY id, name");
     assert_eq!(results.len(), 4);
 
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("Seongbin"));
-    assert!(results[0].get("name").unwrap().contains("Bernie"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Seongbin")
+    );
+    assert!(
+        results[0]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Bernie")
+    );
 
-    assert!(results[1].get("id").unwrap().contains("2"));
-    assert!(results[1].get("name").unwrap().contains("devgony"));
-    assert!(results[1].get("name").unwrap().contains("Henry"));
+    assert!(results[1].get("id").unwrap().to_string().contains("2"));
+    assert!(
+        results[1]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("devgony")
+    );
+    assert!(
+        results[1]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Henry")
+    );
 
-    assert!(results[2].get("id").unwrap().contains("3"));
-    assert!(results[2].get("name").unwrap().contains("Seongbin"));
-    assert!(results[2].get("name").unwrap().contains("Bernie"));
-    assert!(results[2].get("name").unwrap().contains("Chobobdev"));
+    assert!(results[2].get("id").unwrap().to_string().contains("3"));
+    assert!(
+        results[2]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Seongbin")
+    );
+    assert!(
+        results[2]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Bernie")
+    );
+    assert!(
+        results[2]
+            .get("name")
+            .unwrap()
+            .to_string()
+            .contains("Chobobdev")
+    );
 
-    assert!(results[3].get("id").unwrap().contains("5"));
-    assert!(results[3].get("name").unwrap().contains("Jhon"));
+    assert!(results[3].get("id").unwrap().to_string().contains("5"));
+    assert!(results[3].get("name").unwrap().to_string().contains("Jhon"));
 
     ctx.commit();
 }
@@ -150,9 +241,9 @@ fn test_select_mixed_type_array_literal() {
 
     let list_val = results[0].get("arr").unwrap();
     println!("Mixed array value: {}", list_val);
-    assert!(list_val.contains("name"));
-    assert!(list_val.contains("1"));
-    assert!(list_val.contains("true") || list_val.contains("Bool(true)"));
+    assert!(list_val.to_string().contains("name"));
+    assert!(list_val.to_string().contains("1"));
+    assert!(list_val.to_string().contains("true") || list_val.to_string().contains("Bool(true)"));
 
     ctx.commit();
 }
@@ -163,10 +254,10 @@ fn test_array_indexing_in_select() {
 
     let results = ctx.query("SELECT ['Proven', 1, True] [0] AS element");
     assert_eq!(results.len(), 1);
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT ['Proven', 1, True] [0] AS element",
         "element",
-        "Str(Proven)",
+        Value::Str("Proven".to_string()),
     );
 
     ctx.commit();
@@ -181,10 +272,10 @@ fn test_array_literal_data_types() {
     assert_eq!(results.len(), 1);
 
     let mixed_val = results[0].get("mixed").unwrap();
-    assert!(mixed_val.contains("string"));
-    assert!(mixed_val.contains("42"));
-    assert!(mixed_val.contains("true") || mixed_val.contains("Bool(true)"));
-    assert!(mixed_val.contains("null") || mixed_val.contains("Null"));
+    assert!(mixed_val.to_string().contains("string"));
+    assert!(mixed_val.to_string().contains("42"));
+    assert!(mixed_val.to_string().contains("true") || mixed_val.to_string().contains("Bool(true)"));
+    assert!(mixed_val.to_string().contains("null") || mixed_val.to_string().contains("Null"));
 
     // However, when storing in tables, arrays must have uniform types
     // that match the declared column type

@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_uint32_columns() {
     let mut ctx = setup_test();
@@ -14,14 +14,14 @@ fn test_create_table_with_uint32_columns() {
 
     let results = ctx.query("SELECT field_one, field_two FROM Item ORDER BY field_one");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("field_one").unwrap(), "U32(1)");
-    assert_eq!(results[0].get("field_two").unwrap(), "U32(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U32(2)");
-    assert_eq!(results[1].get("field_two").unwrap(), "U32(2)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U32(3)");
-    assert_eq!(results[2].get("field_two").unwrap(), "U32(3)");
-    assert_eq!(results[3].get("field_one").unwrap(), "U32(4)");
-    assert_eq!(results[3].get("field_two").unwrap(), "U32(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U32(1));
+    assert_eq!(results[0].get("field_two").unwrap(), &Value::U32(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U32(2));
+    assert_eq!(results[1].get("field_two").unwrap(), &Value::U32(2));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U32(3));
+    assert_eq!(results[2].get("field_two").unwrap(), &Value::U32(3));
+    assert_eq!(results[3].get("field_one").unwrap(), &Value::U32(4));
+    assert_eq!(results[3].get("field_two").unwrap(), &Value::U32(4));
 
     ctx.commit();
 }
@@ -43,13 +43,13 @@ fn test_insert_uint32_values() {
 
     let results = ctx.query("SELECT id, value FROM uint32_test ORDER BY id");
     assert_eq!(results.len(), 7);
-    assert_eq!(results[0].get("value").unwrap(), "U32(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U32(1)");
-    assert_eq!(results[2].get("value").unwrap(), "U32(65535)");
-    assert_eq!(results[3].get("value").unwrap(), "U32(65536)");
-    assert_eq!(results[4].get("value").unwrap(), "U32(2147483647)");
-    assert_eq!(results[5].get("value").unwrap(), "U32(2147483648)");
-    assert_eq!(results[6].get("value").unwrap(), "U32(4294967295)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U32(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U32(1));
+    assert_eq!(results[2].get("value").unwrap(), &Value::U32(65535));
+    assert_eq!(results[3].get("value").unwrap(), &Value::U32(65536));
+    assert_eq!(results[4].get("value").unwrap(), &Value::U32(2147483647));
+    assert_eq!(results[5].get("value").unwrap(), &Value::U32(2147483648));
+    assert_eq!(results[6].get("value").unwrap(), &Value::U32(4294967295));
 
     ctx.commit();
 }
@@ -84,26 +84,26 @@ fn test_uint32_comparisons() {
     // Test greater than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one > 2 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U32(3)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U32(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U32(3));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U32(4));
 
     // Test greater than or equal
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one >= 2 ORDER BY field_one");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("field_one").unwrap(), "U32(2)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U32(3)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U32(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U32(2));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U32(3));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U32(4));
 
     // Test equality
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("field_one").unwrap(), "U32(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U32(2));
 
     // Test less than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one < 3 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U32(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U32(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U32(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U32(2));
 
     ctx.commit();
 }
@@ -118,27 +118,27 @@ fn test_uint32_arithmetic_operations() {
     // Test addition
     let results = ctx.query("SELECT a + b AS sum FROM uint32_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("sum").unwrap(), "U32(130000)");
+    assert_eq!(results[0].get("sum").unwrap(), &Value::U32(130000));
 
     // Test subtraction
     let results = ctx.query("SELECT a - b AS diff FROM uint32_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("diff").unwrap(), "U32(70000)");
+    assert_eq!(results[0].get("diff").unwrap(), &Value::U32(70000));
 
     // Test multiplication
     let results = ctx.query("SELECT a * b AS product FROM uint32_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("product").unwrap(), "U32(3000000000)");
+    assert_eq!(results[0].get("product").unwrap(), &Value::U32(3000000000));
 
     // Test division (integer division)
     let results = ctx.query("SELECT a / b AS quotient FROM uint32_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("quotient").unwrap(), "U32(3)");
+    assert_eq!(results[0].get("quotient").unwrap(), &Value::U32(3));
 
     // Test modulo
     let results = ctx.query("SELECT a % b AS remainder FROM uint32_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("remainder").unwrap(), "U32(10000)");
+    assert_eq!(results[0].get("remainder").unwrap(), &Value::U32(10000));
 
     ctx.commit();
 }
@@ -157,8 +157,8 @@ fn test_uint32_range_boundaries() {
 
     let results = ctx.query("SELECT value FROM uint32_bounds ORDER BY value");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U32(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U32(4294967295)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U32(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U32(4294967295));
 
     // Test operations at boundaries
     ctx.exec("CREATE TABLE uint32_boundary_ops (a INT UNSIGNED, b INT UNSIGNED)");
@@ -166,7 +166,7 @@ fn test_uint32_range_boundaries() {
 
     // Test 4294967295 - 0 = 4294967295
     let results = ctx.query("SELECT a - b AS diff FROM uint32_boundary_ops");
-    assert_eq!(results[0].get("diff").unwrap(), "U32(4294967295)");
+    assert_eq!(results[0].get("diff").unwrap(), &Value::U32(4294967295));
 
     ctx.commit();
 }
@@ -205,15 +205,15 @@ fn test_uint32_with_null() {
     let results =
         ctx.query("SELECT id, value FROM uint32_nulls WHERE value IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U32(100000)");
-    assert_eq!(results[1].get("value").unwrap(), "U32(200000)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U32(100000));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U32(200000));
 
     // Test NULL propagation in arithmetic
     let results = ctx.query("SELECT id, value + 50000 as result FROM uint32_nulls ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "U32(150000)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "U32(250000)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::U32(150000));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::U32(250000));
 
     ctx.commit();
 }
@@ -225,12 +225,12 @@ fn test_cast_to_uint32() {
     // Test CAST from string
     let results = ctx.query("SELECT CAST('1234567' AS INT UNSIGNED) AS uint32_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint32_val").unwrap(), "U32(1234567)");
+    assert_eq!(results[0].get("uint32_val").unwrap(), &Value::U32(1234567));
 
     // Test CAST from integer
     let results = ctx.query("SELECT CAST(4200000 AS INT UNSIGNED) AS uint32_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint32_val").unwrap(), "U32(4200000)");
+    assert_eq!(results[0].get("uint32_val").unwrap(), &Value::U32(4200000));
 
     // Test CAST from larger integer type
     ctx.exec("CREATE TABLE test_cast (i INT)");
@@ -238,7 +238,7 @@ fn test_cast_to_uint32() {
 
     let results = ctx.query("SELECT CAST(i AS INT UNSIGNED) AS uint32_val FROM test_cast");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint32_val").unwrap(), "U32(1000000)");
+    assert_eq!(results[0].get("uint32_val").unwrap(), &Value::U32(1000000));
 
     ctx.commit();
 }

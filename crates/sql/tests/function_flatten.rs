@@ -14,11 +14,11 @@ fn test_flatten_nested_list() {
     let value = results[0].get("test").unwrap();
 
     // Should return flattened list: [1, 2, 3, 4]
-    assert!(value.contains("List"));
-    assert!(value.contains("1"));
-    assert!(value.contains("2"));
-    assert!(value.contains("3"));
-    assert!(value.contains("4"));
+    assert!(value.to_string().contains("List"));
+    assert!(value.to_string().contains("1"));
+    assert!(value.to_string().contains("2"));
+    assert!(value.to_string().contains("3"));
+    assert!(value.to_string().contains("4"));
 
     ctx.commit();
 }
@@ -33,10 +33,10 @@ fn test_flatten_single_level_list() {
     let value = results[0].get("test").unwrap();
 
     // Should return the same list: [1, 2, 3]
-    assert!(value.contains("List"));
-    assert!(value.contains("1"));
-    assert!(value.contains("2"));
-    assert!(value.contains("3"));
+    assert!(value.to_string().contains("List"));
+    assert!(value.to_string().contains("1"));
+    assert!(value.to_string().contains("2"));
+    assert!(value.to_string().contains("3"));
 
     ctx.commit();
 }
@@ -51,11 +51,11 @@ fn test_flatten_mixed_nested_and_single_elements() {
     let value = results[0].get("test").unwrap();
 
     // Should return flattened list: [1, 2, 3, 4]
-    assert!(value.contains("List"));
-    assert!(value.contains("1"));
-    assert!(value.contains("2"));
-    assert!(value.contains("3"));
-    assert!(value.contains("4"));
+    assert!(value.to_string().contains("List"));
+    assert!(value.to_string().contains("1"));
+    assert!(value.to_string().contains("2"));
+    assert!(value.to_string().contains("3"));
+    assert!(value.to_string().contains("4"));
 
     ctx.commit();
 }
@@ -70,7 +70,7 @@ fn test_flatten_empty_list() {
     let value = results[0].get("test").unwrap();
 
     // Should return empty list
-    assert!(value.contains("List"));
+    assert!(value.to_string().contains("List"));
 
     ctx.commit();
 }
@@ -85,9 +85,9 @@ fn test_flatten_list_with_empty_sublists() {
     let value = results[0].get("test").unwrap();
 
     // Should return [1, 2]
-    assert!(value.contains("List"));
-    assert!(value.contains("1"));
-    assert!(value.contains("2"));
+    assert!(value.to_string().contains("List"));
+    assert!(value.to_string().contains("1"));
+    assert!(value.to_string().contains("2"));
 
     ctx.commit();
 }
@@ -103,7 +103,7 @@ fn test_flatten_with_null() {
 
     // Should return NULL
     assert!(
-        value.contains("Null") || value.contains("NULL"),
+        value.to_string().contains("Null") || value.to_string().contains("NULL"),
         "Expected NULL, got: {}",
         value
     );
@@ -119,7 +119,9 @@ fn test_flatten_non_list_should_error() {
 
     // Should error - FLATTEN requires a list or array
     assert!(
-        error.contains("TypeMismatch") || error.contains("list") || error.contains("array"),
+        error.to_string().contains("TypeMismatch")
+            || error.contains("list")
+            || error.contains("array"),
         "Expected list/array-related error, got: {}",
         error
     );
@@ -135,7 +137,9 @@ fn test_flatten_string_should_error() {
 
     // Should error - FLATTEN requires a list or array
     assert!(
-        error.contains("TypeMismatch") || error.contains("list") || error.contains("array"),
+        error.to_string().contains("TypeMismatch")
+            || error.contains("list")
+            || error.contains("array"),
         "Expected list/array-related error, got: {}",
         error
     );
@@ -158,12 +162,12 @@ fn test_flatten_with_table_data() {
     let value = results[0].get("flattened").unwrap();
 
     // Should return flattened list: [1, 2, 3, 4, 5]
-    assert!(value.contains("List"));
-    assert!(value.contains("1"));
-    assert!(value.contains("2"));
-    assert!(value.contains("3"));
-    assert!(value.contains("4"));
-    assert!(value.contains("5"));
+    assert!(value.to_string().contains("List"));
+    assert!(value.to_string().contains("1"));
+    assert!(value.to_string().contains("2"));
+    assert!(value.to_string().contains("3"));
+    assert!(value.to_string().contains("4"));
+    assert!(value.to_string().contains("5"));
 
     ctx.commit();
 }
@@ -179,7 +183,7 @@ fn test_flatten_deeply_nested_only_one_level() {
     let value = results[0].get("test").unwrap();
 
     // Should return [[1, 2], [3, 4]] (only one level flattened)
-    assert!(value.contains("List"));
+    assert!(value.to_string().contains("List"));
 
     ctx.commit();
 }
@@ -195,7 +199,7 @@ fn test_flatten_preserves_types() {
     let value = results[0].get("flattened").unwrap();
 
     // Should preserve string types and flatten to ['a', 'b', 'c', 'd']
-    assert!(value.contains("List"));
+    assert!(value.to_string().contains("List"));
 
     ctx.commit();
 }
@@ -208,7 +212,7 @@ fn test_flatten_wrong_argument_count() {
 
     // Should error - FLATTEN takes exactly 1 argument
     assert!(
-        error.contains("ExecutionError")
+        error.to_string().contains("ExecutionError")
             || error.contains("1 argument")
             || error.contains("exactly"),
         "Expected argument count error, got: {}",

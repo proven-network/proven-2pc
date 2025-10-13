@@ -14,11 +14,11 @@ fn test_from_entries_simple_pairs() {
     let value = results[0].get("test").unwrap();
 
     // Should return a map with name and age keys
-    assert!(value.contains("Map"));
-    assert!(value.contains("name"));
-    assert!(value.contains("Alice"));
-    assert!(value.contains("age"));
-    assert!(value.contains("25"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("name"));
+    assert!(value.to_string().contains("Alice"));
+    assert!(value.to_string().contains("age"));
+    assert!(value.to_string().contains("25"));
 
     ctx.commit();
 }
@@ -33,9 +33,9 @@ fn test_from_entries_single_pair() {
     let value = results[0].get("test").unwrap();
 
     // Should return a map with single entry
-    assert!(value.contains("Map"));
-    assert!(value.contains("key"));
-    assert!(value.contains("value"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("key"));
+    assert!(value.to_string().contains("value"));
 
     ctx.commit();
 }
@@ -50,7 +50,7 @@ fn test_from_entries_empty_list() {
     let value = results[0].get("test").unwrap();
 
     // Should return empty map
-    assert!(value.contains("Map"));
+    assert!(value.to_string().contains("Map"));
 
     ctx.commit();
 }
@@ -66,7 +66,7 @@ fn test_from_entries_with_null() {
 
     // Should return NULL
     assert!(
-        value.contains("Null") || value.contains("NULL"),
+        value.to_string().contains("Null") || value.to_string().contains("NULL"),
         "Expected NULL, got: {}",
         value
     );
@@ -85,10 +85,10 @@ fn test_from_entries_overwrites_duplicate_keys() {
     let value = results[0].get("test").unwrap();
 
     // Second value should overwrite the first
-    assert!(value.contains("Map"));
-    assert!(value.contains("key"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("key"));
     // Should contain 'second' (the last value for 'key')
-    assert!(value.contains("second"));
+    assert!(value.to_string().contains("second"));
 
     ctx.commit();
 }
@@ -109,13 +109,13 @@ fn test_from_entries_multiple_entries() {
     let value = results[0].get("test").unwrap();
 
     // Should contain all keys and values
-    assert!(value.contains("Map"));
-    assert!(value.contains("name"));
-    assert!(value.contains("Bob"));
-    assert!(value.contains("city"));
-    assert!(value.contains("NYC"));
-    assert!(value.contains("country"));
-    assert!(value.contains("USA"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("name"));
+    assert!(value.to_string().contains("Bob"));
+    assert!(value.to_string().contains("city"));
+    assert!(value.to_string().contains("NYC"));
+    assert!(value.to_string().contains("country"));
+    assert!(value.to_string().contains("USA"));
 
     ctx.commit();
 }
@@ -225,11 +225,11 @@ fn test_from_entries_inverse_of_entries() {
     let value = results[0].get("reconstructed").unwrap();
 
     // Should be a map containing the original keys
-    assert!(value.contains("Map"));
-    assert!(value.contains("name"));
-    assert!(value.contains("Test"));
-    assert!(value.contains("value"));
-    assert!(value.contains("123"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("name"));
+    assert!(value.to_string().contains("Test"));
+    assert!(value.to_string().contains("value"));
+    assert!(value.to_string().contains("123"));
 
     ctx.commit();
 }
@@ -244,10 +244,10 @@ fn test_from_entries_with_null_values() {
     let value = results[0].get("test").unwrap();
 
     // Should accept NULL as a value
-    assert!(value.contains("Map"));
-    assert!(value.contains("key1"));
-    assert!(value.contains("value1"));
-    assert!(value.contains("key2"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("key1"));
+    assert!(value.to_string().contains("value1"));
+    assert!(value.to_string().contains("key2"));
 
     ctx.commit();
 }
@@ -263,11 +263,11 @@ fn test_from_entries_with_integer_values() {
     let value = results[0].get("test").unwrap();
 
     // Should create a map with integer values
-    assert!(value.contains("Map"));
-    assert!(value.contains("count"));
-    assert!(value.contains("42"));
-    assert!(value.contains("total"));
-    assert!(value.contains("100"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("count"));
+    assert!(value.to_string().contains("42"));
+    assert!(value.to_string().contains("total"));
+    assert!(value.to_string().contains("100"));
 
     ctx.commit();
 }
@@ -283,9 +283,9 @@ fn test_from_entries_with_boolean_values() {
     let value = results[0].get("test").unwrap();
 
     // Should create a map with boolean values
-    assert!(value.contains("Map"));
-    assert!(value.contains("active"));
-    assert!(value.contains("visible"));
+    assert!(value.to_string().contains("Map"));
+    assert!(value.to_string().contains("active"));
+    assert!(value.to_string().contains("visible"));
 
     ctx.commit();
 }

@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_create_tables_for_column_alias() {
@@ -43,12 +44,16 @@ fn test_select_from_inner_table() {
         .insert_values("(1, 'PROVEN'), (2, 'SQL'), (3, 'SQL')");
 
     assert_rows!(ctx, "SELECT * FROM InnerTable", 3);
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT * FROM InnerTable WHERE id = 1",
         "name",
-        "Str(PROVEN)",
+        Value::Str("PROVEN".to_string()),
     );
-    ctx.assert_query_contains("SELECT * FROM InnerTable WHERE id = 2", "name", "Str(SQL)");
+    ctx.assert_query_value(
+        "SELECT * FROM InnerTable WHERE id = 2",
+        "name",
+        Value::Str("SQL".to_string()),
+    );
 
     ctx.commit();
 }
@@ -107,9 +112,9 @@ fn test_select_aliased_column() {
     assert_eq!(results.len(), 3);
 
     // Verify values
-    assert!(results[0].get("a").unwrap().contains("1"));
-    assert!(results[1].get("a").unwrap().contains("2"));
-    assert!(results[2].get("a").unwrap().contains("3"));
+    assert!(results[0].get("a").unwrap().to_string().contains("1"));
+    assert!(results[1].get("a").unwrap().to_string().contains("2"));
+    assert!(results[2].get("a").unwrap().to_string().contains("3"));
 
     ctx.commit();
 }
@@ -164,8 +169,8 @@ fn test_inline_view_select_aliased_columns() {
     assert_eq!(results.len(), 3);
 
     // Verify data
-    assert!(results[0].get("a").unwrap().contains("1"));
-    assert!(results[0].get("b").unwrap().contains("PROVEN"));
+    assert!(results[0].get("a").unwrap().to_string().contains("1"));
+    assert!(results[0].get("b").unwrap().to_string().contains("PROVEN"));
 
     ctx.commit();
 }
@@ -235,8 +240,8 @@ fn test_values_with_full_column_aliases() {
     assert!(results[0].contains_key("name"));
 
     // Verify values
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("a"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(results[0].get("name").unwrap().to_string().contains("a"));
 
     ctx.commit();
 }
@@ -252,10 +257,10 @@ fn test_values_select_qualified_aliased_columns() {
     assert_eq!(results.len(), 2);
 
     // Verify data
-    assert!(results[0].get("id").unwrap().contains("1"));
-    assert!(results[0].get("name").unwrap().contains("a"));
-    assert!(results[1].get("id").unwrap().contains("2"));
-    assert!(results[1].get("name").unwrap().contains("b"));
+    assert!(results[0].get("id").unwrap().to_string().contains("1"));
+    assert!(results[0].get("name").unwrap().to_string().contains("a"));
+    assert!(results[1].get("id").unwrap().to_string().contains("2"));
+    assert!(results[1].get("name").unwrap().to_string().contains("b"));
 
     ctx.commit();
 }

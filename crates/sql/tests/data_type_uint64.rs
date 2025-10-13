@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_uint64_columns() {
     let mut ctx = setup_test();
@@ -14,14 +14,14 @@ fn test_create_table_with_uint64_columns() {
 
     let results = ctx.query("SELECT field_one, field_two FROM Item ORDER BY field_one");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("field_one").unwrap(), "U64(1)");
-    assert_eq!(results[0].get("field_two").unwrap(), "U64(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U64(2)");
-    assert_eq!(results[1].get("field_two").unwrap(), "U64(2)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U64(3)");
-    assert_eq!(results[2].get("field_two").unwrap(), "U64(3)");
-    assert_eq!(results[3].get("field_one").unwrap(), "U64(4)");
-    assert_eq!(results[3].get("field_two").unwrap(), "U64(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U64(1));
+    assert_eq!(results[0].get("field_two").unwrap(), &Value::U64(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U64(2));
+    assert_eq!(results[1].get("field_two").unwrap(), &Value::U64(2));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U64(3));
+    assert_eq!(results[2].get("field_two").unwrap(), &Value::U64(3));
+    assert_eq!(results[3].get("field_one").unwrap(), &Value::U64(4));
+    assert_eq!(results[3].get("field_two").unwrap(), &Value::U64(4));
 
     ctx.commit();
 }
@@ -43,15 +43,21 @@ fn test_insert_uint64_values() {
 
     let results = ctx.query("SELECT id, value FROM uint64_test ORDER BY id");
     assert_eq!(results.len(), 7);
-    assert_eq!(results[0].get("value").unwrap(), "U64(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U64(1)");
-    assert_eq!(results[2].get("value").unwrap(), "U64(4294967295)");
-    assert_eq!(results[3].get("value").unwrap(), "U64(4294967296)");
-    assert_eq!(results[4].get("value").unwrap(), "U64(9223372036854775807)");
-    assert_eq!(results[5].get("value").unwrap(), "U64(9223372036854775808)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U64(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U64(1));
+    assert_eq!(results[2].get("value").unwrap(), &Value::U64(4294967295));
+    assert_eq!(results[3].get("value").unwrap(), &Value::U64(4294967296));
+    assert_eq!(
+        results[4].get("value").unwrap(),
+        &Value::U64(9223372036854775807)
+    );
+    assert_eq!(
+        results[5].get("value").unwrap(),
+        &Value::U64(9223372036854775808)
+    );
     assert_eq!(
         results[6].get("value").unwrap(),
-        "U64(18446744073709551615)"
+        &Value::U64(18446744073709551615)
     );
 
     ctx.commit();
@@ -87,26 +93,26 @@ fn test_uint64_comparisons() {
     // Test greater than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one > 2 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U64(3)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U64(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U64(3));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U64(4));
 
     // Test greater than or equal
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one >= 2 ORDER BY field_one");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("field_one").unwrap(), "U64(2)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U64(3)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U64(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U64(2));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U64(3));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U64(4));
 
     // Test equality
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("field_one").unwrap(), "U64(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U64(2));
 
     // Test less than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one < 3 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U64(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U64(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U64(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U64(2));
 
     ctx.commit();
 }
@@ -121,30 +127,30 @@ fn test_uint64_arithmetic_operations() {
     // Test addition
     let results = ctx.query("SELECT a + b AS sum FROM uint64_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("sum").unwrap(), "U64(1300000000)");
+    assert_eq!(results[0].get("sum").unwrap(), &Value::U64(1300000000));
 
     // Test subtraction
     let results = ctx.query("SELECT a - b AS diff FROM uint64_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("diff").unwrap(), "U64(700000000)");
+    assert_eq!(results[0].get("diff").unwrap(), &Value::U64(700000000));
 
     // Test multiplication
     let results = ctx.query("SELECT a * b AS product FROM uint64_math");
     assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].get("product").unwrap(),
-        "U64(300000000000000000)"
+        &Value::U64(300000000000000000)
     );
 
     // Test division (integer division)
     let results = ctx.query("SELECT a / b AS quotient FROM uint64_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("quotient").unwrap(), "U64(3)");
+    assert_eq!(results[0].get("quotient").unwrap(), &Value::U64(3));
 
     // Test modulo
     let results = ctx.query("SELECT a % b AS remainder FROM uint64_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("remainder").unwrap(), "U64(100000000)");
+    assert_eq!(results[0].get("remainder").unwrap(), &Value::U64(100000000));
 
     ctx.commit();
 }
@@ -163,10 +169,10 @@ fn test_uint64_range_boundaries() {
 
     let results = ctx.query("SELECT value FROM uint64_bounds ORDER BY value");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U64(0)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U64(0));
     assert_eq!(
         results[1].get("value").unwrap(),
-        "U64(18446744073709551615)"
+        &Value::U64(18446744073709551615)
     );
 
     // Test operations at boundaries
@@ -175,7 +181,10 @@ fn test_uint64_range_boundaries() {
 
     // Test 18446744073709551615 - 0 = 18446744073709551615
     let results = ctx.query("SELECT a - b AS diff FROM uint64_boundary_ops");
-    assert_eq!(results[0].get("diff").unwrap(), "U64(18446744073709551615)");
+    assert_eq!(
+        results[0].get("diff").unwrap(),
+        &Value::U64(18446744073709551615)
+    );
 
     ctx.commit();
 }
@@ -214,16 +223,16 @@ fn test_uint64_with_null() {
     let results =
         ctx.query("SELECT id, value FROM uint64_nulls WHERE value IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U64(10000000000)");
-    assert_eq!(results[1].get("value").unwrap(), "U64(20000000000)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U64(10000000000));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U64(20000000000));
 
     // Test NULL propagation in arithmetic
     let results =
         ctx.query("SELECT id, value + 5000000000 as result FROM uint64_nulls ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "U64(15000000000)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "U64(25000000000)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::U64(15000000000));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::U64(25000000000));
 
     ctx.commit();
 }
@@ -235,12 +244,18 @@ fn test_cast_to_uint64() {
     // Test CAST from string
     let results = ctx.query("SELECT CAST('12345678901' AS BIGINT UNSIGNED) AS uint64_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint64_val").unwrap(), "U64(12345678901)");
+    assert_eq!(
+        results[0].get("uint64_val").unwrap(),
+        &Value::U64(12345678901)
+    );
 
     // Test CAST from integer
     let results = ctx.query("SELECT CAST(4200000000 AS BIGINT UNSIGNED) AS uint64_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint64_val").unwrap(), "U64(4200000000)");
+    assert_eq!(
+        results[0].get("uint64_val").unwrap(),
+        &Value::U64(4200000000)
+    );
 
     // Test CAST from larger integer type
     ctx.exec("CREATE TABLE test_cast (i INT)");
@@ -248,7 +263,10 @@ fn test_cast_to_uint64() {
 
     let results = ctx.query("SELECT CAST(i AS BIGINT UNSIGNED) AS uint64_val FROM test_cast");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint64_val").unwrap(), "U64(100000000)");
+    assert_eq!(
+        results[0].get("uint64_val").unwrap(),
+        &Value::U64(100000000)
+    );
 
     ctx.commit();
 }

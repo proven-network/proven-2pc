@@ -3,10 +3,11 @@
 //! Adapted from toydb for proven-sql's PCC architecture.
 //! Tables are immutable after creation - no ALTER TABLE support.
 
+use super::Row;
 use super::data_type::DataType;
-use super::value::Row;
 use crate::error::{Error, Result};
 use crate::parsing::ast::ddl::ForeignKeyConstraint;
+use crate::types::ValueExt;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
@@ -245,7 +246,7 @@ impl Display for Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::value::Value;
+    use crate::types::Value;
 
     #[test]
     fn test_table_creation() {

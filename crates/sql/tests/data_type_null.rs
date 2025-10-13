@@ -4,14 +4,14 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_null_is_null_condition() {
     let mut ctx = setup_test();
 
     let results = ctx.query("SELECT NULL IS NULL as res");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("res").unwrap(), "Bool(true)");
+    assert_eq!(results[0].get("res").unwrap(), &Value::Bool(true));
 
     ctx.commit();
 }
@@ -22,7 +22,7 @@ fn test_null_binary_operators_equality() {
 
     let results = ctx.query("SELECT NULL = NULL as res");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("res").unwrap(), "Null");
+    assert_eq!(results[0].get("res").unwrap(), &Value::Null);
 
     ctx.commit();
 }
@@ -39,7 +39,7 @@ fn test_null_binary_operators_comparison() {
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].get("res").unwrap(),
-            "Null",
+            &Value::Null,
             "NULL {} NULL should return NULL",
             op
         );
@@ -64,7 +64,7 @@ fn test_null_binary_operators_bitwise() {
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].get("res").unwrap(),
-            "Null",
+            &Value::Null,
             "NULL {} NULL should return NULL",
             op
         );
@@ -85,7 +85,7 @@ fn test_null_binary_operators_arithmetic() {
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].get("res").unwrap(),
-            "Null",
+            &Value::Null,
             "NULL {} NULL should return NULL",
             op
         );
@@ -106,7 +106,7 @@ fn test_null_unary_operators_arithmetic() {
         assert_eq!(results.len(), 1);
         assert_eq!(
             results[0].get("res").unwrap(),
-            "Null",
+            &Value::Null,
             "{} NULL should return NULL",
             op
         );
@@ -121,7 +121,7 @@ fn test_null_unary_operators_logical() {
 
     let results = ctx.query("SELECT NOT NULL as res");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("res").unwrap(), "Null");
+    assert_eq!(results[0].get("res").unwrap(), &Value::Null);
 
     ctx.commit();
 }
@@ -135,39 +135,39 @@ fn test_null_propagation_in_expressions() {
 
     let results = ctx.query("SELECT id, val + 5 as result FROM TestTable ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "I32(15)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "I32(35)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::I32(15));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::I32(35));
 
     let results = ctx.query("SELECT id, val * 2 as result FROM TestTable ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "I32(20)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "I32(60)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::I32(20));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::I32(60));
 
     let results = ctx.query("SELECT id, val - 3 as result FROM TestTable ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "I32(7)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "I32(27)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::I32(7));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::I32(27));
 
     let results = ctx.query("SELECT id, val > 15 as result FROM TestTable ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "Bool(false)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "Bool(true)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::Bool(false));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::Bool(true));
 
     let results = ctx.query("SELECT id, val = NULL as result FROM TestTable ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "Null");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "Null");
+    assert_eq!(results[0].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::Null);
 
     let results = ctx.query("SELECT id, val IS NULL as result FROM TestTable ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "Bool(false)");
-    assert_eq!(results[1].get("result").unwrap(), "Bool(true)");
-    assert_eq!(results[2].get("result").unwrap(), "Bool(false)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::Bool(false));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Bool(true));
+    assert_eq!(results[2].get("result").unwrap(), &Value::Bool(false));
 
     ctx.commit();
 }

@@ -3,7 +3,7 @@
 use super::helpers::*;
 use super::traits::BinaryOperator;
 use crate::error::{Error, Result};
-use crate::types::{DataType, Value};
+use crate::types::{DataType, Value, ValueExt};
 
 pub struct EqualOperator;
 
@@ -90,8 +90,52 @@ impl BinaryOperator for EqualOperator {
             (Array(_) | List(_), Str(s)) | (Str(s), Array(_) | List(_))
                 if s.starts_with('[') && s.ends_with(']') =>
             {
-                if let Ok(parsed) = Value::parse_json_array(s) {
-                    if matches!(left, Array(_) | List(_)) {
+                if let Ok(mut parsed) = Value::parse_json_array(s) {
+                    // parse_json_array returns List, but we need to match the stored type
+                    // If comparing with Array, convert List to Array
+                    let (collection, is_left) = if matches!(left, Array(_) | List(_)) {
+                        (left, true)
+                    } else {
+                        (right, false)
+                    };
+
+                    // Convert parsed List to Array if needed
+                    if matches!(collection, Array(_))
+                        && let Value::List(items) = parsed
+                    {
+                        parsed = Value::Array(items);
+                    }
+
+                    // Try to coerce element types to match the stored collection
+                    // Get the element type from the stored collection
+                    let stored_elements = match collection {
+                        Array(items) => items,
+                        List(items) => items,
+                        _ => unreachable!(),
+                    };
+
+                    if let Some(first_elem) = stored_elements.first() {
+                        let target_type = first_elem.data_type();
+
+                        // Coerce parsed elements to match stored element type
+                        let coerced_elements: Result<Vec<Value>> = match &parsed {
+                            Array(items) | List(items) => items
+                                .iter()
+                                .map(|v| crate::coercion::coerce_value(v.clone(), &target_type))
+                                .collect(),
+                            _ => Ok(stored_elements.clone()),
+                        };
+
+                        if let Ok(coerced) = coerced_elements {
+                            parsed = match collection {
+                                Array(_) => Value::Array(coerced),
+                                List(_) => Value::List(coerced),
+                                _ => unreachable!(),
+                            };
+                        }
+                    }
+
+                    if is_left {
                         (left.clone(), parsed)
                     } else {
                         (parsed, right.clone())

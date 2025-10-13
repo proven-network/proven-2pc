@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_date_literal_parsing() {
     use chrono::NaiveDate;
@@ -114,7 +114,7 @@ fn test_index_equality_queries_with_nulls() {
     // Test equality queries - NULL values should not match
     let results = ctx.query("SELECT * FROM NullIdx WHERE id = 1");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
 
     let results = ctx.query("SELECT * FROM NullIdx WHERE flag = TRUE");
     assert_eq!(results.len(), 2); // Only non-NULL TRUE values
@@ -248,16 +248,19 @@ fn test_order_by_with_null_indexed_columns() {
     let non_null_ids: Vec<_> = results
         .iter()
         .filter_map(|row| {
-            let id_str = row.get("id").unwrap();
-            if id_str != "Null" {
-                Some(id_str.clone())
+            let id_val = row.get("id").unwrap();
+            if id_val != &Value::Null {
+                Some(id_val.clone())
             } else {
                 None
             }
         })
         .collect();
 
-    assert_eq!(non_null_ids, vec!["I32(1)", "I32(2)", "I32(3)"]);
+    assert_eq!(
+        non_null_ids,
+        vec![Value::I32(1), Value::I32(2), Value::I32(3)]
+    );
 
     ctx.commit();
 }

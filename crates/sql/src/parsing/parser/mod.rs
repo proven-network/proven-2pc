@@ -393,7 +393,7 @@ impl LiteralParser for Parser<'_> {
         interval_str: &str,
         start_unit: &str,
     ) -> Result<Expression> {
-        use crate::types::data_type::Interval;
+        use proven_value::Interval;
 
         let start_upper = start_unit.to_uppercase();
 

@@ -302,9 +302,7 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(prev),
                             right: Box::new(scan),
-                            predicate: Expression::Constant(crate::types::value::Value::boolean(
-                                true,
-                            )),
+                            predicate: Expression::Constant(crate::types::Value::boolean(true)),
                             join_type: JoinType::Inner,
                         }
                     } else {
@@ -340,9 +338,7 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(prev),
                             right: Box::new(subquery_node),
-                            predicate: Expression::Constant(crate::types::value::Value::boolean(
-                                true,
-                            )),
+                            predicate: Expression::Constant(crate::types::Value::boolean(true)),
                             join_type: JoinType::Inner,
                         }
                     } else {
@@ -416,9 +412,7 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(left_node),
                             right: Box::new(right_node),
-                            predicate: Expression::Constant(crate::types::value::Value::boolean(
-                                true,
-                            )),
+                            predicate: Expression::Constant(crate::types::Value::boolean(true)),
                             join_type: JoinType::Cross,
                         }
                     };
@@ -427,9 +421,7 @@ impl Planner {
                         Node::NestedLoopJoin {
                             left: Box::new(prev),
                             right: Box::new(join_node),
-                            predicate: Expression::Constant(crate::types::value::Value::boolean(
-                                true,
-                            )),
+                            predicate: Expression::Constant(crate::types::Value::boolean(true)),
                             join_type: JoinType::Inner,
                         }
                     } else {
@@ -541,7 +533,7 @@ impl Planner {
                 let value = if let Some(e) = expr {
                     context.resolve_expression(&e)?
                 } else {
-                    Expression::Constant(crate::types::value::Value::Null)
+                    Expression::Constant(crate::types::Value::Null)
                 };
 
                 Ok((column, value))
@@ -675,8 +667,8 @@ impl Planner {
             // For now, evaluate limit as a constant
             // TODO: Support dynamic limits
             let limit = match context.resolve_expression(limit_expr)? {
-                Expression::Constant(crate::types::value::Value::I32(n)) if n > 0 => n as usize,
-                Expression::Constant(crate::types::value::Value::I64(n)) if n > 0 => n as usize,
+                Expression::Constant(crate::types::Value::I32(n)) if n > 0 => n as usize,
+                Expression::Constant(crate::types::Value::I64(n)) if n > 0 => n as usize,
                 _ => {
                     return Err(Error::ExecutionError(
                         "LIMIT must be a positive integer".into(),
@@ -695,8 +687,8 @@ impl Planner {
             // For now, evaluate offset as a constant
             // TODO: Support dynamic offsets
             let offset = match context.resolve_expression(offset_expr)? {
-                Expression::Constant(crate::types::value::Value::I32(n)) if n >= 0 => n as usize,
-                Expression::Constant(crate::types::value::Value::I64(n)) if n >= 0 => n as usize,
+                Expression::Constant(crate::types::Value::I32(n)) if n >= 0 => n as usize,
+                Expression::Constant(crate::types::Value::I64(n)) if n >= 0 => n as usize,
                 _ => {
                     return Err(Error::ExecutionError(
                         "OFFSET must be a non-negative integer".into(),
@@ -852,7 +844,7 @@ impl Planner {
     }
 
     fn infer_expression_type(&self, expr: &Expression) -> Result<DataType> {
-        use crate::types::value::Value;
+        use crate::types::Value;
 
         match expr {
             Expression::Constant(Value::Null) => Ok(DataType::Null),
@@ -1071,12 +1063,12 @@ impl Planner {
                 let func_name = name.to_uppercase();
 
                 let arg = if args.is_empty() {
-                    Expression::Constant(crate::types::value::Value::integer(1))
+                    Expression::Constant(crate::types::Value::integer(1))
                 } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
                     if func_name.ends_with("_DISTINCT") {
                         Expression::All
                     } else {
-                        Expression::Constant(crate::types::value::Value::integer(1))
+                        Expression::Constant(crate::types::Value::integer(1))
                     }
                 } else {
                     context.resolve_expression(&args[0])?
@@ -1483,24 +1475,24 @@ impl<'a> AnalyzedPlanContext<'a> {
         match expr {
             AstExpression::Literal(lit) => {
                 let value = match lit {
-                    Literal::Null => crate::types::value::Value::Null,
-                    Literal::Boolean(b) => crate::types::value::Value::boolean(*b),
+                    Literal::Null => crate::types::Value::Null,
+                    Literal::Boolean(b) => crate::types::Value::boolean(*b),
                     Literal::Integer(i) => {
                         if *i >= i32::MIN as i128 && *i <= i32::MAX as i128 {
-                            crate::types::value::Value::I32(*i as i32)
+                            crate::types::Value::I32(*i as i32)
                         } else if *i >= i64::MIN as i128 && *i <= i64::MAX as i128 {
-                            crate::types::value::Value::I64(*i as i64)
+                            crate::types::Value::I64(*i as i64)
                         } else {
-                            crate::types::value::Value::I128(*i)
+                            crate::types::Value::I128(*i)
                         }
                     }
-                    Literal::Float(f) => crate::types::value::Value::F64(*f),
-                    Literal::String(s) => crate::types::value::Value::string(s.clone()),
-                    Literal::Bytea(b) => crate::types::value::Value::Bytea(b.clone()),
-                    Literal::Date(d) => crate::types::value::Value::Date(*d),
-                    Literal::Time(t) => crate::types::value::Value::Time(*t),
-                    Literal::Timestamp(ts) => crate::types::value::Value::Timestamp(*ts),
-                    Literal::Interval(i) => crate::types::value::Value::Interval(i.clone()),
+                    Literal::Float(f) => crate::types::Value::F64(*f),
+                    Literal::String(s) => crate::types::Value::string(s.clone()),
+                    Literal::Bytea(b) => crate::types::Value::Bytea(b.clone()),
+                    Literal::Date(d) => crate::types::Value::Date(*d),
+                    Literal::Time(t) => crate::types::Value::Time(*t),
+                    Literal::Timestamp(ts) => crate::types::Value::Timestamp(*ts),
+                    Literal::Interval(i) => crate::types::Value::Interval(i.clone()),
                 };
                 Ok(Expression::Constant(value))
             }
@@ -1733,7 +1725,7 @@ impl<'a> AnalyzedPlanContext<'a> {
             ),
             Is(e, lit) => {
                 let value = match lit {
-                    Literal::Null => crate::types::value::Value::Null,
+                    Literal::Null => crate::types::Value::Null,
                     _ => return Err(Error::ExecutionError("IS only supports NULL".into())),
                 };
                 Expression::Is(Box::new(self.resolve_expression_simple(e)?), value)
@@ -1871,24 +1863,24 @@ fn resolve_default_expression(
     match expr {
         AstExpression::Literal(lit) => {
             let value = match lit {
-                Literal::Null => crate::types::value::Value::Null,
-                Literal::Boolean(b) => crate::types::value::Value::Bool(*b),
+                Literal::Null => crate::types::Value::Null,
+                Literal::Boolean(b) => crate::types::Value::Bool(*b),
                 Literal::Integer(n) => {
                     if *n >= i32::MIN as i128 && *n <= i32::MAX as i128 {
-                        crate::types::value::Value::I32(*n as i32)
+                        crate::types::Value::I32(*n as i32)
                     } else if *n >= i64::MIN as i128 && *n <= i64::MAX as i128 {
-                        crate::types::value::Value::I64(*n as i64)
+                        crate::types::Value::I64(*n as i64)
                     } else {
-                        crate::types::value::Value::I128(*n)
+                        crate::types::Value::I128(*n)
                     }
                 }
-                Literal::Float(f) => crate::types::value::Value::F64(*f),
-                Literal::String(s) => crate::types::value::Value::Str(s.clone()),
-                Literal::Bytea(b) => crate::types::value::Value::Bytea(b.clone()),
-                Literal::Date(d) => crate::types::value::Value::Date(*d),
-                Literal::Time(t) => crate::types::value::Value::Time(*t),
-                Literal::Timestamp(ts) => crate::types::value::Value::Timestamp(*ts),
-                Literal::Interval(i) => crate::types::value::Value::Interval(i.clone()),
+                Literal::Float(f) => crate::types::Value::F64(*f),
+                Literal::String(s) => crate::types::Value::Str(s.clone()),
+                Literal::Bytea(b) => crate::types::Value::Bytea(b.clone()),
+                Literal::Date(d) => crate::types::Value::Date(*d),
+                Literal::Time(t) => crate::types::Value::Time(*t),
+                Literal::Timestamp(ts) => crate::types::Value::Timestamp(*ts),
+                Literal::Interval(i) => crate::types::Value::Interval(i.clone()),
             };
             Ok(DefaultExpression::Constant(value))
         }
@@ -1977,7 +1969,7 @@ fn resolve_default_expression(
                 // IS NULL
                 Is(e, lit) => {
                     let value = match lit {
-                        Literal::Null => crate::types::value::Value::Null,
+                        Literal::Null => crate::types::Value::Null,
                         _ => return Err(Error::ExecutionError("IS only supports NULL".into())),
                     };
                     DefaultExpression::Is(Box::new(resolve_default_expression(e)?), value)

@@ -4,7 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
-
+use proven_value::Value;
 #[test]
 #[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_single_column() {
@@ -24,9 +24,18 @@ fn test_distinct_single_column() {
     // Test DISTINCT on single column
     let results = ctx.query("SELECT DISTINCT category FROM DistinctTest ORDER BY category");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("category").unwrap(), "Str(\"A\")");
-    assert_eq!(results[1].get("category").unwrap(), "Str(\"B\")");
-    assert_eq!(results[2].get("category").unwrap(), "Str(\"C\")");
+    assert_eq!(
+        results[0].get("category").unwrap(),
+        &Value::Str("\"A\"".to_string())
+    );
+    assert_eq!(
+        results[1].get("category").unwrap(),
+        &Value::Str("\"B\"".to_string())
+    );
+    assert_eq!(
+        results[2].get("category").unwrap(),
+        &Value::Str("\"C\"".to_string())
+    );
 
     ctx.commit();
 }
@@ -76,10 +85,10 @@ fn test_distinct_with_null_values() {
     // Test DISTINCT with NULL values
     let results = ctx.query("SELECT DISTINCT value FROM NullTest ORDER BY value");
     assert_eq!(results.len(), 4); // NULL, 10, 20, 30
-    assert_eq!(results[0].get("value").unwrap(), "Null");
-    assert_eq!(results[1].get("value").unwrap(), "I64(10)");
-    assert_eq!(results[2].get("value").unwrap(), "I64(20)");
-    assert_eq!(results[3].get("value").unwrap(), "I64(30)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::Null);
+    assert_eq!(results[1].get("value").unwrap(), &Value::I64(10));
+    assert_eq!(results[2].get("value").unwrap(), &Value::I64(20));
+    assert_eq!(results[3].get("value").unwrap(), &Value::I64(30));
 
     ctx.commit();
 }
@@ -149,10 +158,22 @@ fn test_distinct_with_order_by() {
     // Test DISTINCT with ORDER BY
     let results = ctx.query("SELECT DISTINCT name FROM DistinctTest ORDER BY name ASC");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("name").unwrap(), "Str(\"Apple\")");
-    assert_eq!(results[1].get("name").unwrap(), "Str(\"Banana\")");
-    assert_eq!(results[2].get("name").unwrap(), "Str(\"Cherry\")");
-    assert_eq!(results[3].get("name").unwrap(), "Str(\"Zebra\")");
+    assert_eq!(
+        results[0].get("name").unwrap(),
+        &Value::Str("\"Apple\"".to_string())
+    );
+    assert_eq!(
+        results[1].get("name").unwrap(),
+        &Value::Str("\"Banana\"".to_string())
+    );
+    assert_eq!(
+        results[2].get("name").unwrap(),
+        &Value::Str("\"Cherry\"".to_string())
+    );
+    assert_eq!(
+        results[3].get("name").unwrap(),
+        &Value::Str("\"Zebra\"".to_string())
+    );
 
     ctx.commit();
 }
@@ -169,9 +190,18 @@ fn test_distinct_with_limit() {
     // Test DISTINCT with LIMIT
     let results = ctx.query("SELECT DISTINCT category FROM DistinctTest ORDER BY category LIMIT 3");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("category").unwrap(), "Str(\"A\")");
-    assert_eq!(results[1].get("category").unwrap(), "Str(\"B\")");
-    assert_eq!(results[2].get("category").unwrap(), "Str(\"C\")");
+    assert_eq!(
+        results[0].get("category").unwrap(),
+        &Value::Str("\"A\"".to_string())
+    );
+    assert_eq!(
+        results[1].get("category").unwrap(),
+        &Value::Str("\"B\"".to_string())
+    );
+    assert_eq!(
+        results[2].get("category").unwrap(),
+        &Value::Str("\"C\"".to_string())
+    );
 
     ctx.commit();
 }
@@ -195,7 +225,7 @@ fn test_distinct_with_expressions() {
     // Test DISTINCT with expressions
     let results = ctx.query("SELECT DISTINCT a + b AS sum FROM DistinctTest ORDER BY sum");
     assert_eq!(results.len(), 4); // 10, 10, 10, 10 becomes just 10
-    assert_eq!(results[0].get("sum").unwrap(), "I64(10)");
+    assert_eq!(results[0].get("sum").unwrap(), &Value::I64(10));
 
     ctx.commit();
 }
@@ -219,9 +249,9 @@ fn test_distinct_on_boolean() {
     // Test DISTINCT on boolean column
     let results = ctx.query("SELECT DISTINCT active FROM BoolTest ORDER BY active");
     assert_eq!(results.len(), 3); // NULL, FALSE, TRUE
-    assert_eq!(results[0].get("active").unwrap(), "Null");
-    assert_eq!(results[1].get("active").unwrap(), "Bool(false)");
-    assert_eq!(results[2].get("active").unwrap(), "Bool(true)");
+    assert_eq!(results[0].get("active").unwrap(), &Value::Null);
+    assert_eq!(results[1].get("active").unwrap(), &Value::Bool(false));
+    assert_eq!(results[2].get("active").unwrap(), &Value::Bool(true));
 
     ctx.commit();
 }
@@ -238,7 +268,7 @@ fn test_distinct_count() {
     // Test COUNT(DISTINCT)
     let results = ctx.query("SELECT COUNT(DISTINCT category) AS unique_count FROM DistinctTest");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("unique_count").unwrap(), "I64(3)");
+    assert_eq!(results[0].get("unique_count").unwrap(), &Value::I64(3));
 
     ctx.commit();
 }
@@ -267,10 +297,16 @@ fn test_distinct_with_group_by() {
          ORDER BY region",
     );
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("region").unwrap(), "Str(\"North\")");
-    assert_eq!(results[0].get("product_count").unwrap(), "I64(2)");
-    assert_eq!(results[1].get("region").unwrap(), "Str(\"South\")");
-    assert_eq!(results[1].get("product_count").unwrap(), "I64(2)");
+    assert_eq!(
+        results[0].get("region").unwrap(),
+        &Value::Str("\"North\"".to_string())
+    );
+    assert_eq!(results[0].get("product_count").unwrap(), &Value::I64(2));
+    assert_eq!(
+        results[1].get("region").unwrap(),
+        &Value::Str("\"South\"".to_string())
+    );
+    assert_eq!(results[1].get("product_count").unwrap(), &Value::I64(2));
 
     ctx.commit();
 }
@@ -301,7 +337,10 @@ fn test_distinct_single_row() {
     // Test DISTINCT with single row
     let results = ctx.query("SELECT DISTINCT value FROM SingleRow");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("value").unwrap(), "Str(\"Only\")");
+    assert_eq!(
+        results[0].get("value").unwrap(),
+        &Value::Str("\"Only\"".to_string())
+    );
 
     ctx.commit();
 }

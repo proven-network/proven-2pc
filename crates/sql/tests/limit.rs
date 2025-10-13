@@ -4,7 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
-
+use proven_value::Value;
 fn setup_limit_test_table(ctx: &mut common::TestContext) {
     TableBuilder::new(ctx, "LimitTest")
         .create_simple("id INTEGER, name TEXT, value INTEGER")
@@ -42,9 +42,9 @@ fn test_limit_with_order_by() {
     // Test LIMIT with ORDER BY
     let results = ctx.query("SELECT id, value FROM LimitTest ORDER BY value DESC LIMIT 3");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("value").unwrap(), "I32(100)");
-    assert_eq!(results[1].get("value").unwrap(), "I32(90)");
-    assert_eq!(results[2].get("value").unwrap(), "I32(80)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::I32(100));
+    assert_eq!(results[1].get("value").unwrap(), &Value::I32(90));
+    assert_eq!(results[2].get("value").unwrap(), &Value::I32(80));
 
     ctx.commit();
 }
@@ -81,11 +81,11 @@ fn test_offset_basic() {
     // Test basic OFFSET
     let results = ctx.query("SELECT id FROM LimitTest ORDER BY id ASC OFFSET 5");
     assert_eq!(results.len(), 5);
-    assert_eq!(results[0].get("id").unwrap(), "I32(6)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(7)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(8)");
-    assert_eq!(results[3].get("id").unwrap(), "I32(9)");
-    assert_eq!(results[4].get("id").unwrap(), "I32(10)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(6));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(7));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(8));
+    assert_eq!(results[3].get("id").unwrap(), &Value::I32(9));
+    assert_eq!(results[4].get("id").unwrap(), &Value::I32(10));
 
     ctx.commit();
 }
@@ -98,12 +98,21 @@ fn test_limit_with_offset() {
     // Test LIMIT with OFFSET (pagination)
     let results = ctx.query("SELECT id, name FROM LimitTest ORDER BY id ASC LIMIT 3 OFFSET 3");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("id").unwrap(), "I32(4)");
-    assert_eq!(results[0].get("name").unwrap(), "Str(Item4)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(5)");
-    assert_eq!(results[1].get("name").unwrap(), "Str(Item5)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(6)");
-    assert_eq!(results[2].get("name").unwrap(), "Str(Item6)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(4));
+    assert_eq!(
+        results[0].get("name").unwrap(),
+        &Value::Str("Item4".to_string())
+    );
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(5));
+    assert_eq!(
+        results[1].get("name").unwrap(),
+        &Value::Str("Item5".to_string())
+    );
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(6));
+    assert_eq!(
+        results[2].get("name").unwrap(),
+        &Value::Str("Item6".to_string())
+    );
 
     ctx.commit();
 }
@@ -116,7 +125,7 @@ fn test_offset_zero() {
     // Test OFFSET 0 (should return all rows)
     let results = ctx.query("SELECT * FROM LimitTest ORDER BY id ASC OFFSET 0");
     assert_eq!(results.len(), 10);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
 
     ctx.commit();
 }
@@ -141,25 +150,25 @@ fn test_pagination_scenario() {
     // Test pagination - Page 1
     let page1 = ctx.query("SELECT id, name FROM LimitTest ORDER BY id ASC LIMIT 3 OFFSET 0");
     assert_eq!(page1.len(), 3);
-    assert_eq!(page1[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(page1[2].get("id").unwrap(), "I32(3)");
+    assert_eq!(page1[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(page1[2].get("id").unwrap(), &Value::I32(3));
 
     // Page 2
     let page2 = ctx.query("SELECT id, name FROM LimitTest ORDER BY id ASC LIMIT 3 OFFSET 3");
     assert_eq!(page2.len(), 3);
-    assert_eq!(page2[0].get("id").unwrap(), "I32(4)");
-    assert_eq!(page2[2].get("id").unwrap(), "I32(6)");
+    assert_eq!(page2[0].get("id").unwrap(), &Value::I32(4));
+    assert_eq!(page2[2].get("id").unwrap(), &Value::I32(6));
 
     // Page 3
     let page3 = ctx.query("SELECT id, name FROM LimitTest ORDER BY id ASC LIMIT 3 OFFSET 6");
     assert_eq!(page3.len(), 3);
-    assert_eq!(page3[0].get("id").unwrap(), "I32(7)");
-    assert_eq!(page3[2].get("id").unwrap(), "I32(9)");
+    assert_eq!(page3[0].get("id").unwrap(), &Value::I32(7));
+    assert_eq!(page3[2].get("id").unwrap(), &Value::I32(9));
 
     // Page 4 (partial page)
     let page4 = ctx.query("SELECT id, name FROM LimitTest ORDER BY id ASC LIMIT 3 OFFSET 9");
     assert_eq!(page4.len(), 1); // Only 1 row left
-    assert_eq!(page4[0].get("id").unwrap(), "I32(10)");
+    assert_eq!(page4[0].get("id").unwrap(), &Value::I32(10));
 
     ctx.commit();
 }
@@ -174,8 +183,8 @@ fn test_limit_offset_with_where() {
         "SELECT id, value FROM LimitTest WHERE value >= 50 ORDER BY value ASC LIMIT 2 OFFSET 1",
     );
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "I32(60)");
-    assert_eq!(results[1].get("value").unwrap(), "I32(70)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::I32(60));
+    assert_eq!(results[1].get("value").unwrap(), &Value::I32(70));
 
     ctx.commit();
 }
@@ -206,10 +215,16 @@ fn test_limit_offset_with_complex_query() {
     );
 
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("item").unwrap(), "Str(Item3)");
-    assert_eq!(results[0].get("price").unwrap(), "I32(150)");
-    assert_eq!(results[1].get("item").unwrap(), "Str(Item5)");
-    assert_eq!(results[1].get("price").unwrap(), "I32(120)");
+    assert_eq!(
+        results[0].get("item").unwrap(),
+        &Value::Str("Item3".to_string())
+    );
+    assert_eq!(results[0].get("price").unwrap(), &Value::I32(150));
+    assert_eq!(
+        results[1].get("item").unwrap(),
+        &Value::Str("Item5".to_string())
+    );
+    assert_eq!(results[1].get("price").unwrap(), &Value::I32(120));
 
     ctx.commit();
 }
@@ -222,8 +237,8 @@ fn test_limit_one() {
     // Test LIMIT 1 (common use case)
     let results = ctx.query("SELECT * FROM LimitTest ORDER BY value DESC LIMIT 1");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(10)");
-    assert_eq!(results[0].get("value").unwrap(), "I32(100)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(10));
+    assert_eq!(results[0].get("value").unwrap(), &Value::I32(100));
 
     ctx.commit();
 }
@@ -246,12 +261,21 @@ fn test_top_n_queries() {
     // Top 3 scores
     let results = ctx.query("SELECT player, score FROM Scores ORDER BY score DESC LIMIT 3");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("player").unwrap(), "Str(Eve)");
-    assert_eq!(results[0].get("score").unwrap(), "I32(96)");
-    assert_eq!(results[1].get("player").unwrap(), "Str(Alice)");
-    assert_eq!(results[1].get("score").unwrap(), "I32(95)");
-    assert_eq!(results[2].get("player").unwrap(), "Str(Charlie)");
-    assert_eq!(results[2].get("score").unwrap(), "I32(92)");
+    assert_eq!(
+        results[0].get("player").unwrap(),
+        &Value::Str("Eve".to_string())
+    );
+    assert_eq!(results[0].get("score").unwrap(), &Value::I32(96));
+    assert_eq!(
+        results[1].get("player").unwrap(),
+        &Value::Str("Alice".to_string())
+    );
+    assert_eq!(results[1].get("score").unwrap(), &Value::I32(95));
+    assert_eq!(
+        results[2].get("player").unwrap(),
+        &Value::Str("Charlie".to_string())
+    );
+    assert_eq!(results[2].get("score").unwrap(), &Value::I32(92));
 
     ctx.commit();
 }
@@ -274,9 +298,9 @@ fn test_limit_with_null_values() {
     let results = ctx.query("SELECT id, value FROM NullTest ORDER BY value ASC LIMIT 3");
     assert_eq!(results.len(), 3);
     // SQL standard: NULLs come last in ASC order
-    assert_eq!(results[0].get("value").unwrap(), "I32(10)");
-    assert_eq!(results[1].get("value").unwrap(), "I32(30)");
-    assert_eq!(results[2].get("value").unwrap(), "I32(50)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::I32(10));
+    assert_eq!(results[1].get("value").unwrap(), &Value::I32(30));
+    assert_eq!(results[2].get("value").unwrap(), &Value::I32(50));
 
     ctx.commit();
 }
@@ -289,9 +313,9 @@ fn test_offset_with_limit_all() {
     // Test OFFSET with very large LIMIT
     let results = ctx.query("SELECT id FROM LimitTest ORDER BY id ASC LIMIT 1000 OFFSET 7");
     assert_eq!(results.len(), 3); // Only 3 rows left after offset
-    assert_eq!(results[0].get("id").unwrap(), "I32(8)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(9)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(10)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(8));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(9));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(10));
 
     ctx.commit();
 }
@@ -313,8 +337,8 @@ fn test_limit_with_expressions() {
     // Test LIMIT with expressions in SELECT
     let results = ctx.query("SELECT a, b, a + b AS sum FROM ExprTest ORDER BY a + b DESC LIMIT 2");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("sum").unwrap(), "I32(10)"); // 1 + 9
-    assert_eq!(results[1].get("sum").unwrap(), "I32(10)"); // 2 + 8 or 3 + 7
+    assert_eq!(results[0].get("sum").unwrap(), &Value::I32(10)); // 1 + 9
+    assert_eq!(results[1].get("sum").unwrap(), &Value::I32(10)); // 2 + 8 or 3 + 7
 
     ctx.commit();
 }

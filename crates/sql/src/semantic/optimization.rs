@@ -14,8 +14,8 @@ use crate::parsing::ast::{
     DmlStatement, Expression, FromClause, InsertSource, Literal, Operator, SelectStatement,
     Statement,
 };
+use crate::types::Value;
 use crate::types::schema::Table;
-use crate::types::value::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 

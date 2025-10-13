@@ -8,9 +8,17 @@ pub mod operation;
 pub mod query;
 pub mod response;
 pub mod schema;
+pub mod value_ext;
 // pub mod statistics;
-pub mod value;
 
-// Re-export key types - matching toydb's pattern
+// Re-export key types
 pub use data_type::DataType;
-pub use value::Value;
+
+// Re-export Value and related types from proven-value
+pub use proven_value::{Interval, Point, Value};
+
+// Re-export value extension trait
+pub use value_ext::ValueExt;
+
+// SQL-specific type: A row is a vector of values
+pub type Row = Vec<Value>;

@@ -4,6 +4,7 @@
 mod common;
 
 use common::setup_test;
+use proven_sql::Value;
 
 #[test]
 fn test_create_table_for_text_search() {
@@ -39,9 +40,9 @@ fn test_find_idx_substring_search() {
 
     assert_eq!(results.len(), 2);
     // 'pork' doesn't contain 'rg', should return 0
-    assert!(results[0].get("test").unwrap().contains("0"));
+    assert!(results[0].get("test").unwrap().to_string().contains("0"));
     // 'burger' contains 'rg' at index 3
-    assert!(results[1].get("test").unwrap().contains("3"));
+    assert!(results[1].get("test").unwrap().to_string().contains("3"));
 
     ctx.commit();
 }
@@ -58,9 +59,9 @@ fn test_find_idx_with_start_offset() {
 
     assert_eq!(results.len(), 2);
     // 'pork' doesn't contain 'r' starting from index 4, should return 0
-    assert!(results[0].get("test").unwrap().contains("0"));
+    assert!(results[0].get("test").unwrap().to_string().contains("0"));
     // 'burger' contains 'r' at index 6 when searching from index 4
-    assert!(results[1].get("test").unwrap().contains("6"));
+    assert!(results[1].get("test").unwrap().to_string().contains("6"));
 
     ctx.commit();
 }
@@ -73,7 +74,7 @@ fn test_find_idx_empty_substring() {
 
     assert_eq!(results.len(), 1);
     // Empty string found at beginning (index 0)
-    assert!(results[0].get("test").unwrap().contains("0"));
+    assert!(results[0].get("test").unwrap().to_string().contains("0"));
 
     ctx.commit();
 }
@@ -86,7 +87,7 @@ fn test_find_idx_single_character() {
 
     assert_eq!(results.len(), 1);
     // 's' is at index 5 in 'cheese'
-    assert!(results[0].get("test").unwrap().contains("5"));
+    assert!(results[0].get("test").unwrap().to_string().contains("5"));
 
     ctx.commit();
 }
@@ -99,7 +100,7 @@ fn test_find_idx_with_offset() {
 
     assert_eq!(results.len(), 1);
     // 'e' is at index 6 when searching from index 5
-    assert!(results[0].get("test").unwrap().contains("6"));
+    assert!(results[0].get("test").unwrap().to_string().contains("6"));
 
     ctx.commit();
 }
@@ -114,7 +115,7 @@ fn test_find_idx_with_null_substring() {
     let value = results[0].get("test").unwrap();
     // Should return NULL
     assert!(
-        value.contains("Null") || value.contains("NULL"),
+        value == &Value::Null || value.to_string().contains("NULL"),
         "Expected NULL, got: {}",
         value
     );
@@ -184,16 +185,17 @@ fn test_find_idx_function_signatures() {
     let mut ctx = setup_test();
 
     // Test 2-argument form
+    // 'hello world': positions are 1-indexed, 'world' starts at position 7
     let results = ctx.query("SELECT FIND_IDX('hello world', 'world') AS test");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("test").unwrap().contains("6"));
+    assert_eq!(results[0].get("test").unwrap(), &Value::I64(7));
 
     // Test 3-argument form
     // 'hello world': h=1, e=2, l=3, l=4, o=5, space=6, w=7, o=8
     // Starting from position 5, looking for 'o', finds 'o' at position 5
     let results = ctx.query("SELECT FIND_IDX('hello world', 'o', 5) AS test");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("test").unwrap().contains("5"));
+    assert!(results[0].get("test").unwrap().to_string().contains("5"));
 
     ctx.commit();
 }

@@ -18,7 +18,11 @@ fn test_append_integer_to_list() {
 
     // Check that the result contains a list with the appended element
     let result_str = results[0].get("myappend").unwrap();
-    assert!(result_str.contains("[") && result_str.contains("1") && result_str.contains("4"));
+    assert!(
+        result_str.to_string().contains("[")
+            && result_str.to_string().contains("1")
+            && result_str.to_string().contains("4")
+    );
 
     ctx.commit();
 }
@@ -37,7 +41,7 @@ fn test_append_with_type_coercion() {
     assert_eq!(results.len(), 1);
 
     let result_str = results[0].get("myappend").unwrap();
-    assert!(result_str.contains("42") && result_str.contains("100"));
+    assert!(result_str.to_string().contains("42") && result_str.to_string().contains("100"));
 
     ctx.commit();
 }
@@ -71,7 +75,7 @@ fn test_insert_with_append_function() {
 
     // Check that the result contains the appended list
     let result_str = results[0].get("myappend").unwrap();
-    assert!(result_str.contains("4"));
+    assert!(result_str.to_string().contains("4"));
 
     ctx.commit();
 }

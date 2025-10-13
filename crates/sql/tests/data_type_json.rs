@@ -51,9 +51,21 @@ fn test_insert_json_implicit_conversion() {
     assert_eq!(results.len(), 6);
 
     // Verify the JSON was parsed correctly
-    assert!(results[0].get("data").unwrap().contains("Alice"));
-    assert!(results[1].get("data").unwrap().contains("["));
-    assert!(results[2].get("data").unwrap().contains("hello"));
+    assert!(
+        results[0]
+            .get("data")
+            .unwrap()
+            .to_string()
+            .contains("Alice")
+    );
+    assert!(results[1].get("data").unwrap().to_string().contains("["));
+    assert!(
+        results[2]
+            .get("data")
+            .unwrap()
+            .to_string()
+            .contains("hello")
+    );
 
     ctx.commit();
 }
@@ -75,9 +87,9 @@ fn test_json_round_trip() {
 
     // Verify the JSON is stored and retrieved
     let data = results[0].get("data").unwrap();
-    assert!(data.contains("Bob"));
-    assert!(data.contains("nested"));
-    assert!(data.contains("array"));
+    assert!(data.to_string().contains("Bob"));
+    assert!(data.to_string().contains("nested"));
+    assert!(data.to_string().contains("array"));
 
     ctx.commit();
 }
@@ -119,8 +131,20 @@ fn test_json_objects() {
     let results = ctx.query("SELECT * FROM JsonData ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert!(results[0].get("config").unwrap().contains("timeout"));
-    assert!(results[1].get("config").unwrap().contains("retries"));
+    assert!(
+        results[0]
+            .get("config")
+            .unwrap()
+            .to_string()
+            .contains("timeout")
+    );
+    assert!(
+        results[1]
+            .get("config")
+            .unwrap()
+            .to_string()
+            .contains("retries")
+    );
 
     ctx.commit();
 }
@@ -170,9 +194,9 @@ fn test_nested_json() {
     assert_eq!(results.len(), 1);
 
     let data = results[0].get("data").unwrap();
-    assert!(data.contains("Alice"));
-    assert!(data.contains("Seattle"));
-    assert!(data.contains("orders"));
+    assert!(data.to_string().contains("Alice"));
+    assert!(data.to_string().contains("Seattle"));
+    assert!(data.to_string().contains("orders"));
 
     ctx.commit();
 }
@@ -207,8 +231,8 @@ fn test_json_empty_structures() {
     let results = ctx.query("SELECT * FROM JsonData ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert!(results[0].get("data").unwrap().contains("{}"));
-    assert!(results[1].get("data").unwrap().contains("[]"));
+    assert!(results[0].get("data").unwrap().to_string().contains("{}"));
+    assert!(results[1].get("data").unwrap().to_string().contains("[]"));
 
     ctx.commit();
 }

@@ -108,7 +108,7 @@ impl UnaryOperator for NegateOperator {
             Decimal(d) => Ok(Decimal(-d)),
 
             // Interval
-            Interval(i) => Ok(Interval(crate::types::data_type::Interval {
+            Interval(i) => Ok(Interval(proven_value::Interval {
                 months: -i.months,
                 days: -i.days,
                 microseconds: -i.microseconds,

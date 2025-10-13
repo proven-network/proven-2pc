@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_stdev_with_null_values() {
@@ -30,18 +31,14 @@ fn test_stdev_with_null_values() {
     let stdev_val = results[0].get("STDEV(age)").unwrap();
 
     // Check if it's approximately 48.0885
-    if let Some(num_str) = stdev_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = stdev_val {
         assert!(
             (val - 48.0885).abs() < 0.01,
             "Expected ~48.0885, got {}",
             val
         );
     } else {
-        panic!("Expected F64 value, got {}", stdev_val);
+        panic!("Expected F64 value, got {:?}", stdev_val);
     }
 
     ctx.commit();
@@ -71,14 +68,10 @@ fn test_stdev_basic_calculation() {
     let stdev_val = results[0].get("STDEV(total)").unwrap();
 
     // Check if it's approximately 0.8944
-    if let Some(num_str) = stdev_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = stdev_val {
         assert!((val - 0.8944).abs() < 0.01, "Expected ~0.8944, got {}", val);
     } else {
-        panic!("Expected F64 value, got {}", stdev_val);
+        panic!("Expected F64 value, got {:?}", stdev_val);
     }
 
     ctx.commit();
@@ -108,11 +101,7 @@ fn test_stdev_distinct_values() {
     let stdev_val = results[0].get("STDEV(DISTINCT id)").unwrap();
 
     // Check if it's approximately sqrt(2.5) = 1.5811
-    if let Some(num_str) = stdev_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = stdev_val {
         let expected = (2.5_f64).sqrt();
         assert!(
             (val - expected).abs() < 0.01,
@@ -121,7 +110,7 @@ fn test_stdev_distinct_values() {
             val
         );
     } else {
-        panic!("Expected F64 value, got {}", stdev_val);
+        panic!("Expected F64 value, got {:?}", stdev_val);
     }
 
     ctx.commit();
@@ -151,18 +140,14 @@ fn test_stdev_distinct_with_nulls() {
     let stdev_val = results[0].get("STDEV(DISTINCT age)").unwrap();
 
     // Check if it's approximately 48.0885
-    if let Some(num_str) = stdev_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = stdev_val {
         assert!(
             (val - 48.0885).abs() < 0.01,
             "Expected ~48.0885, got {}",
             val
         );
     } else {
-        panic!("Expected F64 value, got {}", stdev_val);
+        panic!("Expected F64 value, got {:?}", stdev_val);
     }
 
     ctx.commit();
@@ -177,7 +162,7 @@ fn test_stdev_requires_multiple_values() {
         .insert_values("(1, 10)");
 
     // STDEV with only one value should return NULL
-    ctx.assert_query_contains("SELECT STDEV(value) FROM Item", "STDEV(value)", "Null");
+    ctx.assert_query_value("SELECT STDEV(value) FROM Item", "STDEV(value)", Value::Null);
 
     ctx.commit();
 }
@@ -195,7 +180,7 @@ fn test_stdev_all_nulls() {
         );
 
     // STDEV of all NULLs should return NULL
-    ctx.assert_query_contains("SELECT STDEV(value) FROM Item", "STDEV(value)", "Null");
+    ctx.assert_query_value("SELECT STDEV(value) FROM Item", "STDEV(value)", Value::Null);
 
     ctx.commit();
 }
@@ -223,11 +208,7 @@ fn test_stdev_with_duplicates() {
     assert_eq!(results.len(), 1);
     let stdev_val = results[0].get("STDEV(value)").unwrap();
 
-    if let Some(num_str) = stdev_val
-        .strip_prefix("F64(")
-        .and_then(|s| s.strip_suffix(")"))
-    {
-        let val: f64 = num_str.parse().unwrap();
+    if let Value::F64(val) = stdev_val {
         let expected = 30_f64.sqrt();
         assert!(
             (val - expected).abs() < 0.01,
@@ -236,7 +217,7 @@ fn test_stdev_with_duplicates() {
             val
         );
     } else {
-        panic!("Expected F64 value, got {}", stdev_val);
+        panic!("Expected F64 value, got {:?}", stdev_val);
     }
 
     ctx.commit();

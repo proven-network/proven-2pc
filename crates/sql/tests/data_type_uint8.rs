@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_uint8_columns() {
     let mut ctx = setup_test();
@@ -14,14 +14,14 @@ fn test_create_table_with_uint8_columns() {
 
     let results = ctx.query("SELECT field_one, field_two FROM Item ORDER BY field_one");
     assert_eq!(results.len(), 4);
-    assert_eq!(results[0].get("field_one").unwrap(), "U8(1)");
-    assert_eq!(results[0].get("field_two").unwrap(), "U8(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U8(2)");
-    assert_eq!(results[1].get("field_two").unwrap(), "U8(2)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U8(3)");
-    assert_eq!(results[2].get("field_two").unwrap(), "U8(3)");
-    assert_eq!(results[3].get("field_one").unwrap(), "U8(4)");
-    assert_eq!(results[3].get("field_two").unwrap(), "U8(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U8(1));
+    assert_eq!(results[0].get("field_two").unwrap(), &Value::U8(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U8(2));
+    assert_eq!(results[1].get("field_two").unwrap(), &Value::U8(2));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U8(3));
+    assert_eq!(results[2].get("field_two").unwrap(), &Value::U8(3));
+    assert_eq!(results[3].get("field_one").unwrap(), &Value::U8(4));
+    assert_eq!(results[3].get("field_two").unwrap(), &Value::U8(4));
 
     ctx.commit();
 }
@@ -41,11 +41,11 @@ fn test_insert_uint8_values() {
 
     let results = ctx.query("SELECT id, value FROM uint8_test ORDER BY id");
     assert_eq!(results.len(), 5);
-    assert_eq!(results[0].get("value").unwrap(), "U8(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U8(1)");
-    assert_eq!(results[2].get("value").unwrap(), "U8(127)");
-    assert_eq!(results[3].get("value").unwrap(), "U8(128)");
-    assert_eq!(results[4].get("value").unwrap(), "U8(255)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U8(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U8(1));
+    assert_eq!(results[2].get("value").unwrap(), &Value::U8(127));
+    assert_eq!(results[3].get("value").unwrap(), &Value::U8(128));
+    assert_eq!(results[4].get("value").unwrap(), &Value::U8(255));
 
     ctx.commit();
 }
@@ -80,26 +80,26 @@ fn test_uint8_comparisons() {
     // Test greater than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one > 2 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U8(3)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U8(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U8(3));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U8(4));
 
     // Test greater than or equal
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one >= 2 ORDER BY field_one");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("field_one").unwrap(), "U8(2)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U8(3)");
-    assert_eq!(results[2].get("field_one").unwrap(), "U8(4)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U8(2));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U8(3));
+    assert_eq!(results[2].get("field_one").unwrap(), &Value::U8(4));
 
     // Test equality
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("field_one").unwrap(), "U8(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U8(2));
 
     // Test less than
     let results = ctx.query("SELECT field_one FROM Item WHERE field_one < 3 ORDER BY field_one");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("field_one").unwrap(), "U8(1)");
-    assert_eq!(results[1].get("field_one").unwrap(), "U8(2)");
+    assert_eq!(results[0].get("field_one").unwrap(), &Value::U8(1));
+    assert_eq!(results[1].get("field_one").unwrap(), &Value::U8(2));
 
     ctx.commit();
 }
@@ -114,27 +114,27 @@ fn test_uint8_arithmetic_operations() {
     // Test addition
     let results = ctx.query("SELECT a + b AS sum FROM uint8_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("sum").unwrap(), "U8(13)");
+    assert_eq!(results[0].get("sum").unwrap(), &Value::U8(13));
 
     // Test subtraction
     let results = ctx.query("SELECT a - b AS diff FROM uint8_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("diff").unwrap(), "U8(7)");
+    assert_eq!(results[0].get("diff").unwrap(), &Value::U8(7));
 
     // Test multiplication
     let results = ctx.query("SELECT a * b AS product FROM uint8_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("product").unwrap(), "U8(30)");
+    assert_eq!(results[0].get("product").unwrap(), &Value::U8(30));
 
     // Test division (integer division)
     let results = ctx.query("SELECT a / b AS quotient FROM uint8_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("quotient").unwrap(), "U8(3)");
+    assert_eq!(results[0].get("quotient").unwrap(), &Value::U8(3));
 
     // Test modulo
     let results = ctx.query("SELECT a % b AS remainder FROM uint8_math");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("remainder").unwrap(), "U8(1)");
+    assert_eq!(results[0].get("remainder").unwrap(), &Value::U8(1));
 
     ctx.commit();
 }
@@ -153,8 +153,8 @@ fn test_uint8_range_boundaries() {
 
     let results = ctx.query("SELECT value FROM uint8_bounds ORDER BY value");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U8(0)");
-    assert_eq!(results[1].get("value").unwrap(), "U8(255)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U8(0));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U8(255));
 
     // Test operations at boundaries
     ctx.exec("CREATE TABLE uint8_boundary_ops (a TINYINT UNSIGNED, b TINYINT UNSIGNED)");
@@ -165,7 +165,7 @@ fn test_uint8_range_boundaries() {
 
     // Test 255 - 0 = 255
     let results = ctx.query("SELECT a - b AS diff FROM uint8_boundary_ops");
-    assert_eq!(results[0].get("diff").unwrap(), "U8(255)");
+    assert_eq!(results[0].get("diff").unwrap(), &Value::U8(255));
 
     ctx.commit();
 }
@@ -204,15 +204,15 @@ fn test_uint8_with_null() {
     let results =
         ctx.query("SELECT id, value FROM uint8_nulls WHERE value IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("value").unwrap(), "U8(10)");
-    assert_eq!(results[1].get("value").unwrap(), "U8(20)");
+    assert_eq!(results[0].get("value").unwrap(), &Value::U8(10));
+    assert_eq!(results[1].get("value").unwrap(), &Value::U8(20));
 
     // Test NULL propagation in arithmetic
     let results = ctx.query("SELECT id, value + 5 as result FROM uint8_nulls ORDER BY id");
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("result").unwrap(), "U8(15)");
-    assert_eq!(results[1].get("result").unwrap(), "Null");
-    assert_eq!(results[2].get("result").unwrap(), "U8(25)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::U8(15));
+    assert_eq!(results[1].get("result").unwrap(), &Value::Null);
+    assert_eq!(results[2].get("result").unwrap(), &Value::U8(25));
 
     ctx.commit();
 }
@@ -224,12 +224,12 @@ fn test_cast_to_uint8() {
     // Test CAST from string
     let results = ctx.query("SELECT CAST('123' AS TINYINT UNSIGNED) AS uint8_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint8_val").unwrap(), "U8(123)");
+    assert_eq!(results[0].get("uint8_val").unwrap(), &Value::U8(123));
 
     // Test CAST from integer
     let results = ctx.query("SELECT CAST(42 AS TINYINT UNSIGNED) AS uint8_val");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint8_val").unwrap(), "U8(42)");
+    assert_eq!(results[0].get("uint8_val").unwrap(), &Value::U8(42));
 
     // Test CAST from larger integer type
     ctx.exec("CREATE TABLE test_cast (i INT)");
@@ -237,7 +237,7 @@ fn test_cast_to_uint8() {
 
     let results = ctx.query("SELECT CAST(i AS TINYINT UNSIGNED) AS uint8_val FROM test_cast");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("uint8_val").unwrap(), "U8(100)");
+    assert_eq!(results[0].get("uint8_val").unwrap(), &Value::U8(100));
 
     ctx.commit();
 }

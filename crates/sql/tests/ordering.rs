@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 /// Setup helper that creates and populates the Operator table
 fn setup_operator_table() -> common::TestContext {
@@ -34,7 +35,7 @@ fn test_less_than_operator() {
 
     // Test id < 2 should return 1 row (id=1)
     assert_rows!(ctx, "SELECT * FROM Operator WHERE id < 2", 1);
-    ctx.assert_query_contains("SELECT id FROM Operator WHERE id < 2", "id", "I32(1)");
+    ctx.assert_query_value("SELECT id FROM Operator WHERE id < 2", "id", Value::I32(1));
 
     ctx.commit();
 }

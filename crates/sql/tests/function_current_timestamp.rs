@@ -4,7 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_current_timestamp_default() {
     let mut ctx = setup_test();
@@ -35,7 +35,7 @@ fn test_current_timestamp_is_not_null() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("is_not_null").unwrap();
-    assert!(value.contains("true") || value == "Bool(true)");
+    assert!(value.to_string().contains("true") || value == &Value::Bool(true));
 
     ctx.commit();
 }
@@ -49,7 +49,7 @@ fn test_current_timestamp_with_parentheses() {
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("is_not_null").unwrap();
-    assert!(value.contains("true") || value == "Bool(true)");
+    assert!(value.to_string().contains("true") || value == &Value::Bool(true));
 
     ctx.commit();
 }

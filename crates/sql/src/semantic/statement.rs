@@ -6,8 +6,8 @@
 
 use super::predicate::{Predicate, PredicateCondition, QueryPredicates};
 use crate::parsing::ast::Statement;
+use crate::types::Value;
 use crate::types::data_type::DataType;
-use crate::types::value::Value;
 use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 use std::sync::Arc;

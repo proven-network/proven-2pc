@@ -7,10 +7,10 @@
 use super::expression;
 use crate::error::{Error, Result};
 use crate::storage::SqlStorage;
+use crate::types::Value;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::query::{JoinType, RowRef, Rows};
-use crate::types::value::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -444,9 +444,9 @@ pub fn execute_hash_join<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Value;
     use crate::types::context::ExecutionContext;
     use crate::types::expression::Expression;
-    use crate::types::value::Value;
     use proven_hlc::{HlcTimestamp, NodeId};
 
     fn create_test_context() -> ExecutionContext {

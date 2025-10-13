@@ -9,7 +9,7 @@ use crate::operators;
 use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
-use crate::types::value::{Row, Value};
+use crate::types::{Row, Value};
 use std::sync::Arc;
 
 /// Evaluate an expression to a value, using a row for column lookups,

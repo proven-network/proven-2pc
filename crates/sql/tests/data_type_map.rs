@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_map_column() {
     let mut ctx = setup_test();
@@ -30,9 +30,9 @@ fn test_insert_map_values() {
     let results = ctx.query("SELECT id, prefs FROM UserPreferences ORDER BY id");
     assert_eq!(results.len(), 3);
 
-    assert!(results[0].get("prefs").unwrap().contains("Map"));
-    assert!(results[1].get("prefs").unwrap().contains("Map"));
-    assert!(results[2].get("prefs").unwrap().contains("Map"));
+    assert!(results[0].get("prefs").unwrap().to_string().contains("Map"));
+    assert!(results[1].get("prefs").unwrap().to_string().contains("Map"));
+    assert!(results[2].get("prefs").unwrap().to_string().contains("Map"));
 
     ctx.commit();
 }
@@ -54,10 +54,22 @@ fn test_map_key_access() {
     );
     assert_eq!(results.len(), 2);
 
-    assert_eq!(results[0].get("host").unwrap(), "Str(localhost)");
-    assert_eq!(results[0].get("port").unwrap(), "Str(5432)");
-    assert_eq!(results[1].get("host").unwrap(), "Str(remote.server)");
-    assert_eq!(results[1].get("port").unwrap(), "Str(3306)");
+    assert_eq!(
+        results[0].get("host").unwrap(),
+        &Value::Str("localhost".to_string())
+    );
+    assert_eq!(
+        results[0].get("port").unwrap(),
+        &Value::Str("5432".to_string())
+    );
+    assert_eq!(
+        results[1].get("host").unwrap(),
+        &Value::Str("remote.server".to_string())
+    );
+    assert_eq!(
+        results[1].get("port").unwrap(),
+        &Value::Str("3306".to_string())
+    );
 
     ctx.commit();
 }
@@ -74,7 +86,7 @@ fn test_map_with_different_value_types() {
 
     let results = ctx.query("SELECT data FROM Metadata");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("data").unwrap().contains("Map"));
+    assert!(results[0].get("data").unwrap().to_string().contains("Map"));
 
     ctx.commit();
 }
@@ -93,13 +105,13 @@ fn test_map_in_where_clause() {
     let results =
         ctx.query("SELECT id FROM Products WHERE attributes['color'] = 'red' ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     // Filter by multiple map values
     let results = ctx.query("SELECT id FROM Products WHERE attributes['size'] = 'large' AND attributes['material'] = 'cotton'");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
 
     ctx.commit();
 }
@@ -116,8 +128,8 @@ fn test_map_with_nulls() {
 
     let results = ctx.query("SELECT id FROM Features WHERE flags IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }
@@ -133,7 +145,7 @@ fn test_map_key_not_found() {
     // Accessing non-existent key should return NULL
     let results = ctx.query("SELECT id, settings['database'] AS db FROM Config");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("db").unwrap(), "Null");
+    assert_eq!(results[0].get("db").unwrap(), &Value::Null);
 
     ctx.commit();
 }
@@ -149,7 +161,7 @@ fn test_empty_map() {
 
     let results = ctx.query("SELECT id, data FROM EmptyMaps ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert!(results[0].get("data").unwrap().contains("Map"));
+    assert!(results[0].get("data").unwrap().to_string().contains("Map"));
 
     ctx.commit();
 }
@@ -169,8 +181,8 @@ fn test_map_comparison() {
         r#"SELECT id FROM Tags WHERE labels = '{"env": "prod", "version": "1.0"}' ORDER BY id"#,
     );
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     ctx.commit();
 }
@@ -189,7 +201,13 @@ fn test_map_update() {
 
     let results = ctx.query("SELECT config FROM Settings WHERE id = 1");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("config").unwrap().contains("Map"));
+    assert!(
+        results[0]
+            .get("config")
+            .unwrap()
+            .to_string()
+            .contains("Map")
+    );
 
     ctx.commit();
 }
@@ -206,7 +224,7 @@ fn test_map_keys_function() {
     let results = ctx.query("SELECT id, KEYS(settings) AS keys FROM Configs");
     assert_eq!(results.len(), 1);
     // Should return a list of keys: ["a", "b", "c"]
-    assert!(results[0].get("keys").unwrap().contains("List"));
+    assert!(results[0].get("keys").unwrap().to_string().contains("List"));
 
     ctx.commit();
 }
@@ -223,7 +241,7 @@ fn test_map_values_function() {
     let results = ctx.query("SELECT id, MAP_VALUES(settings) AS vals FROM Configs");
     assert_eq!(results.len(), 1);
     // Should return a list of values: ["1", "2", "3"]
-    assert!(results[0].get("vals").unwrap().contains("List"));
+    assert!(results[0].get("vals").unwrap().to_string().contains("List"));
 
     ctx.commit();
 }
@@ -244,7 +262,13 @@ fn test_nested_maps() {
 
     let results = ctx.query("SELECT config FROM NestedConfig");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("config").unwrap().contains("Map"));
+    assert!(
+        results[0]
+            .get("config")
+            .unwrap()
+            .to_string()
+            .contains("Map")
+    );
 
     ctx.commit();
 }

@@ -48,8 +48,12 @@ fn test_empty_list() {
 
     let results = ctx.query("SELECT * FROM EmptyListTest");
     assert!(
-        results[0].get("items").unwrap().contains("[]")
-            || results[0].get("items").unwrap().contains("Array[]")
+        results[0].get("items").unwrap().to_string().contains("[]")
+            || results[0]
+                .get("items")
+                .unwrap()
+                .to_string()
+                .contains("Array[]")
     );
 
     ctx.commit();
@@ -67,7 +71,13 @@ fn test_list_with_nulls() {
     assert_rows!(ctx, "SELECT * FROM ListWithNulls", 1);
 
     let results = ctx.query("SELECT * FROM ListWithNulls");
-    assert!(results[0].get("items").unwrap().contains("Null"));
+    assert!(
+        results[0]
+            .get("items")
+            .unwrap()
+            .to_string()
+            .contains("Null")
+    );
 
     ctx.commit();
 }

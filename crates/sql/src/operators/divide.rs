@@ -94,14 +94,14 @@ impl BinaryOperator for DivideOperator {
 
             // Interval / integer (scale down interval)
             (Value::Interval(interval), I32(scale)) => {
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: interval.months / scale,
                     days: interval.days / scale,
                     microseconds: interval.microseconds / (*scale as i64),
                 }))
             }
             (Value::Interval(interval), I64(scale)) => {
-                Ok(Value::Interval(crate::types::data_type::Interval {
+                Ok(Value::Interval(proven_value::Interval {
                     months: (interval.months as i64 / scale) as i32,
                     days: (interval.days as i64 / scale) as i32,
                     microseconds: interval.microseconds / scale,

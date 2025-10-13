@@ -1,7 +1,6 @@
 //! SQL data types with GlueSQL-compatible format
 
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::fmt;
 
 /// SQL data types matching GlueSQL format
@@ -52,10 +51,6 @@ pub enum DataType {
 }
 
 impl DataType {
-    pub fn is_nullable(&self) -> bool {
-        matches!(self, DataType::Nullable(_))
-    }
-
     pub fn base_type(&self) -> &DataType {
         match self {
             DataType::Nullable(inner) => inner.base_type(),
@@ -97,14 +92,6 @@ impl DataType {
                 | DataType::U32
                 | DataType::U64
                 | DataType::U128
-        )
-    }
-
-    /// Check if this type is an unsigned integer
-    pub fn is_unsigned_integer(&self) -> bool {
-        matches!(
-            self.base_type(),
-            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128
         )
     }
 }
@@ -153,114 +140,6 @@ impl fmt::Display for DataType {
             DataType::Json => write!(f, "JSON"),
             DataType::Nullable(inner) => write!(f, "{} NULL", inner),
             DataType::Null => write!(f, "NULL"),
-        }
-    }
-}
-
-/// Point type for geometric coordinates
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
-}
-
-impl Point {
-    pub fn new(x: f64, y: f64) -> Self {
-        Self { x, y }
-    }
-}
-
-impl Eq for Point {}
-
-impl PartialOrd for Point {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Point {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.x.partial_cmp(&other.x) {
-            Some(Ordering::Equal) | None => self.y.partial_cmp(&other.y).unwrap_or(Ordering::Equal),
-            Some(other) => other,
-        }
-    }
-}
-
-impl std::hash::Hash for Point {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.x.to_bits().hash(state);
-        self.y.to_bits().hash(state);
-    }
-}
-
-/// Interval type for time durations
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Interval {
-    pub months: i32,
-    pub days: i32,
-    pub microseconds: i64,
-}
-
-impl std::fmt::Display for Interval {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut parts = Vec::new();
-
-        if self.months != 0 {
-            if self.months == 1 {
-                parts.push("1 month".to_string());
-            } else {
-                parts.push(format!("{} months", self.months));
-            }
-        }
-
-        if self.days != 0 {
-            if self.days == 1 {
-                parts.push("1 day".to_string());
-            } else {
-                parts.push(format!("{} days", self.days));
-            }
-        }
-
-        if self.microseconds != 0 {
-            // Convert microseconds to appropriate units
-            let abs_micros = self.microseconds.abs();
-            let sign = if self.microseconds < 0 { "-" } else { "" };
-
-            if abs_micros % 1_000_000 == 0 {
-                // Full seconds
-                let seconds = abs_micros / 1_000_000;
-                if seconds % 60 == 0 {
-                    // Full minutes
-                    let minutes = seconds / 60;
-                    if minutes % 60 == 0 {
-                        // Full hours
-                        let hours = minutes / 60;
-                        if hours == 1 {
-                            parts.push(format!("{}1 hour", sign));
-                        } else {
-                            parts.push(format!("{}{} hours", sign, hours));
-                        }
-                    } else if minutes == 1 {
-                        parts.push(format!("{}1 minute", sign));
-                    } else {
-                        parts.push(format!("{}{} minutes", sign, minutes));
-                    }
-                } else if seconds == 1 {
-                    parts.push(format!("{}1 second", sign));
-                } else {
-                    parts.push(format!("{}{} seconds", sign, seconds));
-                }
-            } else {
-                // Has fractional seconds, show as microseconds
-                parts.push(format!("{}{} microseconds", sign, abs_micros));
-            }
-        }
-
-        if parts.is_empty() {
-            write!(f, "0")
-        } else {
-            write!(f, "{}", parts.join(" "))
         }
     }
 }

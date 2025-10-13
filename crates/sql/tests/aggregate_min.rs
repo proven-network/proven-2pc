@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_min_nullable_column() {
@@ -20,7 +21,7 @@ fn test_min_nullable_column() {
         );
 
     // MIN ignores NULL values
-    ctx.assert_query_contains("SELECT MIN(age) FROM Item", "MIN(age)", "I32(3)");
+    ctx.assert_query_value("SELECT MIN(age) FROM Item", "MIN(age)", Value::I32(3));
 
     ctx.commit();
 }
@@ -41,8 +42,8 @@ fn test_min_multiple_columns() {
 
     let results = ctx.query("SELECT MIN(id), MIN(quantity) FROM Item");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("MIN(id)").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("MIN(quantity)").unwrap(), "I32(0)");
+    assert_eq!(results[0].get("MIN(id)").unwrap(), &Value::I32(1));
+    assert_eq!(results[0].get("MIN(quantity)").unwrap(), &Value::I32(0));
 
     ctx.commit();
 }
@@ -62,10 +63,10 @@ fn test_min_with_expression() {
         );
 
     // MIN(id + quantity) = MIN(11, 2, 12, 7, 30) = 2
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT MIN(id + quantity) FROM Item",
         "MIN(id + quantity)",
-        "I32(2)",
+        Value::I32(2),
     );
 
     ctx.commit();
@@ -94,7 +95,7 @@ fn test_min_in_complex_expression() {
     for (key, value) in &results[0] {
         println!("Column: {}, Value: {}", key, value);
         // Should be 91 as I32
-        assert!(value.contains("91"));
+        assert!(value.to_string().contains("91"));
     }
 
     ctx.commit();
@@ -116,10 +117,10 @@ fn test_min_with_case_expression() {
         );
 
     // MIN of ids where quantity > 5: MIN(1, 3, 5) = 1
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT MIN(CASE WHEN quantity > 5 THEN id END) FROM Item",
         "MIN(CASE WHEN quantity > 5 THEN id END)",
-        "I32(1)",
+        Value::I32(1),
     );
 
     ctx.commit();
@@ -141,10 +142,10 @@ fn test_min_distinct_values() {
         );
 
     // MIN(DISTINCT value) should be same as MIN(value) = 10
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT MIN(DISTINCT value) FROM Item",
         "MIN(DISTINCT value)",
-        "I32(10)",
+        Value::I32(10),
     );
 
     ctx.commit();
@@ -167,10 +168,10 @@ fn test_min_distinct_nullable_column() {
         );
 
     // MIN(DISTINCT age) = MIN(11, 90, 3) = 3
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT MIN(DISTINCT age) FROM Item",
         "MIN(DISTINCT age)",
-        "I32(3)",
+        Value::I32(3),
     );
 
     ctx.commit();
@@ -189,7 +190,7 @@ fn test_min_handles_nulls() {
         );
 
     // MIN of all NULLs should return NULL
-    ctx.assert_query_contains("SELECT MIN(value) FROM Item", "MIN(value)", "Null");
+    ctx.assert_query_value("SELECT MIN(value) FROM Item", "MIN(value)", Value::Null);
 
     ctx.commit();
 }

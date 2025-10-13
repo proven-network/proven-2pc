@@ -5,7 +5,7 @@
 //! - Added TransactionContext for deterministic function evaluation
 //! - Integrated with our Value types (including UUID, Timestamp, Blob)
 
-use super::value::Value;
+use super::Value;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 

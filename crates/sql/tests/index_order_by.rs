@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_order_by_single_table() {
     let mut ctx = setup_test();
@@ -26,10 +26,22 @@ fn test_order_by_single_table() {
     assert_eq!(results.len(), 4);
 
     // Check order - alphabetical by name: Hello, Monday, Wild, World
-    assert_eq!(results[0].get("name").unwrap(), "Str(Hello)");
-    assert_eq!(results[1].get("name").unwrap(), "Str(Monday)");
-    assert_eq!(results[2].get("name").unwrap(), "Str(Wild)");
-    assert_eq!(results[3].get("name").unwrap(), "Str(World)");
+    assert_eq!(
+        results[0].get("name").unwrap(),
+        &Value::Str("Hello".to_string())
+    );
+    assert_eq!(
+        results[1].get("name").unwrap(),
+        &Value::Str("Monday".to_string())
+    );
+    assert_eq!(
+        results[2].get("name").unwrap(),
+        &Value::Str("Wild".to_string())
+    );
+    assert_eq!(
+        results[3].get("name").unwrap(),
+        &Value::Str("World".to_string())
+    );
 
     ctx.commit();
 }
@@ -56,14 +68,14 @@ fn test_order_by_expression_index() {
 
     // Check order by id + num: 1+2=3, 1+9=10, 4+7=11, 3+NULL=NULL
     // NULLs should come last in ASC order
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("num").unwrap(), "I32(2)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(9)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(4)");
-    assert_eq!(results[2].get("num").unwrap(), "I32(7)");
-    assert_eq!(results[3].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[3].get("num").unwrap(), "Null");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(2));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(9));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(4));
+    assert_eq!(results[2].get("num").unwrap(), &Value::I32(7));
+    assert_eq!(results[3].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(results[3].get("num").unwrap(), &Value::Null);
 
     ctx.commit();
 }
@@ -89,9 +101,9 @@ fn test_order_by_desc_index() {
     assert_eq!(results.len(), 3);
 
     // Check DESC order with NULL: NULL, 9, 2
-    assert_eq!(results[0].get("num").unwrap(), "Null");
-    assert_eq!(results[1].get("num").unwrap(), "I32(9)");
-    assert_eq!(results[2].get("num").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("num").unwrap(), &Value::Null);
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(9));
+    assert_eq!(results[2].get("num").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -115,22 +127,22 @@ fn test_order_by_multi_column() {
     assert_eq!(results.len(), 25);
 
     // Check first few rows - should be id=1 with num in ascending order
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(20)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[2].get("num").unwrap(), "I32(30)");
-    assert_eq!(results[3].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[3].get("num").unwrap(), "I32(40)");
-    assert_eq!(results[4].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[4].get("num").unwrap(), "I32(50)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(20));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[2].get("num").unwrap(), &Value::I32(30));
+    assert_eq!(results[3].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[3].get("num").unwrap(), &Value::I32(40));
+    assert_eq!(results[4].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[4].get("num").unwrap(), &Value::I32(50));
 
     // Check last few rows - should be id=5 with num in ascending order
-    assert_eq!(results[20].get("id").unwrap(), "I32(5)");
-    assert_eq!(results[20].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[24].get("id").unwrap(), "I32(5)");
-    assert_eq!(results[24].get("num").unwrap(), "I32(50)");
+    assert_eq!(results[20].get("id").unwrap(), &Value::I32(5));
+    assert_eq!(results[20].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[24].get("id").unwrap(), &Value::I32(5));
+    assert_eq!(results[24].get("num").unwrap(), &Value::I32(50));
 
     ctx.commit();
 }
@@ -157,16 +169,16 @@ fn test_order_by_with_index() {
     assert_eq!(results.len(), 25);
 
     // Check first few rows - should be num=10 with id in ascending order
-    assert_eq!(results[0].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[2].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[3].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[3].get("id").unwrap(), "I32(4)");
-    assert_eq!(results[4].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[4].get("id").unwrap(), "I32(5)");
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[2].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(results[3].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[3].get("id").unwrap(), &Value::I32(4));
+    assert_eq!(results[4].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[4].get("id").unwrap(), &Value::I32(5));
 
     ctx.commit();
 }
@@ -188,20 +200,20 @@ fn test_order_by_mixed_asc_desc() {
     assert_eq!(results.len(), 9);
 
     // Check order - id descending (3, 2, 1), within each id num ascending
-    assert_eq!(results[0].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[0].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(20)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[2].get("num").unwrap(), "I32(30)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(20));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(results[2].get("num").unwrap(), &Value::I32(30));
 
-    assert_eq!(results[3].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[3].get("num").unwrap(), "I32(10)");
+    assert_eq!(results[3].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[3].get("num").unwrap(), &Value::I32(10));
 
-    assert_eq!(results[6].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[6].get("num").unwrap(), "I32(10)");
-    assert_eq!(results[8].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[8].get("num").unwrap(), "I32(30)");
+    assert_eq!(results[6].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[6].get("num").unwrap(), &Value::I32(10));
+    assert_eq!(results[8].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[8].get("num").unwrap(), &Value::I32(30));
 
     ctx.commit();
 }
@@ -226,18 +238,18 @@ fn test_order_by_expression_with_desc() {
 
     // Check order - id ascending, within each id: id+num descending
     // For id=1: 1+50=51, 1+40=41, 1+30=31, 1+20=21, 1+10=11
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[0].get("num").unwrap(), "I32(50)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("num").unwrap(), "I32(40)");
-    assert_eq!(results[4].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[4].get("num").unwrap(), "I32(10)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[0].get("num").unwrap(), &Value::I32(50));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("num").unwrap(), &Value::I32(40));
+    assert_eq!(results[4].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[4].get("num").unwrap(), &Value::I32(10));
 
     // For id=2: 2+50=52, 2+40=42, etc.
-    assert_eq!(results[5].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[5].get("num").unwrap(), "I32(50)");
-    assert_eq!(results[9].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[9].get("num").unwrap(), "I32(10)");
+    assert_eq!(results[5].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[5].get("num").unwrap(), &Value::I32(50));
+    assert_eq!(results[9].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[9].get("num").unwrap(), &Value::I32(10));
 
     ctx.commit();
 }

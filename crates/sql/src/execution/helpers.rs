@@ -4,9 +4,9 @@
 //! when working with the lower-level storage API.
 
 use crate::error::{Error, Result};
+use crate::types::Value;
 use crate::types::index::IndexMetadata;
 use crate::types::schema::Table as TableSchema;
-use crate::types::value::Value;
 
 /// Extract index values from a row based on index metadata
 ///

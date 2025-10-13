@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, TestContext, data, setup_test, setup_with_tables};
+use proven_value::Value;
 
 fn setup_test_table(ctx: &mut TestContext) {
     TableBuilder::new(ctx, "Foo")
@@ -25,11 +26,19 @@ fn test_delete_with_where_clause() {
     // Verify only the row with flag=FALSE was deleted
     assert_rows!(ctx, "SELECT * FROM Foo", 2);
 
-    // Check remaining rows using assert_query_contains
-    ctx.assert_query_contains("SELECT id FROM Foo WHERE id = 1", "id", "I32(1)");
-    ctx.assert_query_contains("SELECT flag FROM Foo WHERE id = 1", "flag", "Bool(true)");
-    ctx.assert_query_contains("SELECT id FROM Foo WHERE id = 3", "id", "I32(3)");
-    ctx.assert_query_contains("SELECT flag FROM Foo WHERE id = 3", "flag", "Bool(true)");
+    // Check remaining rows using assert_query_value
+    ctx.assert_query_value("SELECT id FROM Foo WHERE id = 1", "id", Value::I32(1));
+    ctx.assert_query_value(
+        "SELECT flag FROM Foo WHERE id = 1",
+        "flag",
+        Value::Bool(true),
+    );
+    ctx.assert_query_value("SELECT id FROM Foo WHERE id = 3", "id", Value::I32(3));
+    ctx.assert_query_value(
+        "SELECT flag FROM Foo WHERE id = 3",
+        "flag",
+        Value::Bool(true),
+    );
 
     ctx.commit();
 }
@@ -59,7 +68,7 @@ fn test_delete_verify_affected_row_count() {
 
     // Should have deleted 2 rows (score=300 and score=700)
     assert_rows!(ctx, "SELECT * FROM Foo", 1);
-    ctx.assert_query_contains("SELECT score FROM Foo", "score", "I32(100)");
+    ctx.assert_query_value("SELECT score FROM Foo", "score", Value::I32(100));
 
     ctx.commit();
 }
@@ -92,8 +101,8 @@ fn test_delete_with_boolean_condition() {
 
     // Verify only rows with flag=TRUE were deleted
     assert_rows!(ctx, "SELECT * FROM Foo", 1);
-    ctx.assert_query_contains("SELECT id FROM Foo", "id", "I32(2)");
-    ctx.assert_query_contains("SELECT flag FROM Foo", "flag", "Bool(false)");
+    ctx.assert_query_value("SELECT id FROM Foo", "id", Value::I32(2));
+    ctx.assert_query_value("SELECT flag FROM Foo", "flag", Value::Bool(false));
 
     ctx.commit();
 }
@@ -109,9 +118,17 @@ fn test_select_after_delete() {
     // SELECT should work correctly after DELETE
     assert_rows!(ctx, "SELECT * FROM Foo", 2);
 
-    // Verify data integrity after delete using assert_query_contains
-    ctx.assert_query_contains("SELECT score FROM Foo WHERE id = 1", "score", "I32(100)");
-    ctx.assert_query_contains("SELECT score FROM Foo WHERE id = 3", "score", "I32(700)");
+    // Verify data integrity after delete using assert_query_value
+    ctx.assert_query_value(
+        "SELECT score FROM Foo WHERE id = 1",
+        "score",
+        Value::I32(100),
+    );
+    ctx.assert_query_value(
+        "SELECT score FROM Foo WHERE id = 3",
+        "score",
+        Value::I32(700),
+    );
 
     ctx.commit();
 }
@@ -129,8 +146,8 @@ fn test_delete_with_complex_where() {
     assert_rows!(ctx, "SELECT * FROM Foo WHERE id = 3", 0);
 
     // Verify remaining rows
-    ctx.assert_query_contains("SELECT id FROM Foo WHERE score = 100", "id", "I32(1)");
-    ctx.assert_query_contains("SELECT id FROM Foo WHERE score = 300", "id", "I32(2)");
+    ctx.assert_query_value("SELECT id FROM Foo WHERE score = 100", "id", Value::I32(1));
+    ctx.assert_query_value("SELECT id FROM Foo WHERE score = 300", "id", Value::I32(2));
 
     ctx.commit();
 }
@@ -202,15 +219,15 @@ fn test_delete_with_standard_table() {
     assert_rows!(ctx, "SELECT * FROM StandardTest", 5);
 
     // Verify remaining rows by checking specific values
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT value FROM StandardTest WHERE id = 5",
         "value",
-        "I32(50)",
+        Value::I32(50),
     );
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT value FROM StandardTest WHERE id = 1",
         "value",
-        "I32(10)",
+        Value::I32(10),
     );
 
     ctx.commit();
@@ -257,8 +274,8 @@ fn test_delete_using_data_generators() {
     // Verify deletion
     assert_rows!(ctx, "SELECT * FROM GenTest", 10);
     // Check specific remaining rows
-    ctx.assert_query_contains("SELECT id FROM GenTest WHERE id = 11", "id", "I32(11)");
-    ctx.assert_query_contains("SELECT id FROM GenTest WHERE id = 20", "id", "I32(20)");
+    ctx.assert_query_value("SELECT id FROM GenTest WHERE id = 11", "id", Value::I32(11));
+    ctx.assert_query_value("SELECT id FROM GenTest WHERE id = 20", "id", Value::I32(20));
 
     ctx.commit();
 }
@@ -283,7 +300,7 @@ fn test_delete_cascade_simulation() {
     // Verify cascade-like behavior
     assert_rows!(ctx, "SELECT * FROM Parent", 1);
     assert_rows!(ctx, "SELECT * FROM Child", 1);
-    ctx.assert_query_contains("SELECT parent_id FROM Child", "parent_id", "I32(2)");
+    ctx.assert_query_value("SELECT parent_id FROM Child", "parent_id", Value::I32(2));
 
     ctx.commit();
 }

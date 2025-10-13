@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_sum_nullable_column() {
@@ -20,7 +21,7 @@ fn test_sum_nullable_column() {
         );
 
     // SUM of column with NULLs should return sum of non-NULL values
-    ctx.assert_query_contains("SELECT SUM(age) FROM Item", "SUM(age)", "I32(104)");
+    ctx.assert_query_value("SELECT SUM(age) FROM Item", "SUM(age)", Value::I32(104));
 
     ctx.commit();
 }
@@ -41,8 +42,8 @@ fn test_sum_multiple_columns() {
 
     let results = ctx.query("SELECT SUM(id), SUM(quantity) FROM Item");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("SUM(id)").unwrap(), "I32(15)");
-    assert_eq!(results[0].get("SUM(quantity)").unwrap(), "I32(47)");
+    assert_eq!(results[0].get("SUM(id)").unwrap(), &Value::I32(15));
+    assert_eq!(results[0].get("SUM(quantity)").unwrap(), &Value::I32(47));
 
     ctx.commit();
 }
@@ -62,10 +63,10 @@ fn test_sum_with_coalesce_function() {
         );
 
     // With COALESCE, NULL values become 0
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT SUM(COALESCE(age, 0)) FROM Item",
         "SUM(COALESCE(age, 0))",
-        "I32(104)",
+        Value::I32(104),
     );
 
     ctx.commit();
@@ -86,7 +87,7 @@ fn test_sum_with_literal_expression() {
         );
 
     // SUM(1 + 2) = 3 * 5 rows = 15
-    ctx.assert_query_contains("SELECT SUM(1 + 2) FROM Item", "SUM(1 + 2)", "I32(15)");
+    ctx.assert_query_value("SELECT SUM(1 + 2) FROM Item", "SUM(1 + 2)", Value::I32(15));
 
     ctx.commit();
 }
@@ -106,7 +107,11 @@ fn test_sum_with_column_expression() {
         );
 
     // SUM(id + 1) = (1+1) + (2+1) + (3+1) + (4+1) + (5+1) = 20
-    ctx.assert_query_contains("SELECT SUM(id + 1) FROM Item", "SUM(id + 1)", "I32(20)");
+    ctx.assert_query_value(
+        "SELECT SUM(id + 1) FROM Item",
+        "SUM(id + 1)",
+        Value::I32(20),
+    );
 
     ctx.commit();
 }
@@ -126,10 +131,10 @@ fn test_sum_with_multiplication() {
         );
 
     // SUM(id * quantity) = 1*10 + 2*0 + 3*9 + 4*3 + 5*25 = 174
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT SUM(id * quantity) FROM Item",
         "SUM(id * quantity)",
-        "I32(174)",
+        Value::I32(174),
     );
 
     ctx.commit();
@@ -151,10 +156,10 @@ fn test_sum_with_case_expression() {
         );
 
     // SUM only quantities where id > 3: 3 + 25 = 28
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT SUM(CASE WHEN id > 3 THEN quantity ELSE 0 END) FROM Item",
         "SUM(CASE WHEN id > 3 THEN quantity ELSE 0 END)",
-        "I64(28)",
+        Value::I64(28),
     );
 
     ctx.commit();
@@ -176,10 +181,10 @@ fn test_sum_distinct_values() {
         );
 
     // SUM(DISTINCT value) = 10 + 20 + 30 = 60
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT SUM(DISTINCT value) FROM Item",
         "SUM(DISTINCT value)",
-        "I32(60)",
+        Value::I32(60),
     );
 
     ctx.commit();
@@ -202,10 +207,10 @@ fn test_sum_distinct_nullable_column() {
         );
 
     // SUM(DISTINCT age) = 11 + 90 + 3 = 104 (duplicates removed, NULLs ignored)
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT SUM(DISTINCT age) FROM Item",
         "SUM(DISTINCT age)",
-        "I32(104)",
+        Value::I32(104),
     );
 
     ctx.commit();
@@ -224,7 +229,7 @@ fn test_sum_handles_null_propagation() {
         );
 
     // SUM of all NULLs should return NULL
-    ctx.assert_query_contains("SELECT SUM(value) FROM Item", "SUM(value)", "Null");
+    ctx.assert_query_value("SELECT SUM(value) FROM Item", "SUM(value)", Value::Null);
 
     ctx.commit();
 }

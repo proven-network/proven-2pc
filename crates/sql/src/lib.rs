@@ -22,6 +22,6 @@ pub use engine::SqlTransactionEngine;
 pub use error::{Error, Result};
 pub use fjall::{CompressionType, PersistMode};
 pub use storage::SqlStorageConfig;
+pub use types::Value;
 pub use types::operation::SqlOperation;
 pub use types::response::SqlResponse;
-pub use types::value::Value;

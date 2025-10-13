@@ -3,7 +3,7 @@
 //! This module defines the SQL-specific operations that can be sent in messages.
 //! The actual message structure is provided by the engine crate.
 
-use crate::types::value::Value;
+use crate::types::Value;
 use proven_common::{Operation, OperationType};
 use serde::{Deserialize, Serialize};
 

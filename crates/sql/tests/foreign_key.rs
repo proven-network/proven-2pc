@@ -4,6 +4,7 @@
 mod common;
 
 use common::setup_test;
+use proven_value::Value;
 
 #[test]
 
@@ -138,10 +139,10 @@ fn test_foreign_key_on_delete_set_default() {
     ctx.exec("DELETE FROM ReferencedTableWithPK WHERE id = 1");
 
     // Check that child now references default
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT referenced_id FROM ReferencingTable WHERE id = 10",
         "referenced_id",
-        "I32(999)",
+        Value::I32(999),
     );
 
     ctx.commit();
@@ -171,10 +172,10 @@ fn test_foreign_key_on_delete_set_null() {
     ctx.exec("DELETE FROM ReferencedTableWithPK WHERE id = 1");
 
     // Check that child now has NULL reference
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT referenced_id FROM ReferencingTable WHERE id = 10",
         "referenced_id",
-        "Null",
+        Value::Null,
     );
 
     ctx.commit();
@@ -295,10 +296,10 @@ fn test_insert_null_referenced_value() {
     ctx.exec("INSERT INTO ReferencingTable VALUES (1, 'Null is independent', NULL)");
 
     assert_rows!(ctx, "SELECT * FROM ReferencingTable", 1);
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT referenced_id FROM ReferencingTable WHERE id = 1",
         "referenced_id",
-        "Null",
+        Value::Null,
     );
 
     ctx.commit();
@@ -329,10 +330,10 @@ fn test_insert_with_valid_referenced_value() {
     );
 
     assert_rows!(ctx, "SELECT * FROM ReferencingTable", 1);
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT referenced_id FROM ReferencingTable WHERE id = 2",
         "referenced_id",
-        "I32(1)",
+        Value::I32(1),
     );
 
     ctx.commit();
@@ -389,10 +390,10 @@ fn test_update_to_null_referenced_value() {
     // Update to NULL should be allowed even if there is no referenced value
     ctx.exec("UPDATE ReferencingTable SET referenced_id = NULL WHERE id = 2");
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT referenced_id FROM ReferencingTable WHERE id = 2",
         "referenced_id",
-        "Null",
+        Value::Null,
     );
 
     ctx.commit();
@@ -421,10 +422,10 @@ fn test_update_with_valid_referenced_value() {
     // Update with valid referenced value should succeed
     ctx.exec("UPDATE ReferencingTable SET referenced_id = 3 WHERE id = 2");
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT referenced_id FROM ReferencingTable WHERE id = 2",
         "referenced_id",
-        "I32(3)",
+        Value::I32(3),
     );
 
     ctx.commit();

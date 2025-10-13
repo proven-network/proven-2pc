@@ -1,7 +1,7 @@
 //! Value coercion implementation
 
 use crate::error::{Error, Result};
-use crate::types::{DataType, Value};
+use crate::types::{DataType, Value, ValueExt};
 use std::collections::HashMap;
 
 /// Coerce a value to match the target data type
@@ -488,7 +488,7 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
                     expected: "LIST".into(),
                     found: format!("Invalid JSON array: '{}'", s),
                 }),
-                Err(e) => Err(e),
+                Err(e) => Err(Error::InvalidValue(e)),
             }
         }
         (Value::Str(s), DataType::Array(elem_type, size)) => {
@@ -515,7 +515,7 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
                     expected: "ARRAY".into(),
                     found: format!("Invalid JSON array: '{}'", s),
                 }),
-                Err(e) => Err(e),
+                Err(e) => Err(Error::InvalidValue(e)),
             }
         }
         (Value::Str(s), DataType::Map(key_type, value_type)) => {
@@ -535,7 +535,7 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
                     expected: format!("MAP({:?}, {:?})", key_type, value_type),
                     found: format!("Invalid JSON object: '{}'", s),
                 }),
-                Err(e) => Err(e),
+                Err(e) => Err(Error::InvalidValue(e)),
             }
         }
         (Value::Str(s), DataType::Struct(schema_fields)) => {
@@ -579,7 +579,7 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
                     expected: "STRUCT".into(),
                     found: format!("Invalid JSON object: '{}'", s),
                 }),
-                Err(e) => Err(e),
+                Err(e) => Err(Error::InvalidValue(e)),
             }
         }
 

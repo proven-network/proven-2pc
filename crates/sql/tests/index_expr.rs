@@ -3,7 +3,7 @@
 
 mod common;
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_simple_column_index() {
     let mut ctx = setup_test();
@@ -22,7 +22,7 @@ fn test_create_simple_column_index() {
     // Verify index can be used for queries
     let results = ctx.query("SELECT * FROM Test WHERE id = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -47,10 +47,10 @@ fn test_create_arithmetic_expression_index() {
     let results = ctx.query("SELECT * FROM Test ORDER BY id + num");
     assert_eq!(results.len(), 4);
     // 1+2=3, 2+3=5, 3+4=7, 4+NULL=NULL (sorts last)
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(2)");
-    assert_eq!(results[2].get("id").unwrap(), "I32(3)");
-    assert_eq!(results[3].get("id").unwrap(), "I32(4)"); // NULL result sorts last
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(3));
+    assert_eq!(results[3].get("id").unwrap(), &Value::I32(4)); // NULL result sorts last
 
     ctx.commit();
 }
@@ -74,9 +74,9 @@ fn test_create_multiplication_expression_index() {
     let results = ctx.query("SELECT id, num, id * num as product FROM Test ORDER BY id * num");
     assert_eq!(results.len(), 3);
     // 2*3=6, 1*10=10, 4*5=20
-    assert_eq!(results[0].get("product").unwrap(), "I32(6)");
-    assert_eq!(results[1].get("product").unwrap(), "I32(10)");
-    assert_eq!(results[2].get("product").unwrap(), "I32(20)");
+    assert_eq!(results[0].get("product").unwrap(), &Value::I32(6));
+    assert_eq!(results[1].get("product").unwrap(), &Value::I32(10));
+    assert_eq!(results[2].get("product").unwrap(), &Value::I32(20));
 
     ctx.commit();
 }
@@ -114,7 +114,7 @@ fn test_parenthesized_expression_index() {
     // Verify it works like a regular column index
     let results = ctx.query("SELECT * FROM Test WHERE id = 2");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -138,9 +138,9 @@ fn test_complex_expression_index() {
     let results = ctx.query("SELECT a, b, c, (a + b) * c as result FROM Test ORDER BY (a + b) * c");
     assert_eq!(results.len(), 3);
     // (1+2)*3=9, (2+3)*4=20, (3+4)*5=35
-    assert_eq!(results[0].get("result").unwrap(), "I32(9)");
-    assert_eq!(results[1].get("result").unwrap(), "I32(20)");
-    assert_eq!(results[2].get("result").unwrap(), "I32(35)");
+    assert_eq!(results[0].get("result").unwrap(), &Value::I32(9));
+    assert_eq!(results[1].get("result").unwrap(), &Value::I32(20));
+    assert_eq!(results[2].get("result").unwrap(), &Value::I32(35));
 
     ctx.commit();
 }
@@ -164,9 +164,9 @@ fn test_expression_index_with_asc_desc() {
     let results = ctx.query("SELECT id, num, id + num as sum FROM Test ORDER BY id + num DESC");
     assert_eq!(results.len(), 3);
     // 3+7=10, 1+5=6, 2+3=5
-    assert_eq!(results[0].get("sum").unwrap(), "I32(10)");
-    assert_eq!(results[1].get("sum").unwrap(), "I32(6)");
-    assert_eq!(results[2].get("sum").unwrap(), "I32(5)");
+    assert_eq!(results[0].get("sum").unwrap(), &Value::I32(10));
+    assert_eq!(results[1].get("sum").unwrap(), &Value::I32(6));
+    assert_eq!(results[2].get("sum").unwrap(), &Value::I32(5));
 
     ctx.commit();
 }
@@ -209,11 +209,11 @@ fn test_expression_index_with_nulls() {
     let results = ctx.query("SELECT id, num FROM Test ORDER BY id + num");
     assert_eq!(results.len(), 4);
     // Non-NULL results first: 1+2=3, 3+4=7, then NULLs
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
     // NULL results sort last
-    assert_eq!(results[2].get("num").unwrap(), "Null");
-    assert_eq!(results[3].get("num").unwrap(), "Null");
+    assert_eq!(results[2].get("num").unwrap(), &Value::Null);
+    assert_eq!(results[3].get("num").unwrap(), &Value::Null);
 
     ctx.commit();
 }

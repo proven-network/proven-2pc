@@ -10,7 +10,7 @@ use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
 use crate::types::schema::Table;
-use crate::types::value::Value;
+use crate::types::{Value, ValueExt};
 
 /// Validate foreign key constraints for an updated row
 fn validate_foreign_keys_on_update(

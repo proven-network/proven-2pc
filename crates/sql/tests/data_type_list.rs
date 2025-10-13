@@ -4,7 +4,7 @@
 mod common;
 
 use common::setup_test;
-
+use proven_value::Value;
 #[test]
 fn test_create_table_with_list_column() {
     let mut ctx = setup_test();
@@ -29,9 +29,27 @@ fn test_insert_simple_list() {
     assert_eq!(results.len(), 3);
 
     // Lists can have varying lengths
-    assert!(results[0].get("items").unwrap().contains("List"));
-    assert!(results[1].get("items").unwrap().contains("List"));
-    assert!(results[2].get("items").unwrap().contains("List"));
+    assert!(
+        results[0]
+            .get("items")
+            .unwrap()
+            .to_string()
+            .contains("List")
+    );
+    assert!(
+        results[1]
+            .get("items")
+            .unwrap()
+            .to_string()
+            .contains("List")
+    );
+    assert!(
+        results[2]
+            .get("items")
+            .unwrap()
+            .to_string()
+            .contains("List")
+    );
 
     ctx.commit();
 }
@@ -81,10 +99,10 @@ fn test_unwrap_list_elements() {
     let results = ctx.query("SELECT id, UNWRAP(items, '0') AS first, UNWRAP(items, '1') AS second FROM ListData ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert_eq!(results[0].get("first").unwrap(), "I64(10)");
-    assert_eq!(results[0].get("second").unwrap(), "I64(20)");
-    assert_eq!(results[1].get("first").unwrap(), "I64(40)");
-    assert_eq!(results[1].get("second").unwrap(), "I64(50)");
+    assert_eq!(results[0].get("first").unwrap(), &Value::I64(10));
+    assert_eq!(results[0].get("second").unwrap(), &Value::I64(20));
+    assert_eq!(results[1].get("first").unwrap(), &Value::I64(40));
+    assert_eq!(results[1].get("second").unwrap(), &Value::I64(50));
 
     ctx.commit();
 }
@@ -102,10 +120,10 @@ fn test_list_bracket_access() {
         ctx.query("SELECT id, items[0] AS first, items[1] AS second FROM ListData ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert_eq!(results[0].get("first").unwrap(), "I64(100)");
-    assert_eq!(results[0].get("second").unwrap(), "I64(200)");
-    assert_eq!(results[1].get("first").unwrap(), "I64(400)");
-    assert_eq!(results[1].get("second").unwrap(), "I64(500)");
+    assert_eq!(results[0].get("first").unwrap(), &Value::I64(100));
+    assert_eq!(results[0].get("second").unwrap(), &Value::I64(200));
+    assert_eq!(results[1].get("first").unwrap(), &Value::I64(400));
+    assert_eq!(results[1].get("second").unwrap(), &Value::I64(500));
 
     ctx.commit();
 }
@@ -122,12 +140,12 @@ fn test_list_with_nulls() {
 
     let results = ctx.query("SELECT id, items FROM ListData WHERE items IS NOT NULL ORDER BY id");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
-    assert_eq!(results[1].get("id").unwrap(), "I32(3)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(3));
 
     let results = ctx.query("SELECT id FROM ListData WHERE items IS NULL");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(2)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(2));
 
     ctx.commit();
 }
@@ -139,7 +157,13 @@ fn test_cast_to_list() {
     // CAST string literals to LIST
     let results = ctx.query("SELECT CAST('[1, 2, 3]' AS INTEGER[]) AS my_list");
     assert_eq!(results.len(), 1);
-    assert!(results[0].get("my_list").unwrap().contains("List"));
+    assert!(
+        results[0]
+            .get("my_list")
+            .unwrap()
+            .to_string()
+            .contains("List")
+    );
 
     ctx.commit();
 }
@@ -159,13 +183,13 @@ fn test_list_in_where_clause() {
     // For now, just test basic equality
     let results = ctx.query(r#"SELECT id FROM ListData WHERE tags = '["red", "blue"]'"#);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("id").unwrap(), "I32(1)");
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
 
     ctx.commit();
 }
 
 #[test]
-#[should_panic(expected = "JsonArrayTypeRequired")]
+#[should_panic(expected = "InvalidValue")]
 fn test_insert_json_object_into_list_should_error() {
     let mut ctx = setup_test();
 
@@ -176,7 +200,7 @@ fn test_insert_json_object_into_list_should_error() {
 }
 
 #[test]
-#[should_panic(expected = "InvalidJsonString")]
+#[should_panic(expected = "InvalidValue")]
 fn test_insert_invalid_json_should_error() {
     let mut ctx = setup_test();
 
@@ -201,8 +225,8 @@ fn test_group_by_list() {
     let results =
         ctx.query("SELECT tags, COUNT(*) as cnt FROM ListData GROUP BY tags ORDER BY cnt");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("cnt").unwrap(), "I64(1)");
-    assert_eq!(results[1].get("cnt").unwrap(), "I64(2)");
+    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(1));
+    assert_eq!(results[1].get("cnt").unwrap(), &Value::I64(2));
 
     ctx.commit();
 }

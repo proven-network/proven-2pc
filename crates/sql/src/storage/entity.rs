@@ -164,7 +164,7 @@ pub struct IndexEntity;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IndexKey {
     /// The indexed column values (in index column order)
-    pub values: Vec<crate::types::value::Value>,
+    pub values: Vec<crate::types::Value>,
     /// The row_id for uniqueness (also points back to table row)
     pub row_id: u64,
 }
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_index_delta_roundtrip() {
-        use crate::types::value::Value;
+        use crate::types::Value;
 
         let delta = IndexDelta::Insert {
             key: IndexKey {

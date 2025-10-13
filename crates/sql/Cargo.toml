@@ -17,6 +17,7 @@ proven-engine.workspace = true
 proven-hlc.workspace = true
 proven-mvcc = { path = "../mvcc" }
 proven-stream.workspace = true
+proven-value = { workspace = true, features = ["mvcc"] }
 regex.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true

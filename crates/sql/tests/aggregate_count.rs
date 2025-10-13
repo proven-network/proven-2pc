@@ -4,6 +4,7 @@
 mod common;
 
 use common::{TableBuilder, setup_test};
+use proven_value::Value;
 
 #[test]
 fn test_count_all_rows() {
@@ -22,7 +23,7 @@ fn test_count_all_rows() {
              (1, NULL, 11, 1)",
         );
 
-    ctx.assert_query_contains("SELECT COUNT(*) FROM Item", "COUNT(*)", "I64(8)");
+    ctx.assert_query_value("SELECT COUNT(*) FROM Item", "COUNT(*)", Value::I64(8));
 
     ctx.commit();
 }
@@ -46,8 +47,8 @@ fn test_count_specific_columns() {
 
     let results = ctx.query("SELECT COUNT(age), COUNT(quantity) FROM Item");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("COUNT(age)").unwrap(), "I64(6)");
-    assert_eq!(results[0].get("COUNT(quantity)").unwrap(), "I64(6)");
+    assert_eq!(results[0].get("COUNT(age)").unwrap(), &Value::I64(6));
+    assert_eq!(results[0].get("COUNT(quantity)").unwrap(), &Value::I64(6));
 
     ctx.commit();
 }
@@ -56,7 +57,7 @@ fn test_count_specific_columns() {
 fn test_count_null_literal() {
     let mut ctx = setup_test();
 
-    ctx.assert_query_contains("SELECT COUNT(NULL)", "COUNT(NULL)", "I64(0)");
+    ctx.assert_query_value("SELECT COUNT(NULL)", "COUNT(NULL)", Value::I64(0));
 
     ctx.commit();
 }
@@ -78,10 +79,10 @@ fn test_count_distinct_values() {
              (1, NULL, 11, 1)",
         );
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COUNT(DISTINCT id) FROM Item",
         "COUNT(DISTINCT id)",
-        "I64(7)",
+        Value::I64(7),
     );
 
     ctx.commit();
@@ -104,10 +105,10 @@ fn test_count_distinct_nullable_column() {
              (1, NULL, 11, 1)",
         );
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COUNT(DISTINCT age) FROM Item",
         "COUNT(DISTINCT age)",
-        "I64(3)",
+        Value::I64(3),
     );
 
     ctx.commit();
@@ -132,8 +133,11 @@ fn test_count_vs_count_distinct() {
 
     let results = ctx.query("SELECT COUNT(age), COUNT(DISTINCT age) FROM Item");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].get("COUNT(age)").unwrap(), "I64(6)");
-    assert_eq!(results[0].get("COUNT(DISTINCT age)").unwrap(), "I64(3)");
+    assert_eq!(results[0].get("COUNT(age)").unwrap(), &Value::I64(6));
+    assert_eq!(
+        results[0].get("COUNT(DISTINCT age)").unwrap(),
+        &Value::I64(3)
+    );
 
     ctx.commit();
 }
@@ -155,10 +159,10 @@ fn test_count_distinct_all_columns() {
              (1, NULL, 11, 1)",
         );
 
-    ctx.assert_query_contains(
+    ctx.assert_query_value(
         "SELECT COUNT(DISTINCT *) FROM Item",
         "COUNT(DISTINCT *)",
-        "I64(7)",
+        Value::I64(7),
     );
 
     ctx.commit();
@@ -178,9 +182,13 @@ fn test_count_with_null_values() {
              (5, 30)",
         );
 
-    ctx.assert_query_contains("SELECT COUNT(*) FROM Item", "COUNT(*)", "I64(5)");
+    ctx.assert_query_value("SELECT COUNT(*) FROM Item", "COUNT(*)", Value::I64(5));
 
-    ctx.assert_query_contains("SELECT COUNT(value) FROM Item", "COUNT(value)", "I64(3)");
+    ctx.assert_query_value(
+        "SELECT COUNT(value) FROM Item",
+        "COUNT(value)",
+        Value::I64(3),
+    );
 
     ctx.commit();
 }
