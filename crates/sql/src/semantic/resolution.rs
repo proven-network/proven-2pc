@@ -365,12 +365,54 @@ impl NameResolver {
 
         let column_names = root_node.get_column_names(&self.schemas);
 
-        // Build column list - we have names from the plan, infer types conservatively
+        // For SELECT *, we need to get types from the column resolution map
+        // For other expressions, we can try type inference
         let mut columns = Vec::new();
-        for col_name in column_names {
-            // TODO: Extract actual types from the plan/analyzed statement
-            // For now, use I64 as reasonable default (works for most cases)
-            columns.push((col_name, DataType::I64, true));
+
+        // Check if this is a SELECT * query by looking at the first SELECT item
+        let is_select_star =
+            if let Statement::Dml(DmlStatement::Select(select)) = analyzed.ast.as_ref() {
+                select.select.len() == 1
+                    && matches!(select.select[0].0, crate::parsing::ast::Expression::All)
+            } else {
+                false
+            };
+
+        if is_select_star {
+            // For SELECT *, get types from column resolution map
+            for col_name in column_names {
+                // Look up the column in the resolution map
+                if let Some(resolution) = analyzed.column_resolution_map.resolve(None, &col_name) {
+                    columns.push((col_name, resolution.data_type.clone(), resolution.nullable));
+                } else {
+                    // Fallback if not found
+                    columns.push((col_name, DataType::I64, true));
+                }
+            }
+        } else {
+            // For explicit column expressions or aggregates, infer types
+            let checker = super::typing::TypeChecker::new();
+            let resolution_view = super::analyzer::ResolutionView {
+                column_map: &analyzed.column_resolution_map,
+            };
+            let expression_types = checker.infer_all_types(&analyzed.ast, &resolution_view, &[])?;
+
+            for (idx, col_name) in column_names.iter().enumerate() {
+                let expr_id = super::statement::ExpressionId::from_path(vec![idx]);
+                let (data_type, nullable) = if let Some(type_info) = expression_types.get(&expr_id)
+                {
+                    (type_info.data_type.clone(), type_info.nullable)
+                } else {
+                    // Fallback: try to look up in column resolution map
+                    if let Some(resolution) = analyzed.column_resolution_map.resolve(None, col_name)
+                    {
+                        (resolution.data_type.clone(), resolution.nullable)
+                    } else {
+                        (DataType::I64, true)
+                    }
+                };
+                columns.push((col_name.clone(), data_type, nullable));
+            }
         }
 
         Ok(columns)
