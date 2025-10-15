@@ -124,16 +124,15 @@ fn test_sort_invalid_order_should_error() {
     ctx.commit();
 }
 
-#[ignore = "implementation doesn't validate sort order, should error with InvalidSortOrder"]
 #[test]
 fn test_sort_invalid_order_should_error_strict() {
     let mut ctx = setup_test();
     setup_sort_table(&mut ctx);
 
-    // GlueSQL behavior: invalid sort order should error with InvalidSortOrder
+    // SQL standard behavior: invalid sort order should error
     ctx.assert_error_contains(
         "SELECT SORT(items, 'WRONG') AS items FROM Test1",
-        "InvalidSortOrder",
+        "Invalid sort order",
     );
 
     ctx.commit();

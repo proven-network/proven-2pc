@@ -36,7 +36,17 @@ impl Function for SortFunction {
 
         let order = if args.len() == 2 {
             match &args[1] {
-                Value::Str(s) => s.to_uppercase(),
+                Value::Str(s) => {
+                    let order_upper = s.to_uppercase();
+                    // Validate sort order - only ASC or DESC allowed
+                    if order_upper != "ASC" && order_upper != "DESC" {
+                        return Err(Error::ExecutionError(format!(
+                            "Invalid sort order '{}'. Must be 'ASC' or 'DESC'",
+                            s
+                        )));
+                    }
+                    order_upper
+                }
                 _ => {
                     return Err(Error::TypeMismatch {
                         expected: "string ('ASC' or 'DESC')".into(),
@@ -54,6 +64,7 @@ impl Function for SortFunction {
                 if order == "DESC" {
                     sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
                 } else {
+                    // order == "ASC"
                     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 }
                 Ok(Value::List(sorted))

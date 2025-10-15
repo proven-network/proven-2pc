@@ -36,9 +36,28 @@ impl Function for TakeFunction {
             ));
         }
 
+        // Handle NULL count - SQL standard: NULL in -> NULL out
+        if matches!(args[1], Value::Null) {
+            return Ok(Value::Null);
+        }
+
         let count = match &args[1] {
-            Value::I32(i) => *i as usize,
-            Value::I64(i) => *i as usize,
+            Value::I32(i) => {
+                if *i < 0 {
+                    return Err(Error::ExecutionError(
+                        "TAKE count must be non-negative".into(),
+                    ));
+                }
+                *i as usize
+            }
+            Value::I64(i) => {
+                if *i < 0 {
+                    return Err(Error::ExecutionError(
+                        "TAKE count must be non-negative".into(),
+                    ));
+                }
+                *i as usize
+            }
             _ => {
                 return Err(Error::TypeMismatch {
                     expected: "integer".into(),

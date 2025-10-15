@@ -34,9 +34,10 @@ impl Function for SliceFunction {
             ));
         }
 
-        let start = match &args[1] {
-            Value::I32(i) => *i as usize,
-            Value::I64(i) => *i as usize,
+        // Get start index as signed integer (supports negative indices)
+        let start_idx = match &args[1] {
+            Value::I32(i) => *i as i64,
+            Value::I64(i) => *i,
             _ => {
                 return Err(Error::TypeMismatch {
                     expected: "integer".into(),
@@ -47,24 +48,46 @@ impl Function for SliceFunction {
 
         match &args[0] {
             Value::List(l) | Value::Array(l) => {
-                let end = if args.len() == 3 {
-                    match &args[2] {
-                        Value::I32(i) => *i as usize,
-                        Value::I64(i) => *i as usize,
+                let len = l.len() as i64;
+
+                // DuckDB-style negative index handling for start
+                // When start < 0: count from end
+                // When start < -length: clamp to 0
+                let actual_start = if start_idx < 0 {
+                    (len + start_idx).max(0) as usize
+                } else {
+                    (start_idx as usize).min(l.len())
+                };
+
+                // Get end index
+                let actual_end = if args.len() == 3 {
+                    let end_idx = match &args[2] {
+                        Value::I32(i) => *i as i64,
+                        Value::I64(i) => *i,
                         _ => {
                             return Err(Error::TypeMismatch {
                                 expected: "integer".into(),
                                 found: args[2].data_type().to_string(),
                             });
                         }
+                    };
+
+                    // DuckDB-style negative index handling for end
+                    if end_idx < 0 {
+                        (len + end_idx).max(0) as usize
+                    } else {
+                        (end_idx as usize).min(l.len())
                     }
                 } else {
                     l.len()
                 };
 
-                let start = start.min(l.len());
-                let end = end.min(l.len());
-                Ok(Value::List(l[start..end].to_vec()))
+                // Ensure start <= end
+                if actual_start > actual_end {
+                    Ok(Value::List(Vec::new()))
+                } else {
+                    Ok(Value::List(l[actual_start..actual_end].to_vec()))
+                }
             }
             Value::Null => Ok(Value::Null),
             _ => Err(Error::TypeMismatch {

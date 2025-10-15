@@ -66,24 +66,26 @@ impl Function for SubstrFunction {
             });
         }
 
-        // Third argument (length) if present must be integer
-        if arg_types.len() == 3
-            && !matches!(
-                arg_types[2],
+        // Third argument (length) if present must be integer or NULL
+        if arg_types.len() == 3 {
+            match &arg_types[2] {
                 DataType::I8
-                    | DataType::I16
-                    | DataType::I32
-                    | DataType::I64
-                    | DataType::U8
-                    | DataType::U16
-                    | DataType::U32
-                    | DataType::U64
-            )
-        {
-            return Err(Error::TypeMismatch {
-                expected: "integer".into(),
-                found: arg_types[2].to_string(),
-            });
+                | DataType::I16
+                | DataType::I32
+                | DataType::I64
+                | DataType::U8
+                | DataType::U16
+                | DataType::U32
+                | DataType::U64
+                | DataType::Null => {}
+                DataType::Nullable(_) => {}
+                _ => {
+                    return Err(Error::TypeMismatch {
+                        expected: "integer or NULL".into(),
+                        found: arg_types[2].to_string(),
+                    });
+                }
+            }
         }
 
         Ok(DataType::Text)
@@ -174,7 +176,13 @@ impl Function for SubstrFunction {
 
         // Extract substring
         let result = if let Some(length) = length {
-            if length <= 0 {
+            // PostgreSQL behavior: error on negative length
+            if length < 0 {
+                return Err(Error::ExecutionError(
+                    "SUBSTR length must be non-negative".into(),
+                ));
+            }
+            if length == 0 {
                 String::new()
             } else {
                 let end = (actual_start + length as usize).min(chars.len());

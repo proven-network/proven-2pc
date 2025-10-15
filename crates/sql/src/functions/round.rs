@@ -25,7 +25,7 @@ impl Function for RoundFunction {
             )));
         }
 
-        // First argument must be numeric
+        // First argument must be numeric or NULL
         match &arg_types[0] {
             DataType::I8
             | DataType::I16
@@ -58,15 +58,24 @@ impl Function for RoundFunction {
                 }
                 Ok(arg_types[0].clone())
             }
+            DataType::Null => {
+                // NULL literal returns nullable numeric
+                Ok(DataType::Nullable(Box::new(DataType::F64)))
+            }
             DataType::Nullable(inner) => {
                 // Recursively validate
-                let inner_types = if arg_types.len() == 2 {
-                    vec![(**inner).clone(), arg_types[1].clone()]
-                } else {
-                    vec![(**inner).clone()]
-                };
-                let inner_result = self.validate(&inner_types)?;
-                Ok(DataType::Nullable(Box::new(inner_result)))
+                match inner.as_ref() {
+                    DataType::Null => Ok(DataType::Nullable(Box::new(DataType::F64))),
+                    _ => {
+                        let inner_types = if arg_types.len() == 2 {
+                            vec![(**inner).clone(), arg_types[1].clone()]
+                        } else {
+                            vec![(**inner).clone()]
+                        };
+                        let inner_result = self.validate(&inner_types)?;
+                        Ok(DataType::Nullable(Box::new(inner_result)))
+                    }
+                }
             }
             _ => Err(Error::TypeMismatch {
                 expected: "numeric type".into(),

@@ -88,18 +88,6 @@ fn test_skip_with_null_list() {
 }
 
 #[test]
-fn test_skip_with_null_count() {
-    let mut ctx = setup_test();
-    setup_skip_table(&mut ctx);
-
-    // NULL handling differs - this implementation rejects NULL at type checking
-    ctx.assert_error_contains("SELECT SKIP(items, NULL) as col1 FROM Test", "integer");
-
-    ctx.commit();
-}
-
-#[ignore = "implementation rejects NULL at type checking, GlueSQL returns NULL"]
-#[test]
 fn test_skip_with_null_count_should_return_null() {
     let mut ctx = setup_test();
     setup_skip_table(&mut ctx);
@@ -135,38 +123,14 @@ fn test_skip_non_list_should_error() {
 }
 
 #[test]
-fn test_skip_negative_size_should_error() {
-    let mut ctx = setup_test();
-    setup_skip_table(&mut ctx);
-
-    // This implementation may accept negative values and treat them as 0
-    // Try to query with negative value
-    let results = ctx.query("SELECT SKIP(items, -2) as col1 FROM Test");
-
-    // Either it errors or it treats negative as 0 (returns all items)
-    if results.len() == 1 {
-        // Accepted negative, likely treated as 0
-        let result_value = results[0].get("col1").unwrap();
-        if let Value::List(_list) = result_value {
-            // This is acceptable behavior
-        } else {
-            panic!("Expected List value, got: {:?}", result_value);
-        }
-    }
-
-    ctx.commit();
-}
-
-#[ignore = "implementation accepts negative values, GlueSQL should error with FunctionRequiresUSizeValue"]
-#[test]
 fn test_skip_negative_size_should_error_gluesql() {
     let mut ctx = setup_test();
     setup_skip_table(&mut ctx);
 
-    // GlueSQL behavior: negative size should error
+    // SQL standard behavior: negative size should error
     ctx.assert_error_contains(
         "SELECT SKIP(items, -2) as col1 FROM Test",
-        "FunctionRequiresUSizeValue",
+        "SKIP count must be non-negative",
     );
 
     ctx.commit();

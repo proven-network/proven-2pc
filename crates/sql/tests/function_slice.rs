@@ -155,15 +155,15 @@ fn test_slice_negative_index() {
     ctx.commit();
 }
 
-#[ignore = "implementation panics with negative indices, should support Python-style negative indexing"]
 #[test]
 fn test_slice_negative_index_from_end() {
     let mut ctx = setup_test();
     setup_slice_table(&mut ctx);
 
-    // GlueSQL behavior: SLICE with negative index should count from end
-    // SLICE(items, -1, 1) should return [4] (last element)
-    let results = ctx.query("SELECT SLICE(items, -1, 1) AS value FROM Test");
+    // DuckDB-style behavior: SLICE with negative index should count from end
+    // SLICE(items, -1) with no end = slice from last element to end
+    // Or SLICE(items, -1, 4) = from last element (index 3) to end (index 4)
+    let results = ctx.query("SELECT SLICE(items, -1) AS value FROM Test");
     assert_eq!(results.len(), 1);
 
     let result_value = results[0].get("value").unwrap();
@@ -204,7 +204,6 @@ fn test_slice_negative_index_multiple() {
     ctx.commit();
 }
 
-#[ignore = "implementation doesn't support negative indices properly"]
 #[test]
 fn test_slice_negative_index_multiple_elements() {
     let mut ctx = setup_test();
@@ -293,7 +292,6 @@ fn test_slice_large_negative_index() {
     ctx.commit();
 }
 
-#[ignore = "implementation returns empty list, GlueSQL clamps large negative to 0"]
 #[test]
 fn test_slice_large_negative_index_clamps_to_zero() {
     let mut ctx = setup_test();

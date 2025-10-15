@@ -130,21 +130,6 @@ fn test_take_with_null_list() {
 }
 
 #[test]
-fn test_take_with_null_count() {
-    let mut ctx = setup_test();
-    setup_take_table(&mut ctx);
-
-    // Current implementation rejects NULL in count parameter
-    ctx.assert_error_contains(
-        "SELECT TAKE(items, NULL) as mynulltake FROM Take",
-        "integer",
-    );
-
-    ctx.commit();
-}
-
-#[ignore = "implementation rejects NULL at type checking, GlueSQL returns NULL"]
-#[test]
 fn test_take_with_null_count_should_return_null() {
     let mut ctx = setup_test();
     setup_take_table(&mut ctx);
@@ -158,29 +143,14 @@ fn test_take_with_null_count_should_return_null() {
 }
 
 #[test]
-fn test_take_negative_count_should_error() {
-    let mut ctx = setup_test();
-    setup_take_table(&mut ctx);
-
-    // Current implementation doesn't error on negative count
-    // Need to decide: should negative count error?
-    let results = ctx.query("SELECT TAKE(items, -5) as mymistake FROM Take");
-    // If it doesn't error, it likely treats negative as 0 or clips to 0
-    assert_eq!(results.len(), 1);
-
-    ctx.commit();
-}
-
-#[ignore = "need to decide: should TAKE error on negative count?"]
-#[test]
 fn test_take_negative_count_should_error_strict() {
     let mut ctx = setup_test();
     setup_take_table(&mut ctx);
 
-    // GlueSQL behavior: should error on negative count
+    // SQL standard behavior: should error on negative count
     ctx.assert_error_contains(
         "SELECT TAKE(items, -5) as mymistake FROM Take",
-        "FunctionRequiresUSizeValue",
+        "TAKE count must be non-negative",
     );
 
     ctx.commit();

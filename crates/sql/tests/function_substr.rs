@@ -261,8 +261,10 @@ fn test_substr_with_null_parameters() {
     ctx.exec("CREATE TABLE NullNumber (number INTEGER)");
     ctx.exec("INSERT INTO NullNumber VALUES (NULL)");
 
-    // Current implementation rejects NULL in length parameter - this is a type error
-    ctx.assert_error_contains("SELECT SUBSTR('ABC', -1, NULL) AS t1", "integer");
+    // SQL standard behavior: NULL in length parameter returns NULL
+    let results = ctx.query("SELECT SUBSTR('ABC', -1, NULL) AS t1");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("t1").unwrap(), &Value::Null);
 
     // Test with NULL source string
     let results = ctx.query("SELECT SUBSTR(name, 3) AS test FROM NullName");
@@ -278,7 +280,6 @@ fn test_substr_with_null_parameters() {
     ctx.commit();
 }
 
-#[ignore = "implementation rejects NULL at type checking, GlueSQL returns NULL"]
 #[test]
 fn test_substr_with_null_length_parameter() {
     let mut ctx = setup_test();
@@ -301,7 +302,6 @@ fn test_substr_error_cases() {
     ctx.commit();
 }
 
-#[ignore = "need to decide: should SUBSTR accept float index and coerce to int?"]
 #[test]
 fn test_substr_with_float_index() {
     let mut ctx = setup_test();
@@ -312,13 +312,15 @@ fn test_substr_with_float_index() {
     ctx.commit();
 }
 
-#[ignore = "need to decide: should SUBSTR error on negative length?"]
 #[test]
 fn test_substr_with_negative_length() {
     let mut ctx = setup_test();
 
-    // GlueSQL behavior: should error on negative length
-    ctx.assert_error_contains("SELECT SUBSTR('Words', 1, -4) AS test", "");
+    // PostgreSQL behavior: should error on negative length
+    ctx.assert_error_contains(
+        "SELECT SUBSTR('Words', 1, -4) AS test",
+        "SUBSTR length must be non-negative",
+    );
 
     ctx.commit();
 }

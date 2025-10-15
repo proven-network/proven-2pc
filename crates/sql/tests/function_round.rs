@@ -61,18 +61,6 @@ fn test_round_with_string_input() {
 }
 
 #[test]
-fn test_round_with_null_input() {
-    let mut ctx = setup_test();
-
-    // NULL handling may differ - some systems reject NULL, others return NULL
-    // This implementation rejects NULL at type checking
-    ctx.assert_error_contains("SELECT ROUND(NULL) AS round", "numeric type");
-
-    ctx.commit();
-}
-
-#[ignore = "implementation rejects NULL at type checking, GlueSQL returns NULL"]
-#[test]
 fn test_round_with_null_input_should_return_null() {
     let mut ctx = setup_test();
 
