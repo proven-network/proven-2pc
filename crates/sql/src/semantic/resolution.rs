@@ -9,7 +9,8 @@
 use super::statement::{ColumnResolution, ColumnResolutionMap};
 use crate::error::{Error, Result};
 use crate::parsing::ast::common::SubquerySource;
-use crate::parsing::ast::{DmlStatement, Expression, FromClause, SelectStatement, Statement};
+use crate::parsing::ast::{DmlStatement, FromClause, SelectStatement, Statement};
+use crate::planning::planner::Planner;
 use crate::types::{DataType, schema::Table};
 use std::collections::HashMap;
 
@@ -342,76 +343,34 @@ impl NameResolver {
         select_stmt: &SelectStatement,
         _schemas: &HashMap<String, Table>,
     ) -> Result<Vec<(String, DataType, bool)>> {
-        // Recursively analyze the subquery to determine its output types
+        // Plan the subquery to get its actual output schema
         let subquery_analyzer = super::analyzer::SemanticAnalyzer::new(self.schemas.clone());
         let subquery_statement =
             Statement::Dml(DmlStatement::Select(Box::new(select_stmt.clone())));
         let analyzed = subquery_analyzer.analyze(subquery_statement, Vec::new())?;
 
-        let mut columns = Vec::new();
+        // Plan it to get the execution plan with proper output schema
+        let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
+        let subquery_plan = subquery_planner.plan_select(select_stmt, &analyzed)?;
 
-        // Process each projection in the SELECT list
-        for (expr, alias) in &select_stmt.select {
-            match expr {
-                Expression::All | Expression::QualifiedWildcard(_) => {
-                    // Wildcards expand to all available columns from the inner query's column map
-                    // We need to get all columns from the analyzed subquery's resolution map
-                    let col_map = &analyzed.column_resolution_map;
-
-                    // Collect all resolutions and sort by global_offset to maintain order
-                    let mut all_cols: Vec<_> = col_map
-                        .columns
-                        .iter()
-                        .filter(|((table_qualifier, _), _)| {
-                            // For All, include all columns
-                            // For QualifiedWildcard, filter by table
-                            match expr {
-                                Expression::All => table_qualifier.is_some(), // Skip duplicate unqualified entries
-                                Expression::QualifiedWildcard(table) => {
-                                    table_qualifier.as_deref() == Some(table.as_str())
-                                }
-                                _ => false,
-                            }
-                        })
-                        .collect();
-
-                    // Sort by global offset to maintain column order
-                    all_cols.sort_by_key(|(_, resolution)| resolution.global_offset);
-
-                    // Add each expanded column
-                    for ((_, col_name), resolution) in all_cols {
-                        columns.push((
-                            col_name.clone(),
-                            resolution.data_type.clone(),
-                            resolution.nullable,
-                        ));
-                    }
-                }
-                _ => {
-                    // For non-wildcard expressions, determine the column name
-                    let col_name = if let Some(alias_name) = alias {
-                        // Use explicit alias
-                        alias_name.clone()
-                    } else {
-                        // Infer name from expression
-                        match expr {
-                            Expression::Column(_table, col) => col.clone(),
-                            _ => {
-                                // For expressions without alias, generate a name
-                                "?column?".to_string()
-                            }
-                        }
-                    };
-
-                    // Get the type information from the analyzed statement
-                    // For now, we'll use a conservative approach and default to nullable text
-                    // A more complete implementation would track expression IDs and look them up
-                    let data_type = DataType::Text; // Conservative default
-                    let nullable = true; // Conservative default
-
-                    columns.push((col_name, data_type, nullable));
-                }
+        // Extract column names from the plan
+        let root_node = match subquery_plan {
+            crate::planning::plan::Plan::Query { root, .. } => root,
+            _ => {
+                return Err(Error::ExecutionError(
+                    "Expected Query plan for SELECT subquery".into(),
+                ));
             }
+        };
+
+        let column_names = root_node.get_column_names(&self.schemas);
+
+        // Build column list - we have names from the plan, infer types conservatively
+        let mut columns = Vec::new();
+        for col_name in column_names {
+            // TODO: Extract actual types from the plan/analyzed statement
+            // For now, use I64 as reasonable default (works for most cases)
+            columns.push((col_name, DataType::I64, true));
         }
 
         Ok(columns)

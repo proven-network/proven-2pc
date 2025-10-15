@@ -246,7 +246,6 @@ fn test_group_by_having_with_aggregate() {
 }
 
 #[test]
-#[ignore = "Subqueries not yet implemented"]
 fn test_group_by_with_subquery_context() {
     let mut ctx = setup_test();
 

@@ -180,8 +180,11 @@ impl Planner {
         }
 
         // Apply GROUP BY and aggregates
-        // Use metadata instead of re-computing
-        let has_aggregates = analyzed.metadata.has_aggregates;
+        // Check if there are any aggregate functions in the SELECT clause
+        let has_aggregates = select
+            .select
+            .iter()
+            .any(|(expr, _)| self.is_aggregate_expr(expr));
         let group_by_count = select.group_by.len();
 
         if !select.group_by.is_empty() || has_aggregates {
@@ -1052,12 +1055,10 @@ impl Planner {
     ) -> Result<Vec<AggregateFunc>> {
         let mut aggregates = Vec::new();
 
-        // Use aggregate_expressions from metadata to quickly identify aggregates
-        for (idx, (expr, _)) in select.iter().enumerate() {
-            let expr_id = crate::semantic::statement::ExpressionId::from_path(vec![idx]);
-
-            // Check if this expression is marked as an aggregate
-            if context.analyzed.aggregate_expressions.contains(&expr_id)
+        // Extract aggregate functions from SELECT expressions
+        for (expr, _) in select.iter() {
+            // Check if this expression is an aggregate function
+            if self.is_aggregate_expr(expr)
                 && let AstExpression::Function(name, args) = expr
             {
                 let func_name = name.to_uppercase();
@@ -1195,7 +1196,7 @@ impl Planner {
     fn plan_aggregate_projection(
         &self,
         select: &[(AstExpression, Option<String>)],
-        _group_by: &[AstExpression],
+        group_by: &[AstExpression],
         group_by_count: usize,
         _context: &mut AnalyzedPlanContext,
     ) -> Result<(Vec<Expression>, Vec<Option<String>>)> {
@@ -1239,21 +1240,55 @@ impl Planner {
                 aliases.push(func_alias);
             } else {
                 // For non-aggregate expressions in GROUP BY context,
-                // they must be GROUP BY columns - project from position
-                // For simplicity, assume it's in the first position if it's user_id
+                // they must be GROUP BY columns - find which position
+                let group_by_idx = self.find_group_by_index(expr, group_by)?;
+                expressions.push(Expression::Column(group_by_idx));
+
                 if let AstExpression::Column(_, col_name) = expr {
-                    // Find which GROUP BY position this is
-                    // For now, assume it's position 0 if it matches
-                    expressions.push(Expression::Column(0));
                     aliases.push(alias.clone().or(Some(col_name.clone())));
                 } else {
-                    expressions.push(Expression::Column(0));
                     aliases.push(alias.clone());
                 }
             }
         }
 
         Ok((expressions, aliases))
+    }
+
+    /// Find the index of an expression in the GROUP BY clause
+    fn find_group_by_index(
+        &self,
+        expr: &AstExpression,
+        group_by: &[AstExpression],
+    ) -> Result<usize> {
+        // Try to match the expression with a GROUP BY expression
+        for (idx, gb_expr) in group_by.iter().enumerate() {
+            if Self::expressions_match(expr, gb_expr) {
+                return Ok(idx);
+            }
+        }
+
+        Err(Error::ExecutionError(format!(
+            "Expression '{}' in SELECT is not in GROUP BY clause",
+            expr_to_string(expr)
+        )))
+    }
+
+    /// Check if two AST expressions match
+    fn expressions_match(a: &AstExpression, b: &AstExpression) -> bool {
+        match (a, b) {
+            (AstExpression::Column(t1, c1), AstExpression::Column(t2, c2)) => t1 == t2 && c1 == c2,
+            (AstExpression::Literal(v1), AstExpression::Literal(v2)) => v1 == v2,
+            (AstExpression::Function(n1, args1), AstExpression::Function(n2, args2)) => {
+                n1 == n2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| Self::expressions_match(a1, a2))
+            }
+            _ => false,
+        }
     }
 
     fn extract_equi_join_columns(
