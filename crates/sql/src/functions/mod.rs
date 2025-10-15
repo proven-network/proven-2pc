@@ -44,6 +44,7 @@ mod abs;
 mod ceil;
 mod greatest;
 mod least;
+mod math;
 mod round;
 mod sqrt;
 
@@ -152,6 +153,7 @@ impl FunctionRegistry {
         sqrt::register(&mut registry);
         greatest::register(&mut registry);
         least::register(&mut registry);
+        math::register(&mut registry);
 
         // Register system functions
         now::register(&mut registry);
