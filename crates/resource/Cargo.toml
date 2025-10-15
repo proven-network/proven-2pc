@@ -4,13 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bincode = "1.3"
+bincode.workspace = true
 ciborium.workspace = true
 parking_lot.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true
 proven-hlc.workspace = true
-proven-mvcc = { path = "../mvcc" }
+proven-mvcc.workspace = true
 proven-stream.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true

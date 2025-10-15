@@ -1,23 +1,13 @@
 [package]
 name = "proven-mvcc"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-fjall = "2.6"
-proven-hlc = { path = "../hlc" }
-tempfile = "3.8"
-
-# Optional: for blanket Encode/Decode impl
-bincode = { version = "1.3", optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
-
-[features]
-default = []
-# Enable blanket impl for types that already use serde
-serde-compat = ["bincode", "serde"]
+fjall.workspace = true
+proven-hlc.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-bincode = "1.3"
-serde = { version = "1.0", features = ["derive"] }
-tempfile = "3.8"
+bincode.workspace = true
+serde.workspace = true
