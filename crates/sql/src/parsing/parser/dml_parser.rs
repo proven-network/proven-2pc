@@ -268,6 +268,47 @@ pub trait DmlParser: TokenHelper {
                 return Err(Error::CompoundObjectNotSupported);
             }
 
+            // Check if this is SERIES(N) table-valued function
+            if name.to_uppercase() == "SERIES" && matches!(self.peek()?, Some(Token::OpenParen)) {
+                self.next()?; // consume opening paren
+
+                // Parse the size expression
+                let size = self.parse_expression()?;
+
+                self.expect(Token::CloseParen)?;
+
+                // Parse optional alias
+                let mut alias = None;
+                if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_)))
+                {
+                    // Allow keywords as alias names
+                    let alias_name = self.next_ident_or_keyword()?;
+
+                    // Check for column aliases: AS name(col1, col2, ...)
+                    let columns = if self.next_is(Token::OpenParen) {
+                        let mut cols = Vec::new();
+                        loop {
+                            // Allow keywords as column names in alias lists
+                            cols.push(self.next_ident_or_keyword()?);
+                            if !self.next_is(Token::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(Token::CloseParen)?;
+                        cols
+                    } else {
+                        Vec::new()
+                    };
+
+                    alias = Some(TableAlias {
+                        name: alias_name,
+                        columns,
+                    });
+                };
+
+                return Ok(FromClause::Series { size, alias });
+            }
+
             let mut alias = None;
             if self.next_is(Keyword::As.into()) || matches!(self.peek()?, Some(Token::Ident(_))) {
                 // Allow keywords as alias names

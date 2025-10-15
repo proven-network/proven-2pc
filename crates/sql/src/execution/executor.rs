@@ -223,7 +223,6 @@ pub fn execute_with_params(
             }
 
             storage.create_table(name.clone(), schema)?;
-            let create_msg = format!("Created table {}", name);
 
             // Then execute the VALUES insertion
             if let Plan::Query {
@@ -245,14 +244,65 @@ pub fn execute_with_params(
                 // Return success message with row count
                 if let ExecutionResult::Modified(count) = insert_result {
                     Ok(ExecutionResult::Ddl(format!(
-                        "{} with {} rows inserted",
-                        create_msg, count
+                        "Created table {} with {} rows inserted",
+                        name, count
                     )))
                 } else {
-                    Ok(ExecutionResult::Ddl(create_msg))
+                    Ok(ExecutionResult::Ddl(format!("Created table {}", name)))
                 }
             } else {
-                Ok(ExecutionResult::Ddl(create_msg))
+                Ok(ExecutionResult::Ddl(format!("Created table {}", name)))
+            }
+        }
+
+        Plan::CreateTableAsSelect {
+            name,
+            schema,
+            select_plan,
+            if_not_exists,
+        } => {
+            // First create the table
+            if storage.get_schemas().contains_key(&name) {
+                if if_not_exists {
+                    return Ok(ExecutionResult::Ddl(format!(
+                        "Table {} already exists (skipped)",
+                        name
+                    )));
+                } else {
+                    return Err(Error::DuplicateTable(name));
+                }
+            }
+
+            storage.create_table(name.clone(), schema)?;
+
+            // Then execute the SELECT insertion
+            if let Plan::Query {
+                root,
+                params: _,
+                column_names: _,
+            } = select_plan.as_ref()
+            {
+                let insert_result = super::insert::execute_insert(
+                    name.clone(),
+                    None,
+                    *root.clone(),
+                    storage,
+                    batch,
+                    tx_ctx,
+                    params,
+                )?;
+
+                // Return success message with row count
+                if let ExecutionResult::Modified(count) = insert_result {
+                    Ok(ExecutionResult::Ddl(format!(
+                        "Created table {} with {} rows inserted",
+                        name, count
+                    )))
+                } else {
+                    Ok(ExecutionResult::Ddl(format!("Created table {}", name)))
+                }
+            } else {
+                Ok(ExecutionResult::Ddl(format!("Created table {}", name)))
             }
         }
     }
@@ -284,6 +334,39 @@ pub fn execute_node_read_with_outer<'a>(
                 .map(|result| result.map(|(_, values)| Arc::new(values)));
 
             Ok(Box::new(iter))
+        }
+
+        Node::SeriesScan { size, .. } => {
+            // Evaluate the size expression
+            let size_value =
+                expression::evaluate_with_storage(&size, None, tx_ctx, params, Some(storage))?;
+
+            // Convert size to i64
+            let n = match size_value {
+                Value::I32(v) => v as i64,
+                Value::I64(v) => v,
+                Value::I128(v) => v as i64,
+                _ => {
+                    return Err(Error::ExecutionError(format!(
+                        "SERIES size must be an integer, got {:?}",
+                        size_value
+                    )));
+                }
+            };
+
+            // Validate size is non-negative
+            if n < 0 {
+                return Err(Error::ExecutionError(format!(
+                    "SERIES size must be non-negative, got {}",
+                    n
+                )));
+            }
+
+            // Generate N rows with column "N" containing values 1..=N
+            let rows: Vec<Arc<Vec<Value>>> =
+                (1..=n).map(|i| Arc::new(vec![Value::I64(i)])).collect();
+
+            Ok(Box::new(rows.into_iter().map(Ok)))
         }
 
         Node::IndexScan {

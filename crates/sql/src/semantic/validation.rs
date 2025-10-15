@@ -802,6 +802,10 @@ impl SemanticValidator {
                                     // Skip validation for subqueries for now
                                     return Ok(());
                                 }
+                                FromClause::Series { .. } => {
+                                    // Skip validation for SERIES
+                                    return Ok(());
+                                }
                                 FromClause::Join { left, .. } => {
                                     if let FromClause::Table { name, .. } = left.as_ref() {
                                         name

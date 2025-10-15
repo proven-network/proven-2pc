@@ -303,6 +303,9 @@ impl SemanticAnalyzer {
                 crate::parsing::ast::DdlStatement::CreateTableAsValues { .. } => {
                     StatementType::CreateTable
                 }
+                crate::parsing::ast::DdlStatement::CreateTableAsSelect { .. } => {
+                    StatementType::CreateTable
+                }
                 crate::parsing::ast::DdlStatement::DropTable { .. } => StatementType::DropTable,
                 crate::parsing::ast::DdlStatement::CreateIndex { .. } => StatementType::CreateIndex,
                 crate::parsing::ast::DdlStatement::DropIndex { .. } => StatementType::DropIndex,

@@ -59,6 +59,14 @@ pub enum Plan {
         if_not_exists: bool,
     },
 
+    /// CREATE TABLE AS SELECT
+    CreateTableAsSelect {
+        name: String,
+        schema: crate::types::schema::Table,
+        select_plan: Box<Plan>,
+        if_not_exists: bool,
+    },
+
     /// DROP TABLE
     DropTable {
         names: Vec<String>,
@@ -86,6 +94,7 @@ impl Plan {
             self,
             Plan::CreateTable { .. }
                 | Plan::CreateTableAsValues { .. }
+                | Plan::CreateTableAsSelect { .. }
                 | Plan::DropTable { .. }
                 | Plan::CreateIndex { .. }
                 | Plan::DropIndex { .. }
@@ -99,6 +108,12 @@ pub enum Node {
     /// Table scan
     Scan {
         table: String,
+        alias: Option<String>,
+    },
+
+    /// SERIES(N) scan - generates N rows with column "N" containing values 1..=N
+    SeriesScan {
+        size: Expression,
         alias: Option<String>,
     },
 
@@ -186,6 +201,7 @@ impl Node {
     ) -> usize {
         match self {
             Node::Scan { table, .. } => schemas.get(table).map(|s| s.columns.len()).unwrap_or(0),
+            Node::SeriesScan { .. } => 1, // SERIES(N) produces one column: N
             Node::IndexScan { table, .. } => {
                 schemas.get(table).map(|s| s.columns.len()).unwrap_or(0)
             }
@@ -246,6 +262,9 @@ impl Node {
             | Node::Order { source, .. }
             | Node::Limit { source, .. }
             | Node::Offset { source, .. } => source.get_column_names(schemas),
+
+            // SeriesScan produces column "n" (lowercase for SQL case-insensitivity)
+            Node::SeriesScan { .. } => vec!["n".to_string()],
 
             // Scan nodes get column names from table schema
             Node::Scan { table, .. }

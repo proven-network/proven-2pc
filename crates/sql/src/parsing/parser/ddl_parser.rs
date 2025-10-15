@@ -3,22 +3,16 @@
 //! Handles parsing of CREATE and DROP statements for tables and indexes.
 
 use super::super::{Keyword, Token};
+use super::dml_parser::DmlParser;
 use super::type_parser::TypeParser;
 use crate::error::{Error, Result};
-use crate::parsing::ast::Expression;
 use crate::parsing::ast::common::Direction;
 use crate::parsing::ast::ddl::DdlStatement;
-use crate::parsing::ast::dml::ValuesStatement;
+use crate::parsing::ast::dml::{DmlStatement, ValuesStatement};
 use crate::parsing::ast::{Column, IndexColumn, Statement};
 
 /// Parser trait for DDL statements
-pub trait DdlParser: TypeParser {
-    /// Parses an expression
-    fn parse_expression(&mut self) -> Result<Expression>;
-
-    /// Parses VALUES rows - reused from DML parser
-    fn parse_values_rows(&mut self) -> Result<Vec<Vec<Expression>>>;
-
+pub trait DdlParser: TypeParser + DmlParser {
     /// Parses a table-level constraint
     fn parse_table_constraint(
         &mut self,
@@ -85,23 +79,44 @@ pub trait DdlParser: TypeParser {
 
         let name = self.next_ident()?;
 
-        // Check for AS VALUES
+        // Check for AS VALUES or AS SELECT
         if self.next_is(Keyword::As.into()) {
-            // Parse AS VALUES
-            self.expect(Keyword::Values.into())?;
-            let rows = self.parse_values_rows()?;
+            // Check if this is VALUES or SELECT
+            if matches!(self.peek()?, Some(Token::Keyword(Keyword::Values))) {
+                // Parse AS VALUES
+                self.next()?; // consume VALUES
+                let rows = self.parse_values_rows()?;
 
-            // VALUES doesn't support ORDER BY, LIMIT, OFFSET in CREATE TABLE AS context
-            Ok(Statement::Ddl(DdlStatement::CreateTableAsValues {
-                name,
-                values: ValuesStatement {
-                    rows,
-                    order_by: Vec::new(),
-                    limit: None,
-                    offset: None,
-                },
-                if_not_exists,
-            }))
+                // VALUES doesn't support ORDER BY, LIMIT, OFFSET in CREATE TABLE AS context
+                Ok(Statement::Ddl(DdlStatement::CreateTableAsValues {
+                    name,
+                    values: ValuesStatement {
+                        rows,
+                        order_by: Vec::new(),
+                        limit: None,
+                        offset: None,
+                    },
+                    if_not_exists,
+                }))
+            } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
+                // Parse AS SELECT - extract the SELECT statement from the parsed DML
+                let stmt = self.parse_select()?;
+                if let Statement::Dml(DmlStatement::Select(select)) = stmt {
+                    Ok(Statement::Ddl(DdlStatement::CreateTableAsSelect {
+                        name,
+                        select,
+                        if_not_exists,
+                    }))
+                } else {
+                    Err(Error::ParseError(
+                        "Expected SELECT statement after CREATE TABLE AS".to_string(),
+                    ))
+                }
+            } else {
+                Err(Error::ParseError(
+                    "expected VALUES or SELECT after CREATE TABLE AS".to_string(),
+                ))
+            }
         } else if self.next_is(Token::OpenParen) {
             // Parse column list and constraints
             let mut columns = Vec::new();

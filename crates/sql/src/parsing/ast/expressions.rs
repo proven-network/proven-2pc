@@ -172,3 +172,81 @@ impl From<Operator> for Expression {
         Expression::Operator(operator)
     }
 }
+
+impl Expression {
+    /// Convert an expression to a string suitable for use as a column name.
+    /// This generates descriptive names for simple expressions and falls back
+    /// to "expr" for complex cases where users should provide explicit aliases.
+    pub fn to_column_name(&self) -> String {
+        match self {
+            Expression::Column(Some(table), col) => format!("{}.{}", table, col),
+            Expression::Column(None, col) => col.clone(),
+
+            Expression::Literal(Literal::Integer(i)) => i.to_string(),
+            Expression::Literal(Literal::Float(f)) => f.to_string(),
+            Expression::Literal(Literal::String(s)) => format!("'{}'", s),
+            Expression::Literal(Literal::Null) => "NULL".to_string(),
+            Expression::Literal(Literal::Boolean(b)) => {
+                if *b { "true" } else { "false" }.to_string()
+            }
+            Expression::Literal(Literal::Date(d)) => format!("'{}'", d),
+            Expression::Literal(Literal::Time(t)) => format!("'{}'", t),
+            Expression::Literal(Literal::Timestamp(ts)) => format!("'{}'", ts),
+            Expression::Literal(Literal::Bytea(_)) => "bytea".to_string(),
+            Expression::Literal(Literal::Interval(_)) => "interval".to_string(),
+
+            Expression::All => "*".to_string(),
+            Expression::QualifiedWildcard(table) => format!("{}.*", table),
+
+            Expression::Function(name, args) => {
+                let arg_str = args
+                    .iter()
+                    .map(|a| a.to_column_name())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // Use uppercase for function names (SQL convention)
+                format!("{}({})", name.to_uppercase(), arg_str)
+            }
+
+            Expression::Operator(op) => {
+                match op {
+                    Operator::Add(l, r) => {
+                        format!("{} + {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Subtract(l, r) => {
+                        format!("{} - {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Multiply(l, r) => {
+                        format!("{} * {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Divide(l, r) => {
+                        format!("{} / {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Remainder(l, r) => {
+                        format!("{} % {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Concat(l, r) => {
+                        format!("{} || {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Not(e) => format!("NOT {}", e.to_column_name()),
+                    Operator::Negate(e) => format!("-{}", e.to_column_name()),
+                    Operator::Identity(e) => format!("+{}", e.to_column_name()),
+                    _ => "expr".to_string(), // Complex operators get generic name
+                }
+            }
+
+            Expression::Subquery(select) => {
+                // Try to generate a reasonable name for simple scalar subqueries
+                if select.select.len() == 1 && select.select[0].1.is_none() {
+                    let inner_expr = &select.select[0].0;
+                    format!("(SELECT {})", inner_expr.to_column_name())
+                } else {
+                    "(SELECT ...)".to_string()
+                }
+            }
+
+            // All other expression types get generic "expr" name
+            _ => "expr".to_string(),
+        }
+    }
+}

@@ -53,6 +53,13 @@ pub enum FromClause {
         /// Required alias for the subquery
         alias: TableAlias,
     },
+    /// SERIES(N) table-valued function that generates N rows
+    Series {
+        /// The size expression (number of rows to generate)
+        size: Expression,
+        /// An optional alias for the series
+        alias: Option<TableAlias>,
+    },
     /// A join of two or more tables (may be nested).
     Join {
         /// The left table to join.

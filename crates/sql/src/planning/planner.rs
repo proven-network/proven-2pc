@@ -15,6 +15,7 @@ use crate::parsing::ast::{
 use crate::semantic::AnalyzedStatement;
 use crate::semantic::analyzer::{OuterQueryContext, SemanticAnalyzer};
 use crate::types::DataType;
+use crate::types::Value;
 use crate::types::expression::Expression;
 use crate::types::index::IndexMetadata;
 use crate::types::schema::Table;
@@ -78,6 +79,12 @@ impl Planner {
                 values,
                 if_not_exists,
             } => self.plan_create_table_as_values(name.clone(), values, *if_not_exists, analyzed),
+
+            DdlStatement::CreateTableAsSelect {
+                name,
+                select,
+                if_not_exists,
+            } => self.plan_create_table_as_select(name.clone(), select, *if_not_exists, analyzed),
 
             DdlStatement::DropTable {
                 names,
@@ -287,7 +294,11 @@ impl Planner {
     /// Plan FROM clause
     fn plan_from(&self, from: &[FromClause], context: &mut AnalyzedPlanContext) -> Result<Node> {
         if from.is_empty() {
-            return Ok(Node::Values { rows: vec![vec![]] });
+            // Default to SERIES(1) for SELECT without FROM
+            return Ok(Node::SeriesScan {
+                size: crate::types::expression::Expression::Constant(Value::I64(1)),
+                alias: None,
+            });
         }
 
         let mut node = None;
@@ -346,6 +357,50 @@ impl Planner {
                         }
                     } else {
                         subquery_node
+                    });
+                }
+
+                FromClause::Series { size, alias } => {
+                    // Convert AST expression to typed expression
+                    // For now, we only support literal integer expressions
+                    let size_expr = match size {
+                        AstExpression::Literal(Literal::Integer(n)) => {
+                            // Convert the i128 to an i64
+                            let val = *n as i64;
+                            Expression::Constant(Value::I64(val))
+                        }
+                        AstExpression::Operator(Operator::Identity(expr)) => {
+                            // Handle unary plus: +N
+                            if let AstExpression::Literal(Literal::Integer(n)) = &**expr {
+                                let val = *n as i64;
+                                Expression::Constant(Value::I64(val))
+                            } else {
+                                return Err(Error::ExecutionError(
+                                    "SERIES size must be a constant integer".into(),
+                                ));
+                            }
+                        }
+                        _ => {
+                            return Err(Error::ExecutionError(
+                                "SERIES size must be a constant integer".into(),
+                            ));
+                        }
+                    };
+
+                    let series_scan = Node::SeriesScan {
+                        size: size_expr,
+                        alias: alias.as_ref().map(|a| a.name.clone()),
+                    };
+
+                    node = Some(if let Some(prev) = node {
+                        Node::NestedLoopJoin {
+                            left: Box::new(prev),
+                            right: Box::new(series_scan),
+                            predicate: Expression::Constant(Value::boolean(true)),
+                            join_type: JoinType::Inner,
+                        }
+                    } else {
+                        series_scan
                     });
                 }
 
@@ -846,6 +901,120 @@ impl Planner {
         })
     }
 
+    fn plan_create_table_as_select(
+        &self,
+        name: String,
+        select: &SelectStatement,
+        if_not_exists: bool,
+        _analyzed: &AnalyzedStatement,
+    ) -> Result<Plan> {
+        // Need to analyze the SELECT statement separately since the provided
+        // analyzed statement is for the CREATE TABLE AS, not the SELECT
+        use crate::parsing::ast::Statement;
+        use crate::parsing::ast::dml::DmlStatement;
+
+        let select_stmt = Statement::Dml(DmlStatement::Select(Box::new(select.clone())));
+        let analyzer = crate::semantic::analyzer::SemanticAnalyzer::new(self.schemas.clone());
+        let select_analyzed = analyzer.analyze(select_stmt, Vec::new())?;
+
+        // Now plan the SELECT statement with its own analysis
+        let select_plan = self.plan_select(select, &select_analyzed)?;
+
+        // Extract column names and types from the SELECT plan
+        let (column_names, column_types) = match &select_plan {
+            Plan::Query {
+                column_names, root, ..
+            } => {
+                // Get column names - either from override or from node
+                let col_names = if let Some(names) = column_names {
+                    if names.is_empty() {
+                        // Empty override, get names from the plan tree instead
+                        root.get_column_names(&self.schemas)
+                    } else {
+                        names.clone()
+                    }
+                } else {
+                    // No override, get names from the plan tree
+                    root.get_column_names(&self.schemas)
+                };
+
+                // Infer types from the projection expressions
+                let types = self.infer_select_column_types(root)?;
+                (col_names, types)
+            }
+            _ => return Err(Error::ExecutionError("SELECT plan must be a Query".into())),
+        };
+
+        // Create columns using names from SELECT
+        let schema_columns = column_names
+            .iter()
+            .zip(column_types.iter())
+            .map(|(col_name, dtype)| {
+                crate::types::schema::Column::new(col_name.clone(), dtype.clone()).nullable(true)
+            })
+            .collect();
+
+        let table = Table::new(name.clone(), schema_columns)?;
+
+        Ok(Plan::CreateTableAsSelect {
+            name,
+            schema: table,
+            select_plan: Box::new(select_plan),
+            if_not_exists,
+        })
+    }
+
+    fn infer_select_column_types(&self, node: &Node) -> Result<Vec<DataType>> {
+        match node {
+            Node::Projection {
+                expressions,
+                source,
+                ..
+            } => {
+                // For columns from the source, look up types from schemas or SeriesScan
+                let types: Vec<DataType> = expressions
+                    .iter()
+                    .map(|expr| match expr {
+                        Expression::Column(offset) => {
+                            // Try to get type from the source
+                            self.infer_column_type_from_source(source, *offset)
+                                .unwrap_or(DataType::Str)
+                        }
+                        _ => self.infer_expression_type(expr).unwrap_or(DataType::Str),
+                    })
+                    .collect();
+                Ok(types)
+            }
+            _ => {
+                // For non-projection nodes, we need to walk up the tree
+                // For now, assume all columns are nullable strings
+                Err(Error::ExecutionError(
+                    "Cannot infer column types from non-projection node".into(),
+                ))
+            }
+        }
+    }
+
+    fn infer_column_type_from_source(&self, node: &Node, offset: usize) -> Option<DataType> {
+        match node {
+            Node::SeriesScan { .. } => {
+                // SERIES produces I64 column
+                if offset == 0 {
+                    Some(DataType::I64)
+                } else {
+                    None
+                }
+            }
+            Node::Scan { table, .. } | Node::IndexScan { table, .. } => {
+                // Get type from table schema
+                self.schemas
+                    .get(table)
+                    .and_then(|schema| schema.columns.get(offset).map(|col| col.data_type.clone()))
+            }
+            _ => None,
+        }
+    }
+
     fn infer_expression_type(&self, expr: &Expression) -> Result<DataType> {
         use crate::types::Value;
 
@@ -1165,17 +1334,41 @@ impl Planner {
                 }
                 AstExpression::QualifiedWildcard(table_alias) => {
                     // Expand table.* to all columns from that specific table
+                    // First check if this is a SERIES or other non-table source
+                    let mut found = false;
+
                     for table in &context.tables {
                         // Check if this is the table we're looking for (by alias or name)
-                        if ((table.alias.as_deref() == Some(table_alias.as_str()))
-                            && table.name == *table_alias)
+                        if (table.alias.as_deref() == Some(table_alias.as_str())
+                            || table.name == *table_alias)
                             && let Some(schema) = self.schemas.get(&table.name)
                         {
                             for (i, col) in schema.columns.iter().enumerate() {
                                 expressions.push(Expression::Column(table.start_column + i));
                                 aliases.push(Some(col.name.clone()));
                             }
+                            found = true;
                             break;
+                        }
+                    }
+
+                    // If not found in tables, try to expand from column resolution map
+                    // This handles SERIES and subqueries
+                    if !found {
+                        let map = &context.analyzed.column_resolution_map;
+                        let matching_columns: Vec<_> = map
+                            .columns
+                            .iter()
+                            .filter(|((tbl, _), _)| tbl.as_deref() == Some(table_alias.as_str()))
+                            .collect();
+
+                        // Sort by global_offset to maintain column order
+                        let mut sorted: Vec<_> = matching_columns.into_iter().collect();
+                        sorted.sort_by_key(|(_, res)| res.global_offset);
+
+                        for ((_, col_name), resolution) in sorted {
+                            expressions.push(Expression::Column(resolution.global_offset));
+                            aliases.push(Some(col_name.clone()));
                         }
                     }
                 }
@@ -1185,7 +1378,12 @@ impl Planner {
                 }
                 _ => {
                     expressions.push(context.resolve_expression(expr)?);
-                    aliases.push(alias.clone());
+                    // If no alias provided, generate one from the expression
+                    if alias.is_none() {
+                        aliases.push(Some(expr.to_column_name()));
+                    } else {
+                        aliases.push(alias.clone());
+                    }
                 }
             }
         }
@@ -1225,7 +1423,7 @@ impl Planner {
                         let arg_str = if args.is_empty() || matches!(args[0], AstExpression::All) {
                             "*".to_string()
                         } else {
-                            expr_to_string(&args[0])
+                            args[0].to_column_name()
                         };
 
                         if is_distinct {
@@ -1270,7 +1468,7 @@ impl Planner {
 
         Err(Error::ExecutionError(format!(
             "Expression '{}' in SELECT is not in GROUP BY clause",
-            expr_to_string(expr)
+            expr.to_column_name()
         )))
     }
 
@@ -2104,61 +2302,5 @@ fn resolve_default_expression(
         _ => Err(Error::ExecutionError(
             "Expression type not supported in DEFAULT expressions".into(),
         )),
-    }
-}
-
-/// Convert an expression to a string representation for alias generation
-fn expr_to_string(expr: &AstExpression) -> String {
-    use crate::parsing::Operator;
-    use crate::parsing::ast::Literal;
-
-    match expr {
-        AstExpression::Column(table, col) => {
-            if let Some(t) = table {
-                format!("{}.{}", t, col)
-            } else {
-                col.clone()
-            }
-        }
-        AstExpression::Literal(Literal::Integer(i)) => i.to_string(),
-        AstExpression::Literal(Literal::Float(f)) => f.to_string(),
-        AstExpression::Literal(Literal::String(s)) => format!("'{}'", s),
-        AstExpression::Literal(Literal::Null) => "NULL".to_string(),
-        AstExpression::Literal(Literal::Boolean(b)) => {
-            if *b { "TRUE" } else { "FALSE" }.to_string()
-        }
-        AstExpression::Literal(Literal::Date(d)) => format!("'{}'", d),
-        AstExpression::Literal(Literal::Time(t)) => format!("'{}'", t),
-        AstExpression::Literal(Literal::Timestamp(ts)) => format!("'{}'", ts),
-        AstExpression::All => "*".to_string(),
-        AstExpression::QualifiedWildcard(table) => format!("{}.*", table),
-        AstExpression::Function(name, args) => {
-            let arg_str = args
-                .iter()
-                .map(expr_to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{}({})", name.to_uppercase(), arg_str)
-        }
-        AstExpression::Operator(op) => {
-            match op {
-                Operator::Add(l, r) => format!("{} + {}", expr_to_string(l), expr_to_string(r)),
-                Operator::Subtract(l, r) => {
-                    format!("{} - {}", expr_to_string(l), expr_to_string(r))
-                }
-                Operator::Multiply(l, r) => {
-                    format!("{} * {}", expr_to_string(l), expr_to_string(r))
-                }
-                Operator::Divide(l, r) => format!("{} / {}", expr_to_string(l), expr_to_string(r)),
-                Operator::Remainder(l, r) => {
-                    format!("{} % {}", expr_to_string(l), expr_to_string(r))
-                }
-                Operator::Not(e) => format!("NOT {}", expr_to_string(e)),
-                Operator::Negate(e) => format!("-{}", expr_to_string(e)),
-                Operator::Identity(e) => format!("+{}", expr_to_string(e)),
-                _ => "expr".to_string(), // For complex operators we don't need full string representation
-            }
-        }
-        _ => "expr".to_string(), // For other complex expressions
     }
 }

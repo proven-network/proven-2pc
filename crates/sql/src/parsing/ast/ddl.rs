@@ -83,6 +83,15 @@ pub enum DdlStatement {
         /// IF NOT EXISTS: if true, don't error if the table already exists.
         if_not_exists: bool,
     },
+    /// CREATE TABLE AS SELECT: creates a new table from a SELECT query.
+    CreateTableAsSelect {
+        /// The table name.
+        name: String,
+        /// The SELECT statement to populate from.
+        select: Box<super::dml::SelectStatement>,
+        /// IF NOT EXISTS: if true, don't error if the table already exists.
+        if_not_exists: bool,
+    },
     /// DROP TABLE: drops one or more tables.
     DropTable {
         /// The tables to drop.

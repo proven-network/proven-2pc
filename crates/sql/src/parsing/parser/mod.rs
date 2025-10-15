@@ -252,14 +252,6 @@ impl DmlParser for Parser<'_> {
 
 // Implement DdlParser trait for Parser
 impl DdlParser for Parser<'_> {
-    fn parse_expression(&mut self) -> Result<Expression> {
-        ExpressionParser::parse_expression(self)
-    }
-
-    fn parse_values_rows(&mut self) -> Result<Vec<Vec<Expression>>> {
-        DmlParser::parse_values_rows(self)
-    }
-
     fn parse_table_constraint(
         &mut self,
     ) -> Result<Option<crate::parsing::ast::ddl::ForeignKeyConstraint>> {

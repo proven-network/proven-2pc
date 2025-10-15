@@ -4,6 +4,7 @@
 mod common;
 
 use common::setup_test;
+use proven_sql::Value;
 
 /// Create standard test tables for nested select tests
 fn setup_nested_tables(ctx: &mut common::TestContext) {
@@ -187,7 +188,6 @@ fn test_where_equals_nonexistent_subquery() {
 }
 
 #[test]
-#[ignore = "SERIES function and scalar subqueries not yet implemented"]
 fn test_select_subquery_with_series_nonexistent() {
     let mut ctx = setup_test();
 
@@ -196,15 +196,7 @@ fn test_select_subquery_with_series_nonexistent() {
     let results = ctx.query("SELECT (SELECT N FROM SERIES(3) WHERE N = 4) N");
 
     assert_eq!(results.len(), 1, "Should return one row");
-    assert!(
-        results[0]
-            .values()
-            .next()
-            .unwrap()
-            .to_string()
-            .contains("Null"),
-        "Should return NULL"
-    );
+    assert_eq!(results[0].values().next().unwrap(), &Value::Null);
 
     ctx.commit();
 }

@@ -95,6 +95,9 @@ impl MetadataBuilder {
                         let table_name = match source {
                             super::resolution::TableSource::Table { name, .. } => name,
                             super::resolution::TableSource::Subquery { alias, .. } => alias,
+                            super::resolution::TableSource::Series { alias, .. } => {
+                                alias.as_ref().map(|s| s.as_str()).unwrap_or("SERIES")
+                            }
                         };
                         for template in &templates[initial_count..] {
                             if self.template_covers_table(template, table_name) {
@@ -114,6 +117,9 @@ impl MetadataBuilder {
                                 super::resolution::TableSource::Table { name, .. } => name.clone(),
                                 super::resolution::TableSource::Subquery { alias, .. } => {
                                     alias.clone()
+                                }
+                                super::resolution::TableSource::Series { alias, .. } => {
+                                    alias.clone().unwrap_or_else(|| "SERIES".to_string())
                                 }
                             };
                             templates.push(PredicateTemplate::FullTable { table: table_name });
@@ -237,6 +243,12 @@ impl MetadataBuilder {
         match from {
             FromClause::Table { name, .. } => Some(name.clone()),
             FromClause::Subquery { alias, .. } => Some(alias.name.clone()),
+            FromClause::Series { alias, .. } => Some(
+                alias
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_else(|| "SERIES".to_string()),
+            ),
             FromClause::Join { left, .. } => Self::extract_table_from_clause(left),
         }
     }
@@ -652,6 +664,9 @@ impl MetadataBuilder {
             FromClause::Subquery { .. } => {
                 // Subqueries don't directly reference tables at this level
                 // The tables they use internally are handled when the subquery is analyzed
+            }
+            FromClause::Series { .. } => {
+                // SERIES doesn't reference any real tables, so no predicates needed
             }
             FromClause::Join { left, right, .. } => {
                 // Recursively extract tables from joins

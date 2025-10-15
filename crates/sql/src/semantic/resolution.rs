@@ -29,6 +29,11 @@ pub enum TableSource {
         source: SubquerySource,
         column_aliases: Vec<String>,
     },
+    /// SERIES(N) table-valued function
+    Series {
+        alias: Option<String>,
+        column_aliases: Vec<String>,
+    },
 }
 
 /// Handles all name resolution in the semantic analysis phase
@@ -66,8 +71,16 @@ impl NameResolver {
         if let Statement::Dml(dml) = statement {
             match dml {
                 DmlStatement::Select(select) => {
-                    for from_clause in &select.from {
-                        self.extract_from_sources(from_clause, &mut sources)?;
+                    if select.from.is_empty() {
+                        // SELECT without FROM defaults to SERIES(1)
+                        sources.push(TableSource::Series {
+                            alias: None,
+                            column_aliases: Vec::new(),
+                        });
+                    } else {
+                        for from_clause in &select.from {
+                            self.extract_from_sources(from_clause, &mut sources)?;
+                        }
                     }
                 }
                 DmlStatement::Insert { table, .. } => {
@@ -127,6 +140,16 @@ impl NameResolver {
                     alias: alias.name.clone(),
                     source: source.clone(),
                     column_aliases: alias.columns.clone(),
+                });
+            }
+            FromClause::Series { alias, .. } => {
+                // SERIES(N) generates a single column named "n" (lowercase)
+                sources.push(TableSource::Series {
+                    alias: alias.as_ref().map(|a| a.name.clone()),
+                    column_aliases: alias
+                        .as_ref()
+                        .map(|a| a.columns.clone())
+                        .unwrap_or_default(),
                 });
             }
             FromClause::Join { left, right, .. } => {
@@ -305,6 +328,52 @@ impl NameResolver {
                             }
                         }
                     }
+                }
+                TableSource::Series {
+                    alias,
+                    column_aliases,
+                } => {
+                    // SERIES(N) generates a single column named "N" of type I64
+                    // Validate column aliases count (should be 0 or 1)
+                    if !column_aliases.is_empty() && column_aliases.len() > 1 {
+                        return Err(Error::TooManyColumnAliases(
+                            alias.clone().unwrap_or_else(|| "SERIES".to_string()),
+                            1,
+                            column_aliases.len(),
+                        ));
+                    }
+
+                    // Use column alias if provided, otherwise use "n" (lowercase for case-insensitive matching)
+                    let column_name = if !column_aliases.is_empty() {
+                        column_aliases[0].clone()
+                    } else {
+                        "n".to_string()
+                    };
+
+                    // Track column name frequency
+                    *column_counts.entry(column_name.clone()).or_insert(0) += 1;
+
+                    let resolution = ColumnResolution {
+                        global_offset,
+                        table_name: alias.clone().unwrap_or_else(|| "SERIES".to_string()),
+                        data_type: DataType::I64,
+                        nullable: false,
+                        is_indexed: false,
+                    };
+
+                    // Add with alias if present
+                    if let Some(table_alias) = alias {
+                        resolution_map.add_resolution(
+                            Some(table_alias.clone()),
+                            column_name.clone(),
+                            resolution.clone(),
+                        );
+                    }
+
+                    // Also add without table qualifier for unambiguous lookups
+                    resolution_map.add_resolution(None, column_name, resolution);
+
+                    global_offset += 1;
                 }
             }
         }
