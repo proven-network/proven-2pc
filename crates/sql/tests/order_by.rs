@@ -364,7 +364,6 @@ fn test_order_by_with_duplicate_values() {
 }
 
 #[test]
-#[ignore = "ORDER BY column position not yet implemented"]
 fn test_order_by_column_position() {
     let mut ctx = setup_test();
 
@@ -387,7 +386,6 @@ fn test_order_by_column_position() {
 }
 
 #[test]
-#[ignore = "ORDER BY with CASE expression not yet implemented"]
 fn test_order_by_case_expression() {
     let mut ctx = setup_test();
 
@@ -414,15 +412,15 @@ fn test_order_by_case_expression() {
     assert_eq!(results.len(), 5);
     assert_eq!(
         results[0].get("status").unwrap(),
-        &Value::Str("\"failed\"".to_string())
+        &Value::Str("failed".to_string())
     );
     assert_eq!(
         results[1].get("status").unwrap(),
-        &Value::Str("\"pending\"".to_string())
+        &Value::Str("pending".to_string())
     );
     assert_eq!(
         results[2].get("status").unwrap(),
-        &Value::Str("\"pending\"".to_string())
+        &Value::Str("pending".to_string())
     );
 
     ctx.commit();

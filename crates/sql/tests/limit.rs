@@ -344,7 +344,6 @@ fn test_limit_with_expressions() {
 }
 
 #[test]
-#[ignore = "LIMIT with subqueries not yet implemented"]
 fn test_limit_in_subquery() {
     let mut ctx = setup_test();
     setup_limit_test_table(&mut ctx);

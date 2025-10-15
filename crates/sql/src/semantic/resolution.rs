@@ -34,12 +34,28 @@ pub enum TableSource {
 pub struct NameResolver {
     /// Available table schemas
     schemas: HashMap<String, Table>,
+    /// Optional outer query column map for correlated subqueries
+    outer_column_map: Option<ColumnResolutionMap>,
 }
 
 impl NameResolver {
     /// Create a new name resolver
     pub fn new(schemas: HashMap<String, Table>) -> Self {
-        Self { schemas }
+        Self {
+            schemas,
+            outer_column_map: None,
+        }
+    }
+
+    /// Create a name resolver with outer query context for correlated subqueries
+    pub fn with_outer_context(
+        schemas: HashMap<String, Table>,
+        outer_column_map: ColumnResolutionMap,
+    ) -> Self {
+        Self {
+            schemas,
+            outer_column_map: Some(outer_column_map),
+        }
     }
 
     /// Extract table sources from a statement
@@ -292,6 +308,23 @@ impl NameResolver {
             }
         }
 
+        // Add outer query columns if this is a correlated subquery
+        // Outer columns are appended after inner columns, so adjust their offsets
+        if let Some(outer_map) = &self.outer_column_map {
+            let inner_column_count = global_offset; // Number of columns in inner query
+            for ((table_qualifier, col_name), outer_resolution) in &outer_map.columns {
+                // Only add if not already present in inner query
+                // Outer columns are accessible but don't override inner columns
+                let key = (table_qualifier.clone(), col_name.clone());
+                resolution_map.columns.entry(key).or_insert_with(|| {
+                    // Adjust the global_offset to account for inner columns
+                    let mut adjusted_resolution = outer_resolution.clone();
+                    adjusted_resolution.global_offset += inner_column_count;
+                    adjusted_resolution
+                });
+            }
+        }
+
         // Mark ambiguous columns
         for (column_name, count) in column_counts {
             if count > 1 {
@@ -365,7 +398,7 @@ impl NameResolver {
                             Expression::Column(_table, col) => col.clone(),
                             _ => {
                                 // For expressions without alias, generate a name
-                                format!("?column?")
+                                "?column?".to_string()
                             }
                         }
                     };

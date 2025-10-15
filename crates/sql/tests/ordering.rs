@@ -96,7 +96,6 @@ fn test_literal_comparisons() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries not yet implemented - ColumnNotFound error on o1.id reference"]
 fn test_subquery_comparisons() {
     let mut ctx = setup_operator_table();
 

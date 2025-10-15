@@ -203,7 +203,6 @@ fn test_select_from_empty_table() {
 }
 
 #[test]
-#[ignore = "Subqueries in FROM clause not yet supported"]
 fn test_select_from_subquery_empty() {
     let mut ctx = setup_test();
 

@@ -101,7 +101,6 @@ fn test_is_null_with_additional_condition() {
 }
 
 #[test]
-#[ignore = "SUBSTR function not yet implemented"]
 fn test_function_result_is_null() {
     let mut ctx = setup_test();
 

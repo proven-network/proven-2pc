@@ -303,7 +303,6 @@ fn test_select_boolean_expressions() {
 }
 
 #[test]
-#[ignore = "CASE expressions not yet implemented"]
 fn test_select_case_expression() {
     let mut ctx = setup_test();
     setup_project_test_tables(&mut ctx);
@@ -336,7 +335,6 @@ fn test_select_case_expression() {
 }
 
 #[test]
-#[ignore = "Subqueries in SELECT not yet implemented"]
 fn test_select_with_subquery() {
     let mut ctx = setup_test();
     setup_project_test_tables(&mut ctx);
@@ -348,15 +346,14 @@ fn test_select_with_subquery() {
          FROM ProjectUser ORDER BY id",
     );
     assert_eq!(results.len(), 3);
-    assert_eq!(results[0].get("item_count").unwrap(), &Value::I32(2)); // Alice has 2 items
-    assert_eq!(results[1].get("item_count").unwrap(), &Value::I32(2)); // Bob has 2 items
-    assert_eq!(results[2].get("item_count").unwrap(), &Value::I32(1)); // Charlie has 1 item
+    assert_eq!(results[0].get("item_count").unwrap(), &Value::I64(2)); // Alice has 2 items
+    assert_eq!(results[1].get("item_count").unwrap(), &Value::I64(2)); // Bob has 2 items
+    assert_eq!(results[2].get("item_count").unwrap(), &Value::I64(1)); // Charlie has 1 item
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "String concatenation not yet implemented"]
 fn test_select_string_concatenation() {
     let mut ctx = setup_test();
     setup_project_test_tables(&mut ctx);

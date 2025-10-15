@@ -56,14 +56,37 @@ pub struct JoinHint {
     pub selectivity_estimate: f64,
 }
 
+/// Context from outer query for correlated subqueries
+#[derive(Debug, Clone)]
+pub struct OuterQueryContext {
+    /// Column resolution map from the outer query
+    pub column_map: super::statement::ColumnResolutionMap,
+}
+
 /// Phase-based analyzer with explicit data flow
 pub struct SemanticAnalyzer {
     schemas: HashMap<String, Table>,
+    /// Optional outer query context for correlated subqueries
+    outer_context: Option<Box<OuterQueryContext>>,
 }
 
 impl SemanticAnalyzer {
     pub fn new(schemas: HashMap<String, Table>) -> Self {
-        Self { schemas }
+        Self {
+            schemas,
+            outer_context: None,
+        }
+    }
+
+    /// Create a new analyzer with outer query context for correlated subqueries
+    pub fn with_outer_context(
+        schemas: HashMap<String, Table>,
+        outer_context: OuterQueryContext,
+    ) -> Self {
+        Self {
+            schemas,
+            outer_context: Some(Box::new(outer_context)),
+        }
     }
 
     /// Update the schemas used by the analyzer
@@ -97,7 +120,14 @@ impl SemanticAnalyzer {
 
     /// Phase 1: Name Resolution
     fn resolve_names(&self, ast: &Arc<Statement>) -> Result<ResolutionOutput> {
-        let resolver = super::resolution::NameResolver::new(self.schemas.clone());
+        let resolver = if let Some(outer) = &self.outer_context {
+            super::resolution::NameResolver::with_outer_context(
+                self.schemas.clone(),
+                outer.column_map.clone(),
+            )
+        } else {
+            super::resolution::NameResolver::new(self.schemas.clone())
+        };
 
         // Build table sources list from FROM clauses
         let table_sources = resolver.extract_table_sources(ast)?;

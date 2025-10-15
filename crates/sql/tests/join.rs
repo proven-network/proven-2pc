@@ -299,7 +299,6 @@ fn test_left_join_with_subquery_limit_offset() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries not yet supported"]
 fn test_left_join_with_correlated_subquery_no_results() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
@@ -315,7 +314,6 @@ fn test_left_join_with_correlated_subquery_no_results() {
 }
 
 #[test]
-#[ignore = "Complex correlated subqueries not yet supported"]
 fn test_left_join_with_complex_correlated_subquery() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
@@ -337,7 +335,6 @@ fn test_left_join_with_complex_correlated_subquery() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries not yet supported"]
 fn test_left_join_with_in_subquery() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);

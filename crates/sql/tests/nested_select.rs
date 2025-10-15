@@ -102,7 +102,6 @@ fn test_where_in_with_subquery_from_request() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries not yet implemented"]
 fn test_where_in_with_correlated_subquery() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);
@@ -120,7 +119,6 @@ fn test_where_in_with_correlated_subquery() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries not yet implemented"]
 fn test_where_in_with_nested_correlated_subquery() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);
@@ -213,7 +211,6 @@ fn test_select_subquery_with_series_nonexistent() {
 
 // Additional test cases for EXISTS, ANY, ALL operators when implemented
 #[test]
-#[ignore = "Correlated subqueries not yet implemented"]
 fn test_where_exists_subquery() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);
@@ -230,7 +227,6 @@ fn test_where_exists_subquery() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries not yet implemented"]
 fn test_where_not_exists_subquery() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);
@@ -247,7 +243,6 @@ fn test_where_not_exists_subquery() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries in SELECT clause not yet implemented"]
 fn test_select_with_scalar_subquery() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);

@@ -13,7 +13,7 @@ use crate::parsing::ast::{
     Statement,
 };
 use crate::semantic::AnalyzedStatement;
-use crate::semantic::analyzer::SemanticAnalyzer;
+use crate::semantic::analyzer::{OuterQueryContext, SemanticAnalyzer};
 use crate::types::DataType;
 use crate::types::expression::Expression;
 use crate::types::index::IndexMetadata;
@@ -1564,8 +1564,12 @@ impl<'a> AnalyzedPlanContext<'a> {
                 // Plan the subquery and store it in the expression
                 let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
 
-                // Create a minimal analyzed statement for the subquery
-                let analyzer = SemanticAnalyzer::new(self.schemas.clone());
+                // Create analyzer with outer context for correlated subqueries
+                let outer_context = OuterQueryContext {
+                    column_map: self.analyzed.column_resolution_map.clone(),
+                };
+                let analyzer =
+                    SemanticAnalyzer::with_outer_context(self.schemas.clone(), outer_context);
                 let subquery_stmt =
                     Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
                 let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;
@@ -1814,8 +1818,12 @@ impl<'a> AnalyzedPlanContext<'a> {
                     // Plan the subquery
                     let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
 
-                    // Create a minimal analyzed statement for the subquery
-                    let analyzer = SemanticAnalyzer::new(self.schemas.clone());
+                    // Create analyzer with outer context for correlated subqueries
+                    let outer_context = OuterQueryContext {
+                        column_map: self.analyzed.column_resolution_map.clone(),
+                    };
+                    let analyzer =
+                        SemanticAnalyzer::with_outer_context(self.schemas.clone(), outer_context);
                     let subquery_stmt =
                         Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
                     let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;
@@ -1839,8 +1847,12 @@ impl<'a> AnalyzedPlanContext<'a> {
                     // Plan the subquery
                     let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
 
-                    // Create a minimal analyzed statement for the subquery
-                    let analyzer = SemanticAnalyzer::new(self.schemas.clone());
+                    // Create analyzer with outer context for correlated subqueries
+                    let outer_context = OuterQueryContext {
+                        column_map: self.analyzed.column_resolution_map.clone(),
+                    };
+                    let analyzer =
+                        SemanticAnalyzer::with_outer_context(self.schemas.clone(), outer_context);
                     let subquery_stmt =
                         Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
                     let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;

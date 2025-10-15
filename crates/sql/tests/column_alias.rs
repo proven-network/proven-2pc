@@ -135,7 +135,6 @@ fn test_table_alias_too_many_column_aliases_error() {
     ctx.abort();
 }
 
-#[ignore = "requires SELECT subquery column extraction"]
 #[test]
 fn test_inline_view_with_column_aliases() {
     let mut ctx = setup_test();
@@ -155,7 +154,6 @@ fn test_inline_view_with_column_aliases() {
     ctx.commit();
 }
 
-#[ignore = "requires SELECT subquery column extraction"]
 #[test]
 fn test_inline_view_select_aliased_columns() {
     let mut ctx = setup_test();
@@ -175,7 +173,6 @@ fn test_inline_view_select_aliased_columns() {
     ctx.commit();
 }
 
-#[ignore = "requires SELECT subquery column extraction"]
 #[test]
 fn test_inline_view_partial_column_aliases() {
     let mut ctx = setup_test();
@@ -195,7 +192,6 @@ fn test_inline_view_partial_column_aliases() {
     ctx.commit();
 }
 
-#[ignore = "requires SELECT subquery column extraction"]
 #[test]
 fn test_inline_view_too_many_column_aliases_error() {
     let mut ctx = setup_test();

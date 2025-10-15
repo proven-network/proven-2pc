@@ -61,7 +61,6 @@ fn test_update_with_where_clause() {
 }
 
 #[test]
-#[ignore = "SUBSTR function not yet implemented"]
 fn test_update_with_function_in_set() {
     let mut ctx = setup_test();
     setup_test_tables(&mut ctx);
@@ -73,14 +72,13 @@ fn test_update_with_function_in_set() {
     ctx.assert_query_value(
         "SELECT name FROM TableA WHERE num = 9",
         "name",
-        Value::Str("\"John\"".to_string()),
+        Value::Str("John".to_string()),
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "Subqueries in UPDATE SET clause not yet implemented"]
 fn test_update_with_subquery_in_set() {
     let mut ctx = setup_test();
     setup_test_tables(&mut ctx);
@@ -101,7 +99,6 @@ fn test_update_with_subquery_in_set() {
 }
 
 #[test]
-#[ignore = "Correlated subqueries not yet implemented"]
 fn test_update_with_correlated_subquery() {
     let mut ctx = setup_test();
     setup_test_tables(&mut ctx);
@@ -122,7 +119,6 @@ fn test_update_with_correlated_subquery() {
 }
 
 #[test]
-#[ignore = "Complex subqueries not yet implemented"]
 fn test_update_with_complex_where_subquery() {
     let mut ctx = setup_test();
     setup_test_tables(&mut ctx);
@@ -141,7 +137,6 @@ fn test_update_with_complex_where_subquery() {
 }
 
 #[test]
-#[ignore = "JOIN in UPDATE not supported"]
 fn test_update_join_not_supported_error() {
     let mut ctx = setup_test();
 
@@ -159,7 +154,6 @@ fn test_update_join_not_supported_error() {
 }
 
 #[test]
-#[ignore = "Subquery as table factor not supported"]
 fn test_update_subquery_table_factor_error() {
     let mut ctx = setup_test();
 
@@ -172,7 +166,6 @@ fn test_update_subquery_table_factor_error() {
 }
 
 #[test]
-#[ignore = "Compound identifiers in SET clause not yet validated"]
 fn test_update_compound_identifier_error() {
     let mut ctx = setup_test();
 

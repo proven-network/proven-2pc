@@ -348,7 +348,6 @@ fn test_where_all_rows() {
     ctx.commit();
 }
 
-#[ignore = "EXISTS not yet implemented"]
 #[test]
 fn test_exists_clause() {
     let mut ctx = setup_test();

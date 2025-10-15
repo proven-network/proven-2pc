@@ -24,9 +24,22 @@ pub fn evaluate(
 }
 
 /// Evaluate an expression with optional storage access (for subqueries)
+/// and optional outer row (for correlated subqueries)
 pub fn evaluate_with_storage(
     expr: &Expression,
     row: Option<&Row>,
+    context: &ExecutionContext,
+    params: Option<&Vec<Value>>,
+    storage: Option<&SqlStorage>,
+) -> Result<Value> {
+    evaluate_with_storage_and_outer(expr, row, None, context, params, storage)
+}
+
+/// Evaluate an expression with storage, params, and outer row context
+fn evaluate_with_storage_and_outer(
+    expr: &Expression,
+    row: Option<&Row>,
+    outer_row: Option<&Row>,
     context: &ExecutionContext,
     params: Option<&Vec<Value>>,
     storage: Option<&SqlStorage>,
@@ -36,10 +49,26 @@ pub fn evaluate_with_storage(
         Constant(value) => value.clone(),
         All => Value::integer(1), // Placeholder - should be handled at higher level
 
-        Column(i) => row
-            .and_then(|row| row.get(*i))
-            .cloned()
-            .ok_or_else(|| Error::InvalidValue(format!("Column {} not found", i)))?,
+        Column(i) => {
+            // For correlated subqueries, we may have an outer_row
+            // Create a combined row: [current_row values... | outer_row values...]
+            // Inner query columns come first, then outer query columns
+            if let Some(outer) = outer_row {
+                let combined_row: Row = if let Some(inner) = row {
+                    inner.iter().chain(outer.iter()).cloned().collect()
+                } else {
+                    outer.clone()
+                };
+                combined_row
+                    .get(*i)
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidValue(format!("Column {} not found", i)))?
+            } else {
+                row.and_then(|row| row.get(*i))
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidValue(format!("Column {} not found", i)))?
+            }
+        }
 
         Parameter(idx) => params.and_then(|p| p.get(*idx)).cloned().ok_or_else(|| {
             Error::ExecutionError(format!("unbound parameter at position {}", idx))
@@ -47,129 +76,138 @@ pub fn evaluate_with_storage(
 
         // Logical operations
         And(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_and(&l, &r)?
         }
         Or(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_or(&l, &r)?
         }
         Xor(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_xor(&l, &r)?
         }
         Not(expr) => {
-            let v = evaluate_with_storage(expr, row, context, params, storage)?;
+            let v =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             operators::execute_not(&v)?
         }
 
         // Comparison operations
         Equal(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_equal(&l, &r)?
         }
 
         NotEqual(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_not_equal(&l, &r)?
         }
 
         LessThan(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_less_than(&l, &r)?
         }
 
         LessThanOrEqual(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_less_than_equal(&l, &r)?
         }
 
         GreaterThan(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_greater_than(&l, &r)?
         }
 
         GreaterThanOrEqual(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_greater_than_equal(&l, &r)?
         }
 
         Is(expr, check_value) => {
-            let v = evaluate_with_storage(expr, row, context, params, storage)?;
+            let v =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             Value::boolean(v == *check_value)
         }
 
         // Arithmetic operations
         Add(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_add(&l, &r)?
         }
         Concat(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_concat(&l, &r)?
         }
         Subtract(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_subtract(&l, &r)?
         }
         Multiply(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_multiply(&l, &r)?
         }
         Divide(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_divide(&l, &r)?
         }
         Remainder(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_remainder(&l, &r)?
         }
 
         Negate(expr) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             operators::execute_negate(&value)?
         }
 
         Identity(expr) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             operators::execute_identity(&value)?
         }
 
         Factorial(expr) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             operators::execute_factorial(&value)?
         }
 
         Exponentiate(lhs, rhs) => {
-            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
-            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
             operators::execute_exponentiate(&l, &r)?
         }
 
         ILike(expr, pattern) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
-            let pattern_value = evaluate_with_storage(pattern, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
+            let pattern_value =
+                evaluate_with_storage_and_outer(pattern, row, outer_row, context, params, storage)?;
             operators::execute_ilike(&value, &pattern_value)?
         }
 
         Like(expr, pattern) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
-            let pattern_value = evaluate_with_storage(pattern, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
+            let pattern_value =
+                evaluate_with_storage_and_outer(pattern, row, outer_row, context, params, storage)?;
             operators::execute_like(&value, &pattern_value)?
         }
 
@@ -177,14 +215,17 @@ pub fn evaluate_with_storage(
         Function(name, args) => {
             let arg_values: Result<Vec<_>> = args
                 .iter()
-                .map(|arg| evaluate_with_storage(arg, row, context, params, storage))
+                .map(|arg| {
+                    evaluate_with_storage_and_outer(arg, row, outer_row, context, params, storage)
+                })
                 .collect();
             crate::functions::execute_function(name, &arg_values?, context)?
         }
 
         // IN list operator
         InList(expr, list, negated) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
 
             if value == Value::Null {
                 return Ok(Value::Null);
@@ -194,7 +235,9 @@ pub fn evaluate_with_storage(
             let mut has_null = false;
 
             for item in list {
-                let item_value = evaluate_with_storage(item, row, context, params, storage)?;
+                let item_value = evaluate_with_storage_and_outer(
+                    item, row, outer_row, context, params, storage,
+                )?;
                 if item_value == Value::Null {
                     has_null = true;
                 } else if let Ok(std::cmp::Ordering::Equal) =
@@ -217,9 +260,12 @@ pub fn evaluate_with_storage(
 
         // BETWEEN operator
         Between(expr, low, high, negated) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
-            let low_value = evaluate_with_storage(low, row, context, params, storage)?;
-            let high_value = evaluate_with_storage(high, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
+            let low_value =
+                evaluate_with_storage_and_outer(low, row, outer_row, context, params, storage)?;
+            let high_value =
+                evaluate_with_storage_and_outer(high, row, outer_row, context, params, storage)?;
 
             if value == Value::Null || low_value == Value::Null || high_value == Value::Null {
                 return Ok(Value::Null);
@@ -242,8 +288,10 @@ pub fn evaluate_with_storage(
 
         // Collection access expressions
         ArrayAccess(base, index) => {
-            let collection = evaluate_with_storage(base, row, context, params, storage)?;
-            let idx = evaluate_with_storage(index, row, context, params, storage)?;
+            let collection =
+                evaluate_with_storage_and_outer(base, row, outer_row, context, params, storage)?;
+            let idx =
+                evaluate_with_storage_and_outer(index, row, outer_row, context, params, storage)?;
 
             match (collection, idx) {
                 (Value::Array(arr), Value::I32(i)) if i >= 0 => {
@@ -264,7 +312,8 @@ pub fn evaluate_with_storage(
         }
 
         FieldAccess(base, field) => {
-            let struct_val = evaluate_with_storage(base, row, context, params, storage)?;
+            let struct_val =
+                evaluate_with_storage_and_outer(base, row, outer_row, context, params, storage)?;
             match struct_val {
                 Value::Struct(fields) => fields
                     .iter()
@@ -278,7 +327,9 @@ pub fn evaluate_with_storage(
         ArrayLiteral(elements) => {
             let values: Result<Vec<_>> = elements
                 .iter()
-                .map(|e| evaluate_with_storage(e, row, context, params, storage))
+                .map(|e| {
+                    evaluate_with_storage_and_outer(e, row, outer_row, context, params, storage)
+                })
                 .collect();
             Value::Array(values?)
         }
@@ -286,8 +337,10 @@ pub fn evaluate_with_storage(
         MapLiteral(pairs) => {
             let mut map = std::collections::HashMap::new();
             for (k, v) in pairs {
-                let key = evaluate_with_storage(k, row, context, params, storage)?;
-                let value = evaluate_with_storage(v, row, context, params, storage)?;
+                let key =
+                    evaluate_with_storage_and_outer(k, row, outer_row, context, params, storage)?;
+                let value =
+                    evaluate_with_storage_and_outer(v, row, outer_row, context, params, storage)?;
                 if let Value::Str(key_str) = key {
                     map.insert(key_str, value);
                 }
@@ -297,7 +350,8 @@ pub fn evaluate_with_storage(
 
         // Subquery operators
         InSubquery(expr, plan, negated) => {
-            let value = evaluate_with_storage(expr, row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
 
             if value == Value::Null {
                 return Ok(Value::Null);
@@ -320,8 +374,15 @@ pub fn evaluate_with_storage(
                     ));
                 }
             };
-            let mut rows =
-                super::executor::execute_node_read(node, storage, &mut subquery_ctx, params)?;
+            // For correlated subqueries, pass the current row as the outer row
+            let outer_row_arc = row.map(|r| Arc::new(r.clone()));
+            let mut rows = super::executor::execute_node_read_with_outer(
+                node,
+                storage,
+                &mut subquery_ctx,
+                params,
+                outer_row_arc.as_ref(),
+            )?;
 
             // Check if value is in the result set
             let mut found = false;
@@ -369,8 +430,15 @@ pub fn evaluate_with_storage(
                     ));
                 }
             };
-            let mut rows =
-                super::executor::execute_node_read(node, storage, &mut subquery_ctx, params)?;
+            // For correlated subqueries, pass the current row as the outer row
+            let outer_row_arc = row.map(|r| Arc::new(r.clone()));
+            let mut rows = super::executor::execute_node_read_with_outer(
+                node,
+                storage,
+                &mut subquery_ctx,
+                params,
+                outer_row_arc.as_ref(),
+            )?;
 
             // Check if any rows exist
             let exists = rows.next().is_some();
@@ -400,8 +468,15 @@ pub fn evaluate_with_storage(
                     ));
                 }
             };
-            let mut rows =
-                super::executor::execute_node_read(node, storage, &mut subquery_ctx, params)?;
+            // For correlated subqueries, pass the current row as the outer row
+            let outer_row_arc = row.map(|r| Arc::new(r.clone()));
+            let mut rows = super::executor::execute_node_read_with_outer(
+                node,
+                storage,
+                &mut subquery_ctx,
+                params,
+                outer_row_arc.as_ref(),
+            )?;
 
             // Get the first row
             match rows.next() {
@@ -426,14 +501,16 @@ pub fn evaluate_with_storage(
         } => {
             // Evaluate operand once if present
             let operand_value = if let Some(op) = operand {
-                evaluate_with_storage(op, row, context, params, storage)?
+                evaluate_with_storage_and_outer(op, row, outer_row, context, params, storage)?
             } else {
                 Value::boolean(true)
             };
 
             // Iterate through when/then clauses
             for (when_expr, then_expr) in when_clauses {
-                let when_value = evaluate_with_storage(when_expr, row, context, params, storage)?;
+                let when_value = evaluate_with_storage_and_outer(
+                    when_expr, row, outer_row, context, params, storage,
+                )?;
 
                 // For simple CASE (operand present), compare operand == when_value
                 // For searched CASE (no operand), check if when_value is true
@@ -446,13 +523,17 @@ pub fn evaluate_with_storage(
                 };
 
                 if matches {
-                    return evaluate_with_storage(then_expr, row, context, params, storage);
+                    return evaluate_with_storage_and_outer(
+                        then_expr, row, outer_row, context, params, storage,
+                    );
                 }
             }
 
             // No match found, evaluate else clause or return NULL
             if let Some(else_expr) = else_clause {
-                evaluate_with_storage(else_expr, row, context, params, storage)?
+                evaluate_with_storage_and_outer(
+                    else_expr, row, outer_row, context, params, storage,
+                )?
             } else {
                 Value::Null
             }
@@ -469,4 +550,23 @@ pub fn evaluate_with_arc_and_storage(
     storage: Option<&SqlStorage>,
 ) -> Result<Value> {
     evaluate_with_storage(expr, row.map(|r| r.as_ref()), context, params, storage)
+}
+
+/// Evaluate with Arc row, storage, and outer row (for correlated subqueries)
+pub fn evaluate_with_arc_storage_and_outer(
+    expr: &Expression,
+    row: Option<&Arc<Vec<Value>>>,
+    outer_row: Option<&Arc<Vec<Value>>>,
+    context: &ExecutionContext,
+    params: Option<&Vec<Value>>,
+    storage: Option<&SqlStorage>,
+) -> Result<Value> {
+    evaluate_with_storage_and_outer(
+        expr,
+        row.map(|r| r.as_ref()),
+        outer_row.map(|r| r.as_ref()),
+        context,
+        params,
+        storage,
+    )
 }

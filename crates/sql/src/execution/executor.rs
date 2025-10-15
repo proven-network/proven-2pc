@@ -265,6 +265,17 @@ pub fn execute_node_read<'a>(
     tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
 ) -> Result<Rows<'a>> {
+    execute_node_read_with_outer(node, storage, tx_ctx, params, None)
+}
+
+/// Execute a plan node for reading with optional outer row (for correlated subqueries)
+pub fn execute_node_read_with_outer<'a>(
+    node: Node,
+    storage: &'a SqlStorage,
+    tx_ctx: &mut ExecutionContext,
+    params: Option<&Vec<Value>>,
+    outer_row: Option<&'a Arc<Vec<Value>>>,
+) -> Result<Rows<'a>> {
     match node {
         Node::Scan { table, .. } => {
             // True streaming with immutable storage!
@@ -542,17 +553,20 @@ pub fn execute_node_read<'a>(
         }
 
         Node::Filter { source, predicate } => {
-            let source_rows = execute_node_read(*source, storage, tx_ctx, params)?;
+            let source_rows =
+                execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
 
-            // Clone transaction context and params for use in closure
+            // Clone transaction context, params, and outer_row for use in closure
             let tx_ctx_clone = tx_ctx.clone();
             let params_clone = params.cloned();
+            let outer_row_clone = outer_row.cloned();
 
             let filtered = source_rows.filter_map(move |row| match row {
                 Ok(row) => {
-                    match expression::evaluate_with_arc_and_storage(
+                    match expression::evaluate_with_arc_storage_and_outer(
                         &predicate,
                         Some(&row),
+                        outer_row_clone.as_ref(),
                         &tx_ctx_clone,
                         params_clone.as_ref(),
                         Some(storage),
@@ -595,7 +609,8 @@ pub fn execute_node_read<'a>(
             expressions,
             ..
         } => {
-            let source_rows = execute_node_read(*source, storage, tx_ctx, params)?;
+            let source_rows =
+                execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
 
             // Clone transaction context and params for use in closure
             let tx_ctx_clone = tx_ctx.clone();
@@ -623,12 +638,12 @@ pub fn execute_node_read<'a>(
 
         // Limit and Offset are trivial with iterators
         Node::Limit { source, limit } => {
-            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
+            let rows = execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
             Ok(Box::new(rows.take(limit)))
         }
 
         Node::Offset { source, offset } => {
-            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
+            let rows = execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
             Ok(Box::new(rows.skip(offset)))
         }
 
@@ -642,7 +657,7 @@ pub fn execute_node_read<'a>(
             let mut aggregator = Aggregator::new(group_by, aggregates);
 
             // Process all source rows
-            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
+            let rows = execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
             for row in rows {
                 let row = row?;
                 // Use the transaction context for the aggregator
@@ -672,8 +687,10 @@ pub fn execute_node_read<'a>(
             let right_columns = right.column_count(&schemas);
 
             // Both can borrow storage immutably!
-            let left_rows = execute_node_read(*left, storage, tx_ctx, params)?;
-            let right_rows = execute_node_read(*right, storage, tx_ctx, params)?;
+            let left_rows =
+                execute_node_read_with_outer(*left, storage, tx_ctx, params, outer_row)?;
+            let right_rows =
+                execute_node_read_with_outer(*right, storage, tx_ctx, params, outer_row)?;
 
             join::execute_hash_join(
                 left_rows,
@@ -702,8 +719,10 @@ pub fn execute_node_read<'a>(
             let left_columns = left.column_count(&schemas);
             let right_columns = right.column_count(&schemas);
 
-            let left_rows = execute_node_read(*left, storage, tx_ctx, params)?;
-            let right_rows = execute_node_read(*right, storage, tx_ctx, params)?;
+            let left_rows =
+                execute_node_read_with_outer(*left, storage, tx_ctx, params, outer_row)?;
+            let right_rows =
+                execute_node_read_with_outer(*right, storage, tx_ctx, params, outer_row)?;
 
             // Use the standalone function for nested loop join
             join::execute_nested_loop_join(
@@ -719,7 +738,7 @@ pub fn execute_node_read<'a>(
 
         // Order By requires full materialization to sort
         Node::Order { source, order_by } => {
-            let rows = execute_node_read(*source, storage, tx_ctx, params)?;
+            let rows = execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
 
             // Must materialize to sort
             let mut collected: Vec<_> = rows.collect::<Result<Vec<_>>>()?;
