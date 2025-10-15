@@ -507,6 +507,66 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 )
             }
 
+            // TRIM expression: TRIM([[LEADING | TRAILING | BOTH] [removal_chars] FROM] source)
+            Token::Keyword(Keyword::Trim) => {
+                self.expect(Token::OpenParen)?;
+
+                // Check for optional trim specification (LEADING, TRAILING, BOTH)
+                let trim_spec = match self.peek()? {
+                    Some(Token::Keyword(Keyword::Leading)) => {
+                        self.next()?;
+                        Some("LEADING")
+                    }
+                    Some(Token::Keyword(Keyword::Trailing)) => {
+                        self.next()?;
+                        Some("TRAILING")
+                    }
+                    Some(Token::Keyword(Keyword::Both)) => {
+                        self.next()?;
+                        Some("BOTH")
+                    }
+                    _ => None,
+                };
+
+                // Now we need to determine if there's a removal_chars expression and a FROM clause
+                // We parse the next expression, then check if FROM follows
+                let first_expr = <Self as ExpressionParser>::parse_expression(self)?;
+
+                // Check if FROM keyword follows
+                if self.next_is(Token::Keyword(Keyword::From)) {
+                    // The first_expr was the removal_chars, now parse the source
+                    let source = <Self as ExpressionParser>::parse_expression(self)?;
+                    self.expect(Token::CloseParen)?;
+
+                    // Build arguments: [trim_spec, removal_chars, source]
+                    let mut args = Vec::new();
+                    if let Some(spec) = trim_spec {
+                        args.push(Expression::Literal(Literal::String(spec.to_string())));
+                    } else {
+                        // Default to BOTH if no spec given
+                        args.push(Expression::Literal(Literal::String("BOTH".to_string())));
+                    }
+                    args.push(first_expr);
+                    args.push(source);
+
+                    Expression::Function("TRIM".to_string(), args)
+                } else {
+                    // No FROM, so first_expr is the source to trim
+                    self.expect(Token::CloseParen)?;
+
+                    // Build arguments based on whether we have a trim_spec
+                    let mut args = Vec::new();
+                    if let Some(spec) = trim_spec {
+                        // TRIM(LEADING expr) or TRIM(TRAILING expr) or TRIM(BOTH expr)
+                        // This means trim whitespace with the given spec
+                        args.push(Expression::Literal(Literal::String(spec.to_string())));
+                    }
+                    args.push(first_expr);
+
+                    Expression::Function("TRIM".to_string(), args)
+                }
+            }
+
             // Function call.
             Token::Ident(name) if self.next_is(Token::OpenParen) => {
                 let mut args = Vec::new();

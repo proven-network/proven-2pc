@@ -75,6 +75,7 @@ mod reverse;
 mod skip;
 mod slice;
 mod sort;
+mod splice;
 mod take;
 mod unwrap;
 mod values;
@@ -175,6 +176,7 @@ impl FunctionRegistry {
         dedup::register(&mut registry);
         distinct::register(&mut registry);
         slice::register(&mut registry);
+        splice::register(&mut registry);
         take::register(&mut registry);
         skip::register(&mut registry);
         find_idx::register(&mut registry);
