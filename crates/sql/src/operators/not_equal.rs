@@ -56,6 +56,9 @@ impl BinaryOperator for NotEqualOperator {
             // UUID can be compared with strings (parsed at runtime)
             (Uuid, Str) | (Str, Uuid) => Ok(Bool),
 
+            // INET can be compared with strings (parsed at runtime)
+            (Inet, Str) | (Str, Inet) => Ok(Bool),
+
             _ => Err(Error::TypeMismatch {
                 expected: format!("{:?}", left),
                 found: format!("{:?}", right),

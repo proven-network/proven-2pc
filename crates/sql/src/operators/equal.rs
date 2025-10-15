@@ -56,6 +56,9 @@ impl BinaryOperator for EqualOperator {
             // UUID can be compared with strings (parsed at runtime)
             (Uuid, Str) | (Str, Uuid) => Ok(Bool),
 
+            // INET can be compared with strings (parsed at runtime)
+            (Inet, Str) | (Str, Inet) => Ok(Bool),
+
             _ => Err(Error::TypeMismatch {
                 expected: format!("{:?}", left),
                 found: format!("{:?}", right),
@@ -180,6 +183,20 @@ impl BinaryOperator for EqualOperator {
                         (left.clone(), Uuid(parsed_uuid))
                     } else {
                         (Uuid(parsed_uuid), right.clone())
+                    }
+                } else {
+                    // If parsing fails, comparison will return false
+                    (left.clone(), right.clone())
+                }
+            }
+
+            // INET comparison with string - parse the string as IP address
+            (Inet(_), Str(s)) | (Str(s), Inet(_)) => {
+                if let Ok(parsed_ip) = s.parse::<std::net::IpAddr>() {
+                    if matches!(left, Inet(_)) {
+                        (left.clone(), Inet(parsed_ip))
+                    } else {
+                        (Inet(parsed_ip), right.clone())
                     }
                 } else {
                     // If parsing fails, comparison will return false

@@ -429,6 +429,19 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         // Bytea
         (Bytea(a), Bytea(b)) => a.cmp(b),
 
+        // INET vs String comparisons - parse string at runtime
+        (Inet(inet), Str(s)) | (Str(s), Inet(inet)) => {
+            use std::net::IpAddr;
+            let parsed = s
+                .parse::<IpAddr>()
+                .map_err(|_| Error::InvalidValue(format!("Cannot parse '{}' as IP address", s)))?;
+            if matches!(left, Inet(_)) {
+                inet.cmp(&parsed)
+            } else {
+                parsed.cmp(inet)
+            }
+        }
+
         // Inet
         (Inet(a), Inet(b)) => a.cmp(b),
 

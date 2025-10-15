@@ -69,10 +69,26 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
         ) => true,
         (DataType::F32, DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8) => true,
 
-        // String to date/time types (parsing)
-        (DataType::Str, DataType::Date | DataType::Time | DataType::Timestamp | DataType::Uuid) => {
-            true
-        }
+        // String to date/time/uuid/inet types (parsing)
+        (
+            DataType::Str,
+            DataType::Date | DataType::Time | DataType::Timestamp | DataType::Uuid | DataType::Inet,
+        ) => true,
+
+        // Integer to INET (convert integers to IPv4/IPv6)
+        (
+            DataType::I8
+            | DataType::I16
+            | DataType::I32
+            | DataType::I64
+            | DataType::I128
+            | DataType::U8
+            | DataType::U16
+            | DataType::U32
+            | DataType::U64
+            | DataType::U128,
+            DataType::Inet,
+        ) => true,
 
         // String to collections (JSON parsing)
         (

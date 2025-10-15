@@ -412,6 +412,112 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
         }
         (Value::Uuid(_), DataType::Uuid) => Ok(value),
 
+        // INET coercions
+        (Value::Str(s), DataType::Inet) => {
+            use std::net::IpAddr;
+            // Try to parse the IP address string
+            s.parse::<IpAddr>()
+                .map(Value::Inet)
+                .map_err(|_| Error::InvalidValue(format!("Failed to parse IP address: {}", s)))
+        }
+
+        // Integer to INET conversions
+        (Value::I8(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr};
+            if *v >= 0 {
+                Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v as u32))))
+            } else {
+                Err(Error::InvalidValue(format!(
+                    "Cannot convert negative value {} to INET",
+                    v
+                )))
+            }
+        }
+        (Value::I16(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr};
+            if *v >= 0 {
+                Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v as u32))))
+            } else {
+                Err(Error::InvalidValue(format!(
+                    "Cannot convert negative value {} to INET",
+                    v
+                )))
+            }
+        }
+        (Value::I32(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr};
+            if *v >= 0 {
+                Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v as u32))))
+            } else {
+                Err(Error::InvalidValue(format!(
+                    "Cannot convert negative value {} to INET",
+                    v
+                )))
+            }
+        }
+        (Value::I64(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+            // Convert integer to IP address
+            // For values in u32 range, convert to IPv4
+            // For larger values, convert to IPv6
+            if *v >= 0 && *v <= u32::MAX as i64 {
+                let ipv4 = Ipv4Addr::from(*v as u32);
+                Ok(Value::Inet(IpAddr::V4(ipv4)))
+            } else if *v >= 0 {
+                let ipv6 = Ipv6Addr::from(*v as u128);
+                Ok(Value::Inet(IpAddr::V6(ipv6)))
+            } else {
+                Err(Error::InvalidValue(format!(
+                    "Cannot convert negative value {} to INET",
+                    v
+                )))
+            }
+        }
+        (Value::I128(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+            if *v >= 0 && *v <= u32::MAX as i128 {
+                let ipv4 = Ipv4Addr::from(*v as u32);
+                Ok(Value::Inet(IpAddr::V4(ipv4)))
+            } else if *v >= 0 {
+                let ipv6 = Ipv6Addr::from(*v as u128);
+                Ok(Value::Inet(IpAddr::V6(ipv6)))
+            } else {
+                Err(Error::InvalidValue(format!(
+                    "Cannot convert negative value {} to INET",
+                    v
+                )))
+            }
+        }
+        (Value::U8(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr};
+            Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v as u32))))
+        }
+        (Value::U16(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr};
+            Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v as u32))))
+        }
+        (Value::U32(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr};
+            Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v))))
+        }
+        (Value::U64(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+            if *v <= u32::MAX as u64 {
+                Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v as u32))))
+            } else {
+                Ok(Value::Inet(IpAddr::V6(Ipv6Addr::from(*v as u128))))
+            }
+        }
+        (Value::U128(v), DataType::Inet) => {
+            use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+            if *v <= u32::MAX as u128 {
+                Ok(Value::Inet(IpAddr::V4(Ipv4Addr::from(*v as u32))))
+            } else {
+                Ok(Value::Inet(IpAddr::V6(Ipv6Addr::from(*v))))
+            }
+        }
+        (Value::Inet(_), DataType::Inet) => Ok(value),
+
         // Boolean remains strict - no implicit coercion
         (Value::Bool(_), DataType::Bool) => Ok(value),
 
