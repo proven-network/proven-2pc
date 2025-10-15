@@ -38,7 +38,6 @@ fn test_coalesce_null_and_value() {
 }
 
 #[test]
-#[ignore = "subqueries in COALESCE not yet supported"]
 fn test_coalesce_with_subqueries() {
     let mut ctx = setup_test();
 

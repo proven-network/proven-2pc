@@ -108,7 +108,6 @@ fn test_where_less_than_or_equal() {
     ctx.commit();
 }
 
-#[ignore = "BETWEEN not yet implemented"]
 #[test]
 fn test_where_between() {
     let mut ctx = setup_test();
@@ -131,13 +130,12 @@ fn test_where_between() {
     ctx.assert_query_value(
         "SELECT id FROM FilterTest WHERE id BETWEEN 3 AND 7 ORDER BY id LIMIT 1",
         "id",
-        Value::I64(3),
+        Value::I32(3),
     );
 
     ctx.commit();
 }
 
-#[ignore = "BETWEEN not yet implemented"]
 #[test]
 fn test_where_not_between() {
     let mut ctx = setup_test();
@@ -158,7 +156,6 @@ fn test_where_not_between() {
     ctx.commit();
 }
 
-#[ignore = "BETWEEN not yet implemented"]
 #[test]
 fn test_where_and() {
     let mut ctx = setup_test();
@@ -185,7 +182,7 @@ fn test_where_and() {
     ctx.assert_query_value(
         "SELECT name FROM FilterTest WHERE id > 5 AND active = TRUE ORDER BY id LIMIT 1",
         "name",
-        Value::Str("\"Frank\"".to_string()),
+        Value::Str("Frank".to_string()),
     );
 
     ctx.commit();
@@ -212,7 +209,6 @@ fn test_where_or() {
     ctx.commit();
 }
 
-#[ignore = "BETWEEN not yet implemented"]
 #[test]
 fn test_where_complex_conditions() {
     let mut ctx = setup_test();
@@ -263,7 +259,6 @@ fn test_where_with_null() {
     ctx.commit();
 }
 
-#[ignore = "LIKE operator not yet implemented"]
 #[test]
 fn test_where_with_like() {
     let mut ctx = setup_test();
@@ -271,14 +266,13 @@ fn test_where_with_like() {
 
     // Test LIKE operator
     assert_rows!(ctx, "SELECT * FROM FilterTest WHERE name LIKE 'A%'", 1);
-    assert_rows!(ctx, "SELECT * FROM FilterTest WHERE name LIKE '%e'", 3);
+    assert_rows!(ctx, "SELECT * FROM FilterTest WHERE name LIKE '%e'", 4); // Alice, Charlie, Eve, Grace
     assert_rows!(ctx, "SELECT * FROM FilterTest WHERE name LIKE '%ar%'", 1);
     assert_rows!(ctx, "SELECT * FROM FilterTest WHERE name LIKE 'D_vid'", 1);
 
     ctx.commit();
 }
 
-#[ignore = "IN operator not yet implemented"]
 #[test]
 fn test_where_with_in() {
     let mut ctx = setup_test();
@@ -377,7 +371,6 @@ fn test_exists_clause() {
     ctx.commit();
 }
 
-#[ignore = "Unary operators not yet implemented"]
 #[test]
 fn test_unary_operators() {
     let mut ctx = setup_test();
@@ -392,7 +385,6 @@ fn test_unary_operators() {
     ctx.commit();
 }
 
-#[ignore = "Arithmetic in WHERE not yet implemented"]
 #[test]
 fn test_arithmetic_in_where() {
     let mut ctx = setup_test();
