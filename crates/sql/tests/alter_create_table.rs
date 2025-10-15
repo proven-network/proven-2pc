@@ -123,7 +123,6 @@ fn test_unsupported_column_option_error() {
 }
 
 #[test]
-#[ignore = "UNIQUE on FLOAT not yet validated"]
 fn test_unique_constraint_on_unsupported_type_error() {
     let mut ctx = setup_test();
 
@@ -141,7 +140,6 @@ fn test_default_value_with_subquery_error() {
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS SELECT not yet implemented"]
 fn test_create_table_as_select_schema_only() {
     let mut ctx = setup_test();
 
@@ -166,7 +164,6 @@ fn test_create_table_as_select_schema_only() {
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS SELECT not yet implemented"]
 fn test_create_table_as_select_with_data() {
     let mut ctx = setup_test();
 
@@ -185,20 +182,19 @@ fn test_create_table_as_select_with_data() {
     assert_eq!(results[0].get("num").unwrap(), &Value::I32(1));
     assert_eq!(
         results[0].get("name").unwrap(),
-        &Value::Str("\"1\"".to_string())
+        &Value::Str("1".to_string())
     );
     assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
     assert_eq!(results[1].get("num").unwrap(), &Value::I32(2));
     assert_eq!(
         results[1].get("name").unwrap(),
-        &Value::Str("\"2\"".to_string())
+        &Value::Str("2".to_string())
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS SELECT not yet implemented"]
 fn test_create_table_as_select_with_limit() {
     let mut ctx = setup_test();
 
@@ -217,14 +213,13 @@ fn test_create_table_as_select_with_limit() {
     assert_eq!(results[0].get("num").unwrap(), &Value::I32(1));
     assert_eq!(
         results[0].get("name").unwrap(),
-        &Value::Str("\"1\"".to_string())
+        &Value::Str("1".to_string())
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS SELECT not yet implemented"]
 fn test_create_table_as_select_with_offset() {
     let mut ctx = setup_test();
 
@@ -243,14 +238,14 @@ fn test_create_table_as_select_with_offset() {
     assert_eq!(results[0].get("num").unwrap(), &Value::I32(2));
     assert_eq!(
         results[0].get("name").unwrap(),
-        &Value::Str("\"2\"".to_string())
+        &Value::Str("2".to_string())
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS SELECT not yet implemented"]
+#[should_panic(expected = "DuplicateTable")]
 fn test_create_table_as_select_target_exists_error() {
     let mut ctx = setup_test();
 
@@ -266,7 +261,7 @@ fn test_create_table_as_select_target_exists_error() {
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS SELECT not yet implemented"]
+#[should_panic(expected = "TableNotFound")]
 fn test_create_table_as_select_source_not_found_error() {
     let mut ctx = setup_test();
 
@@ -275,7 +270,6 @@ fn test_create_table_as_select_source_not_found_error() {
 }
 
 #[test]
-#[ignore = "Duplicate column validation not yet implemented"]
 fn test_create_table_duplicate_column_error() {
     let mut ctx = setup_test();
 

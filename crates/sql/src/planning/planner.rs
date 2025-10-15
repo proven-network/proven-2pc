@@ -996,9 +996,13 @@ impl Planner {
                     .collect();
                 Ok(types)
             }
+            // For nodes that pass through columns unchanged, recursively traverse to find the Projection
+            Node::Filter { source, .. }
+            | Node::Limit { source, .. }
+            | Node::Offset { source, .. }
+            | Node::Order { source, .. } => self.infer_select_column_types(source),
             _ => {
-                // For non-projection nodes, we need to walk up the tree
-                // For now, assume all columns are nullable strings
+                // For non-projection nodes that don't pass through columns
                 Err(Error::ExecutionError(
                     "Cannot infer column types from non-projection node".into(),
                 ))
@@ -1022,6 +1026,11 @@ impl Planner {
                     .get(table)
                     .and_then(|schema| schema.columns.get(offset).map(|col| col.data_type.clone()))
             }
+            // Recursively traverse through nodes that pass columns unchanged
+            Node::Filter { source, .. }
+            | Node::Limit { source, .. }
+            | Node::Offset { source, .. }
+            | Node::Order { source, .. } => self.infer_column_type_from_source(source, offset),
             _ => None,
         }
     }
