@@ -530,7 +530,7 @@ where
     let amount = args["amount"].as_u64().unwrap_or(10);
 
     // 1. KV Put operation - using key and value from args
-    kv.put("kv_stream", key, Value::String(value.to_string()))
+    kv.put("kv_stream", key, Value::Str(value.to_string()))
         .await?;
 
     // 2. Queue Enqueue operation - using message from args

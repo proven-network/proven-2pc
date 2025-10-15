@@ -2,8 +2,9 @@
 
 pub mod operation;
 pub mod response;
-pub mod value;
 
 pub use operation::KvOperation;
 pub use response::KvResponse;
-pub use value::Value;
+
+// Re-export Value from proven-value crate
+pub use proven_value::Value;

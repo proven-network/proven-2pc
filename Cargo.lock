@@ -1015,6 +1015,7 @@ dependencies = [
  "proven-mvcc",
  "proven-snapshot-memory",
  "proven-stream",
+ "proven-value",
  "serde",
  "serde_json",
  "tempfile",

@@ -11,6 +11,7 @@ proven-engine.workspace = true
 proven-hlc.workspace = true
 proven-mvcc = { path = "../mvcc" }
 proven-stream.workspace = true
+proven-value = { workspace = true, features = ["mvcc"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

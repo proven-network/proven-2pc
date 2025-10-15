@@ -127,8 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n5. Complex Types (KV):");
     let preferences = Value::Map(
         vec![
-            ("theme".to_string(), Value::String("dark".to_string())),
-            ("language".to_string(), Value::String("en".to_string())),
+            ("theme".to_string(), Value::Str("dark".to_string())),
+            ("language".to_string(), Value::Str("en".to_string())),
         ]
         .into_iter()
         .collect(),
@@ -198,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("  Alice's balance: {} coins", balance);
 
-    if let Some(Value::String(item)) = kv_verify.get("kv_stream", "inventory:alice:sword").await? {
+    if let Some(Value::Str(item)) = kv_verify.get("kv_stream", "inventory:alice:sword").await? {
         println!("  Inventory item: {}", item);
     }
 

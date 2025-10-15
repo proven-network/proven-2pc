@@ -41,13 +41,13 @@ fn main() {
 
         // Create put operation with various value types to simulate real usage
         let value = match i % 5 {
-            0 => Value::Integer(i as i64),
-            1 => Value::String(format!("value_{}", i)),
-            2 => Value::Boolean(i % 2 == 0),
-            3 => Value::Bytes(format!("data_{}", i % 1000).into_bytes()),
+            0 => Value::I64(i as i64),
+            1 => Value::Str(format!("value_{}", i)),
+            2 => Value::Bool(i % 2 == 0),
+            3 => Value::Bytea(format!("data_{}", i % 1000).into_bytes()),
             _ => Value::List(vec![
-                Value::Integer(i as i64),
-                Value::String(format!("item_{}", i % 100)),
+                Value::I64(i as i64),
+                Value::Str(format!("item_{}", i % 100)),
             ]),
         };
 

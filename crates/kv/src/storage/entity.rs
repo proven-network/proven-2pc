@@ -75,18 +75,7 @@ impl Decode for KvKey {
     }
 }
 
-// Implement Encode/Decode for Value using bincode
-impl Encode for Value {
-    fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))
-    }
-}
-
-impl Decode for Value {
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))
-    }
-}
+// Note: Encode/Decode for Value is implemented in proven-value crate with mvcc feature
 
 // Implement Encode/Decode for KvDelta
 impl Encode for KvDelta {

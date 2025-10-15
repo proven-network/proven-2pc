@@ -84,8 +84,7 @@ impl<E: Executor> KvClient<E> {
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Result<Option<Value>, KvError> {
-        self.put(stream_name, key, Value::String(value.into()))
-            .await
+        self.put(stream_name, key, Value::Str(value.into())).await
     }
 
     /// Put bytes value
@@ -95,7 +94,7 @@ impl<E: Executor> KvClient<E> {
         key: impl Into<String>,
         value: impl Into<Vec<u8>>,
     ) -> Result<Option<Value>, KvError> {
-        self.put(stream_name, key, Value::Bytes(value.into())).await
+        self.put(stream_name, key, Value::Bytea(value.into())).await
     }
 
     /// Put integer value
@@ -105,7 +104,7 @@ impl<E: Executor> KvClient<E> {
         key: impl Into<String>,
         value: i64,
     ) -> Result<Option<Value>, KvError> {
-        self.put(stream_name, key, Value::Integer(value)).await
+        self.put(stream_name, key, Value::I64(value)).await
     }
 
     /// Get a string value
@@ -115,7 +114,7 @@ impl<E: Executor> KvClient<E> {
         key: impl Into<String>,
     ) -> Result<Option<String>, KvError> {
         match self.get(stream_name, key).await? {
-            Some(Value::String(s)) => Ok(Some(s)),
+            Some(Value::Str(s)) => Ok(Some(s)),
             Some(_) => Err(KvError::TypeMismatch),
             None => Ok(None),
         }
@@ -128,7 +127,7 @@ impl<E: Executor> KvClient<E> {
         key: impl Into<String>,
     ) -> Result<Option<Vec<u8>>, KvError> {
         match self.get(stream_name, key).await? {
-            Some(Value::Bytes(b)) => Ok(Some(b)),
+            Some(Value::Bytea(b)) => Ok(Some(b)),
             Some(_) => Err(KvError::TypeMismatch),
             None => Ok(None),
         }
@@ -141,7 +140,7 @@ impl<E: Executor> KvClient<E> {
         key: impl Into<String>,
     ) -> Result<Option<i64>, KvError> {
         match self.get(stream_name, key).await? {
-            Some(Value::Integer(i)) => Ok(Some(i)),
+            Some(Value::I64(i)) => Ok(Some(i)),
             Some(_) => Err(KvError::TypeMismatch),
             None => Ok(None),
         }

@@ -22,7 +22,7 @@ fn test_basic_get_put_delete() {
     // Test PUT
     let put_op = KvOperation::Put {
         key: "test_key".to_string(),
-        value: Value::String("test_value".to_string()),
+        value: Value::Str("test_value".to_string()),
     };
     let result = engine.apply_operation(put_op, tx, 2);
     match result {
@@ -41,7 +41,7 @@ fn test_basic_get_put_delete() {
     match result {
         OperationResult::Complete(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "test_key");
-            assert_eq!(value, Some(Value::String("test_value".to_string())));
+            assert_eq!(value, Some(Value::Str("test_value".to_string())));
         }
         _ => panic!("Expected successful get, got {:?}", result),
     }
@@ -49,13 +49,13 @@ fn test_basic_get_put_delete() {
     // Test PUT with overwrite
     let put_op = KvOperation::Put {
         key: "test_key".to_string(),
-        value: Value::String("new_value".to_string()),
+        value: Value::Str("new_value".to_string()),
     };
     let result = engine.apply_operation(put_op, tx, 4);
     match result {
         OperationResult::Complete(KvResponse::PutResult { key, previous }) => {
             assert_eq!(key, "test_key");
-            assert_eq!(previous, Some(Value::String("test_value".to_string())));
+            assert_eq!(previous, Some(Value::Str("test_value".to_string())));
         }
         _ => panic!("Expected successful put, got {:?}", result),
     }
@@ -98,7 +98,7 @@ fn test_transaction_isolation() {
     // TX1: Put a value
     let put_op = KvOperation::Put {
         key: "isolated_key".to_string(),
-        value: Value::Integer(42),
+        value: Value::I64(42),
     };
     let result = engine.apply_operation(put_op, tx1, 3);
     assert!(matches!(result, OperationResult::Complete(_)));
@@ -118,7 +118,7 @@ fn test_transaction_isolation() {
     match result {
         OperationResult::Complete(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "isolated_key");
-            assert_eq!(value, Some(Value::Integer(42)));
+            assert_eq!(value, Some(Value::I64(42)));
         }
         _ => panic!("Expected successful get after commit"),
     }
@@ -137,7 +137,7 @@ fn test_transaction_abort_rollback() {
     for i in 0..3 {
         let put_op = KvOperation::Put {
             key: format!("key_{}", i),
-            value: Value::Integer(i as i64),
+            value: Value::I64(i as i64),
         };
         engine.apply_operation(put_op, tx1, 2);
     }
@@ -174,11 +174,11 @@ fn test_different_value_types() {
 
     // Test different value types
     let test_cases = vec![
-        ("string_key", Value::String("hello world".to_string())),
-        ("int_key", Value::Integer(123456)),
-        ("float_key", Value::Float("3.14159".to_string())),
-        ("bool_key", Value::Boolean(true)),
-        ("bytes_key", Value::Bytes(vec![1, 2, 3, 4, 5])),
+        ("string_key", Value::Str("hello world".to_string())),
+        ("int_key", Value::I64(123456)),
+        ("float_key", Value::F64(std::f64::consts::PI)),
+        ("bool_key", Value::Bool(true)),
+        ("bytes_key", Value::Bytea(vec![1, 2, 3, 4, 5])),
     ];
 
     // Put all values
@@ -216,7 +216,7 @@ fn test_concurrent_reads_with_shared_locks() {
     engine.begin(tx_setup, 1);
     let put_op = KvOperation::Put {
         key: "shared_key".to_string(),
-        value: Value::String("shared_data".to_string()),
+        value: Value::Str("shared_data".to_string()),
     };
     engine.apply_operation(put_op, tx_setup, 2);
     engine.commit(tx_setup, 3);
@@ -261,7 +261,7 @@ fn test_write_write_conflict() {
     // TX1: Write to key
     let put_op = KvOperation::Put {
         key: "conflict_key".to_string(),
-        value: Value::String("value1".to_string()),
+        value: Value::Str("value1".to_string()),
     };
     let result = engine.apply_operation(put_op, tx1, 3);
     assert!(matches!(result, OperationResult::Complete(_)));
@@ -269,7 +269,7 @@ fn test_write_write_conflict() {
     // TX2: Try to write to same key (should be blocked)
     let put_op = KvOperation::Put {
         key: "conflict_key".to_string(),
-        value: Value::String("value2".to_string()),
+        value: Value::Str("value2".to_string()),
     };
     let result = engine.apply_operation(put_op.clone(), tx2, 4);
     match result {
@@ -342,7 +342,7 @@ fn test_read_lock_released_on_prepare() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("value2".to_string()),
+            value: Value::Str("value2".to_string()),
         },
         tx2,
         4,
@@ -364,7 +364,7 @@ fn test_read_lock_released_on_prepare() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("value2".to_string()),
+            value: Value::Str("value2".to_string()),
         },
         tx2,
         6,
@@ -386,7 +386,7 @@ fn test_write_lock_not_released_on_prepare() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("value1".to_string()),
+            value: Value::Str("value1".to_string()),
         },
         tx1,
         3,
@@ -447,7 +447,7 @@ fn test_write_lock_not_released_on_prepare() {
     match result {
         OperationResult::Complete(KvResponse::GetResult { key, value }) => {
             assert_eq!(key, "key1");
-            assert_eq!(value, Some(Value::String("value1".to_string())));
+            assert_eq!(value, Some(Value::Str("value1".to_string())));
         }
         _ => panic!("Expected successful read after commit, got {:?}", result),
     }
@@ -479,7 +479,7 @@ fn test_multiple_reads_released_on_prepare() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key2".to_string(),
-            value: Value::String("new_value".to_string()),
+            value: Value::Str("new_value".to_string()),
         },
         tx2,
         4,
@@ -501,7 +501,7 @@ fn test_multiple_reads_released_on_prepare() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key2".to_string(),
-            value: Value::String("new_value".to_string()),
+            value: Value::Str("new_value".to_string()),
         },
         tx2,
         6,
@@ -513,7 +513,7 @@ fn test_multiple_reads_released_on_prepare() {
         let result = engine.apply_operation(
             KvOperation::Put {
                 key: key.to_string(),
-                value: Value::String("updated".to_string()),
+                value: Value::Str("updated".to_string()),
             },
             tx2,
             7,
@@ -545,7 +545,7 @@ fn test_mixed_locks_partial_release() {
     engine.apply_operation(
         KvOperation::Put {
             key: "key2".to_string(),
-            value: Value::String("value".to_string()),
+            value: Value::Str("value".to_string()),
         },
         tx1,
         4,
@@ -564,7 +564,7 @@ fn test_mixed_locks_partial_release() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("new".to_string()),
+            value: Value::Str("new".to_string()),
         },
         tx2,
         6,
@@ -596,7 +596,7 @@ fn test_mixed_locks_partial_release() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("new".to_string()),
+            value: Value::Str("new".to_string()),
         },
         tx2,
         8,
@@ -607,7 +607,7 @@ fn test_mixed_locks_partial_release() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key3".to_string(),
-            value: Value::String("new3".to_string()),
+            value: Value::Str("new3".to_string()),
         },
         tx2,
         9,
@@ -646,7 +646,7 @@ fn test_snapshot_read_doesnt_block_write() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("write_value".to_string()),
+            value: Value::Str("write_value".to_string()),
         },
         write_tx,
         2,
@@ -685,7 +685,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("write_value".to_string()),
+            value: Value::Str("write_value".to_string()),
         },
         write_tx,
         2,
@@ -726,7 +726,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
 
     match result {
         OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
-            assert_eq!(value, Some(Value::String("write_value".to_string())));
+            assert_eq!(value, Some(Value::Str("write_value".to_string())));
         }
         _ => panic!("Expected Complete, got {:?}", result),
     }
@@ -756,7 +756,7 @@ fn test_snapshot_read_doesnt_take_locks() {
     let result = engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("write_value".to_string()),
+            value: Value::Str("write_value".to_string()),
         },
         write_tx,
         3,
@@ -777,7 +777,7 @@ fn test_multiple_snapshot_reads_concurrent() {
     engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("initial_value".to_string()),
+            value: Value::Str("initial_value".to_string()),
         },
         setup_tx,
         2,
@@ -824,7 +824,7 @@ fn test_snapshot_read_sees_committed_writes() {
     engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("value1".to_string()),
+            value: Value::Str("value1".to_string()),
         },
         write_tx1,
         2,
@@ -837,7 +837,7 @@ fn test_snapshot_read_sees_committed_writes() {
     engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("value2".to_string()),
+            value: Value::Str("value2".to_string()),
         },
         write_tx2,
         5,
@@ -856,7 +856,7 @@ fn test_snapshot_read_sees_committed_writes() {
 
     match result {
         OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
-            assert_eq!(value, Some(Value::String("value1".to_string())));
+            assert_eq!(value, Some(Value::Str("value1".to_string())));
         }
         _ => panic!("Expected Complete, got {:?}", result),
     }
@@ -873,7 +873,7 @@ fn test_snapshot_read_sees_committed_writes() {
 
     match result {
         OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
-            assert_eq!(value, Some(Value::String("value2".to_string())));
+            assert_eq!(value, Some(Value::Str("value2".to_string())));
         }
         _ => panic!("Expected Complete, got {:?}", result),
     }
@@ -889,7 +889,7 @@ fn test_snapshot_read_ignores_aborted_writes() {
     engine.apply_operation(
         KvOperation::Put {
             key: "key1".to_string(),
-            value: Value::String("aborted_value".to_string()),
+            value: Value::Str("aborted_value".to_string()),
         },
         write_tx1,
         2,
