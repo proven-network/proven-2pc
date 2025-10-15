@@ -414,6 +414,35 @@ fn cast_value(value: &Value, target_type: &str) -> Result<Value> {
             }
         }
 
+        "POINT" => {
+            // Use the coercion system to parse POINT from string
+            match value {
+                Value::Str(_) => {
+                    crate::coercion::coerce_value(value.clone(), &DataType::Point)
+                }
+                Value::Point(_) => Ok(value.clone()),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to POINT",
+                    value.data_type()
+                ))),
+            }
+        }
+
+        "INET" => {
+            // Use the coercion system to parse INET from string
+            match value {
+                Value::Str(_) | Value::I8(_) | Value::I16(_) | Value::I32(_) | Value::I64(_) | Value::I128(_)
+                | Value::U8(_) | Value::U16(_) | Value::U32(_) | Value::U64(_) | Value::U128(_) => {
+                    crate::coercion::coerce_value(value.clone(), &DataType::Inet)
+                }
+                Value::Inet(_) => Ok(value.clone()),
+                _ => Err(Error::InvalidValue(format!(
+                    "Cannot cast {} to INET",
+                    value.data_type()
+                ))),
+            }
+        }
+
         "BOOLEAN" | "BOOL" => match value {
             Value::Bool(b) => Ok(Value::Bool(*b)),
             Value::I8(v) => Ok(Value::Bool(*v != 0)),

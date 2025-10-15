@@ -59,6 +59,9 @@ impl BinaryOperator for EqualOperator {
             // INET can be compared with strings (parsed at runtime)
             (Inet, Str) | (Str, Inet) => Ok(Bool),
 
+            // POINT can be compared with strings (parsed at runtime)
+            (Point, Str) | (Str, Point) => Ok(Bool),
+
             _ => Err(Error::TypeMismatch {
                 expected: format!("{:?}", left),
                 found: format!("{:?}", right),
@@ -197,6 +200,21 @@ impl BinaryOperator for EqualOperator {
                         (left.clone(), Inet(parsed_ip))
                     } else {
                         (Inet(parsed_ip), right.clone())
+                    }
+                } else {
+                    // If parsing fails, comparison will return false
+                    (left.clone(), right.clone())
+                }
+            }
+
+            // POINT comparison with string - parse the string as POINT
+            (Point(_), Str(s)) | (Str(s), Point(_)) => {
+                // Try to coerce string to Point
+                if let Ok(point_val) = crate::coercion::coerce_value(Str(s.clone()), &crate::types::DataType::Point) {
+                    if matches!(left, Point(_)) {
+                        (left.clone(), point_val)
+                    } else {
+                        (point_val, right.clone())
                     }
                 } else {
                     // If parsing fails, comparison will return false

@@ -518,6 +518,42 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
         }
         (Value::Inet(_), DataType::Inet) => Ok(value),
 
+        // POINT coercions
+        (Value::Str(s), DataType::Point) => {
+            // Parse POINT string format: "POINT(x y)" or "POINT(x, y)"
+            let s = s.trim();
+            if !s.to_uppercase().starts_with("POINT(") || !s.ends_with(')') {
+                return Err(Error::InvalidValue(format!(
+                    "Failed to parse POINT: {}",
+                    s
+                )));
+            }
+
+            // Extract coordinates from "POINT(x y)" or "POINT(x, y)"
+            let coords = &s[6..s.len() - 1]; // Remove "POINT(" and ")"
+            let parts: Vec<&str> = coords
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            if parts.len() != 2 {
+                return Err(Error::InvalidValue(format!(
+                    "Failed to parse POINT: expected 2 coordinates, found {}",
+                    parts.len()
+                )));
+            }
+
+            let x = parts[0].parse::<f64>().map_err(|_| {
+                Error::InvalidValue(format!("Failed to parse POINT x coordinate: {}", parts[0]))
+            })?;
+            let y = parts[1].parse::<f64>().map_err(|_| {
+                Error::InvalidValue(format!("Failed to parse POINT y coordinate: {}", parts[1]))
+            })?;
+
+            Ok(Value::Point(crate::types::Point::new(x, y)))
+        }
+        (Value::Point(_), DataType::Point) => Ok(value),
+
         // Boolean remains strict - no implicit coercion
         (Value::Bool(_), DataType::Bool) => Ok(value),
 

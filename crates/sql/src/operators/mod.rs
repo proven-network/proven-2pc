@@ -445,6 +445,23 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         // Inet
         (Inet(a), Inet(b)) => a.cmp(b),
 
+        // POINT vs String comparisons - parse string at runtime
+        (Point(point), Str(s)) | (Str(s), Point(point)) => {
+            use crate::coercion::coerce_value;
+            use crate::types::DataType;
+            let parsed_val = coerce_value(Str(s.clone()), &DataType::Point)
+                .map_err(|_| Error::InvalidValue(format!("Cannot parse '{}' as POINT", s)))?;
+            if let Value::Point(parsed_point) = parsed_val {
+                if matches!(left, Point(_)) {
+                    point.cmp(&parsed_point)
+                } else {
+                    parsed_point.cmp(point)
+                }
+            } else {
+                return Err(Error::InvalidValue(format!("Failed to parse '{}' as POINT", s)));
+            }
+        }
+
         // Point
         (Point(a), Point(b)) => a.cmp(b),
 

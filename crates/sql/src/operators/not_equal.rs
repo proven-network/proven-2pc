@@ -59,6 +59,9 @@ impl BinaryOperator for NotEqualOperator {
             // INET can be compared with strings (parsed at runtime)
             (Inet, Str) | (Str, Inet) => Ok(Bool),
 
+            // POINT can be compared with strings (parsed at runtime)
+            (Point, Str) | (Str, Point) => Ok(Bool),
+
             _ => Err(Error::TypeMismatch {
                 expected: format!("{:?}", left),
                 found: format!("{:?}", right),
