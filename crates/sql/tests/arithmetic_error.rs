@@ -1,92 +1,200 @@
 //! Arithmetic error handling tests
 //! Based on gluesql/test-suite/src/arithmetic/error.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::{TableBuilder, setup_test};
+
 #[test]
-fn test_division_by_zero_integer() {
-    // TODO: Test SELECT 1 / 0 - should error with division by zero
+fn test_division_by_zero() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // Integer division by zero
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE id = 2 / 0");
+    assert!(
+        err.contains("zero") || err.contains("divisor") || err.contains("divide"),
+        "Expected division by zero error, got: {}",
+        err
+    );
+
+    // Float division by zero
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE id = 2 / 0.0");
+    assert!(
+        err.contains("zero") || err.contains("divisor") || err.contains("divide"),
+        "Expected division by zero error, got: {}",
+        err
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_division_by_zero_float() {
-    // TODO: Test SELECT 1.0 / 0.0 - should handle float division by zero (may return Infinity)
-}
-
-#[ignore = "not yet implemented"]
 #[test]
 fn test_modulo_by_zero() {
-    // TODO: Test SELECT 1 % 0 - should error with modulo by zero
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // Integer modulo by zero
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE id = 2 % 0");
+    assert!(
+        err.contains("zero") || err.contains("divisor") || err.contains("modulo"),
+        "Expected modulo by zero error, got: {}",
+        err
+    );
+
+    // Float modulo by zero
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE id = 2 % 0.0");
+    assert!(
+        err.contains("zero") || err.contains("divisor") || err.contains("modulo"),
+        "Expected modulo by zero error, got: {}",
+        err
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_integer_overflow_addition() {
-    // TODO: Test SELECT max_int + 1 - should handle integer overflow appropriately
+fn test_string_arithmetic_errors() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // String + Integer
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE name + id < 1");
+    assert!(
+        err.contains("type")
+            || err.contains("numeric")
+            || err.contains("operator")
+            || err.contains("operation")
+            || err.contains("add"),
+        "Expected type error for string + int, got: {}",
+        err
+    );
+
+    // String - Integer
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE name - id < 1");
+    assert!(
+        err.contains("type")
+            || err.contains("numeric")
+            || err.contains("operator")
+            || err.contains("operation")
+            || err.contains("subtract"),
+        "Expected type error for string - int, got: {}",
+        err
+    );
+
+    // String * Integer
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE name * id < 1");
+    assert!(
+        err.contains("type")
+            || err.contains("numeric")
+            || err.contains("operator")
+            || err.contains("operation")
+            || err.contains("multiply"),
+        "Expected type error for string * int, got: {}",
+        err
+    );
+
+    // String / Integer
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE name / id < 1");
+    assert!(
+        err.contains("type")
+            || err.contains("numeric")
+            || err.contains("operator")
+            || err.contains("operation")
+            || err.contains("divide"),
+        "Expected type error for string / int, got: {}",
+        err
+    );
+
+    // String % Integer
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE name % id < 1");
+    assert!(
+        err.contains("type")
+            || err.contains("numeric")
+            || err.contains("operator")
+            || err.contains("operation")
+            || err.contains("modulo")
+            || err.contains("remainder"),
+        "Expected type error for string % int, got: {}",
+        err
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_integer_overflow_multiplication() {
-    // TODO: Test SELECT max_int * 2 - should handle integer overflow appropriately
+fn test_boolean_arithmetic_errors() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // Boolean + Integer
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE TRUE + 1 = 1");
+    assert!(
+        err.contains("type")
+            || err.contains("operation")
+            || err.contains("boolean")
+            || err.contains("add"),
+        "Expected type error for boolean + int, got: {}",
+        err
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_integer_underflow_subtraction() {
-    // TODO: Test SELECT min_int - 1 - should handle integer underflow appropriately
+fn test_column_not_found_in_update() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // Try to update non-existent column
+    let err = ctx.exec_error("UPDATE Arith SET aaa = 1");
+    assert!(
+        err.contains("column") || err.contains("aaa") || err.contains("not found"),
+        "Expected column not found error, got: {}",
+        err
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_invalid_arithmetic_with_null() {
-    // TODO: Test SELECT NULL + 1 - should return NULL
-    // TODO: Test SELECT NULL * 5 - should return NULL
-    // TODO: Test SELECT NULL / 2 - should return NULL
-}
+fn test_boolean_type_required() {
+    let mut ctx = setup_test();
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_invalid_arithmetic_with_strings() {
-    // TODO: Test SELECT 'hello' + 1 - should error with type mismatch
-    // TODO: Test SELECT 'world' * 2 - should error with type mismatch
-}
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_invalid_arithmetic_with_booleans() {
-    // TODO: Test SELECT TRUE + 1 - should error with type mismatch (if not supported)
-    // TODO: Test SELECT FALSE * 2 - should error with type mismatch (if not supported)
-}
+    // String in boolean context
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE TRUE AND 'hello'");
+    assert!(
+        err.contains("boolean") || err.contains("type") || err.contains("expected"),
+        "Expected boolean type error, got: {}",
+        err
+    );
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_square_root_of_negative() {
-    // TODO: Test SELECT SQRT(-1) - should handle negative square root appropriately
-}
+    // Column value (string) in boolean context
+    let err = ctx.exec_error("SELECT * FROM Arith WHERE name AND id");
+    assert!(
+        err.contains("boolean") || err.contains("type") || err.contains("expected"),
+        "Expected boolean type error, got: {}",
+        err
+    );
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_logarithm_of_zero_or_negative() {
-    // TODO: Test SELECT LOG(0) - should handle log of zero appropriately
-    // TODO: Test SELECT LOG(-1) - should handle log of negative appropriately
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_power_operation_errors() {
-    // TODO: Test SELECT POWER(0, -1) - zero to negative power
-    // TODO: Test edge cases in power operations
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_with_very_large_numbers() {
-    // TODO: Test arithmetic operations with very large numbers that might cause overflow
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_floating_point_precision_errors() {
-    // TODO: Test operations that might cause floating point precision issues
+    ctx.commit();
 }

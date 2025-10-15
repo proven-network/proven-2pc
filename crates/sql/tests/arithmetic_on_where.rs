@@ -1,82 +1,152 @@
 //! Arithmetic operations in WHERE clause tests
 //! Based on gluesql/test-suite/src/arithmetic/on_where.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::{TableBuilder, setup_test};
+
 #[test]
-fn test_create_table_for_arithmetic_where() {
-    // TODO: Test CREATE TABLE WhereTest (id INTEGER, a INTEGER, b INTEGER, rate FLOAT)
+fn test_add_on_where() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // WHERE id = 1 + 1 (id = 2)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id = 1 + 1", 1);
+
+    // WHERE id < id + 1 (always true for positive numbers)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id < id + 1", 5);
+
+    // WHERE id < num + id
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id < num + id", 5);
+
+    // WHERE id + 1 < 5 (id < 4, so id in [1,2,3])
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id + 1 < 5", 3);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_insert_data_for_arithmetic_where() {
-    // TODO: Test INSERT INTO WhereTest VALUES with various numeric values for WHERE clause arithmetic tests
+fn test_subtract_on_where() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // WHERE id = 2 - 1 (id = 1)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id = 2 - 1", 1);
+
+    // WHERE 2 - 1 = id (id = 1)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE 2 - 1 = id", 1);
+
+    // WHERE id > id - 1 (always true for any number)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id > id - 1", 5);
+
+    // WHERE id > id - num (when num > 0, always true)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id > id - num", 5);
+
+    // WHERE 5 - id < 3 (id > 2, so id in [3,4,5])
+    ctx.assert_row_count("SELECT * FROM Arith WHERE 5 - id < 3", 3);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_basic_arithmetic_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE a + b = 10 - addition in WHERE clause
-    // TODO: Test SELECT * FROM WhereTest WHERE a - b > 0 - subtraction comparison
-    // TODO: Test SELECT * FROM WhereTest WHERE a * b < 100 - multiplication comparison
-    // TODO: Test SELECT * FROM WhereTest WHERE a / b = 2 - division comparison
+fn test_multiply_on_where() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // WHERE id = 2 * 2 (id = 4)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id = 2 * 2", 1);
+
+    // WHERE id > id * 2 (never true for positive numbers)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id > id * 2", 0);
+
+    // WHERE id > num * id (never true for positive num)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id > num * id", 0);
+
+    // WHERE 3 * id < 4 (id < 4/3, so id = 1)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE 3 * id < 4", 1);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_arithmetic_with_constants_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE a + 5 > b - column + constant comparison
-    // TODO: Test SELECT * FROM WhereTest WHERE rate * 2 > 10.0 - float arithmetic in WHERE
+fn test_divide_on_where() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // WHERE id = 5 / 2 (integer division: 5/2 = 2, so id = 2)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id = 5 / 2", 1);
+
+    // WHERE id > id / 2 (always true for positive numbers >= 1)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id > id / 2", 5);
+
+    // WHERE id > num / id
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id > num / id", 3);
+
+    // WHERE 10 / id = 2 (id = 5)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE 10 / id = 2", 2);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_complex_arithmetic_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE (a + b) * rate > 50.0 - complex expression with parentheses
-    // TODO: Test SELECT * FROM WhereTest WHERE a + b * rate > 100 - operator precedence in WHERE
+fn test_modulo_on_where() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
+
+    // WHERE id = 5 % 2 (5 mod 2 = 1)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id = 5 % 2", 1);
+
+    // WHERE id > num % id
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id > num % id", 5);
+
+    // WHERE num % id > 2
+    ctx.assert_row_count("SELECT * FROM Arith WHERE num % id > 2", 1);
+
+    // WHERE num % 3 < 2 % id
+    ctx.assert_row_count("SELECT * FROM Arith WHERE num % 3 < 2 % id", 2);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_arithmetic_comparisons_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE a + b BETWEEN 5 AND 15 - arithmetic with BETWEEN
-    // TODO: Test SELECT * FROM WhereTest WHERE a * b IN (6, 12, 20) - arithmetic with IN
-}
+fn test_update_with_arithmetic_where() {
+    let mut ctx = setup_test();
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_multiple_arithmetic_conditions() {
-    // TODO: Test SELECT * FROM WhereTest WHERE a + b > 5 AND a - b < 3 - multiple arithmetic conditions with AND
-    // TODO: Test SELECT * FROM WhereTest WHERE a * 2 = 10 OR b / 2 = 5 - multiple arithmetic conditions with OR
-}
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER, name TEXT")
+        .insert_values("(1, 6, 'A'), (2, 8, 'B'), (3, 4, 'C'), (4, 2, 'D'), (5, 3, 'E')");
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_with_null_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE a + NULL IS NULL - arithmetic with NULL in WHERE
-}
+    // WHERE 1 + 1 = id (id = 2)
+    ctx.assert_row_count("SELECT * FROM Arith WHERE 1 + 1 = id", 1);
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_modulo_operation_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE a % 2 = 0 - modulo operation in WHERE (even numbers)
-    // TODO: Test SELECT * FROM WhereTest WHERE b % 3 = 1 - modulo with different divisor
-}
+    // UPDATE with arithmetic in SET
+    ctx.exec("UPDATE Arith SET id = id + 1");
+    // Now no row has id = 1
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id = 1", 0);
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_nested_arithmetic_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE ((a + b) * rate) / 2 > threshold - deeply nested arithmetic
-}
+    // UPDATE with arithmetic in WHERE
+    ctx.exec("UPDATE Arith SET id = id - 1 WHERE id != 6");
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id <= 2", 2);
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_with_functions_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE ABS(a - b) > 5 - arithmetic with function in WHERE
-}
+    // UPDATE with multiplication
+    ctx.exec("UPDATE Arith SET id = id * 2");
+    ctx.exec("UPDATE Arith SET id = id / 2");
+    ctx.assert_row_count("SELECT * FROM Arith WHERE id <= 2", 2);
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_subqueries_in_where() {
-    // TODO: Test SELECT * FROM WhereTest WHERE a + b > (SELECT AVG(a + b) FROM WhereTest) - arithmetic with subquery
+    ctx.commit();
 }
