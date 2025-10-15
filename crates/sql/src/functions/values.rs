@@ -24,9 +24,28 @@ impl Function for ValuesFunction {
                 "VALUES takes exactly 1 argument".into(),
             ));
         }
-        Ok(DataType::List(Box::new(DataType::Nullable(Box::new(
-            DataType::Text,
-        )))))
+        // Validate that the argument is a map type
+        match &arg_types[0] {
+            DataType::Map(_key_type, value_type) => {
+                // Return a list of the map's value type
+                Ok(DataType::List(value_type.clone()))
+            }
+            DataType::Nullable(inner) => {
+                if let DataType::Map(_key_type, value_type) = inner.as_ref() {
+                    // Return a nullable list of the map's value type
+                    Ok(DataType::List(value_type.clone()))
+                } else {
+                    Err(Error::TypeMismatch {
+                        expected: "map".into(),
+                        found: arg_types[0].to_string(),
+                    })
+                }
+            }
+            _ => Err(Error::TypeMismatch {
+                expected: "map".into(),
+                found: arg_types[0].to_string(),
+            }),
+        }
     }
 
     fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
