@@ -9,7 +9,7 @@ use crate::types::data_type::DataType;
 use crate::types::schema::Table;
 use crate::types::{Interval, Point, Value};
 use chrono::{NaiveDate, NaiveTime, Timelike};
-use proven_value::encoding::encode_value as encode_value_sortable_internal;
+use proven_value::codec::encode_value as encode_value_sortable_internal;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};

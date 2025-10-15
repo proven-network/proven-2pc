@@ -222,7 +222,7 @@ impl MvccDelta<IndexEntity> for IndexDelta {
 impl Encode for IndexKey {
     fn encode(&self) -> Result<Vec<u8>> {
         // Use existing optimized sortable encoding for index keys!
-        let encoded = crate::storage::encoding::encode_index_key(&self.values, self.row_id);
+        let encoded = crate::storage::codec::encode_index_key(&self.values, self.row_id);
         Ok(encoded)
     }
 }

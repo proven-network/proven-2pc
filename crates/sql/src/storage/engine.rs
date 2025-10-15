@@ -9,7 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::semantic::predicate::{Predicate, QueryPredicates};
-use crate::storage::encoding::{decode_row, encode_row};
+use crate::storage::codec::{decode_row, encode_row};
 use crate::storage::entity::{IndexDelta, IndexEntity, IndexKey, TableDelta, TableEntity};
 use crate::storage::predicate_store::PredicateStore;
 use crate::types::Value;
@@ -833,8 +833,8 @@ impl SqlStorage {
         // For point lookup, use range scan from row_id=0 to row_id=MAX
         // This ensures we only get exact matches for the values
         use std::ops::Bound;
-        let start_key = crate::storage::encoding::encode_index_key(&values, 0);
-        let end_key = crate::storage::encoding::encode_index_key(&values, u64::MAX);
+        let start_key = crate::storage::codec::encode_index_key(&values, 0);
+        let end_key = crate::storage::codec::encode_index_key(&values, u64::MAX);
 
         // Use range scan to find all matching entries
         let index_iter = index_storage.range(
@@ -881,7 +881,7 @@ impl SqlStorage {
         use std::ops::Bound;
         let start_bound = match start_values {
             Some(values) => {
-                let key = crate::storage::encoding::encode_index_key(&values, 0);
+                let key = crate::storage::codec::encode_index_key(&values, 0);
                 let prefix_len = key.len() - 8; // Remove row_id
                 Bound::Included(key[..prefix_len].to_vec())
             }
@@ -890,7 +890,7 @@ impl SqlStorage {
 
         let end_bound = match end_values {
             Some(values) => {
-                let key = crate::storage::encoding::encode_index_key(&values, u64::MAX);
+                let key = crate::storage::codec::encode_index_key(&values, u64::MAX);
                 Bound::Included(key)
             }
             None => Bound::Unbounded,
@@ -939,8 +939,8 @@ impl SqlStorage {
 
         // Use range scan for exact value match
         use std::ops::Bound;
-        let start_key = crate::storage::encoding::encode_index_key(&values, 0);
-        let end_key = crate::storage::encoding::encode_index_key(&values, u64::MAX);
+        let start_key = crate::storage::codec::encode_index_key(&values, 0);
+        let end_key = crate::storage::codec::encode_index_key(&values, u64::MAX);
 
         // Scan for any matching entries
         let index_iter = index_storage.range(

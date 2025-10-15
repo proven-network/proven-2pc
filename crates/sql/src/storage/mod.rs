@@ -10,7 +10,7 @@
 //! - Shared keyspace for atomic cross-entity batching
 //! - Preserves schema-aware row encoding (36.1 bytes/row)
 
-pub mod encoding;
+pub mod codec;
 pub mod engine;
 pub mod entity;
 pub mod predicate_store;

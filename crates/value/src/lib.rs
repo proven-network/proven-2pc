@@ -7,11 +7,11 @@
 //!
 //! It also provides efficient binary encoding for storage and indexes.
 
-pub mod encoding;
+pub mod codec;
 pub mod types;
 
 #[cfg(feature = "mvcc")]
 pub mod mvcc;
 
-pub use encoding::{Error, Result, decode_value, encode_value};
+pub use codec::{Error, Result, decode_value, encode_value};
 pub use types::{Interval, Point, Value};

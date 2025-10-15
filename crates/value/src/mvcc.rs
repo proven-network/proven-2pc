@@ -2,7 +2,7 @@
 //!
 //! Provides Encode/Decode implementations for the proven-mvcc crate.
 
-use crate::encoding::{decode_value, encode_value};
+use crate::codec::{decode_value, encode_value};
 use crate::types::Value;
 use proven_mvcc::{Decode, Encode, Error as MvccError};
 
