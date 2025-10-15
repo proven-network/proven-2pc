@@ -82,7 +82,6 @@ fn test_create_multiplication_expression_index() {
 }
 
 #[test]
-#[ignore = "Unary operators in index expressions not yet implemented"]
 fn test_create_unary_operation_index() {
     let mut ctx = setup_test();
 
@@ -93,7 +92,6 @@ fn test_create_unary_operation_index() {
     ctx.exec("INSERT INTO Test VALUES (1, 5)");
 
     // Try to create expression index on -num (unary minus)
-    // This should fail as unary operators aren't supported yet
     ctx.exec("CREATE INDEX idx_neg ON Test (-num)");
 }
 
@@ -219,7 +217,6 @@ fn test_expression_index_with_nulls() {
 }
 
 #[test]
-#[ignore = "String concatenation operator (||) in index expressions not yet implemented"]
 fn test_string_concatenation_index() {
     let mut ctx = setup_test();
 
@@ -228,7 +225,6 @@ fn test_string_concatenation_index() {
     ctx.exec("INSERT INTO Test VALUES (1, 'Hello')");
 
     // Try to create index with string concatenation (|| operator)
-    // This should fail as the || operator isn't parsed yet
     ctx.exec("CREATE INDEX idx_concat ON Test (id || name)");
 }
 

@@ -73,7 +73,6 @@ fn test_insert_without_column_list() {
 }
 
 #[test]
-#[ignore = "DEFAULT values not yet fully implemented"]
 fn test_insert_with_default_values() {
     let mut ctx = setup_test();
 
@@ -118,7 +117,6 @@ fn test_insert_with_null_values() {
 }
 
 #[test]
-#[ignore = "NOT NULL constraint validation not yet implemented"]
 fn test_insert_missing_not_null_column() {
     let mut ctx = setup_test();
 
@@ -165,7 +163,6 @@ fn test_verify_inserted_data() {
 }
 
 #[test]
-#[ignore = "CREATE TABLE AS SELECT not yet implemented"]
 fn test_create_table_as_select() {
     let mut ctx = setup_test();
 
