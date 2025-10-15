@@ -324,12 +324,25 @@ impl Planner {
                     });
                 }
 
-                FromClause::Subquery { source, alias: _ } => {
+                FromClause::Subquery { source, alias } => {
                     // Plan the subquery based on its type
                     let subquery_node = match source {
                         SubquerySource::Select(select_stmt) => {
-                            // Plan the SELECT subquery
-                            let subplan = self.plan_select(select_stmt, context.analyzed)?;
+                            // IMPORTANT: Use the subquery's OWN analyzed statement, not the parent's!
+                            // The parent analyzed statement contains subquery_analyses for each subquery alias
+                            let subquery_analyzed = context
+                                .analyzed
+                                .subquery_analyses
+                                .get(&alias.name)
+                                .ok_or_else(|| {
+                                    Error::ExecutionError(format!(
+                                        "Subquery analysis not found for alias {}",
+                                        alias.name
+                                    ))
+                                })?;
+
+                            // Plan the SELECT subquery with its own analyzed statement
+                            let subplan = self.plan_select(select_stmt, subquery_analyzed)?;
                             match subplan {
                                 Plan::Query { root: node, .. } => *node,
                                 _ => {
@@ -1313,8 +1326,8 @@ impl Planner {
                             .columns
                             .values()
                             .collect();
-                        all_resolutions.sort_by_key(|r| r.global_offset);
-                        all_resolutions.dedup_by_key(|r| r.global_offset);
+                        all_resolutions.sort_by_key(|r| r.offset);
+                        all_resolutions.dedup_by_key(|r| r.offset);
 
                         let column_names = context
                             .analyzed
@@ -1324,7 +1337,7 @@ impl Planner {
                         for (resolution, col_name) in
                             all_resolutions.iter().zip(column_names.iter())
                         {
-                            expressions.push(Expression::Column(resolution.global_offset));
+                            expressions.push(Expression::Column(resolution.offset));
                             aliases.push(Some(col_name.clone()));
                         }
                     } else {
@@ -1382,12 +1395,12 @@ impl Planner {
                             .filter(|((tbl, _), _)| tbl.as_deref() == Some(table_alias.as_str()))
                             .collect();
 
-                        // Sort by global_offset to maintain column order
+                        // Sort by offset to maintain column order
                         let mut sorted: Vec<_> = matching_columns.into_iter().collect();
-                        sorted.sort_by_key(|(_, res)| res.global_offset);
+                        sorted.sort_by_key(|(_, res)| res.offset);
 
                         for ((_, col_name), resolution) in sorted {
-                            expressions.push(Expression::Column(resolution.global_offset));
+                            expressions.push(Expression::Column(resolution.offset));
                             aliases.push(Some(col_name.clone()));
                         }
                     }
@@ -1702,7 +1715,7 @@ impl<'a> AnalyzedPlanContext<'a> {
                     .column_resolution_map
                     .resolve(table_ref.as_deref(), column_name)
                 {
-                    return Ok(Expression::Column(resolution.global_offset));
+                    return Ok(Expression::Column(resolution.offset));
                 }
 
                 // Handle struct field access (DuckDB-style resolution)
@@ -1883,7 +1896,7 @@ impl<'a> AnalyzedPlanContext<'a> {
             .column_resolution_map
             .resolve(table_ref.as_deref(), column_name)
         {
-            return Ok(Expression::Column(resolution.global_offset));
+            return Ok(Expression::Column(resolution.offset));
         }
 
         // If not found, handle struct field access

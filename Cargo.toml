@@ -60,6 +60,7 @@ fjall = { version = "2.11.2", default-features = false, features = ["lz4"] }
 flume = "0.11.1"
 futures = "0.3"
 hex = "0.4"
+indexmap = "2.11.4"
 lru = "0.16.2"
 parking_lot = "0.12.5"
 regex = "1.12.2"

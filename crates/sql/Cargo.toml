@@ -9,6 +9,7 @@ chrono.workspace = true
 ciborium.workspace = true
 fjall.workspace = true
 hex.workspace = true
+indexmap.workspace = true
 lru.workspace = true
 parking_lot.workspace = true
 proven-common.workspace = true

@@ -523,10 +523,7 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
             // Parse POINT string format: "POINT(x y)" or "POINT(x, y)"
             let s = s.trim();
             if !s.to_uppercase().starts_with("POINT(") || !s.ends_with(')') {
-                return Err(Error::InvalidValue(format!(
-                    "Failed to parse POINT: {}",
-                    s
-                )));
+                return Err(Error::InvalidValue(format!("Failed to parse POINT: {}", s)));
             }
 
             // Extract coordinates from "POINT(x y)" or "POINT(x, y)"

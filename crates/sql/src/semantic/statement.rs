@@ -8,7 +8,8 @@ use super::predicate::{Predicate, PredicateCondition, QueryPredicates};
 use crate::parsing::ast::Statement;
 use crate::types::Value;
 use crate::types::data_type::DataType;
-use std::collections::{HashMap, HashSet};
+use indexmap::IndexMap;
+use std::collections::HashSet;
 use std::ops::Bound;
 use std::sync::Arc;
 
@@ -38,6 +39,11 @@ pub struct AnalyzedStatement {
 
     /// Join optimization hints from semantic analysis
     pub join_hints: Vec<crate::semantic::analyzer::JoinHint>,
+
+    /// Analyzed statements for subqueries in FROM clauses
+    /// These have their own local column resolution maps with offsets starting from 0
+    /// Key: subquery alias name -> analyzed subquery
+    pub subquery_analyses: std::collections::HashMap<String, Arc<AnalyzedStatement>>,
 }
 
 /// Template for a predicate that can be evaluated with parameters
@@ -163,7 +169,8 @@ pub enum StatementType {
 #[derive(Debug, Clone, Default)]
 pub struct ColumnResolutionMap {
     /// Direct lookup: (table_qualifier, column_name) -> resolution
-    pub columns: HashMap<(Option<String>, String), ColumnResolution>,
+    /// Using IndexMap to preserve insertion order for deterministic column ordering
+    pub columns: IndexMap<(Option<String>, String), ColumnResolution>,
 
     /// Ambiguous columns that need table qualification
     pub ambiguous: HashSet<String>,
@@ -172,8 +179,8 @@ pub struct ColumnResolutionMap {
 /// Pre-resolved column information
 #[derive(Debug, Clone)]
 pub struct ColumnResolution {
-    /// Global column offset for execution
-    pub global_offset: usize,
+    /// Column offset for execution
+    pub offset: usize,
 
     /// Actual table name (not alias)
     pub table_name: String,
@@ -197,6 +204,7 @@ impl AnalyzedStatement {
             aggregate_expressions: HashSet::new(),
             output_nullability: Vec::new(),
             join_hints: Vec::new(),
+            subquery_analyses: std::collections::HashMap::new(),
         }
     }
 
@@ -467,7 +475,8 @@ impl ColumnResolutionMap {
     pub fn mark_ambiguous(&mut self, column_name: String) {
         self.ambiguous.insert(column_name.clone());
         // Remove any unqualified entry
-        self.columns.remove(&(None, column_name));
+        // Using shift_remove to maintain order of remaining elements
+        self.columns.shift_remove(&(None, column_name));
     }
 
     /// Check if a column is ambiguous
@@ -497,7 +506,7 @@ impl ColumnResolutionMap {
         None
     }
 
-    /// Extract column names in order by global_offset
+    /// Extract column names in order by offset
     /// Returns column names as they should appear in query results
     pub fn get_ordered_column_names(&self) -> Vec<String> {
         // Build a map of offset -> column name, preferring unqualified entries
@@ -506,7 +515,7 @@ impl ColumnResolutionMap {
 
         // First pass: add all entries
         for ((qualifier, col_name), resolution) in &self.columns {
-            let offset = resolution.global_offset;
+            let offset = resolution.offset;
 
             // Only set if not already set, OR if this is an unqualified entry (prefer unqualified)
             if !offset_to_name.contains_key(&offset) || qualifier.is_none() {

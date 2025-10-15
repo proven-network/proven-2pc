@@ -13,6 +13,16 @@ use crate::parsing::ast::{DmlStatement, FromClause, SelectStatement, Statement};
 use crate::planning::planner::Planner;
 use crate::types::{DataType, schema::Table};
 use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Output schema from a SELECT subquery: (column_name, data_type, nullable)
+type SubqueryOutputSchema = Vec<(String, DataType, bool)>;
+
+/// Result from analyzing a SELECT subquery: schema and analyzed statement
+type SubqueryAnalysisResult = (
+    SubqueryOutputSchema,
+    Arc<super::statement::AnalyzedStatement>,
+);
 
 /// Information about a table source (regular table or subquery)
 #[derive(Debug, Clone)]
@@ -161,14 +171,20 @@ impl NameResolver {
     }
 
     /// Build column map from resolved table sources
+    /// Returns (column_resolution_map, subquery_analyses)
     pub fn build_column_map(
         &self,
         sources: &[TableSource],
         schemas: &HashMap<String, Table>,
-    ) -> Result<ColumnResolutionMap> {
+    ) -> Result<(
+        ColumnResolutionMap,
+        HashMap<String, Arc<super::statement::AnalyzedStatement>>,
+    )> {
         let mut resolution_map = ColumnResolutionMap::default();
         let mut column_counts: HashMap<String, usize> = HashMap::new();
-        let mut global_offset = 0;
+        let mut offset = 0;
+        let mut subquery_analyses: HashMap<String, Arc<super::statement::AnalyzedStatement>> =
+            HashMap::new();
 
         for source in sources {
             match source {
@@ -200,7 +216,7 @@ impl NameResolver {
                             *column_counts.entry(column_name.clone()).or_insert(0) += 1;
 
                             let resolution = ColumnResolution {
-                                global_offset,
+                                offset,
                                 table_name: name.clone(),
                                 data_type: column.data_type.clone(),
                                 nullable: column.nullable,
@@ -214,7 +230,7 @@ impl NameResolver {
                                 resolution,
                             );
 
-                            global_offset += 1;
+                            offset += 1;
                         }
                     }
                 }
@@ -256,7 +272,7 @@ impl NameResolver {
                                     // For VALUES, we don't know the exact type yet, use Null as placeholder
                                     // The typing phase will determine the actual type
                                     let resolution = ColumnResolution {
-                                        global_offset,
+                                        offset,
                                         table_name: alias.clone(),
                                         data_type: DataType::Null,
                                         nullable: true,
@@ -272,14 +288,17 @@ impl NameResolver {
                                     // Also add without table qualifier for column references
                                     resolution_map.add_resolution(None, column_name, resolution);
 
-                                    global_offset += 1;
+                                    offset += 1;
                                 }
                             }
                         }
                         SubquerySource::Select(select_stmt) => {
                             // Recursively analyze the SELECT subquery to get its output schema
-                            let subquery_columns =
+                            let (subquery_columns, subquery_analyzed) =
                                 self.extract_select_output_columns(select_stmt, schemas)?;
+
+                            // Store the analyzed subquery for later use by the planner
+                            subquery_analyses.insert(alias.clone(), subquery_analyzed);
 
                             // Validate column aliases count
                             if !column_aliases.is_empty()
@@ -307,7 +326,7 @@ impl NameResolver {
                                 *column_counts.entry(final_col_name.clone()).or_insert(0) += 1;
 
                                 let resolution = ColumnResolution {
-                                    global_offset,
+                                    offset,
                                     table_name: alias.clone(),
                                     data_type: col_type.clone(),
                                     nullable: *nullable,
@@ -324,7 +343,7 @@ impl NameResolver {
                                 // Also add without qualifier for unambiguous lookups
                                 resolution_map.add_resolution(None, final_col_name, resolution);
 
-                                global_offset += 1;
+                                offset += 1;
                             }
                         }
                     }
@@ -354,7 +373,7 @@ impl NameResolver {
                     *column_counts.entry(column_name.clone()).or_insert(0) += 1;
 
                     let resolution = ColumnResolution {
-                        global_offset,
+                        offset,
                         table_name: alias.clone().unwrap_or_else(|| "SERIES".to_string()),
                         data_type: DataType::I64,
                         nullable: false,
@@ -373,7 +392,7 @@ impl NameResolver {
                     // Also add without table qualifier for unambiguous lookups
                     resolution_map.add_resolution(None, column_name, resolution);
 
-                    global_offset += 1;
+                    offset += 1;
                 }
             }
         }
@@ -381,15 +400,15 @@ impl NameResolver {
         // Add outer query columns if this is a correlated subquery
         // Outer columns are appended after inner columns, so adjust their offsets
         if let Some(outer_map) = &self.outer_column_map {
-            let inner_column_count = global_offset; // Number of columns in inner query
+            let inner_column_count = offset; // Number of columns in inner query
             for ((table_qualifier, col_name), outer_resolution) in &outer_map.columns {
                 // Only add if not already present in inner query
                 // Outer columns are accessible but don't override inner columns
                 let key = (table_qualifier.clone(), col_name.clone());
                 resolution_map.columns.entry(key).or_insert_with(|| {
-                    // Adjust the global_offset to account for inner columns
+                    // Adjust the offset to account for inner columns
                     let mut adjusted_resolution = outer_resolution.clone();
-                    adjusted_resolution.global_offset += inner_column_count;
+                    adjusted_resolution.offset += inner_column_count;
                     adjusted_resolution
                 });
             }
@@ -402,16 +421,16 @@ impl NameResolver {
             }
         }
 
-        Ok(resolution_map)
+        Ok((resolution_map, subquery_analyses))
     }
 
     /// Extract output column schema from a SELECT statement
-    /// Returns Vec<(column_name, data_type, nullable)>
+    /// Returns (output_schema, analyzed_statement) for the subquery
     fn extract_select_output_columns(
         &self,
         select_stmt: &SelectStatement,
         _schemas: &HashMap<String, Table>,
-    ) -> Result<Vec<(String, DataType, bool)>> {
+    ) -> Result<SubqueryAnalysisResult> {
         // Plan the subquery to get its actual output schema
         let subquery_analyzer = super::analyzer::SemanticAnalyzer::new(self.schemas.clone());
         let subquery_statement =
@@ -484,7 +503,7 @@ impl NameResolver {
             }
         }
 
-        Ok(columns)
+        Ok((columns, Arc::new(analyzed)))
     }
 
     /// Validate that a table exists in the schema

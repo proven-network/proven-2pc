@@ -210,7 +210,9 @@ impl BinaryOperator for EqualOperator {
             // POINT comparison with string - parse the string as POINT
             (Point(_), Str(s)) | (Str(s), Point(_)) => {
                 // Try to coerce string to Point
-                if let Ok(point_val) = crate::coercion::coerce_value(Str(s.clone()), &crate::types::DataType::Point) {
+                if let Ok(point_val) =
+                    crate::coercion::coerce_value(Str(s.clone()), &crate::types::DataType::Point)
+                {
                     if matches!(left, Point(_)) {
                         (left.clone(), point_val)
                     } else {

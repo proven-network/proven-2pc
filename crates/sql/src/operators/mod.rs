@@ -458,7 +458,10 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
                     parsed_point.cmp(point)
                 }
             } else {
-                return Err(Error::InvalidValue(format!("Failed to parse '{}' as POINT", s)));
+                return Err(Error::InvalidValue(format!(
+                    "Failed to parse '{}' as POINT",
+                    s
+                )));
             }
         }
 

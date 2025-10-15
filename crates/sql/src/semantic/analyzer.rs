@@ -22,6 +22,10 @@ pub struct ResolutionOutput {
 
     /// Column resolution map for O(1) lookups
     pub column_map: ColumnResolutionMap,
+
+    /// Analyzed statements for subqueries in FROM clauses
+    pub subquery_analyses:
+        std::collections::HashMap<String, Arc<super::statement::AnalyzedStatement>>,
 }
 
 /// Output from type inference phase
@@ -132,12 +136,14 @@ impl SemanticAnalyzer {
         // Build table sources list from FROM clauses
         let table_sources = resolver.extract_table_sources(ast)?;
 
-        // Build column resolution map
-        let column_map = resolver.build_column_map(&table_sources, &self.schemas)?;
+        // Build column resolution map and collect subquery analyses
+        let (column_map, subquery_analyses) =
+            resolver.build_column_map(&table_sources, &self.schemas)?;
 
         Ok(ResolutionOutput {
             table_sources,
             column_map,
+            subquery_analyses,
         })
     }
 
@@ -247,6 +253,7 @@ impl SemanticAnalyzer {
 
         // Add resolution data
         analyzed.column_resolution_map = resolution.column_map;
+        analyzed.subquery_analyses = resolution.subquery_analyses;
 
         // Add aggregate expressions first (while we still have types)
         for (expr_id, type_info) in &types.expression_types {

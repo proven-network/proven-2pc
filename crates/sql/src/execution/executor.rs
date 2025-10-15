@@ -769,11 +769,10 @@ pub fn execute_node_read_with_outer<'a>(
             let left_columns = left.column_count(&schemas);
             let right_columns = right.column_count(&schemas);
 
-            // Both can borrow storage immutably!
-            let left_rows =
-                execute_node_read_with_outer(*left, storage, tx_ctx, params, outer_row)?;
-            let right_rows =
-                execute_node_read_with_outer(*right, storage, tx_ctx, params, outer_row)?;
+            // IMPORTANT: Do NOT pass outer_row to the join sources!
+            // Inline views in FROM clauses are independent and should not see outer context.
+            let left_rows = execute_node_read_with_outer(*left, storage, tx_ctx, params, None)?;
+            let right_rows = execute_node_read_with_outer(*right, storage, tx_ctx, params, None)?;
 
             join::execute_hash_join(
                 left_rows,
@@ -802,10 +801,11 @@ pub fn execute_node_read_with_outer<'a>(
             let left_columns = left.column_count(&schemas);
             let right_columns = right.column_count(&schemas);
 
-            let left_rows =
-                execute_node_read_with_outer(*left, storage, tx_ctx, params, outer_row)?;
-            let right_rows =
-                execute_node_read_with_outer(*right, storage, tx_ctx, params, outer_row)?;
+            // IMPORTANT: Do NOT pass outer_row to the join sources!
+            // Inline views in FROM clauses are independent and should not see outer context.
+            // Only pass outer_row for correlated subqueries in WHERE/SELECT clauses.
+            let left_rows = execute_node_read_with_outer(*left, storage, tx_ctx, params, None)?;
+            let right_rows = execute_node_read_with_outer(*right, storage, tx_ctx, params, None)?;
 
             // Use the standalone function for nested loop join
             join::execute_nested_loop_join(
