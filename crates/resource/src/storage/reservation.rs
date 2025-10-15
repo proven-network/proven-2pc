@@ -2,10 +2,11 @@
 
 use crate::types::Amount;
 use proven_hlc::HlcTimestamp;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// Type of reservation
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ReservationType {
     /// Reserve balance for spending (debit)
     Debit(Amount),
@@ -215,6 +216,35 @@ impl ReservationManager {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Get all reservations held by a transaction
+    /// Returns list of (account, reservation_type) pairs
+    pub fn reservations_held_by(
+        &self,
+        transaction_id: HlcTimestamp,
+    ) -> Vec<(String, ReservationType)> {
+        let mut result = Vec::new();
+
+        // Check metadata reservation
+        if self.metadata_reservation == Some(transaction_id) {
+            result.push((String::new(), ReservationType::MetadataUpdate));
+        }
+
+        // Check account reservations
+        if let Some(accounts) = self.transaction_accounts.get(&transaction_id) {
+            for account in accounts {
+                if let Some(reservations) = self.account_reservations.get(account) {
+                    for reservation in reservations {
+                        if reservation.transaction_id == transaction_id {
+                            result.push((account.clone(), reservation.reservation_type.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        result
     }
 }
 

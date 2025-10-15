@@ -693,23 +693,26 @@ fn test_metadata_read_properly_blocks() {
         4,
     );
 
-    // Snapshot read at timestamp 300 MUST block
+    // Snapshot read at timestamp 300 with MVCC
+    // With MVCC, snapshot reads don't block - they read the last committed version
+    // visible at their timestamp. Since tx_update (200) hasn't committed yet,
+    // the snapshot at 300 will see the old committed data from tx1 (100).
     let read_ts = make_timestamp(300);
     let result = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts, 5);
 
-    // Must block
+    // Should succeed and see old metadata (uncommitted changes are not visible)
     match result {
-        OperationResult::WouldBlock { blockers } => {
-            assert_eq!(blockers.len(), 1);
-            assert_eq!(blockers[0].txn, tx_update);
+        OperationResult::Complete(ResourceResponse::Metadata { name, symbol, .. }) => {
+            assert_eq!(name, "Old Name");
+            assert_eq!(symbol, "OLD");
         }
-        _ => panic!("Expected WouldBlock but got {:?}", result),
+        _ => panic!("Expected Complete with old metadata but got {:?}", result),
     }
 
     // Abort the update transaction
     engine.abort(tx_update, 6);
 
-    // Now the read should succeed and see the old metadata
+    // Read again - should still see the old metadata
     let result = engine.read_at_timestamp(ResourceOperation::GetMetadata, read_ts, 7);
 
     match result {
@@ -761,23 +764,26 @@ fn test_supply_read_properly_blocks() {
         6,
     );
 
-    // Snapshot read at timestamp 300 MUST block
+    // Snapshot read at timestamp 300 with MVCC
+    // With MVCC, snapshot reads don't block - they read the last committed version
+    // visible at their timestamp. Since tx_mint (200) hasn't committed yet,
+    // the snapshot at 300 will see the old committed supply from tx1 (100).
     let read_ts = make_timestamp(300);
     let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts, 7);
 
-    // Must block
+    // Should succeed and see old supply (uncommitted mint is not visible)
     match result {
-        OperationResult::WouldBlock { blockers } => {
-            assert_eq!(blockers.len(), 1);
-            assert_eq!(blockers[0].txn, tx_mint);
+        OperationResult::Complete(ResourceResponse::TotalSupply { amount }) => {
+            assert_eq!(amount, Amount::from_integer(1000, 8));
         }
-        _ => panic!("Expected WouldBlock but got {:?}", result),
+        _ => panic!("Expected Complete with old supply but got {:?}", result),
     }
 
     // Commit the mint transaction
     engine.commit(tx_mint, 8);
 
-    // Now the read should succeed and see the new supply
+    // Read again at the same snapshot timestamp - should now see the new supply
+    // because tx_mint (200) < read_ts (300), so the committed change is visible
     let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, read_ts, 9);
 
     match result {
