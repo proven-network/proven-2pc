@@ -31,6 +31,12 @@ Test implementation simulating a consensus/streaming layer for development and t
 #### `proven-hlc` - Hybrid Logical Clocks
 Provides distributed timestamp generation combining physical time with logical counters for causal ordering.
 
+#### `proven-mvcc` - Multi-Version Concurrency Control
+Generic MVCC storage layer providing snapshot isolation, time-travel queries, and crash recovery.
+
+#### `proven-value` - Value Types and Serialization
+Common value types and encoding/decoding utilities shared across storage engines.
+
 ### Snapshot Storage
 
 #### `proven-snapshot` - Snapshot Storage Trait
