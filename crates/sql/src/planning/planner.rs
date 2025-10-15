@@ -536,7 +536,18 @@ impl Planner {
             }
             InsertSource::DefaultValues => Box::new(Node::Values { rows: vec![vec![]] }),
             InsertSource::Select(select) => {
-                let plan = self.plan_select(&select, _analyzed)?;
+                // Analyze the SELECT statement separately to detect ambiguous columns
+                // and other semantic issues (same pattern as CREATE TABLE AS SELECT)
+                use crate::parsing::ast::Statement;
+                use crate::parsing::ast::dml::DmlStatement;
+
+                let select_stmt = Statement::Dml(DmlStatement::Select(select.clone()));
+                let analyzer =
+                    crate::semantic::analyzer::SemanticAnalyzer::new(self.schemas.clone());
+                let select_analyzed = analyzer.analyze(select_stmt, Vec::new())?;
+
+                // Now plan the SELECT statement with its own analysis
+                let plan = self.plan_select(&select, &select_analyzed)?;
                 match plan {
                     Plan::Query { root, .. } => root,
                     _ => return Err(Error::ExecutionError("Expected Query plan".into())),

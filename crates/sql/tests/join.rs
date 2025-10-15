@@ -528,7 +528,6 @@ fn test_join_ambiguous_column_self_join() {
 }
 
 #[test]
-#[ignore = "INSERT doesn't validate ambiguous columns in SELECT subqueries yet"]
 fn test_join_ambiguous_column_in_insert() {
     let mut ctx = setup_test();
     setup_join_tables(&mut ctx);
