@@ -43,10 +43,19 @@ impl Function for SqrtFunction {
                 // SQRT always returns F64
                 Ok(DataType::F64)
             }
-            DataType::Nullable(inner) => {
-                // Check inner type is numeric
-                self.validate(&[(**inner).clone()])?;
+            DataType::Null => {
+                // NULL literal returns nullable F64
                 Ok(DataType::Nullable(Box::new(DataType::F64)))
+            }
+            DataType::Nullable(inner) => {
+                // Check inner type is numeric or null
+                match inner.as_ref() {
+                    DataType::Null => Ok(DataType::Nullable(Box::new(DataType::F64))),
+                    _ => {
+                        self.validate(&[(**inner).clone()])?;
+                        Ok(DataType::Nullable(Box::new(DataType::F64)))
+                    }
+                }
             }
             _ => Err(Error::TypeMismatch {
                 expected: "numeric type".into(),
@@ -113,7 +122,9 @@ impl Function for PowerFunction {
             )));
         }
 
-        // Both arguments must be numeric
+        let mut has_null = false;
+
+        // Both arguments must be numeric or null
         for arg_type in arg_types {
             match arg_type {
                 DataType::I8
@@ -129,29 +140,34 @@ impl Function for PowerFunction {
                 | DataType::F32
                 | DataType::F64
                 | DataType::Decimal(_, _) => {}
-                DataType::Nullable(inner) => match inner.as_ref() {
-                    DataType::I8
-                    | DataType::I16
-                    | DataType::I32
-                    | DataType::I64
-                    | DataType::I128
-                    | DataType::U8
-                    | DataType::U16
-                    | DataType::U32
-                    | DataType::U64
-                    | DataType::U128
-                    | DataType::F32
-                    | DataType::F64
-                    | DataType::Decimal(_, _) => {
-                        return Ok(DataType::Nullable(Box::new(DataType::F64)));
+                DataType::Null => {
+                    has_null = true;
+                }
+                DataType::Nullable(inner) => {
+                    has_null = true;
+                    match inner.as_ref() {
+                        DataType::Null
+                        | DataType::I8
+                        | DataType::I16
+                        | DataType::I32
+                        | DataType::I64
+                        | DataType::I128
+                        | DataType::U8
+                        | DataType::U16
+                        | DataType::U32
+                        | DataType::U64
+                        | DataType::U128
+                        | DataType::F32
+                        | DataType::F64
+                        | DataType::Decimal(_, _) => {}
+                        _ => {
+                            return Err(Error::TypeMismatch {
+                                expected: "numeric type".into(),
+                                found: arg_type.to_string(),
+                            });
+                        }
                     }
-                    _ => {
-                        return Err(Error::TypeMismatch {
-                            expected: "numeric type".into(),
-                            found: arg_type.to_string(),
-                        });
-                    }
-                },
+                }
                 _ => {
                     return Err(Error::TypeMismatch {
                         expected: "numeric type".into(),
@@ -161,8 +177,12 @@ impl Function for PowerFunction {
             }
         }
 
-        // POWER always returns F64
-        Ok(DataType::F64)
+        // POWER returns nullable F64 if any argument is/can be null, otherwise F64
+        if has_null {
+            Ok(DataType::Nullable(Box::new(DataType::F64)))
+        } else {
+            Ok(DataType::F64)
+        }
     }
 
     fn execute(&self, args: &[Value], _context: &ExecutionContext) -> Result<Value> {
