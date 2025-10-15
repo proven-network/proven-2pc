@@ -606,7 +606,7 @@ impl TypeChecker {
         use Operator::*;
 
         match op {
-            And(l, r) | Or(l, r) => {
+            And(l, r) | Or(l, r) | Xor(l, r) => {
                 let left_id = expr_id.child(0);
                 let right_id = expr_id.child(1);
                 let left_type =
@@ -620,6 +620,9 @@ impl TypeChecker {
                     }
                     Or(_, _) => {
                         operators::validate_or(&left_type.data_type, &right_type.data_type)?
+                    }
+                    Xor(_, _) => {
+                        operators::validate_xor(&left_type.data_type, &right_type.data_type)?
                     }
                     _ => unreachable!(),
                 };

@@ -70,6 +70,7 @@ pub enum Operator {
     And(Box<Expression>, Box<Expression>), // a AND b
     Not(Box<Expression>),                  // NOT a
     Or(Box<Expression>, Box<Expression>),  // a OR b
+    Xor(Box<Expression>, Box<Expression>), // a XOR b
 
     Equal(Box<Expression>, Box<Expression>),       // a = b
     GreaterThan(Box<Expression>, Box<Expression>), // a > b

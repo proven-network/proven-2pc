@@ -1,81 +1,116 @@
 //! Arithmetic projection tests
 //! Based on gluesql/test-suite/src/arithmetic/project.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::{TableBuilder, setup_test};
+use proven_value::Value;
+
 #[test]
-fn test_create_table_for_arithmetic_project() {
-    // TODO: Test CREATE TABLE ArithmeticTest (id INTEGER, a INTEGER, b INTEGER, rate FLOAT)
+fn test_complex_arithmetic_expression() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER")
+        .insert_values("(1, 6), (2, 8), (3, 4), (4, 2), (5, 3)");
+
+    // Test complex arithmetic: 1 * 2 + 1 - 3 / 1 = 2 + 1 - 3 = 0
+    let results = ctx.query("SELECT 1 * 2 + 1 - 3 / 1 FROM Arith LIMIT 1");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("column_0"), Some(&Value::I32(0)));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_insert_data_for_arithmetic_project() {
-    // TODO: Test INSERT INTO ArithmeticTest VALUES with various numeric values for arithmetic operations
+fn test_arithmetic_with_columns() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER")
+        .insert_values("(1, 6), (2, 8), (3, 4), (4, 2), (5, 3)");
+
+    // Test arithmetic with column values
+    let results = ctx.query("SELECT id, id + 1, id + num, 1 + 1 FROM Arith");
+
+    assert_eq!(results.len(), 5);
+
+    // Check first row: id=1, id+1=2 (column_1), id+num=7 (column_2), 1+1=2 (column_3)
+    assert_eq!(results[0].get("id"), Some(&Value::I32(1)));
+    assert_eq!(results[0].get("column_1"), Some(&Value::I32(2)));
+    assert_eq!(results[0].get("column_2"), Some(&Value::I32(7)));
+    assert_eq!(results[0].get("column_3"), Some(&Value::I32(2)));
+
+    // Check second row: id=2, id+1=3, id+num=10, 1+1=2
+    assert_eq!(results[1].get("id"), Some(&Value::I32(2)));
+    assert_eq!(results[1].get("column_1"), Some(&Value::I32(3)));
+    assert_eq!(results[1].get("column_2"), Some(&Value::I32(10)));
+    assert_eq!(results[1].get("column_3"), Some(&Value::I32(2)));
+
+    // Check third row: id=3, id+1=4, id+num=7, 1+1=2
+    assert_eq!(results[2].get("id"), Some(&Value::I32(3)));
+    assert_eq!(results[2].get("column_1"), Some(&Value::I32(4)));
+    assert_eq!(results[2].get("column_2"), Some(&Value::I32(7)));
+    assert_eq!(results[2].get("column_3"), Some(&Value::I32(2)));
+
+    // Check fourth row: id=4, id+1=5, id+num=6, 1+1=2
+    assert_eq!(results[3].get("id"), Some(&Value::I32(4)));
+    assert_eq!(results[3].get("column_1"), Some(&Value::I32(5)));
+    assert_eq!(results[3].get("column_2"), Some(&Value::I32(6)));
+    assert_eq!(results[3].get("column_3"), Some(&Value::I32(2)));
+
+    // Check fifth row: id=5, id+1=6, id+num=8, 1+1=2
+    assert_eq!(results[4].get("id"), Some(&Value::I32(5)));
+    assert_eq!(results[4].get("column_1"), Some(&Value::I32(6)));
+    assert_eq!(results[4].get("column_2"), Some(&Value::I32(8)));
+    assert_eq!(results[4].get("column_3"), Some(&Value::I32(2)));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_basic_arithmetic_in_select() {
-    // TODO: Test SELECT id, a + b AS sum FROM ArithmeticTest - addition in projection
-    // TODO: Test SELECT id, a - b AS diff FROM ArithmeticTest - subtraction in projection
-    // TODO: Test SELECT id, a * b AS product FROM ArithmeticTest - multiplication in projection
-    // TODO: Test SELECT id, a / b AS quotient FROM ArithmeticTest - division in projection
+fn test_arithmetic_with_join() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER")
+        .insert_values("(1, 6), (2, 8), (3, 4), (4, 2), (5, 3)");
+
+    // Test arithmetic across joined tables
+    let results = ctx.query("SELECT a.id + b.id FROM Arith a JOIN Arith b ON a.id = b.id + 1");
+
+    assert_eq!(results.len(), 4);
+
+    // a.id=2, b.id=1: 2+1=3
+    assert_eq!(results[0].get("column_0"), Some(&Value::I32(3)));
+    // a.id=3, b.id=2: 3+2=5
+    assert_eq!(results[1].get("column_0"), Some(&Value::I32(5)));
+    // a.id=4, b.id=3: 4+3=7
+    assert_eq!(results[2].get("column_0"), Some(&Value::I32(7)));
+    // a.id=5, b.id=4: 5+4=9
+    assert_eq!(results[3].get("column_0"), Some(&Value::I32(9)));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
-fn test_mixed_type_arithmetic() {
-    // TODO: Test SELECT id, a + rate FROM ArithmeticTest - integer + float
-    // TODO: Test SELECT id, rate * a FROM ArithmeticTest - float * integer
-}
+fn test_xor_operation() {
+    let mut ctx = setup_test();
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_complex_arithmetic_expressions() {
-    // TODO: Test SELECT id, (a + b) * rate FROM ArithmeticTest - complex expression with parentheses
-    // TODO: Test SELECT id, a + b * rate FROM ArithmeticTest - operator precedence test
-}
+    TableBuilder::new(&mut ctx, "Arith")
+        .create_simple("id INTEGER, num INTEGER")
+        .insert_values("(1, 6)");
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_with_constants() {
-    // TODO: Test SELECT id, a + 10 FROM ArithmeticTest - column + constant
-    // TODO: Test SELECT id, rate * 1.5 FROM ArithmeticTest - float column * constant
-}
+    let results = ctx.query(
+        "SELECT TRUE XOR TRUE, FALSE XOR FALSE, TRUE XOR FALSE, FALSE XOR TRUE FROM Arith LIMIT 1",
+    );
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_column_aliases() {
-    // TODO: Test SELECT id, a + b AS total, a - b AS difference FROM ArithmeticTest - multiple arithmetic projections with aliases
-}
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("column_0"), Some(&Value::Bool(false)));
+    assert_eq!(results[0].get("column_1"), Some(&Value::Bool(false)));
+    assert_eq!(results[0].get("column_2"), Some(&Value::Bool(true)));
+    assert_eq!(results[0].get("column_3"), Some(&Value::Bool(true)));
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_nested_arithmetic_expressions() {
-    // TODO: Test SELECT id, ((a + b) * rate) / 2 FROM ArithmeticTest - nested arithmetic operations
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_with_functions() {
-    // TODO: Test SELECT id, ABS(a - b) FROM ArithmeticTest - arithmetic with function calls
-    // TODO: Test SELECT id, ROUND(rate * a, 2) FROM ArithmeticTest - function with arithmetic
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_in_computed_columns() {
-    // TODO: Test using arithmetic expressions as computed columns in projections
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_arithmetic_with_null_handling() {
-    // TODO: Test SELECT id, a + NULL FROM ArithmeticTest - arithmetic with NULL values
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_modulo_operation_in_projection() {
-    // TODO: Test SELECT id, a % b AS remainder FROM ArithmeticTest - modulo operation
+    ctx.commit();
 }

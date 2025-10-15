@@ -80,6 +80,7 @@ impl SemanticValidator {
                 match op {
                     Operator::And(l, r)
                     | Operator::Or(l, r)
+                    | Operator::Xor(l, r)
                     | Operator::Equal(l, r)
                     | Operator::NotEqual(l, r)
                     | Operator::GreaterThan(l, r)
@@ -181,6 +182,7 @@ impl SemanticValidator {
                 match op {
                     Operator::And(l, r)
                     | Operator::Or(l, r)
+                    | Operator::Xor(l, r)
                     | Operator::Equal(l, r)
                     | Operator::NotEqual(l, r)
                     | Operator::GreaterThan(l, r)
@@ -281,6 +283,7 @@ impl SemanticValidator {
                 match op {
                     Operator::And(l, r)
                     | Operator::Or(l, r)
+                    | Operator::Xor(l, r)
                     | Operator::Equal(l, r)
                     | Operator::NotEqual(l, r)
                     | Operator::GreaterThan(l, r)
@@ -384,6 +387,7 @@ impl SemanticValidator {
                 match op {
                     Operator::And(l, r)
                     | Operator::Or(l, r)
+                    | Operator::Xor(l, r)
                     | Operator::Equal(l, r)
                     | Operator::NotEqual(l, r)
                     | Operator::GreaterThan(l, r)

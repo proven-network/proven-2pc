@@ -27,6 +27,7 @@ mod not_equal;
 mod and;
 mod not;
 mod or;
+mod xor;
 
 // Unary operators
 mod factorial;
@@ -144,6 +145,18 @@ pub fn execute_or(left: &Value, right: &Value) -> Result<Value> {
 /// Validate OR operation types
 pub fn validate_or(left: &DataType, right: &DataType) -> Result<DataType> {
     static OP: or::OrOperator = or::OrOperator;
+    OP.validate(left, right)
+}
+
+/// Execute XOR operation
+pub fn execute_xor(left: &Value, right: &Value) -> Result<Value> {
+    static OP: xor::XorOperator = xor::XorOperator;
+    OP.execute(left, right)
+}
+
+/// Validate XOR operation types
+pub fn validate_xor(left: &DataType, right: &DataType) -> Result<DataType> {
+    static OP: xor::XorOperator = xor::XorOperator;
     OP.validate(left, right)
 }
 

@@ -84,6 +84,7 @@ pub enum InfixOperator {
     Or,                 // a OR b
     Remainder,          // a % b
     Subtract,           // a - b
+    Xor,                // a XOR b
 }
 
 impl InfixOperator {
@@ -93,7 +94,7 @@ impl InfixOperator {
     /// This is similar to SQLite and MySQL.
     pub fn precedence(&self) -> Precedence {
         match self {
-            Self::Or => 1,
+            Self::Or | Self::Xor => 1,
             Self::And => 2,
             // Self::Not => 3
             Self::Equal | Self::NotEqual | Self::ILike | Self::Like => 4, // also Self::Is
@@ -136,6 +137,7 @@ impl InfixOperator {
             Self::Or => Operator::Or(lhs, rhs).into(),
             Self::Remainder => Operator::Remainder(lhs, rhs).into(),
             Self::Subtract => Operator::Subtract(lhs, rhs).into(),
+            Self::Xor => Operator::Xor(lhs, rhs).into(),
         }
     }
 }
@@ -657,6 +659,7 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 Token::Keyword(Keyword::ILike) => InfixOperator::ILike,
                 Token::Keyword(Keyword::Like) => InfixOperator::Like,
                 Token::Keyword(Keyword::Or) => InfixOperator::Or,
+                Token::Keyword(Keyword::Xor) => InfixOperator::Xor,
                 Token::LessOrGreaterThan => InfixOperator::NotEqual,
                 Token::LessThan => InfixOperator::LessThan,
                 Token::LessThanOrEqual => InfixOperator::LessThanOrEqual,

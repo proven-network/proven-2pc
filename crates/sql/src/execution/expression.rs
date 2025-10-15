@@ -56,6 +56,11 @@ pub fn evaluate_with_storage(
             let r = evaluate_with_storage(rhs, row, context, params, storage)?;
             operators::execute_or(&l, &r)?
         }
+        Xor(lhs, rhs) => {
+            let l = evaluate_with_storage(lhs, row, context, params, storage)?;
+            let r = evaluate_with_storage(rhs, row, context, params, storage)?;
+            operators::execute_xor(&l, &r)?
+        }
         Not(expr) => {
             let v = evaluate_with_storage(expr, row, context, params, storage)?;
             operators::execute_not(&v)?

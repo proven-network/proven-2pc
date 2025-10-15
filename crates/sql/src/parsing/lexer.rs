@@ -210,6 +210,7 @@ pub enum Keyword {
     When,
     Where,
     Write,
+    Xor,
     Year,
     Years,
 }
@@ -336,6 +337,7 @@ impl TryFrom<&str> for Keyword {
             "when" => Self::When,
             "where" => Self::Where,
             "write" => Self::Write,
+            "xor" => Self::Xor,
             "year" => Self::Year,
             "years" => Self::Years,
             _ => return Err("not a keyword"),
@@ -457,6 +459,7 @@ impl Display for Keyword {
             Self::When => "WHEN",
             Self::Where => "WHERE",
             Self::Write => "WRITE",
+            Self::Xor => "XOR",
             Self::Year => "YEAR",
             Self::Years => "YEARS",
         })

@@ -27,6 +27,8 @@ pub enum Expression {
     And(Box<Expression>, Box<Expression>),
     /// a OR b: logical OR of two booleans.
     Or(Box<Expression>, Box<Expression>),
+    /// a XOR b: logical XOR (exclusive OR) of two booleans.
+    Xor(Box<Expression>, Box<Expression>),
     /// NOT a: logical NOT of a boolean.
     Not(Box<Expression>),
 
@@ -125,6 +127,7 @@ impl Display for Expression {
 
             And(lhs, rhs) => write!(f, "({} AND {})", lhs, rhs),
             Or(lhs, rhs) => write!(f, "({} OR {})", lhs, rhs),
+            Xor(lhs, rhs) => write!(f, "({} XOR {})", lhs, rhs),
             Not(expr) => write!(f, "(NOT {})", expr),
 
             Equal(lhs, rhs) => write!(f, "({} = {})", lhs, rhs),
@@ -261,6 +264,7 @@ pub enum DefaultExpression {
     // Boolean operations
     And(Box<DefaultExpression>, Box<DefaultExpression>),
     Or(Box<DefaultExpression>, Box<DefaultExpression>),
+    Xor(Box<DefaultExpression>, Box<DefaultExpression>),
     Not(Box<DefaultExpression>),
 
     // Comparison operations
@@ -331,6 +335,7 @@ impl From<DefaultExpression> for Expression {
             }
             DE::And(l, r) => E::And(Box::new((*l).into()), Box::new((*r).into())),
             DE::Or(l, r) => E::Or(Box::new((*l).into()), Box::new((*r).into())),
+            DE::Xor(l, r) => E::Xor(Box::new((*l).into()), Box::new((*r).into())),
             DE::Not(e) => E::Not(Box::new((*e).into())),
             DE::Equal(l, r) => E::Equal(Box::new((*l).into()), Box::new((*r).into())),
             DE::GreaterThan(l, r) => E::GreaterThan(Box::new((*l).into()), Box::new((*r).into())),

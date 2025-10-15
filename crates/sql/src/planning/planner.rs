@@ -1303,6 +1303,7 @@ impl Planner {
                     // Check other operators recursively
                     Operator::And(l, r)
                     | Operator::Or(l, r)
+                    | Operator::Xor(l, r)
                     | Operator::Equal(l, r)
                     | Operator::NotEqual(l, r)
                     | Operator::GreaterThan(l, r)
@@ -1698,6 +1699,10 @@ impl<'a> AnalyzedPlanContext<'a> {
                 Box::new(self.resolve_expression_simple(l)?),
                 Box::new(self.resolve_expression_simple(r)?),
             ),
+            Xor(l, r) => Expression::Xor(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
             Not(e) => Expression::Not(Box::new(self.resolve_expression_simple(e)?)),
             Equal(l, r) => Expression::Equal(
                 Box::new(self.resolve_expression_simple(l)?),
@@ -1935,6 +1940,10 @@ fn resolve_default_expression(
                     Box::new(resolve_default_expression(r)?),
                 ),
                 Or(l, r) => DefaultExpression::Or(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                Xor(l, r) => DefaultExpression::Xor(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),

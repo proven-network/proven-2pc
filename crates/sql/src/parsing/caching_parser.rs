@@ -110,6 +110,7 @@ fn count_parameters(stmt: &Statement) -> usize {
         match op {
             Operator::And(l, r)
             | Operator::Or(l, r)
+            | Operator::Xor(l, r)
             | Operator::Equal(l, r)
             | Operator::NotEqual(l, r)
             | Operator::LessThan(l, r)
