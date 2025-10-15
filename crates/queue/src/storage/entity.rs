@@ -10,7 +10,6 @@
 use crate::types::QueueValue;
 use proven_hlc::HlcTimestamp;
 use proven_mvcc::{Decode, Encode, Error as MvccError, MvccDelta, MvccEntity};
-use serde::{Deserialize, Serialize};
 
 type Result<T> = std::result::Result<T, MvccError>;
 
@@ -37,7 +36,7 @@ impl MvccEntity for QueueEntity {
 /// Delta operations for queue data
 ///
 /// Tracks enqueue, dequeue, and clear operations for time-travel and recovery.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum QueueDelta {
     /// Enqueue a value to the back of the queue
     Enqueue {
@@ -118,13 +117,143 @@ impl MvccDelta<QueueEntity> for QueueDelta {
 // Encode/Decode for QueueDelta
 impl Encode for QueueDelta {
     fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| MvccError::Encoding(e.to_string()))
+        use proven_value::encode_value;
+
+        let mut buf = Vec::new();
+        match self {
+            QueueDelta::Enqueue {
+                entry_id,
+                value,
+                enqueued_at,
+            } => {
+                buf.push(1); // Tag for Enqueue
+                buf.extend_from_slice(&entry_id.to_be_bytes());
+                buf.extend_from_slice(&encode_value(value));
+                // Encode HlcTimestamp with bincode (it's just primitive types + NodeId)
+                let ts_bytes = bincode::serialize(enqueued_at)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.extend_from_slice(&(ts_bytes.len() as u32).to_be_bytes());
+                buf.extend_from_slice(&ts_bytes);
+            }
+            QueueDelta::Dequeue {
+                entry_id,
+                old_value,
+            } => {
+                buf.push(2); // Tag for Dequeue
+                buf.extend_from_slice(&entry_id.to_be_bytes());
+                buf.extend_from_slice(&encode_value(old_value));
+            }
+            QueueDelta::Clear { cleared_entries } => {
+                buf.push(3); // Tag for Clear
+                buf.extend_from_slice(&(cleared_entries.len() as u32).to_be_bytes());
+                for (id, value) in cleared_entries {
+                    buf.extend_from_slice(&id.to_be_bytes());
+                    buf.extend_from_slice(&encode_value(value));
+                }
+            }
+        }
+        Ok(buf)
     }
 }
 
 impl Decode for QueueDelta {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(|e| MvccError::Encoding(e.to_string()))
+        use proven_value::decode_value;
+        use std::io::{Cursor, Read};
+
+        let mut cursor = Cursor::new(bytes);
+        let mut tag = [0u8; 1];
+        cursor
+            .read_exact(&mut tag)
+            .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+        match tag[0] {
+            1 => {
+                // Enqueue
+                let mut entry_id_bytes = [0u8; 8];
+                cursor
+                    .read_exact(&mut entry_id_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let entry_id = u64::from_be_bytes(entry_id_bytes);
+
+                let pos = cursor.position() as usize;
+                let remaining = &cursor.get_ref()[pos..];
+                let value =
+                    decode_value(remaining).map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let value_encoded = proven_value::encode_value(&value);
+                cursor.set_position((pos + value_encoded.len()) as u64);
+
+                // Decode HlcTimestamp
+                let mut ts_len_bytes = [0u8; 4];
+                cursor
+                    .read_exact(&mut ts_len_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let ts_len = u32::from_be_bytes(ts_len_bytes) as usize;
+
+                let mut ts_bytes = vec![0u8; ts_len];
+                cursor
+                    .read_exact(&mut ts_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let enqueued_at: HlcTimestamp = bincode::deserialize(&ts_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                Ok(QueueDelta::Enqueue {
+                    entry_id,
+                    value,
+                    enqueued_at,
+                })
+            }
+            2 => {
+                // Dequeue
+                let mut entry_id_bytes = [0u8; 8];
+                cursor
+                    .read_exact(&mut entry_id_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let entry_id = u64::from_be_bytes(entry_id_bytes);
+
+                let pos = cursor.position() as usize;
+                let remaining = &cursor.get_ref()[pos..];
+                let old_value =
+                    decode_value(remaining).map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                Ok(QueueDelta::Dequeue {
+                    entry_id,
+                    old_value,
+                })
+            }
+            3 => {
+                // Clear
+                let mut len_bytes = [0u8; 4];
+                cursor
+                    .read_exact(&mut len_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let len = u32::from_be_bytes(len_bytes) as usize;
+
+                let mut cleared_entries = Vec::with_capacity(len);
+                for _ in 0..len {
+                    let mut entry_id_bytes = [0u8; 8];
+                    cursor
+                        .read_exact(&mut entry_id_bytes)
+                        .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                    let entry_id = u64::from_be_bytes(entry_id_bytes);
+
+                    let pos = cursor.position() as usize;
+                    let remaining = &cursor.get_ref()[pos..];
+                    let value =
+                        decode_value(remaining).map_err(|e| MvccError::Encoding(e.to_string()))?;
+                    let value_encoded = proven_value::encode_value(&value);
+                    cursor.set_position((pos + value_encoded.len()) as u64);
+
+                    cleared_entries.push((entry_id, value));
+                }
+
+                Ok(QueueDelta::Clear { cleared_entries })
+            }
+            _ => Err(MvccError::Encoding(format!(
+                "Unknown delta tag: {}",
+                tag[0]
+            ))),
+        }
     }
 }
 
