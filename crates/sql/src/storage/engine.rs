@@ -143,7 +143,7 @@ impl SqlStorage {
 
             if let Some(table_name) = key_str.strip_prefix("schema_") {
                 // Decode schema
-                let schema: TableSchema = bincode::deserialize(&value)
+                let schema: TableSchema = ciborium::from_reader(&value[..])
                     .map_err(|e| Error::Serialization(e.to_string()))?;
 
                 // Create MvccStorage for this table
@@ -192,7 +192,7 @@ impl SqlStorage {
 
             if let Some(index_name) = key_str.strip_prefix("index_") {
                 // Decode index metadata
-                let index_meta: IndexMetadata = bincode::deserialize(&value)
+                let index_meta: IndexMetadata = ciborium::from_reader(&value[..])
                     .map_err(|e| Error::Serialization(e.to_string()))?;
 
                 // Create MvccStorage for this index
@@ -274,8 +274,9 @@ impl SqlStorage {
         )?;
 
         let schema_key = format!("schema_{}", table_name);
-        let schema_bytes =
-            bincode::serialize(&schema).map_err(|e| Error::Serialization(e.to_string()))?;
+        let mut schema_bytes = Vec::new();
+        ciborium::into_writer(&schema, &mut schema_bytes)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
 
         metadata.insert(schema_key, schema_bytes)?;
 
@@ -689,8 +690,9 @@ impl SqlStorage {
         )?;
 
         let index_key = format!("index_{}", index_name);
-        let index_bytes =
-            bincode::serialize(&metadata).map_err(|e| Error::Serialization(e.to_string()))?;
+        let mut index_bytes = Vec::new();
+        ciborium::into_writer(&metadata, &mut index_bytes)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
 
         metadata_partition.insert(index_key, index_bytes)?;
 

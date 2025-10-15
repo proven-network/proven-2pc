@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bincode.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 ciborium.workspace = true

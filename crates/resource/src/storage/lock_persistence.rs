@@ -40,16 +40,151 @@ impl TransactionReservations {
     }
 }
 
-/// Encode transaction reservations for persistence (using bincode for efficiency)
+/// Encode transaction reservations for persistence
 pub fn encode_transaction_reservations(
     reservations: &TransactionReservations,
 ) -> Result<Vec<u8>, String> {
-    bincode::serialize(reservations).map_err(|e| e.to_string())
+    use std::io::Write;
+    let mut buf = Vec::new();
+
+    // Encode HlcTimestamp (20 bytes)
+    buf.write_all(&reservations.txn_id.to_lexicographic_bytes())
+        .map_err(|e| e.to_string())?;
+
+    // Encode number of reservations
+    buf.write_all(&(reservations.reservations.len() as u32).to_be_bytes())
+        .map_err(|e| e.to_string())?;
+
+    // Encode each reservation
+    for reservation in &reservations.reservations {
+        // Encode account
+        let account_bytes = reservation.account.as_bytes();
+        buf.write_all(&(account_bytes.len() as u32).to_be_bytes())
+            .map_err(|e| e.to_string())?;
+        buf.write_all(account_bytes).map_err(|e| e.to_string())?;
+
+        // Encode reservation type (1 byte tag + data)
+        match &reservation.reservation_type {
+            ReservationType::Debit(amount) => {
+                buf.push(1); // Tag for Debit
+                encode_amount_to_buf(*amount, &mut buf)?;
+            }
+            ReservationType::Credit(amount) => {
+                buf.push(2); // Tag for Credit
+                encode_amount_to_buf(*amount, &mut buf)?;
+            }
+            ReservationType::MetadataUpdate => {
+                buf.push(3); // Tag for MetadataUpdate
+            }
+        }
+    }
+
+    Ok(buf)
 }
 
 /// Decode transaction reservations from persistence
 pub fn decode_transaction_reservations(bytes: &[u8]) -> Result<TransactionReservations, String> {
-    bincode::deserialize(bytes).map_err(|e| e.to_string())
+    use std::io::{Cursor, Read};
+
+    let mut cursor = Cursor::new(bytes);
+
+    // Decode HlcTimestamp (20 bytes)
+    let mut ts_bytes = [0u8; 20];
+    cursor
+        .read_exact(&mut ts_bytes)
+        .map_err(|e| e.to_string())?;
+    let txn_id = HlcTimestamp::from_lexicographic_bytes(&ts_bytes).map_err(|e| e.to_string())?;
+
+    // Decode number of reservations
+    let mut len_bytes = [0u8; 4];
+    cursor
+        .read_exact(&mut len_bytes)
+        .map_err(|e| e.to_string())?;
+    let num_reservations = u32::from_be_bytes(len_bytes) as usize;
+
+    let mut reservations = Vec::with_capacity(num_reservations);
+
+    // Decode each reservation
+    for _ in 0..num_reservations {
+        // Decode account
+        cursor
+            .read_exact(&mut len_bytes)
+            .map_err(|e| e.to_string())?;
+        let account_len = u32::from_be_bytes(len_bytes) as usize;
+
+        let mut account_bytes = vec![0u8; account_len];
+        cursor
+            .read_exact(&mut account_bytes)
+            .map_err(|e| e.to_string())?;
+        let account =
+            String::from_utf8(account_bytes).map_err(|e| format!("Invalid UTF-8: {}", e))?;
+
+        // Decode reservation type
+        let mut type_byte = [0u8; 1];
+        cursor
+            .read_exact(&mut type_byte)
+            .map_err(|e| e.to_string())?;
+
+        let reservation_type = match type_byte[0] {
+            1 => {
+                let amount = decode_amount_from_cursor(&mut cursor)?;
+                ReservationType::Debit(amount)
+            }
+            2 => {
+                let amount = decode_amount_from_cursor(&mut cursor)?;
+                ReservationType::Credit(amount)
+            }
+            3 => ReservationType::MetadataUpdate,
+            _ => return Err(format!("Unknown reservation type: {}", type_byte[0])),
+        };
+
+        reservations.push(PersistedReservation {
+            account,
+            reservation_type,
+        });
+    }
+
+    Ok(TransactionReservations {
+        txn_id,
+        reservations,
+    })
+}
+
+// Helper functions for encoding/decoding Amount
+use crate::types::Amount;
+use rust_decimal::Decimal;
+use std::str::FromStr;
+
+fn encode_amount_to_buf(amount: Amount, buf: &mut Vec<u8>) -> Result<(), String> {
+    use std::io::Write;
+    // Encode Decimal as string (preserves precision)
+    let decimal_str = amount.0.to_string();
+    let bytes = decimal_str.as_bytes();
+    buf.write_all(&(bytes.len() as u32).to_be_bytes())
+        .map_err(|e| e.to_string())?;
+    buf.write_all(bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn decode_amount_from_cursor(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Amount, String> {
+    use std::io::Read;
+    let mut len_bytes = [0u8; 4];
+    cursor
+        .read_exact(&mut len_bytes)
+        .map_err(|e| e.to_string())?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+
+    let mut decimal_bytes = vec![0u8; len];
+    cursor
+        .read_exact(&mut decimal_bytes)
+        .map_err(|e| e.to_string())?;
+
+    let decimal_str =
+        String::from_utf8(decimal_bytes).map_err(|e| format!("Invalid UTF-8: {}", e))?;
+
+    let decimal = Decimal::from_str(&decimal_str).map_err(|e| format!("Invalid decimal: {}", e))?;
+
+    Ok(Amount::new(decimal))
 }
 
 #[cfg(test)]

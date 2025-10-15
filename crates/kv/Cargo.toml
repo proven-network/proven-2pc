@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bincode.workspace = true
 parking_lot.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true

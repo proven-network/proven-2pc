@@ -54,7 +54,9 @@ impl PredicateStore {
             predicate: predicate.clone(),
             is_write,
         };
-        let value = bincode::serialize(&stored).map_err(|e| Error::Serialization(e.to_string()))?;
+        let mut value = Vec::new();
+        ciborium::into_writer(&stored, &mut value)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
 
         batch.insert(&self.predicate_partition, key, value);
         Ok(())
@@ -114,7 +116,7 @@ impl PredicateStore {
             .map_err(|e| Error::Other(format!("Invalid txn_id: {}", e)))?;
 
         let stored: StoredPredicate =
-            bincode::deserialize(value).map_err(|e| Error::Serialization(e.to_string()))?;
+            ciborium::from_reader(value).map_err(|e| Error::Serialization(e.to_string()))?;
 
         Ok(Some((txn_id, stored.predicate)))
     }

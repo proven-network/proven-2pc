@@ -8,7 +8,6 @@
 //! - Deltas contain pre-encoded row bytes (preserves 36.1 bytes/row optimization)
 
 use proven_mvcc::{Decode, Encode, Error as MvccError, MvccDelta, MvccEntity};
-use serde::{Deserialize, Serialize};
 
 type Result<T> = std::result::Result<T, MvccError>;
 
@@ -36,7 +35,7 @@ impl MvccEntity for TableEntity {
 ///
 /// Contains pre-encoded row bytes to preserve schema-aware encoding optimization.
 /// The Storage layer encodes rows with schema before creating these deltas.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TableDelta {
     /// Insert a new row
     Insert {
@@ -138,13 +137,155 @@ impl MvccDelta<TableEntity> for TableDelta {
 // Encode/Decode for TableDelta (u64 and Vec<u8> are implemented in proven-mvcc)
 impl Encode for TableDelta {
     fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| MvccError::Encoding(e.to_string()))
+        use std::io::Write;
+        let mut buf = Vec::new();
+
+        match self {
+            TableDelta::Insert {
+                row_id,
+                encoded_row,
+            } => {
+                buf.push(1); // Tag for Insert
+                buf.write_all(&row_id.to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(&(encoded_row.len() as u32).to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(encoded_row)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+            }
+            TableDelta::Update {
+                row_id,
+                encoded_old,
+                encoded_new,
+            } => {
+                buf.push(2); // Tag for Update
+                buf.write_all(&row_id.to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(&(encoded_old.len() as u32).to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(encoded_old)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(&(encoded_new.len() as u32).to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(encoded_new)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+            }
+            TableDelta::Delete {
+                row_id,
+                encoded_old,
+            } => {
+                buf.push(3); // Tag for Delete
+                buf.write_all(&row_id.to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(&(encoded_old.len() as u32).to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                buf.write_all(encoded_old)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+            }
+        }
+        Ok(buf)
     }
 }
 
 impl Decode for TableDelta {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(|e| MvccError::Encoding(e.to_string()))
+        use std::io::{Cursor, Read};
+
+        let mut cursor = Cursor::new(bytes);
+        let mut tag = [0u8; 1];
+        cursor
+            .read_exact(&mut tag)
+            .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+        match tag[0] {
+            1 => {
+                // Insert
+                let mut row_id_bytes = [0u8; 8];
+                cursor
+                    .read_exact(&mut row_id_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let row_id = u64::from_be_bytes(row_id_bytes);
+
+                let mut len_bytes = [0u8; 4];
+                cursor
+                    .read_exact(&mut len_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let len = u32::from_be_bytes(len_bytes) as usize;
+
+                let mut encoded_row = vec![0u8; len];
+                cursor
+                    .read_exact(&mut encoded_row)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                Ok(TableDelta::Insert {
+                    row_id,
+                    encoded_row,
+                })
+            }
+            2 => {
+                // Update
+                let mut row_id_bytes = [0u8; 8];
+                cursor
+                    .read_exact(&mut row_id_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let row_id = u64::from_be_bytes(row_id_bytes);
+
+                let mut len_bytes = [0u8; 4];
+                cursor
+                    .read_exact(&mut len_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let old_len = u32::from_be_bytes(len_bytes) as usize;
+
+                let mut encoded_old = vec![0u8; old_len];
+                cursor
+                    .read_exact(&mut encoded_old)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                cursor
+                    .read_exact(&mut len_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let new_len = u32::from_be_bytes(len_bytes) as usize;
+
+                let mut encoded_new = vec![0u8; new_len];
+                cursor
+                    .read_exact(&mut encoded_new)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                Ok(TableDelta::Update {
+                    row_id,
+                    encoded_old,
+                    encoded_new,
+                })
+            }
+            3 => {
+                // Delete
+                let mut row_id_bytes = [0u8; 8];
+                cursor
+                    .read_exact(&mut row_id_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let row_id = u64::from_be_bytes(row_id_bytes);
+
+                let mut len_bytes = [0u8; 4];
+                cursor
+                    .read_exact(&mut len_bytes)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let len = u32::from_be_bytes(len_bytes) as usize;
+
+                let mut encoded_old = vec![0u8; len];
+                cursor
+                    .read_exact(&mut encoded_old)
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                Ok(TableDelta::Delete {
+                    row_id,
+                    encoded_old,
+                })
+            }
+            _ => Err(MvccError::Encoding(format!(
+                "Unknown TableDelta tag: {}",
+                tag[0]
+            ))),
+        }
     }
 }
 
@@ -161,7 +302,7 @@ pub struct IndexEntity;
 ///
 /// Example for index on (name, age):
 /// IndexKey { values: [Value::String("Alice"), Value::I32(25)], row_id: 123 }
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IndexKey {
     /// The indexed column values (in index column order)
     pub values: Vec<crate::types::Value>,
@@ -180,7 +321,7 @@ impl MvccEntity for IndexEntity {
 }
 
 /// Delta operations for index data
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum IndexDelta {
     /// Insert index entry
     Insert { key: IndexKey },
@@ -221,7 +362,7 @@ impl MvccDelta<IndexEntity> for IndexDelta {
 // Encode/Decode for IndexKey
 impl Encode for IndexKey {
     fn encode(&self) -> Result<Vec<u8>> {
-        // Use existing optimized sortable encoding for index keys!
+        // Use sortable encoding for index keys (required for MVCC key comparisons)
         let encoded = crate::storage::codec::encode_index_key(&self.values, self.row_id);
         Ok(encoded)
     }
@@ -229,8 +370,10 @@ impl Encode for IndexKey {
 
 impl Decode for IndexKey {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        // Index keys are encoded as: sortable_values || row_id (8 bytes big-endian)
-        // We need at least 8 bytes for the row_id
+        // Index keys are sortable-encoded: sortable_values || row_id (8 bytes big-endian)
+        // We can extract row_id but not the values (would need schema).
+        // This is OK since decode is only used for recovery, and we reconstruct
+        // the IndexKey from deltas which include the full values.
         if bytes.len() < 8 {
             return Err(MvccError::Encoding(format!(
                 "IndexKey too short: {} bytes (need at least 8 for row_id)",
@@ -244,25 +387,115 @@ impl Decode for IndexKey {
         row_id_bytes.copy_from_slice(&bytes[row_id_start..]);
         let row_id = u64::from_be_bytes(row_id_bytes);
 
-        // For now, we don't decode the values since we don't know the schema
-        // We only need row_id for lookups anyway
+        // Values remain empty - they're not needed for MVCC key operations
+        // and will be populated from deltas during recovery
         Ok(IndexKey {
-            values: vec![], // Values not decoded (not needed for row_id extraction)
+            values: vec![],
             row_id,
         })
     }
 }
 
-// Encode/Decode for IndexDelta (()  is implemented in proven-mvcc)
+// Encode/Decode for IndexDelta
+// Note: We store values separately (not using sortable encoding) so IndexKey can be fully reconstructed
 impl Encode for IndexDelta {
     fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| MvccError::Encoding(e.to_string()))
+        use std::io::Write;
+        let mut buf = Vec::new();
+
+        match self {
+            IndexDelta::Insert { key } | IndexDelta::Delete { key } => {
+                // Tag
+                buf.push(match self {
+                    IndexDelta::Insert { .. } => 1,
+                    IndexDelta::Delete { .. } => 2,
+                });
+
+                // Encode row_id
+                buf.write_all(&key.row_id.to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                // Encode values count
+                buf.write_all(&(key.values.len() as u32).to_be_bytes())
+                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+                // Encode each value using proven_value encoding
+                for value in &key.values {
+                    let encoded = proven_value::encode_value(value);
+                    buf.write_all(&(encoded.len() as u32).to_be_bytes())
+                        .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                    buf.write_all(&encoded)
+                        .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                }
+            }
+        }
+        Ok(buf)
     }
 }
 
 impl Decode for IndexDelta {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(|e| MvccError::Encoding(e.to_string()))
+        use std::io::{Cursor, Read};
+
+        if bytes.is_empty() {
+            return Err(MvccError::Encoding("IndexDelta is empty".to_string()));
+        }
+
+        let mut cursor = Cursor::new(bytes);
+        let mut tag = [0u8; 1];
+        cursor
+            .read_exact(&mut tag)
+            .map_err(|e| MvccError::Encoding(e.to_string()))?;
+
+        // Decode row_id
+        let mut row_id_bytes = [0u8; 8];
+        cursor
+            .read_exact(&mut row_id_bytes)
+            .map_err(|e| MvccError::Encoding(e.to_string()))?;
+        let row_id = u64::from_be_bytes(row_id_bytes);
+
+        // Decode values count
+        let mut len_bytes = [0u8; 4];
+        cursor
+            .read_exact(&mut len_bytes)
+            .map_err(|e| MvccError::Encoding(e.to_string()))?;
+        let num_values = u32::from_be_bytes(len_bytes) as usize;
+
+        // Decode each value
+        let mut values = Vec::with_capacity(num_values);
+        for _ in 0..num_values {
+            cursor
+                .read_exact(&mut len_bytes)
+                .map_err(|e| MvccError::Encoding(e.to_string()))?;
+            let value_len = u32::from_be_bytes(len_bytes) as usize;
+
+            let pos = cursor.position() as usize;
+            let remaining = &cursor.get_ref()[pos..];
+            if remaining.len() < value_len {
+                return Err(MvccError::Encoding(format!(
+                    "IndexDelta value truncated: expected {} bytes, got {}",
+                    value_len,
+                    remaining.len()
+                )));
+            }
+
+            let value = proven_value::decode_value(remaining)
+                .map_err(|e| MvccError::Encoding(e.to_string()))?;
+            cursor.set_position(pos as u64 + value_len as u64);
+
+            values.push(value);
+        }
+
+        let key = IndexKey { values, row_id };
+
+        match tag[0] {
+            1 => Ok(IndexDelta::Insert { key }),
+            2 => Ok(IndexDelta::Delete { key }),
+            _ => Err(MvccError::Encoding(format!(
+                "Unknown IndexDelta tag: {}",
+                tag[0]
+            ))),
+        }
     }
 }
 
@@ -320,6 +553,7 @@ mod tests {
         let bytes = delta.encode().unwrap();
         let decoded = IndexDelta::decode(&bytes).unwrap();
 
+        // IndexDelta now stores values separately so it can be fully reconstructed
         assert_eq!(delta, decoded);
     }
 }

@@ -17,6 +17,5 @@ tokio-stream.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-ciborium.workspace = true
 proven-snapshot-memory.workspace = true
 tokio-test.workspace = true

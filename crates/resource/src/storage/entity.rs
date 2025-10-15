@@ -6,7 +6,118 @@
 use crate::storage::ResourceMetadata;
 use crate::types::Amount;
 use proven_mvcc::{Decode, Encode, MvccDelta, MvccEntity, Result};
-use serde::{Deserialize, Serialize};
+use rust_decimal::Decimal;
+use std::io::{Cursor, Read, Write};
+use std::str::FromStr;
+
+// Helper functions for encoding/decoding Amount and ResourceMetadata
+
+fn encode_amount(amount: Amount, buf: &mut Vec<u8>) -> Result<()> {
+    // Encode Decimal as string (preserves precision)
+    let decimal_str = amount.0.to_string();
+    let bytes = decimal_str.as_bytes();
+    buf.write_all(&(bytes.len() as u32).to_be_bytes())
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    buf.write_all(bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    Ok(())
+}
+
+fn decode_amount(cursor: &mut Cursor<&[u8]>) -> Result<Amount> {
+    let mut len_bytes = [0u8; 4];
+    cursor
+        .read_exact(&mut len_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+
+    let mut decimal_bytes = vec![0u8; len];
+    cursor
+        .read_exact(&mut decimal_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+    let decimal_str = String::from_utf8(decimal_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid UTF-8: {}", e)))?;
+
+    let decimal = Decimal::from_str(&decimal_str)
+        .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid decimal: {}", e)))?;
+
+    Ok(Amount::new(decimal))
+}
+
+fn encode_metadata(metadata: &ResourceMetadata, buf: &mut Vec<u8>) -> Result<()> {
+    // Encode name (String)
+    let name_bytes = metadata.name.as_bytes();
+    buf.write_all(&(name_bytes.len() as u32).to_be_bytes())
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    buf.write_all(name_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+    // Encode symbol (String)
+    let symbol_bytes = metadata.symbol.as_bytes();
+    buf.write_all(&(symbol_bytes.len() as u32).to_be_bytes())
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    buf.write_all(symbol_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+    // Encode decimals (u32)
+    buf.write_all(&metadata.decimals.to_be_bytes())
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+    // Encode initialized (bool)
+    buf.push(if metadata.initialized { 1 } else { 0 });
+
+    Ok(())
+}
+
+fn decode_metadata(cursor: &mut Cursor<&[u8]>) -> Result<ResourceMetadata> {
+    // Decode name
+    let mut len_bytes = [0u8; 4];
+    cursor
+        .read_exact(&mut len_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    let name_len = u32::from_be_bytes(len_bytes) as usize;
+
+    let mut name_bytes = vec![0u8; name_len];
+    cursor
+        .read_exact(&mut name_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    let name = String::from_utf8(name_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid UTF-8: {}", e)))?;
+
+    // Decode symbol
+    cursor
+        .read_exact(&mut len_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    let symbol_len = u32::from_be_bytes(len_bytes) as usize;
+
+    let mut symbol_bytes = vec![0u8; symbol_len];
+    cursor
+        .read_exact(&mut symbol_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    let symbol = String::from_utf8(symbol_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid UTF-8: {}", e)))?;
+
+    // Decode decimals
+    let mut decimals_bytes = [0u8; 4];
+    cursor
+        .read_exact(&mut decimals_bytes)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    let decimals = u32::from_be_bytes(decimals_bytes);
+
+    // Decode initialized
+    let mut initialized_byte = [0u8; 1];
+    cursor
+        .read_exact(&mut initialized_byte)
+        .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+    let initialized = initialized_byte[0] == 1;
+
+    Ok(ResourceMetadata {
+        name,
+        symbol,
+        decimals,
+        initialized,
+    })
+}
 
 /// Resource entity for MVCC storage
 pub struct ResourceEntity;
@@ -22,7 +133,7 @@ impl MvccEntity for ResourceEntity {
 }
 
 /// Key type for resource storage
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceKey {
     /// Global metadata key
     Metadata,
@@ -34,22 +145,75 @@ pub enum ResourceKey {
 
 impl Encode for ResourceKey {
     fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| {
-            proven_mvcc::Error::Encoding(format!("Failed to encode ResourceKey: {}", e))
-        })
+        use std::io::Write;
+        let mut buf = Vec::new();
+
+        match self {
+            ResourceKey::Metadata => {
+                buf.push(1); // Tag for Metadata
+            }
+            ResourceKey::Supply => {
+                buf.push(2); // Tag for Supply
+            }
+            ResourceKey::Account(account) => {
+                buf.push(3); // Tag for Account
+                let account_bytes = account.as_bytes();
+                buf.write_all(&(account_bytes.len() as u32).to_be_bytes())
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+                buf.write_all(account_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+            }
+        }
+        Ok(buf)
     }
 }
 
 impl Decode for ResourceKey {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(|e| {
-            proven_mvcc::Error::Encoding(format!("Failed to decode ResourceKey: {}", e))
-        })
+        use std::io::{Cursor, Read};
+
+        if bytes.is_empty() {
+            return Err(proven_mvcc::Error::Encoding(
+                "ResourceKey is empty".to_string(),
+            ));
+        }
+
+        let mut cursor = Cursor::new(bytes);
+        let mut tag = [0u8; 1];
+        cursor
+            .read_exact(&mut tag)
+            .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+        match tag[0] {
+            1 => Ok(ResourceKey::Metadata),
+            2 => Ok(ResourceKey::Supply),
+            3 => {
+                let mut len_bytes = [0u8; 4];
+                cursor
+                    .read_exact(&mut len_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+                let len = u32::from_be_bytes(len_bytes) as usize;
+
+                let mut account_bytes = vec![0u8; len];
+                cursor
+                    .read_exact(&mut account_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+                let account = String::from_utf8(account_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid UTF-8: {}", e)))?;
+
+                Ok(ResourceKey::Account(account))
+            }
+            _ => Err(proven_mvcc::Error::Encoding(format!(
+                "Unknown ResourceKey tag: {}",
+                tag[0]
+            ))),
+        }
     }
 }
 
 /// Value type for resource storage
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResourceValue {
     /// Metadata value
     Metadata(ResourceMetadata),
@@ -61,17 +225,58 @@ pub enum ResourceValue {
 
 impl Encode for ResourceValue {
     fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| {
-            proven_mvcc::Error::Encoding(format!("Failed to encode ResourceValue: {}", e))
-        })
+        let mut buf = Vec::new();
+
+        match self {
+            ResourceValue::Metadata(metadata) => {
+                buf.push(1); // Tag for Metadata
+                encode_metadata(metadata, &mut buf)?;
+            }
+            ResourceValue::Supply(amount) => {
+                buf.push(2); // Tag for Supply
+                encode_amount(*amount, &mut buf)?;
+            }
+            ResourceValue::Balance(amount) => {
+                buf.push(3); // Tag for Balance
+                encode_amount(*amount, &mut buf)?;
+            }
+        }
+        Ok(buf)
     }
 }
 
 impl Decode for ResourceValue {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(|e| {
-            proven_mvcc::Error::Encoding(format!("Failed to decode ResourceValue: {}", e))
-        })
+        use std::io::Cursor;
+
+        if bytes.is_empty() {
+            return Err(proven_mvcc::Error::Encoding(
+                "ResourceValue is empty".to_string(),
+            ));
+        }
+
+        let mut cursor = Cursor::new(bytes);
+        let tag = bytes[0];
+        cursor.set_position(1);
+
+        match tag {
+            1 => {
+                let metadata = decode_metadata(&mut cursor)?;
+                Ok(ResourceValue::Metadata(metadata))
+            }
+            2 => {
+                let amount = decode_amount(&mut cursor)?;
+                Ok(ResourceValue::Supply(amount))
+            }
+            3 => {
+                let amount = decode_amount(&mut cursor)?;
+                Ok(ResourceValue::Balance(amount))
+            }
+            _ => Err(proven_mvcc::Error::Encoding(format!(
+                "Unknown ResourceValue tag: {}",
+                tag
+            ))),
+        }
     }
 }
 
@@ -80,7 +285,7 @@ impl Decode for ResourceValue {
 /// Each delta affects exactly ONE key in MVCC storage.
 /// Multi-key operations (like Mint/Burn) are handled by creating multiple transactions
 /// or multiple deltas in the engine layer.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub enum ResourceDelta {
     /// Update metadata
     SetMetadata {
@@ -101,17 +306,105 @@ pub enum ResourceDelta {
 
 impl Encode for ResourceDelta {
     fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(|e| {
-            proven_mvcc::Error::Encoding(format!("Failed to encode ResourceDelta: {}", e))
-        })
+        use std::io::Write;
+        let mut buf = Vec::new();
+
+        match self {
+            ResourceDelta::SetMetadata { old, new } => {
+                buf.push(1); // Tag for SetMetadata
+                if let Some(old_meta) = old {
+                    buf.push(1); // Has old value
+                    encode_metadata(old_meta, &mut buf)?;
+                } else {
+                    buf.push(0); // No old value
+                }
+                encode_metadata(new, &mut buf)?;
+            }
+            ResourceDelta::SetSupply { old, new } => {
+                buf.push(2); // Tag for SetSupply
+                encode_amount(*old, &mut buf)?;
+                encode_amount(*new, &mut buf)?;
+            }
+            ResourceDelta::SetBalance { account, old, new } => {
+                buf.push(3); // Tag for SetBalance
+                let account_bytes = account.as_bytes();
+                buf.write_all(&(account_bytes.len() as u32).to_be_bytes())
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+                buf.write_all(account_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+                encode_amount(*old, &mut buf)?;
+                encode_amount(*new, &mut buf)?;
+            }
+        }
+        Ok(buf)
     }
 }
 
 impl Decode for ResourceDelta {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(|e| {
-            proven_mvcc::Error::Encoding(format!("Failed to decode ResourceDelta: {}", e))
-        })
+        use std::io::{Cursor, Read};
+
+        if bytes.is_empty() {
+            return Err(proven_mvcc::Error::Encoding(
+                "ResourceDelta is empty".to_string(),
+            ));
+        }
+
+        let mut cursor = Cursor::new(bytes);
+        let mut tag = [0u8; 1];
+        cursor
+            .read_exact(&mut tag)
+            .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+        match tag[0] {
+            1 => {
+                // SetMetadata
+                let mut has_old = [0u8; 1];
+                cursor
+                    .read_exact(&mut has_old)
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+                let old = if has_old[0] == 1 {
+                    Some(decode_metadata(&mut cursor)?)
+                } else {
+                    None
+                };
+                let new = decode_metadata(&mut cursor)?;
+
+                Ok(ResourceDelta::SetMetadata { old, new })
+            }
+            2 => {
+                // SetSupply
+                let old = decode_amount(&mut cursor)?;
+                let new = decode_amount(&mut cursor)?;
+                Ok(ResourceDelta::SetSupply { old, new })
+            }
+            3 => {
+                // SetBalance
+                let mut len_bytes = [0u8; 4];
+                cursor
+                    .read_exact(&mut len_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+                let len = u32::from_be_bytes(len_bytes) as usize;
+
+                let mut account_bytes = vec![0u8; len];
+                cursor
+                    .read_exact(&mut account_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
+
+                let account = String::from_utf8(account_bytes)
+                    .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid UTF-8: {}", e)))?;
+
+                let old = decode_amount(&mut cursor)?;
+                let new = decode_amount(&mut cursor)?;
+
+                Ok(ResourceDelta::SetBalance { account, old, new })
+            }
+            _ => Err(proven_mvcc::Error::Encoding(format!(
+                "Unknown ResourceDelta tag: {}",
+                tag[0]
+            ))),
+        }
     }
 }
 

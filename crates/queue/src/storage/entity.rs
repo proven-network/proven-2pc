@@ -129,11 +129,8 @@ impl Encode for QueueDelta {
                 buf.push(1); // Tag for Enqueue
                 buf.extend_from_slice(&entry_id.to_be_bytes());
                 buf.extend_from_slice(&encode_value(value));
-                // Encode HlcTimestamp with bincode (it's just primitive types + NodeId)
-                let ts_bytes = bincode::serialize(enqueued_at)
-                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
-                buf.extend_from_slice(&(ts_bytes.len() as u32).to_be_bytes());
-                buf.extend_from_slice(&ts_bytes);
+                // Encode HlcTimestamp using lexicographic encoding
+                buf.extend_from_slice(&enqueued_at.to_lexicographic_bytes());
             }
             QueueDelta::Dequeue {
                 entry_id,
@@ -183,18 +180,12 @@ impl Decode for QueueDelta {
                 let value_encoded = proven_value::encode_value(&value);
                 cursor.set_position((pos + value_encoded.len()) as u64);
 
-                // Decode HlcTimestamp
-                let mut ts_len_bytes = [0u8; 4];
-                cursor
-                    .read_exact(&mut ts_len_bytes)
-                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
-                let ts_len = u32::from_be_bytes(ts_len_bytes) as usize;
-
-                let mut ts_bytes = vec![0u8; ts_len];
+                // Decode HlcTimestamp (20 bytes: 8 + 4 + 8)
+                let mut ts_bytes = [0u8; 20];
                 cursor
                     .read_exact(&mut ts_bytes)
                     .map_err(|e| MvccError::Encoding(e.to_string()))?;
-                let enqueued_at: HlcTimestamp = bincode::deserialize(&ts_bytes)
+                let enqueued_at = HlcTimestamp::from_lexicographic_bytes(&ts_bytes)
                     .map_err(|e| MvccError::Encoding(e.to_string()))?;
 
                 Ok(QueueDelta::Enqueue {
@@ -337,7 +328,6 @@ mod tests {
 
     #[test]
     fn test_encode_decode_value() {
-        // Test with String instead of Json (bincode has issues with serde_json::Value)
         let value = QueueValue::Str("test value".to_string());
 
         let encoded = value.encode().unwrap();

@@ -48,7 +48,7 @@ pub fn encode_value_sortable(value: &Value, output: &mut Vec<u8>) {
 /// Current row encoding format version
 pub const ROW_FORMAT_VERSION: u8 = 1;
 
-/// Encode a row using schema-aware format (30-50% smaller than bincode)
+/// Encode a row using schema-aware format
 ///
 /// Format: [version:1][schema_id:2][null_bitmap:ceil(n/8)][packed_values...]
 pub fn encode_row(values: &[Value], schema: &Table) -> Result<Vec<u8>> {
@@ -909,24 +909,5 @@ mod tests {
         let decoded = decode_row(&encoded, &schema).unwrap();
 
         assert_eq!(row, decoded);
-    }
-
-    #[test]
-    fn test_compact_encoding_smaller_than_bincode() {
-        let schema = create_test_schema();
-        let row = vec![
-            Value::I64(1),
-            Value::Str("Alice".to_string()),
-            Value::I32(30),
-            Value::Bool(true),
-        ];
-
-        let compact = encode_row(&row, &schema).unwrap();
-        let bincode_result = bincode::serialize(&row)
-            .map_err(|e| Error::Serialization(e.to_string()))
-            .unwrap();
-
-        // Compact encoding should be smaller
-        assert!(compact.len() < bincode_result.len());
     }
 }

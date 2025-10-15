@@ -10,8 +10,8 @@ use proven_snapshot_memory::MemorySnapshotStore;
 use proven_sql::Value as SqlValue;
 use proven_sql_client::SqlClient;
 use serde_json::json;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 

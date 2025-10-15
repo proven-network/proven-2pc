@@ -26,14 +26,46 @@ impl QueueTransactionLock {
     }
 }
 
-/// Encode transaction lock for persistence (using bincode for efficiency)
+/// Encode transaction lock for persistence
 pub fn encode_transaction_lock(lock: &QueueTransactionLock) -> Result<Vec<u8>, String> {
-    bincode::serialize(lock).map_err(|e| e.to_string())
+    let mut buf = Vec::new();
+
+    // Encode HlcTimestamp (20 bytes)
+    buf.extend_from_slice(&lock.txn_id.to_lexicographic_bytes());
+
+    // Encode mode (1 byte: 1=Shared, 2=Append, 3=Exclusive)
+    buf.push(match lock.mode {
+        LockMode::Shared => 1,
+        LockMode::Append => 2,
+        LockMode::Exclusive => 3,
+    });
+
+    Ok(buf)
 }
 
 /// Decode transaction lock from persistence
 pub fn decode_transaction_lock(bytes: &[u8]) -> Result<QueueTransactionLock, String> {
-    bincode::deserialize(bytes).map_err(|e| e.to_string())
+    if bytes.len() != 21 {
+        return Err(format!(
+            "Invalid lock bytes length: {} (expected 21)",
+            bytes.len()
+        ));
+    }
+
+    // Decode HlcTimestamp (20 bytes)
+    let mut ts_bytes = [0u8; 20];
+    ts_bytes.copy_from_slice(&bytes[0..20]);
+    let txn_id = HlcTimestamp::from_lexicographic_bytes(&ts_bytes).map_err(|e| e.to_string())?;
+
+    // Decode mode
+    let mode = match bytes[20] {
+        1 => LockMode::Shared,
+        2 => LockMode::Append,
+        3 => LockMode::Exclusive,
+        _ => return Err(format!("Unknown lock mode: {}", bytes[20])),
+    };
+
+    Ok(QueueTransactionLock { txn_id, mode })
 }
 
 #[cfg(test)]

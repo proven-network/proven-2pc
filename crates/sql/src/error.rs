@@ -141,12 +141,6 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<bincode::Error> for Error {
-    fn from(err: bincode::Error) -> Self {
-        Error::Serialization(err.to_string())
-    }
-}
-
 impl From<proven_mvcc::Error> for Error {
     fn from(err: proven_mvcc::Error) -> Self {
         match err {
