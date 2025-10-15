@@ -9,7 +9,7 @@
 use super::statement::{ColumnResolution, ColumnResolutionMap};
 use crate::error::{Error, Result};
 use crate::parsing::ast::common::SubquerySource;
-use crate::parsing::ast::{DmlStatement, FromClause, Statement};
+use crate::parsing::ast::{DmlStatement, Expression, FromClause, SelectStatement, Statement};
 use crate::types::{DataType, schema::Table};
 use std::collections::HashMap;
 
@@ -236,10 +236,56 @@ impl NameResolver {
                                 }
                             }
                         }
-                        SubquerySource::Select(_select_stmt) => {
-                            // For SELECT subqueries, we'd need to analyze the SELECT to get columns
-                            // This is more complex and would require recursive analysis
-                            // For now, we'll skip this as it's not needed for basic column alias support
+                        SubquerySource::Select(select_stmt) => {
+                            // Recursively analyze the SELECT subquery to get its output schema
+                            let subquery_columns =
+                                self.extract_select_output_columns(select_stmt, schemas)?;
+
+                            // Validate column aliases count
+                            if !column_aliases.is_empty()
+                                && column_aliases.len() > subquery_columns.len()
+                            {
+                                return Err(Error::TooManyColumnAliases(
+                                    alias.clone(),
+                                    subquery_columns.len(),
+                                    column_aliases.len(),
+                                ));
+                            }
+
+                            // Build column resolutions for each output column
+                            for (idx, (col_name, col_type, nullable)) in
+                                subquery_columns.iter().enumerate()
+                            {
+                                // Use column alias if provided, otherwise use the column name from SELECT
+                                let final_col_name = if idx < column_aliases.len() {
+                                    column_aliases[idx].clone()
+                                } else {
+                                    col_name.clone()
+                                };
+
+                                // Track column name frequency
+                                *column_counts.entry(final_col_name.clone()).or_insert(0) += 1;
+
+                                let resolution = ColumnResolution {
+                                    global_offset,
+                                    table_name: alias.clone(),
+                                    data_type: col_type.clone(),
+                                    nullable: *nullable,
+                                    is_indexed: false,
+                                };
+
+                                // Add with subquery alias qualifier
+                                resolution_map.add_resolution(
+                                    Some(alias.clone()),
+                                    final_col_name.clone(),
+                                    resolution.clone(),
+                                );
+
+                                // Also add without qualifier for unambiguous lookups
+                                resolution_map.add_resolution(None, final_col_name, resolution);
+
+                                global_offset += 1;
+                            }
                         }
                     }
                 }
@@ -254,6 +300,88 @@ impl NameResolver {
         }
 
         Ok(resolution_map)
+    }
+
+    /// Extract output column schema from a SELECT statement
+    /// Returns Vec<(column_name, data_type, nullable)>
+    fn extract_select_output_columns(
+        &self,
+        select_stmt: &SelectStatement,
+        _schemas: &HashMap<String, Table>,
+    ) -> Result<Vec<(String, DataType, bool)>> {
+        // Recursively analyze the subquery to determine its output types
+        let subquery_analyzer = super::analyzer::SemanticAnalyzer::new(self.schemas.clone());
+        let subquery_statement =
+            Statement::Dml(DmlStatement::Select(Box::new(select_stmt.clone())));
+        let analyzed = subquery_analyzer.analyze(subquery_statement, Vec::new())?;
+
+        let mut columns = Vec::new();
+
+        // Process each projection in the SELECT list
+        for (expr, alias) in &select_stmt.select {
+            match expr {
+                Expression::All | Expression::QualifiedWildcard(_) => {
+                    // Wildcards expand to all available columns from the inner query's column map
+                    // We need to get all columns from the analyzed subquery's resolution map
+                    let col_map = &analyzed.column_resolution_map;
+
+                    // Collect all resolutions and sort by global_offset to maintain order
+                    let mut all_cols: Vec<_> = col_map
+                        .columns
+                        .iter()
+                        .filter(|((table_qualifier, _), _)| {
+                            // For All, include all columns
+                            // For QualifiedWildcard, filter by table
+                            match expr {
+                                Expression::All => table_qualifier.is_some(), // Skip duplicate unqualified entries
+                                Expression::QualifiedWildcard(table) => {
+                                    table_qualifier.as_deref() == Some(table.as_str())
+                                }
+                                _ => false,
+                            }
+                        })
+                        .collect();
+
+                    // Sort by global offset to maintain column order
+                    all_cols.sort_by_key(|(_, resolution)| resolution.global_offset);
+
+                    // Add each expanded column
+                    for ((_, col_name), resolution) in all_cols {
+                        columns.push((
+                            col_name.clone(),
+                            resolution.data_type.clone(),
+                            resolution.nullable,
+                        ));
+                    }
+                }
+                _ => {
+                    // For non-wildcard expressions, determine the column name
+                    let col_name = if let Some(alias_name) = alias {
+                        // Use explicit alias
+                        alias_name.clone()
+                    } else {
+                        // Infer name from expression
+                        match expr {
+                            Expression::Column(_table, col) => col.clone(),
+                            _ => {
+                                // For expressions without alias, generate a name
+                                format!("?column?")
+                            }
+                        }
+                    };
+
+                    // Get the type information from the analyzed statement
+                    // For now, we'll use a conservative approach and default to nullable text
+                    // A more complete implementation would track expression IDs and look them up
+                    let data_type = DataType::Text; // Conservative default
+                    let nullable = true; // Conservative default
+
+                    columns.push((col_name, data_type, nullable));
+                }
+            }
+        }
+
+        Ok(columns)
     }
 
     /// Validate that a table exists in the schema

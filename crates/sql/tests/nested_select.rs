@@ -247,7 +247,7 @@ fn test_where_not_exists_subquery() {
 }
 
 #[test]
-#[ignore = "Scalar subqueries in SELECT clause not yet implemented"]
+#[ignore = "Correlated subqueries in SELECT clause not yet implemented"]
 fn test_select_with_scalar_subquery() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);
@@ -264,16 +264,15 @@ fn test_select_with_scalar_subquery() {
 }
 
 #[test]
-#[ignore = "Subqueries in FROM clause not yet implemented"]
 fn test_from_clause_subquery() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);
 
-    // SELECT * FROM (SELECT * FROM Player WHERE id < 3) sub WHERE sub.id = 1
+    // SELECT * FROM (SELECT * FROM Player WHERE id < 3) AS sub WHERE sub.id = 1
     // Subquery returns players 1,2, then filter to just player 1
     assert_rows!(
         ctx,
-        "SELECT * FROM (SELECT * FROM Player WHERE id < 3) sub WHERE sub.id = 1",
+        "SELECT * FROM (SELECT * FROM Player WHERE id < 3) AS sub WHERE sub.id = 1",
         1
     );
 
@@ -282,7 +281,6 @@ fn test_from_clause_subquery() {
 
 // Error cases
 #[test]
-#[ignore = "Subquery error handling not yet implemented"]
 fn test_scalar_subquery_returns_multiple_rows_error() {
     let mut ctx = setup_test();
     setup_nested_tables(&mut ctx);
