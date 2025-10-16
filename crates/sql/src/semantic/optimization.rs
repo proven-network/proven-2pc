@@ -631,11 +631,17 @@ impl MetadataBuilder {
                             self.extract_subquery_predicates(select_stmt, templates);
                         }
                     }
-                    And(left, right) | Or(left, right) => {
+                    And(left, right)
+                    | Or(left, right)
+                    | BitwiseAnd(left, right)
+                    | BitwiseOr(left, right)
+                    | BitwiseXor(left, right)
+                    | BitwiseShiftLeft(left, right)
+                    | BitwiseShiftRight(left, right) => {
                         self.extract_subquery_predicates_from_expr(left, templates);
                         self.extract_subquery_predicates_from_expr(right, templates);
                     }
-                    Not(expr) => {
+                    Not(expr) | BitwiseNot(expr) => {
                         self.extract_subquery_predicates_from_expr(expr, templates);
                     }
                     _ => {}

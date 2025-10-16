@@ -83,13 +83,20 @@ pub enum Operator {
     Add(Box<Expression>, Box<Expression>),          // a + b
     Concat(Box<Expression>, Box<Expression>),       // a || b
     Divide(Box<Expression>, Box<Expression>),       // a / b
-    Exponentiate(Box<Expression>, Box<Expression>), // a ^ b
+    Exponentiate(Box<Expression>, Box<Expression>), // a ** b
     Factorial(Box<Expression>),                     // a!
     Identity(Box<Expression>),                      // +a
     Multiply(Box<Expression>, Box<Expression>),     // a * b
     Negate(Box<Expression>),                        // -a
     Remainder(Box<Expression>, Box<Expression>),    // a % b
     Subtract(Box<Expression>, Box<Expression>),     // a - b
+
+    BitwiseAnd(Box<Expression>, Box<Expression>), // a & b
+    BitwiseOr(Box<Expression>, Box<Expression>),  // a | b
+    BitwiseXor(Box<Expression>, Box<Expression>), // a ^ b
+    BitwiseNot(Box<Expression>),                  // ~a
+    BitwiseShiftLeft(Box<Expression>, Box<Expression>), // a << b
+    BitwiseShiftRight(Box<Expression>, Box<Expression>), // a >> b
 
     ILike(Box<Expression>, Box<Expression>), // a ILIKE b
     Like(Box<Expression>, Box<Expression>),  // a LIKE b
@@ -225,12 +232,31 @@ impl Expression {
                     Operator::Remainder(l, r) => {
                         format!("{} % {}", l.to_column_name(), r.to_column_name())
                     }
+                    Operator::Exponentiate(l, r) => {
+                        format!("{} ** {}", l.to_column_name(), r.to_column_name())
+                    }
                     Operator::Concat(l, r) => {
                         format!("{} || {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::BitwiseAnd(l, r) => {
+                        format!("{} & {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::BitwiseOr(l, r) => {
+                        format!("{} | {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::BitwiseXor(l, r) => {
+                        format!("{} ^ {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::BitwiseShiftLeft(l, r) => {
+                        format!("{} << {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::BitwiseShiftRight(l, r) => {
+                        format!("{} >> {}", l.to_column_name(), r.to_column_name())
                     }
                     Operator::Not(e) => format!("NOT {}", e.to_column_name()),
                     Operator::Negate(e) => format!("-{}", e.to_column_name()),
                     Operator::Identity(e) => format!("+{}", e.to_column_name()),
+                    Operator::BitwiseNot(e) => format!("~{}", e.to_column_name()),
                     _ => "expr".to_string(), // Complex operators get generic name
                 }
             }

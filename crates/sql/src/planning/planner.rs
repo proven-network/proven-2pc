@@ -1640,7 +1640,12 @@ impl Planner {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::ILike(l, r)
-                    | Operator::Like(l, r) => {
+                    | Operator::Like(l, r)
+                    | Operator::BitwiseAnd(l, r)
+                    | Operator::BitwiseOr(l, r)
+                    | Operator::BitwiseXor(l, r)
+                    | Operator::BitwiseShiftLeft(l, r)
+                    | Operator::BitwiseShiftRight(l, r) => {
                         Self::validate_no_subqueries_in_expression(l)?;
                         Self::validate_no_subqueries_in_expression(r)?;
                     }
@@ -1648,6 +1653,7 @@ impl Planner {
                     | Operator::Negate(e)
                     | Operator::Identity(e)
                     | Operator::Factorial(e)
+                    | Operator::BitwiseNot(e)
                     | Operator::Is(e, _) => {
                         Self::validate_no_subqueries_in_expression(e)?;
                     }
@@ -2213,6 +2219,28 @@ impl<'a> AnalyzedPlanContext<'a> {
             Negate(e) => Expression::Negate(Box::new(self.resolve_expression_simple(e)?)),
             Identity(e) => Expression::Identity(Box::new(self.resolve_expression_simple(e)?)),
             Factorial(e) => Expression::Factorial(Box::new(self.resolve_expression_simple(e)?)),
+            // Bitwise operators
+            BitwiseAnd(l, r) => Expression::BitwiseAnd(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
+            BitwiseOr(l, r) => Expression::BitwiseOr(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
+            BitwiseXor(l, r) => Expression::BitwiseXor(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
+            BitwiseNot(e) => Expression::BitwiseNot(Box::new(self.resolve_expression_simple(e)?)),
+            BitwiseShiftLeft(l, r) => Expression::BitwiseShiftLeft(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
+            BitwiseShiftRight(l, r) => Expression::BitwiseShiftRight(
+                Box::new(self.resolve_expression_simple(l)?),
+                Box::new(self.resolve_expression_simple(r)?),
+            ),
             // String matching
             ILike(l, r) => Expression::ILike(
                 Box::new(self.resolve_expression_simple(l)?),
@@ -2384,9 +2412,32 @@ fn resolve_default_expression(
                     Box::new(resolve_default_expression(l)?),
                     Box::new(resolve_default_expression(r)?),
                 ),
+                BitwiseAnd(l, r) => DefaultExpression::BitwiseAnd(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                BitwiseOr(l, r) => DefaultExpression::BitwiseOr(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                BitwiseXor(l, r) => DefaultExpression::BitwiseXor(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                BitwiseShiftLeft(l, r) => DefaultExpression::BitwiseShiftLeft(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
+                BitwiseShiftRight(l, r) => DefaultExpression::BitwiseShiftRight(
+                    Box::new(resolve_default_expression(l)?),
+                    Box::new(resolve_default_expression(r)?),
+                ),
                 Negate(e) => DefaultExpression::Negate(Box::new(resolve_default_expression(e)?)),
                 Identity(e) => {
                     DefaultExpression::Identity(Box::new(resolve_default_expression(e)?))
+                }
+                BitwiseNot(e) => {
+                    DefaultExpression::BitwiseNot(Box::new(resolve_default_expression(e)?))
                 }
                 // Boolean operators
                 And(l, r) => DefaultExpression::And(

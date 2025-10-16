@@ -49,14 +49,11 @@ fn test_null_binary_operators_comparison() {
 }
 
 #[test]
-#[ignore = "Bitwise operators not yet implemented"]
 fn test_null_binary_operators_bitwise() {
     let mut ctx = setup_test();
 
-    // Note: These operators are not yet implemented in our SQL parser
-    // & (bitwise AND), || (string concatenation conflicts with OR),
-    // << (left shift), >> (right shift)
-    let bitwise_ops = vec!["&", "||", "<<", ">>"];
+    // Test bitwise operators: & (AND), | (OR), ^ (XOR), << (left shift), >> (right shift)
+    let bitwise_ops = vec!["&", "|", "^", "<<", ">>"];
 
     for op in bitwise_ops {
         let sql = format!("SELECT NULL {} NULL as res", op);
@@ -98,7 +95,7 @@ fn test_null_binary_operators_arithmetic() {
 fn test_null_unary_operators_arithmetic() {
     let mut ctx = setup_test();
 
-    let unary_ops = vec!["-", "+"];
+    let unary_ops = vec!["-", "+", "~"];
 
     for op in unary_ops {
         let sql = format!("SELECT {} NULL as res", op);

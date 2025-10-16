@@ -195,6 +195,39 @@ fn evaluate_with_storage_and_outer(
             operators::execute_exponentiate(&l, &r)?
         }
 
+        // Bitwise operations
+        BitwiseAnd(lhs, rhs) => {
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
+            operators::execute_bitwise_and(&l, &r)?
+        }
+        BitwiseOr(lhs, rhs) => {
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
+            operators::execute_bitwise_or(&l, &r)?
+        }
+        BitwiseXor(lhs, rhs) => {
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
+            operators::execute_bitwise_xor(&l, &r)?
+        }
+        BitwiseShiftLeft(lhs, rhs) => {
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
+            operators::execute_bitwise_shift_left(&l, &r)?
+        }
+        BitwiseShiftRight(lhs, rhs) => {
+            let l = evaluate_with_storage_and_outer(lhs, row, outer_row, context, params, storage)?;
+            let r = evaluate_with_storage_and_outer(rhs, row, outer_row, context, params, storage)?;
+            operators::execute_bitwise_shift_right(&l, &r)?
+        }
+
+        BitwiseNot(expr) => {
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
+            operators::execute_bitwise_not(&value)?
+        }
+
         ILike(expr, pattern) => {
             let value =
                 evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;

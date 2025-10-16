@@ -685,7 +685,12 @@ impl TypeChecker {
             | Multiply(l, r)
             | Divide(l, r)
             | Remainder(l, r)
-            | Exponentiate(l, r) => {
+            | Exponentiate(l, r)
+            | BitwiseAnd(l, r)
+            | BitwiseOr(l, r)
+            | BitwiseXor(l, r)
+            | BitwiseShiftLeft(l, r)
+            | BitwiseShiftRight(l, r) => {
                 let left_id = expr_id.child(0);
                 let right_id = expr_id.child(1);
                 let left_type =
@@ -713,6 +718,25 @@ impl TypeChecker {
                         operators::validate_remainder(&left_type.data_type, &right_type.data_type)?
                     }
                     Exponentiate(_, _) => operators::validate_exponentiate(
+                        &left_type.data_type,
+                        &right_type.data_type,
+                    )?,
+                    BitwiseAnd(_, _) => operators::validate_bitwise_and(
+                        &left_type.data_type,
+                        &right_type.data_type,
+                    )?,
+                    BitwiseOr(_, _) => {
+                        operators::validate_bitwise_or(&left_type.data_type, &right_type.data_type)?
+                    }
+                    BitwiseXor(_, _) => operators::validate_bitwise_xor(
+                        &left_type.data_type,
+                        &right_type.data_type,
+                    )?,
+                    BitwiseShiftLeft(_, _) => operators::validate_bitwise_shift_left(
+                        &left_type.data_type,
+                        &right_type.data_type,
+                    )?,
+                    BitwiseShiftRight(_, _) => operators::validate_bitwise_shift_right(
                         &left_type.data_type,
                         &right_type.data_type,
                     )?,
@@ -762,7 +786,7 @@ impl TypeChecker {
                 })
             }
 
-            Not(e) | Negate(e) | Identity(e) | Factorial(e) => {
+            Not(e) | Negate(e) | Identity(e) | Factorial(e) | BitwiseNot(e) => {
                 let inner_id = expr_id.child(0);
                 let inner_type =
                     self.infer_expr_type_new(e, &inner_id, column_map, param_types, type_map)?;
@@ -772,6 +796,7 @@ impl TypeChecker {
                     Negate(_) => operators::validate_negate(&inner_type.data_type)?,
                     Identity(_) => operators::validate_identity(&inner_type.data_type)?,
                     Factorial(_) => operators::validate_factorial(&inner_type.data_type)?,
+                    BitwiseNot(_) => operators::validate_bitwise_not(&inner_type.data_type)?,
                     _ => unreachable!(),
                 };
 

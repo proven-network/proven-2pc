@@ -37,7 +37,7 @@ pub enum Token {
     Minus,              // -
     Asterisk,           // *
     Slash,              // /
-    Caret,              // ^
+    Caret,              // ^ (bitwise XOR)
     Percent,            // %
     Exclamation,        // !
     Question,           // ?
@@ -51,6 +51,12 @@ pub enum Token {
     CloseBrace,         // }
     Colon,              // :
     Concat,             // ||
+    Ampersand,          // &
+    Pipe,               // |
+    Tilde,              // ~
+    LeftShift,          // <<
+    RightShift,         // >>
+    Exponentiate,       // **
 }
 
 impl Display for Token {
@@ -87,6 +93,12 @@ impl Display for Token {
             Self::CloseBrace => "}",
             Self::Colon => ":",
             Self::Concat => "||",
+            Self::Ampersand => "&",
+            Self::Pipe => "|",
+            Self::Tilde => "~",
+            Self::LeftShift => "<<",
+            Self::RightShift => ">>",
+            Self::Exponentiate => "**",
         })
     }
 }
@@ -682,16 +694,53 @@ impl<'a> Lexer<'a> {
 
     /// Scans the next symbol token, if any.
     fn scan_symbol(&mut self) -> Option<Token> {
-        // Handle || first as a special case since it's two characters
+        // Handle multi-character tokens first
+
+        // Handle || (concat) and | (bitwise OR)
         if self.chars.peek() == Some(&'|') {
             self.chars.next(); // consume first '|'
             if self.chars.peek() == Some(&'|') {
                 self.chars.next(); // consume second '|'
                 return Some(Token::Concat);
             }
-            // If not ||, we consumed a single | which is not a valid token
-            // For now, we'll just ignore single |
-            return None;
+            // Single | is bitwise OR
+            return Some(Token::Pipe);
+        }
+
+        // Handle << (left shift)
+        if self.chars.peek() == Some(&'<') {
+            let saved = self.chars.clone();
+            self.chars.next(); // consume first '<'
+            if self.chars.peek() == Some(&'<') {
+                self.chars.next(); // consume second '<'
+                return Some(Token::LeftShift);
+            }
+            // Restore for normal < handling
+            self.chars = saved;
+        }
+
+        // Handle >> (right shift)
+        if self.chars.peek() == Some(&'>') {
+            let saved = self.chars.clone();
+            self.chars.next(); // consume first '>'
+            if self.chars.peek() == Some(&'>') {
+                self.chars.next(); // consume second '>'
+                return Some(Token::RightShift);
+            }
+            // Restore for normal > handling
+            self.chars = saved;
+        }
+
+        // Handle ** (exponentiation)
+        if self.chars.peek() == Some(&'*') {
+            let saved = self.chars.clone();
+            self.chars.next(); // consume first '*'
+            if self.chars.peek() == Some(&'*') {
+                self.chars.next(); // consume second '*'
+                return Some(Token::Exponentiate);
+            }
+            // Restore for normal * handling
+            self.chars = saved;
         }
 
         let mut token = self.next_if_map(|c| {
@@ -717,6 +766,8 @@ impl<'a> Lexer<'a> {
                 '{' => Token::OpenBrace,
                 '}' => Token::CloseBrace,
                 ':' => Token::Colon,
+                '&' => Token::Ampersand,
+                '~' => Token::Tilde,
                 _ => return None,
             })
         })?;

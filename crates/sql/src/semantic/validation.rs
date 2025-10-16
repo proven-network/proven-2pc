@@ -95,14 +95,20 @@ impl SemanticValidator {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::ILike(l, r)
-                    | Operator::Like(l, r) => {
+                    | Operator::Like(l, r)
+                    | Operator::BitwiseAnd(l, r)
+                    | Operator::BitwiseOr(l, r)
+                    | Operator::BitwiseXor(l, r)
+                    | Operator::BitwiseShiftLeft(l, r)
+                    | Operator::BitwiseShiftRight(l, r) => {
                         self.validate_group_by_expr(l, group_by_exprs)?;
                         self.validate_group_by_expr(r, group_by_exprs)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
                     | Operator::Identity(e)
-                    | Operator::Factorial(e) => {
+                    | Operator::Factorial(e)
+                    | Operator::BitwiseNot(e) => {
                         self.validate_group_by_expr(e, group_by_exprs)?;
                     }
                     Operator::Between {
@@ -197,13 +203,19 @@ impl SemanticValidator {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::ILike(l, r)
-                    | Operator::Like(l, r) => {
+                    | Operator::Like(l, r)
+                    | Operator::BitwiseAnd(l, r)
+                    | Operator::BitwiseOr(l, r)
+                    | Operator::BitwiseXor(l, r)
+                    | Operator::BitwiseShiftLeft(l, r)
+                    | Operator::BitwiseShiftRight(l, r) => {
                         Self::is_aggregate_expression(l) || Self::is_aggregate_expression(r)
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
                     | Operator::Identity(e)
-                    | Operator::Factorial(e) => Self::is_aggregate_expression(e),
+                    | Operator::Factorial(e)
+                    | Operator::BitwiseNot(e) => Self::is_aggregate_expression(e),
                     Operator::Between {
                         expr,
                         low,
@@ -298,14 +310,20 @@ impl SemanticValidator {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::ILike(l, r)
-                    | Operator::Like(l, r) => {
+                    | Operator::Like(l, r)
+                    | Operator::BitwiseAnd(l, r)
+                    | Operator::BitwiseOr(l, r)
+                    | Operator::BitwiseXor(l, r)
+                    | Operator::BitwiseShiftLeft(l, r)
+                    | Operator::BitwiseShiftRight(l, r) => {
                         self.validate_aggregate_context(l)?;
                         self.validate_aggregate_context(r)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
                     | Operator::Identity(e)
-                    | Operator::Factorial(e) => {
+                    | Operator::Factorial(e)
+                    | Operator::BitwiseNot(e) => {
                         self.validate_aggregate_context(e)?;
                     }
                     Operator::Between {
@@ -402,14 +420,20 @@ impl SemanticValidator {
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
                     | Operator::ILike(l, r)
-                    | Operator::Like(l, r) => {
+                    | Operator::Like(l, r)
+                    | Operator::BitwiseAnd(l, r)
+                    | Operator::BitwiseOr(l, r)
+                    | Operator::BitwiseXor(l, r)
+                    | Operator::BitwiseShiftLeft(l, r)
+                    | Operator::BitwiseShiftRight(l, r) => {
                         Self::validate_no_nested_aggregates(l)?;
                         Self::validate_no_nested_aggregates(r)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
                     | Operator::Identity(e)
-                    | Operator::Factorial(e) => {
+                    | Operator::Factorial(e)
+                    | Operator::BitwiseNot(e) => {
                         Self::validate_no_nested_aggregates(e)?;
                     }
                     Operator::Between {

@@ -41,6 +41,14 @@ mod like;
 // String operations
 mod concat;
 
+// Bitwise operators
+mod bitwise_and;
+mod bitwise_not;
+mod bitwise_or;
+mod bitwise_shift_left;
+mod bitwise_shift_right;
+mod bitwise_xor;
+
 // Re-export commonly used items
 pub use traits::{BinaryOperator, UnaryOperator};
 
@@ -323,6 +331,84 @@ pub fn execute_greater_than_equal(left: &Value, right: &Value) -> Result<Value> 
 pub fn validate_greater_than_equal(left: &DataType, right: &DataType) -> Result<DataType> {
     static OP: greater_than_equal::GreaterThanEqualOperator =
         greater_than_equal::GreaterThanEqualOperator;
+    OP.validate(left, right)
+}
+
+// Bitwise operators
+
+/// Execute bitwise AND operation
+pub fn execute_bitwise_and(left: &Value, right: &Value) -> Result<Value> {
+    static OP: bitwise_and::BitwiseAndOperator = bitwise_and::BitwiseAndOperator;
+    OP.execute(left, right)
+}
+
+/// Validate bitwise AND operation types
+pub fn validate_bitwise_and(left: &DataType, right: &DataType) -> Result<DataType> {
+    static OP: bitwise_and::BitwiseAndOperator = bitwise_and::BitwiseAndOperator;
+    OP.validate(left, right)
+}
+
+/// Execute bitwise OR operation
+pub fn execute_bitwise_or(left: &Value, right: &Value) -> Result<Value> {
+    static OP: bitwise_or::BitwiseOrOperator = bitwise_or::BitwiseOrOperator;
+    OP.execute(left, right)
+}
+
+/// Validate bitwise OR operation types
+pub fn validate_bitwise_or(left: &DataType, right: &DataType) -> Result<DataType> {
+    static OP: bitwise_or::BitwiseOrOperator = bitwise_or::BitwiseOrOperator;
+    OP.validate(left, right)
+}
+
+/// Execute bitwise XOR operation
+pub fn execute_bitwise_xor(left: &Value, right: &Value) -> Result<Value> {
+    static OP: bitwise_xor::BitwiseXorOperator = bitwise_xor::BitwiseXorOperator;
+    OP.execute(left, right)
+}
+
+/// Validate bitwise XOR operation types
+pub fn validate_bitwise_xor(left: &DataType, right: &DataType) -> Result<DataType> {
+    static OP: bitwise_xor::BitwiseXorOperator = bitwise_xor::BitwiseXorOperator;
+    OP.validate(left, right)
+}
+
+/// Execute bitwise NOT operation
+pub fn execute_bitwise_not(value: &Value) -> Result<Value> {
+    static OP: bitwise_not::BitwiseNotOperator = bitwise_not::BitwiseNotOperator;
+    OP.execute(value)
+}
+
+/// Validate bitwise NOT operation types
+pub fn validate_bitwise_not(operand: &DataType) -> Result<DataType> {
+    static OP: bitwise_not::BitwiseNotOperator = bitwise_not::BitwiseNotOperator;
+    OP.validate(operand)
+}
+
+/// Execute bitwise left shift operation
+pub fn execute_bitwise_shift_left(left: &Value, right: &Value) -> Result<Value> {
+    static OP: bitwise_shift_left::BitwiseShiftLeftOperator =
+        bitwise_shift_left::BitwiseShiftLeftOperator;
+    OP.execute(left, right)
+}
+
+/// Validate bitwise left shift operation types
+pub fn validate_bitwise_shift_left(left: &DataType, right: &DataType) -> Result<DataType> {
+    static OP: bitwise_shift_left::BitwiseShiftLeftOperator =
+        bitwise_shift_left::BitwiseShiftLeftOperator;
+    OP.validate(left, right)
+}
+
+/// Execute bitwise right shift operation
+pub fn execute_bitwise_shift_right(left: &Value, right: &Value) -> Result<Value> {
+    static OP: bitwise_shift_right::BitwiseShiftRightOperator =
+        bitwise_shift_right::BitwiseShiftRightOperator;
+    OP.execute(left, right)
+}
+
+/// Validate bitwise right shift operation types
+pub fn validate_bitwise_shift_right(left: &DataType, right: &DataType) -> Result<DataType> {
+    static OP: bitwise_shift_right::BitwiseShiftRightOperator =
+        bitwise_shift_right::BitwiseShiftRightOperator;
     OP.validate(left, right)
 }
 

@@ -59,7 +59,7 @@ pub enum Expression {
     Divide(Box<Expression>, Box<Expression>),
     /// a % b: remainder of two numbers.
     Remainder(Box<Expression>, Box<Expression>),
-    /// a ^ b: exponentiates two numbers.
+    /// a ** b: exponentiates two numbers.
     Exponentiate(Box<Expression>, Box<Expression>),
     /// a!: takes the factorial of a number.
     Factorial(Box<Expression>),
@@ -67,6 +67,19 @@ pub enum Expression {
     Identity(Box<Expression>),
     /// -a: negates a number.
     Negate(Box<Expression>),
+
+    /// a & b: bitwise AND of two integers.
+    BitwiseAnd(Box<Expression>, Box<Expression>),
+    /// a | b: bitwise OR of two integers.
+    BitwiseOr(Box<Expression>, Box<Expression>),
+    /// a ^ b: bitwise XOR of two integers.
+    BitwiseXor(Box<Expression>, Box<Expression>),
+    /// ~a: bitwise NOT of an integer.
+    BitwiseNot(Box<Expression>),
+    /// a << b: bitwise left shift.
+    BitwiseShiftLeft(Box<Expression>, Box<Expression>),
+    /// a >> b: bitwise right shift.
+    BitwiseShiftRight(Box<Expression>, Box<Expression>),
 
     /// a ILIKE pattern: SQL pattern matching (case-insensitive).
     ILike(Box<Expression>, Box<Expression>),
@@ -148,6 +161,13 @@ impl Display for Expression {
             Factorial(expr) => write!(f, "({}!)", expr),
             Identity(expr) => write!(f, "(+{})", expr),
             Negate(expr) => write!(f, "(-{})", expr),
+
+            BitwiseAnd(lhs, rhs) => write!(f, "({} & {})", lhs, rhs),
+            BitwiseOr(lhs, rhs) => write!(f, "({} | {})", lhs, rhs),
+            BitwiseXor(lhs, rhs) => write!(f, "({} # {})", lhs, rhs),
+            BitwiseNot(expr) => write!(f, "(~{})", expr),
+            BitwiseShiftLeft(lhs, rhs) => write!(f, "({} << {})", lhs, rhs),
+            BitwiseShiftRight(lhs, rhs) => write!(f, "({} >> {})", lhs, rhs),
 
             ILike(lhs, rhs) => write!(f, "({} ILIKE {})", lhs, rhs),
             Like(lhs, rhs) => write!(f, "({} LIKE {})", lhs, rhs),
@@ -288,6 +308,14 @@ pub enum DefaultExpression {
     Identity(Box<DefaultExpression>),
     Negate(Box<DefaultExpression>),
 
+    // Bitwise operations
+    BitwiseAnd(Box<DefaultExpression>, Box<DefaultExpression>),
+    BitwiseOr(Box<DefaultExpression>, Box<DefaultExpression>),
+    BitwiseXor(Box<DefaultExpression>, Box<DefaultExpression>),
+    BitwiseNot(Box<DefaultExpression>),
+    BitwiseShiftLeft(Box<DefaultExpression>, Box<DefaultExpression>),
+    BitwiseShiftRight(Box<DefaultExpression>, Box<DefaultExpression>),
+
     // Pattern matching
     ILike(Box<DefaultExpression>, Box<DefaultExpression>),
     Like(Box<DefaultExpression>, Box<DefaultExpression>),
@@ -358,6 +386,16 @@ impl From<DefaultExpression> for Expression {
             DE::Factorial(e) => E::Factorial(Box::new((*e).into())),
             DE::Identity(e) => E::Identity(Box::new((*e).into())),
             DE::Negate(e) => E::Negate(Box::new((*e).into())),
+            DE::BitwiseAnd(l, r) => E::BitwiseAnd(Box::new((*l).into()), Box::new((*r).into())),
+            DE::BitwiseOr(l, r) => E::BitwiseOr(Box::new((*l).into()), Box::new((*r).into())),
+            DE::BitwiseXor(l, r) => E::BitwiseXor(Box::new((*l).into()), Box::new((*r).into())),
+            DE::BitwiseNot(e) => E::BitwiseNot(Box::new((*e).into())),
+            DE::BitwiseShiftLeft(l, r) => {
+                E::BitwiseShiftLeft(Box::new((*l).into()), Box::new((*r).into()))
+            }
+            DE::BitwiseShiftRight(l, r) => {
+                E::BitwiseShiftRight(Box::new((*l).into()), Box::new((*r).into()))
+            }
             DE::ILike(l, r) => E::ILike(Box::new((*l).into()), Box::new((*r).into())),
             DE::Like(l, r) => E::Like(Box::new((*l).into()), Box::new((*r).into())),
             DE::InList(e, list, neg) => E::InList(

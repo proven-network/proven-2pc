@@ -124,13 +124,19 @@ fn count_parameters(stmt: &Statement) -> usize {
             | Operator::Divide(l, r)
             | Operator::Remainder(l, r)
             | Operator::Exponentiate(l, r)
+            | Operator::BitwiseAnd(l, r)
+            | Operator::BitwiseOr(l, r)
+            | Operator::BitwiseXor(l, r)
+            | Operator::BitwiseShiftLeft(l, r)
+            | Operator::BitwiseShiftRight(l, r)
             | Operator::ILike(l, r)
             | Operator::Like(l, r) => count_expr_params(l) + count_expr_params(r),
 
             Operator::Not(e)
             | Operator::Negate(e)
             | Operator::Identity(e)
-            | Operator::Factorial(e) => count_expr_params(e),
+            | Operator::Factorial(e)
+            | Operator::BitwiseNot(e) => count_expr_params(e),
 
             Operator::Is(e, _) => count_expr_params(e),
 

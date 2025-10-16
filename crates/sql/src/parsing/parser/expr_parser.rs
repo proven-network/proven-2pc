@@ -34,9 +34,10 @@ impl Add<Associativity> for Precedence {
 
 /// Prefix operators.
 pub enum PrefixOperator {
-    Minus, // -a
-    Not,   // NOT a
-    Plus,  // +a
+    Minus,      // -a
+    Not,        // NOT a
+    Plus,       // +a
+    BitwiseNot, // ~a
 }
 
 impl PrefixOperator {
@@ -44,7 +45,8 @@ impl PrefixOperator {
     pub fn precedence(&self) -> Precedence {
         match self {
             Self::Not => 3,
-            Self::Minus | Self::Plus => 10,
+            // Unary +, -, ~ have high precedence (higher than exponentiation)
+            Self::Minus | Self::Plus | Self::BitwiseNot => 13,
         }
     }
 
@@ -61,6 +63,7 @@ impl PrefixOperator {
             Self::Plus => Operator::Identity(rhs).into(),
             Self::Minus => Operator::Negate(rhs).into(),
             Self::Not => Operator::Not(rhs).into(),
+            Self::BitwiseNot => Operator::BitwiseNot(rhs).into(),
         }
     }
 }
@@ -72,7 +75,7 @@ pub enum InfixOperator {
     Concat,             // a || b
     Divide,             // a / b
     Equal,              // a = b
-    Exponentiate,       // a ^ b
+    Exponentiate,       // a ** b
     GreaterThan,        // a > b
     GreaterThanOrEqual, // a >= b
     LessThan,           // a < b
@@ -85,6 +88,11 @@ pub enum InfixOperator {
     Remainder,          // a % b
     Subtract,           // a - b
     Xor,                // a XOR b
+    BitwiseAnd,         // a & b
+    BitwiseOr,          // a | b
+    BitwiseXor,         // a ^ b
+    BitwiseShiftLeft,   // a << b
+    BitwiseShiftRight,  // a >> b
 }
 
 impl InfixOperator {
@@ -92,6 +100,12 @@ impl InfixOperator {
     ///
     /// Mostly follows Postgres, except IS and LIKE having same precedence as =.
     /// This is similar to SQLite and MySQL.
+    ///
+    /// Bitwise operator precedence (between comparison and arithmetic):
+    /// - BitwiseOr: lowest bitwise (between comparison and BitwiseXor)
+    /// - BitwiseXor: middle bitwise
+    /// - BitwiseAnd: higher bitwise
+    /// - Shifts (<<, >>): highest bitwise (just below addition)
     pub fn precedence(&self) -> Precedence {
         match self {
             Self::Or | Self::Xor => 1,
@@ -102,9 +116,13 @@ impl InfixOperator {
             | Self::GreaterThanOrEqual
             | Self::LessThan
             | Self::LessThanOrEqual => 5,
-            Self::Add | Self::Concat | Self::Subtract => 6,
-            Self::Multiply | Self::Divide | Self::Remainder => 7,
-            Self::Exponentiate => 8,
+            Self::BitwiseOr => 6,  // Lowest bitwise precedence
+            Self::BitwiseXor => 7, // Middle bitwise precedence
+            Self::BitwiseAnd => 8, // Higher bitwise precedence
+            Self::BitwiseShiftLeft | Self::BitwiseShiftRight => 9, // Highest bitwise precedence
+            Self::Add | Self::Concat | Self::Subtract => 10,
+            Self::Multiply | Self::Divide | Self::Remainder => 11,
+            Self::Exponentiate => 12,
         }
     }
 
@@ -138,6 +156,11 @@ impl InfixOperator {
             Self::Remainder => Operator::Remainder(lhs, rhs).into(),
             Self::Subtract => Operator::Subtract(lhs, rhs).into(),
             Self::Xor => Operator::Xor(lhs, rhs).into(),
+            Self::BitwiseAnd => Operator::BitwiseAnd(lhs, rhs).into(),
+            Self::BitwiseOr => Operator::BitwiseOr(lhs, rhs).into(),
+            Self::BitwiseXor => Operator::BitwiseXor(lhs, rhs).into(),
+            Self::BitwiseShiftLeft => Operator::BitwiseShiftLeft(lhs, rhs).into(),
+            Self::BitwiseShiftRight => Operator::BitwiseShiftRight(lhs, rhs).into(),
         }
     }
 }
@@ -704,6 +727,7 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 Token::Keyword(Keyword::Not) => PrefixOperator::Not,
                 Token::Minus => PrefixOperator::Minus,
                 Token::Plus => PrefixOperator::Plus,
+                Token::Tilde => PrefixOperator::BitwiseNot,
                 _ => return None,
             };
             Some(operator).filter(|op| op.precedence() >= min_precedence)
@@ -716,7 +740,8 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
         self.next_if_map(|token| {
             let operator = match token {
                 Token::Asterisk => InfixOperator::Multiply,
-                Token::Caret => InfixOperator::Exponentiate,
+                Token::Exponentiate => InfixOperator::Exponentiate,
+                Token::Caret => InfixOperator::BitwiseXor,
                 Token::Concat => InfixOperator::Concat,
                 Token::Equal => InfixOperator::Equal,
                 Token::GreaterThan => InfixOperator::GreaterThan,
@@ -734,6 +759,10 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 Token::Percent => InfixOperator::Remainder,
                 Token::Plus => InfixOperator::Add,
                 Token::Slash => InfixOperator::Divide,
+                Token::Ampersand => InfixOperator::BitwiseAnd,
+                Token::Pipe => InfixOperator::BitwiseOr,
+                Token::LeftShift => InfixOperator::BitwiseShiftLeft,
+                Token::RightShift => InfixOperator::BitwiseShiftRight,
                 _ => return None,
             };
             Some(operator).filter(|op| op.precedence() >= min_precedence)
