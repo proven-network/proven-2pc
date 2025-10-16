@@ -38,6 +38,7 @@ mod variance_distinct;
 mod cast;
 pub(crate) mod coalesce;
 mod ifnull;
+mod nullif;
 
 // Math functions
 mod abs;
@@ -145,6 +146,7 @@ impl FunctionRegistry {
         cast::register(&mut registry);
         coalesce::register(&mut registry);
         ifnull::register(&mut registry);
+        nullif::register(&mut registry);
 
         // Register math functions
         abs::register(&mut registry);

@@ -1,50 +1,106 @@
 //! NULLIF function tests
 //! Based on gluesql/test-suite/src/function/nullif.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::setup_test;
+use proven_value::Value;
+
 #[test]
 fn test_nullif_equal_integers() {
-    // TODO: Test SELECT NULLIF(0, 0) should return NULL when integers are equal
+    let mut ctx = setup_test();
+
+    ctx.assert_query_value("SELECT NULLIF(0, 0) AS result", "result", Value::Null);
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_nullif_different_integers() {
-    // TODO: Test SELECT NULLIF(1, 0) should return first argument when integers are different
+    let mut ctx = setup_test();
+
+    ctx.assert_query_value("SELECT NULLIF(1, 0) AS result", "result", Value::I32(1));
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_nullif_equal_strings() {
-    // TODO: Test SELECT NULLIF('hello', 'hello') should return NULL when strings are equal
+    let mut ctx = setup_test();
+
+    ctx.assert_query_value(
+        "SELECT NULLIF('hello', 'hello') AS result",
+        "result",
+        Value::Null,
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_nullif_different_strings() {
-    // TODO: Test SELECT NULLIF('hello', 'helle') should return first argument when strings are different
+    let mut ctx = setup_test();
+
+    ctx.assert_query_value(
+        "SELECT NULLIF('hello', 'helle') AS result",
+        "result",
+        Value::string("hello"),
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "TO_DATE function not yet implemented"]
 #[test]
 fn test_nullif_equal_dates() {
-    // TODO: Test SELECT NULLIF(TO_DATE('2025-01-01', '%Y-%m-%d'), TO_DATE('2025-01-01', '%Y-%m-%d')) should return NULL
+    let mut ctx = setup_test();
+
+    ctx.assert_query_value(
+        "SELECT NULLIF(TO_DATE('2025-01-01', '%Y-%m-%d'), TO_DATE('2025-01-01', '%Y-%m-%d')) AS result",
+        "result",
+        Value::Null,
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "TO_DATE function not yet implemented"]
 #[test]
 fn test_nullif_different_dates() {
-    // TODO: Test SELECT NULLIF(TO_DATE('2025-01-01', '%Y-%m-%d'), TO_DATE('2025-01-02', '%Y-%m-%d')) should return first date
+    let mut ctx = setup_test();
+
+    let results = ctx.query(
+        "SELECT NULLIF(TO_DATE('2025-01-01', '%Y-%m-%d'), TO_DATE('2025-01-02', '%Y-%m-%d')) AS result"
+    );
+
+    assert_eq!(results.len(), 1);
+    let result_value = results[0].get("result").unwrap();
+
+    // Verify it's a date and contains 2025-01-01
+    let date_str = result_value.to_string();
+    assert!(
+        date_str.contains("2025") && date_str.contains("01-01"),
+        "Expected date 2025-01-01, got: {}",
+        date_str
+    );
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_nullif_no_arguments() {
-    // TODO: Test SELECT NULLIF() should fail with FunctionArgsLengthNotMatching (expected: 2, found: 0)
+    let mut ctx = setup_test();
+
+    ctx.assert_error_contains("SELECT NULLIF() AS result", "2 arguments");
+
+    ctx.commit();
 }
 
-#[ignore = "not yet implemented"]
 #[test]
 fn test_nullif_one_argument() {
-    // TODO: Test SELECT NULLIF(1) should fail with FunctionArgsLengthNotMatching (expected: 2, found: 1)
+    let mut ctx = setup_test();
+
+    ctx.assert_error_contains("SELECT NULLIF(1) AS result", "2 arguments");
+
+    ctx.commit();
 }
