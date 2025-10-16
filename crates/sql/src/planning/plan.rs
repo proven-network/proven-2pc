@@ -162,6 +162,9 @@ pub enum Node {
     /// Skip rows (OFFSET)
     Offset { source: Box<Node>, offset: usize },
 
+    /// Distinct - deduplicate result rows
+    Distinct { source: Box<Node> },
+
     /// Aggregate functions with GROUP BY
     Aggregate {
         source: Box<Node>,
@@ -213,6 +216,7 @@ impl Node {
             Node::Order { source, .. } => source.column_count(schemas),
             Node::Limit { source, .. } => source.column_count(schemas),
             Node::Offset { source, .. } => source.column_count(schemas),
+            Node::Distinct { source } => source.column_count(schemas),
             Node::Aggregate {
                 group_by,
                 aggregates,
@@ -261,7 +265,8 @@ impl Node {
             Node::Filter { source, .. }
             | Node::Order { source, .. }
             | Node::Limit { source, .. }
-            | Node::Offset { source, .. } => source.get_column_names(schemas),
+            | Node::Offset { source, .. }
+            | Node::Distinct { source } => source.get_column_names(schemas),
 
             // SeriesScan produces column "n" (lowercase for SQL case-insensitivity)
             Node::SeriesScan { .. } => vec!["n".to_string()],

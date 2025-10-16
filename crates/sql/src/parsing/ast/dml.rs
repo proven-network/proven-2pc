@@ -31,6 +31,8 @@ pub struct ValuesStatement {
 /// SELECT statement structure
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SelectStatement {
+    /// DISTINCT: whether to deduplicate result rows.
+    pub distinct: bool,
     /// Expressions to select, with an optional column alias.
     pub select: Vec<(Expression, Option<String>)>,
     /// FROM: tables to select from.

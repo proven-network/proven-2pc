@@ -291,7 +291,6 @@ fn test_inline_view_unsupported_implicit_join() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_select_distinct() {
     let mut ctx = setup_test();
     setup_inline_view_tables(&mut ctx);

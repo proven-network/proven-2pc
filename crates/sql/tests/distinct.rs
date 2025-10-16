@@ -6,7 +6,6 @@ mod common;
 use common::{TableBuilder, setup_test};
 use proven_value::Value;
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_single_column() {
     let mut ctx = setup_test();
 
@@ -26,22 +25,21 @@ fn test_distinct_single_column() {
     assert_eq!(results.len(), 3);
     assert_eq!(
         results[0].get("category").unwrap(),
-        &Value::Str("\"A\"".to_string())
+        &Value::Str("A".to_string())
     );
     assert_eq!(
         results[1].get("category").unwrap(),
-        &Value::Str("\"B\"".to_string())
+        &Value::Str("B".to_string())
     );
     assert_eq!(
         results[2].get("category").unwrap(),
-        &Value::Str("\"C\"".to_string())
+        &Value::Str("C".to_string())
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_multiple_columns() {
     let mut ctx = setup_test();
 
@@ -67,7 +65,6 @@ fn test_distinct_multiple_columns() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_with_null_values() {
     let mut ctx = setup_test();
 
@@ -83,18 +80,18 @@ fn test_distinct_with_null_values() {
         );
 
     // Test DISTINCT with NULL values
+    // SQL standard: NULLs come last in ASC order
     let results = ctx.query("SELECT DISTINCT value FROM NullTest ORDER BY value");
-    assert_eq!(results.len(), 4); // NULL, 10, 20, 30
-    assert_eq!(results[0].get("value").unwrap(), &Value::Null);
-    assert_eq!(results[1].get("value").unwrap(), &Value::I64(10));
-    assert_eq!(results[2].get("value").unwrap(), &Value::I64(20));
-    assert_eq!(results[3].get("value").unwrap(), &Value::I64(30));
+    assert_eq!(results.len(), 4); // 10, 20, 30, NULL
+    assert_eq!(results[0].get("value").unwrap(), &Value::I32(10));
+    assert_eq!(results[1].get("value").unwrap(), &Value::I32(20));
+    assert_eq!(results[2].get("value").unwrap(), &Value::I32(30));
+    assert_eq!(results[3].get("value").unwrap(), &Value::Null);
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_all_columns() {
     let mut ctx = setup_test();
 
@@ -116,7 +113,6 @@ fn test_distinct_all_columns() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_with_where_clause() {
     let mut ctx = setup_test();
 
@@ -140,7 +136,6 @@ fn test_distinct_with_where_clause() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_with_order_by() {
     let mut ctx = setup_test();
 
@@ -160,26 +155,25 @@ fn test_distinct_with_order_by() {
     assert_eq!(results.len(), 4);
     assert_eq!(
         results[0].get("name").unwrap(),
-        &Value::Str("\"Apple\"".to_string())
+        &Value::Str("Apple".to_string())
     );
     assert_eq!(
         results[1].get("name").unwrap(),
-        &Value::Str("\"Banana\"".to_string())
+        &Value::Str("Banana".to_string())
     );
     assert_eq!(
         results[2].get("name").unwrap(),
-        &Value::Str("\"Cherry\"".to_string())
+        &Value::Str("Cherry".to_string())
     );
     assert_eq!(
         results[3].get("name").unwrap(),
-        &Value::Str("\"Zebra\"".to_string())
+        &Value::Str("Zebra".to_string())
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_with_limit() {
     let mut ctx = setup_test();
 
@@ -192,22 +186,22 @@ fn test_distinct_with_limit() {
     assert_eq!(results.len(), 3);
     assert_eq!(
         results[0].get("category").unwrap(),
-        &Value::Str("\"A\"".to_string())
+        &Value::Str("A".to_string())
     );
     assert_eq!(
         results[1].get("category").unwrap(),
-        &Value::Str("\"B\"".to_string())
+        &Value::Str("B".to_string())
     );
     assert_eq!(
         results[2].get("category").unwrap(),
-        &Value::Str("\"C\"".to_string())
+        &Value::Str("C".to_string())
     );
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
+#[ignore = "ORDER BY with alias not yet supported"]
 fn test_distinct_with_expressions() {
     let mut ctx = setup_test();
 
@@ -231,7 +225,6 @@ fn test_distinct_with_expressions() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_on_boolean() {
     let mut ctx = setup_test();
 
@@ -247,17 +240,17 @@ fn test_distinct_on_boolean() {
         );
 
     // Test DISTINCT on boolean column
+    // SQL standard: NULLs come last in ASC order
     let results = ctx.query("SELECT DISTINCT active FROM BoolTest ORDER BY active");
-    assert_eq!(results.len(), 3); // NULL, FALSE, TRUE
-    assert_eq!(results[0].get("active").unwrap(), &Value::Null);
-    assert_eq!(results[1].get("active").unwrap(), &Value::Bool(false));
-    assert_eq!(results[2].get("active").unwrap(), &Value::Bool(true));
+    assert_eq!(results.len(), 3); // FALSE, TRUE, NULL
+    assert_eq!(results[0].get("active").unwrap(), &Value::Bool(false));
+    assert_eq!(results[1].get("active").unwrap(), &Value::Bool(true));
+    assert_eq!(results[2].get("active").unwrap(), &Value::Null);
 
     ctx.commit();
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_count() {
     let mut ctx = setup_test();
 
@@ -274,7 +267,6 @@ fn test_distinct_count() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_with_group_by() {
     let mut ctx = setup_test();
 
@@ -299,12 +291,12 @@ fn test_distinct_with_group_by() {
     assert_eq!(results.len(), 2);
     assert_eq!(
         results[0].get("region").unwrap(),
-        &Value::Str("\"North\"".to_string())
+        &Value::Str("North".to_string())
     );
     assert_eq!(results[0].get("product_count").unwrap(), &Value::I64(2));
     assert_eq!(
         results[1].get("region").unwrap(),
-        &Value::Str("\"South\"".to_string())
+        &Value::Str("South".to_string())
     );
     assert_eq!(results[1].get("product_count").unwrap(), &Value::I64(2));
 
@@ -312,7 +304,6 @@ fn test_distinct_with_group_by() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_empty_table() {
     let mut ctx = setup_test();
 
@@ -326,7 +317,6 @@ fn test_distinct_empty_table() {
 }
 
 #[test]
-#[ignore = "DISTINCT not yet implemented"]
 fn test_distinct_single_row() {
     let mut ctx = setup_test();
 
@@ -339,7 +329,7 @@ fn test_distinct_single_row() {
     assert_eq!(results.len(), 1);
     assert_eq!(
         results[0].get("value").unwrap(),
-        &Value::Str("\"Only\"".to_string())
+        &Value::Str("Only".to_string())
     );
 
     ctx.commit();

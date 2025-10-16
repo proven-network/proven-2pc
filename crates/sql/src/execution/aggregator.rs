@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 /// Wrapper for Value to make it hashable for DISTINCT tracking
 #[derive(Debug, Clone)]
-struct HashableValue(Value);
+pub struct HashableValue(pub Value);
 
 impl PartialEq for HashableValue {
     fn eq(&self, other: &Self) -> bool {

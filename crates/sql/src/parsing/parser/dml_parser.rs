@@ -10,6 +10,9 @@ use crate::parsing::ast::dml::{DmlStatement, ValuesStatement};
 use crate::parsing::ast::{Expression, InsertSource, SelectStatement, Statement};
 use std::collections::BTreeMap;
 
+/// Type alias for SELECT clause parsing result: (distinct_flag, select_expressions)
+type SelectClauseResult = (bool, Vec<(Expression, Option<String>)>);
+
 /// Parser trait for DML statements
 pub trait DmlParser: TokenHelper {
     /// Parses an expression
@@ -52,8 +55,10 @@ pub trait DmlParser: TokenHelper {
             InsertSource::Values(self.parse_values_rows()?)
         } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
             // Parse the SELECT statement - parse_select_clause will consume SELECT
+            let (distinct, select) = self.parse_select_clause()?;
             let select = Box::new(SelectStatement {
-                select: self.parse_select_clause()?,
+                distinct,
+                select,
                 from: self.parse_from_clause()?,
                 r#where: self.parse_where_clause()?,
                 group_by: self.parse_group_by_clause()?,
@@ -108,9 +113,11 @@ pub trait DmlParser: TokenHelper {
 
     /// Parses a SELECT statement.
     fn parse_select(&mut self) -> Result<Statement> {
+        let (distinct, select) = self.parse_select_clause()?;
         Ok(Statement::Dml(DmlStatement::Select(Box::new(
             SelectStatement {
-                select: self.parse_select_clause()?,
+                distinct,
+                select,
                 from: self.parse_from_clause()?,
                 r#where: self.parse_where_clause()?,
                 group_by: self.parse_group_by_clause()?,
@@ -123,10 +130,14 @@ pub trait DmlParser: TokenHelper {
     }
 
     /// Parses a SELECT clause, if present.
-    fn parse_select_clause(&mut self) -> Result<Vec<(Expression, Option<String>)>> {
+    fn parse_select_clause(&mut self) -> Result<SelectClauseResult> {
         if !self.next_is(Keyword::Select.into()) {
-            return Ok(Vec::new());
+            return Ok((false, Vec::new()));
         }
+
+        // Check for DISTINCT keyword
+        let distinct = self.next_is(Keyword::Distinct.into());
+
         let mut select = Vec::new();
         loop {
             let expr = self.parse_expression()?;
@@ -146,7 +157,7 @@ pub trait DmlParser: TokenHelper {
                 break;
             }
         }
-        Ok(select)
+        Ok((distinct, select))
     }
 
     /// Parses a FROM clause, if present.
@@ -196,8 +207,10 @@ pub trait DmlParser: TokenHelper {
             let source = match self.peek()? {
                 Some(Token::Keyword(Keyword::Select)) => {
                     // Parse SELECT subquery - parse_select_clause will consume SELECT
+                    let (distinct, select) = self.parse_select_clause()?;
                     let select = Box::new(SelectStatement {
-                        select: self.parse_select_clause()?,
+                        distinct,
+                        select,
                         from: self.parse_from_clause()?,
                         r#where: self.parse_where_clause()?,
                         group_by: self.parse_group_by_clause()?,

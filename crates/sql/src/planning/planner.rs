@@ -219,8 +219,26 @@ impl Planner {
             }
         }
 
-        // Apply ORDER BY
-        if !select.order_by.is_empty() {
+        // Check if ORDER BY references any columns not in SELECT
+        // If so, we need to add them to projection temporarily
+        let needs_extended_projection = !select.order_by.is_empty() && {
+            select.order_by.iter().any(|(expr, _)| {
+                // Check if this expression is not in the SELECT list
+                !select.select.iter().any(|(sel_expr, _)| {
+                    // Simple structural check
+                    match (expr, sel_expr) {
+                        (AstExpression::Column(t1, c1), AstExpression::Column(t2, c2)) => {
+                            t1 == t2 && c1 == c2
+                        }
+                        _ => false,
+                    }
+                })
+            })
+        };
+
+        // If ORDER BY needs columns not in SELECT, apply it before projection
+        if needs_extended_projection {
+            // Apply ORDER BY before projection (PostgreSQL-style)
             let order = select
                 .order_by
                 .iter()
@@ -254,9 +272,47 @@ impl Planner {
 
         node = Node::Projection {
             source: Box::new(node),
-            expressions,
-            aliases,
+            expressions: expressions.clone(),
+            aliases: aliases.clone(),
         };
+
+        // Create projection context for ORDER BY resolution
+        // This maps column names/aliases to their position in projection output
+        let projection_ctx = if has_wildcard {
+            // For wildcards, use the column names from semantic analysis
+            let column_names = analyzed.column_resolution_map.get_ordered_column_names();
+            ProjectionContext::with_column_names(expressions, select.select.clone(), column_names)
+        } else {
+            ProjectionContext::new(expressions, select.select.clone())
+        };
+
+        // Apply DISTINCT (SQL standard: after projection, before ORDER BY)
+        if select.distinct {
+            node = Node::Distinct {
+                source: Box::new(node),
+            };
+        }
+
+        // Apply ORDER BY after projection (only if it wasn't applied before)
+        if !select.order_by.is_empty() && !needs_extended_projection {
+            let order = select
+                .order_by
+                .iter()
+                .map(|(e, d)| {
+                    let expr = context.resolve_order_by_expression(e, &projection_ctx)?;
+                    let dir = match d {
+                        AstDirection::Asc => Direction::Ascending,
+                        AstDirection::Desc => Direction::Descending,
+                    };
+                    Ok((expr, dir))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            node = Node::Order {
+                source: Box::new(node),
+                order_by: order,
+            };
+        }
 
         // Apply OFFSET
         if let Some(ref offset_expr) = select.offset {
@@ -1666,6 +1722,77 @@ struct TableRef {
     start_column: usize,
 }
 
+/// Context for resolving ORDER BY expressions after projection
+/// Maps column names/aliases to their position in the projection output
+struct ProjectionContext {
+    /// Maps column names (or aliases) to their index in projection output
+    column_map: HashMap<String, usize>,
+    /// Original projection expressions (for structural matching)
+    expressions: Vec<Expression>,
+}
+
+impl ProjectionContext {
+    /// Create a ProjectionContext from projection expressions and SELECT AST
+    /// For wildcard selections, we need the AnalyzedStatement to get column names
+    fn new(expressions: Vec<Expression>, ast_select: Vec<(AstExpression, Option<String>)>) -> Self {
+        let mut column_map = HashMap::new();
+
+        for (idx, (ast_expr, alias)) in ast_select.iter().enumerate() {
+            // If there's an alias, map it to this position
+            if let Some(alias_name) = alias {
+                column_map.insert(alias_name.clone(), idx);
+            } else {
+                // For unaliased expressions, try to extract the column name
+                // This allows "SELECT x FROM t ORDER BY x" to work
+                if let AstExpression::Column(_, col_name) = ast_expr {
+                    column_map.insert(col_name.clone(), idx);
+                }
+            }
+        }
+
+        Self {
+            column_map,
+            expressions,
+        }
+    }
+
+    /// Create a ProjectionContext with explicit column names (for wildcard expansion)
+    fn with_column_names(
+        expressions: Vec<Expression>,
+        ast_select: Vec<(AstExpression, Option<String>)>,
+        column_names: Vec<String>,
+    ) -> Self {
+        let mut column_map = HashMap::new();
+
+        // Map each column name to its position
+        for (idx, name) in column_names.iter().enumerate() {
+            column_map.insert(name.clone(), idx);
+        }
+
+        // Also handle any explicit aliases from the AST
+        for (idx, (_, alias)) in ast_select.iter().enumerate() {
+            if let Some(alias_name) = alias {
+                column_map.insert(alias_name.clone(), idx);
+            }
+        }
+
+        Self {
+            column_map,
+            expressions,
+        }
+    }
+
+    /// Try to resolve a column name to a projection output index
+    fn resolve_column_name(&self, name: &str) -> Option<usize> {
+        self.column_map.get(name).copied()
+    }
+
+    /// Try to find an expression in the projection by structural equality
+    fn find_expression(&self, expr: &Expression) -> Option<usize> {
+        self.expressions.iter().position(|e| e == expr)
+    }
+}
+
 impl<'a> AnalyzedPlanContext<'a> {
     fn new(schemas: &'a HashMap<String, Table>, analyzed: &'a AnalyzedStatement) -> Self {
         Self {
@@ -1880,6 +2007,55 @@ impl<'a> AnalyzedPlanContext<'a> {
                     when_clauses: resolved_when_clauses,
                     else_clause: resolved_else,
                 })
+            }
+        }
+    }
+
+    /// Resolve an ORDER BY expression against projection context
+    /// Follows SQL standard with PostgreSQL-style relaxed rules:
+    /// 1. Try to find in projection (aliases, projected columns)
+    /// 2. Fall back to source table columns (PostgreSQL extension)
+    fn resolve_order_by_expression(
+        &self,
+        expr: &AstExpression,
+        projection_ctx: &ProjectionContext,
+    ) -> Result<Expression> {
+        match expr {
+            // Simple column reference - try projection first, then source tables
+            AstExpression::Column(None, column_name) => {
+                // First try to find by name in projection (handles aliases)
+                if let Some(idx) = projection_ctx.resolve_column_name(column_name) {
+                    return Ok(Expression::Column(idx));
+                }
+
+                // PostgreSQL extension: allow ORDER BY on non-projected columns
+                // Resolve from source tables
+                self.resolve_expression(expr)
+            }
+
+            // Qualified column reference
+            AstExpression::Column(Some(_table), _column_name) => {
+                // Try to resolve the expression and find it in projection
+                let resolved = self.resolve_expression(expr)?;
+                if let Some(idx) = projection_ctx.find_expression(&resolved) {
+                    return Ok(Expression::Column(idx));
+                }
+
+                // PostgreSQL extension: allow qualified columns not in SELECT
+                Ok(resolved)
+            }
+
+            // For other expressions (functions, operators, etc.)
+            // Try to find in projection by structural equality
+            _ => {
+                let resolved = self.resolve_expression(expr)?;
+                if let Some(idx) = projection_ctx.find_expression(&resolved) {
+                    return Ok(Expression::Column(idx));
+                }
+
+                // Expression not in projection - use the resolved expression
+                // This allows complex expressions in ORDER BY (PostgreSQL extension)
+                Ok(resolved)
             }
         }
     }

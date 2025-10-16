@@ -730,6 +730,26 @@ pub fn execute_node_read_with_outer<'a>(
             Ok(Box::new(rows.skip(offset)))
         }
 
+        Node::Distinct { source } => {
+            let rows = execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
+
+            // Collect all rows and deduplicate
+            let mut seen = std::collections::HashSet::new();
+            let mut distinct_rows = Vec::new();
+
+            for row_result in rows {
+                let row = row_result?;
+                // Use HashableValue wrapper for proper hashing/equality
+                let hash_key =
+                    crate::execution::aggregator::HashableValue(Value::List(row.as_ref().clone()));
+                if seen.insert(hash_key) {
+                    distinct_rows.push(row);
+                }
+            }
+
+            Ok(Box::new(distinct_rows.into_iter().map(Ok)))
+        }
+
         // Aggregation works with immutable storage
         Node::Aggregate {
             source,

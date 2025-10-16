@@ -279,8 +279,10 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                         "NOT EXISTS must be followed by a subquery (SELECT)".into(),
                     ));
                 }
+                let (distinct, select) = self.parse_select_clause()?;
                 let select = Box::new(SelectStatement {
-                    select: self.parse_select_clause()?,
+                    distinct,
+                    select,
                     from: self.parse_from_clause()?,
                     r#where: self.parse_where_clause()?,
                     group_by: self.parse_group_by_clause()?,
@@ -371,8 +373,10 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                         "EXISTS must be followed by a subquery (SELECT)".into(),
                     ));
                 }
+                let (distinct, select) = self.parse_select_clause()?;
                 let select = Box::new(SelectStatement {
-                    select: self.parse_select_clause()?,
+                    distinct,
+                    select,
                     from: self.parse_from_clause()?,
                     r#where: self.parse_where_clause()?,
                     group_by: self.parse_group_by_clause()?,
@@ -625,8 +629,10 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 // Check if this is a subquery (starts with SELECT)
                 if self.peek()? == Some(&Token::Keyword(Keyword::Select)) {
                     // Parse subquery
+                    let (distinct, select) = self.parse_select_clause()?;
                     let select = Box::new(SelectStatement {
-                        select: self.parse_select_clause()?,
+                        distinct,
+                        select,
                         from: self.parse_from_clause()?,
                         r#where: self.parse_where_clause()?,
                         group_by: self.parse_group_by_clause()?,
@@ -794,8 +800,10 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
             // Check if this is a subquery (starts with SELECT) or a list
             if self.peek()? == Some(&Token::Keyword(Keyword::Select)) {
                 // Parse subquery
+                let (distinct, select) = self.parse_select_clause()?;
                 let select = Box::new(SelectStatement {
-                    select: self.parse_select_clause()?,
+                    distinct,
+                    select,
                     from: self.parse_from_clause()?,
                     r#where: self.parse_where_clause()?,
                     group_by: self.parse_group_by_clause()?,
