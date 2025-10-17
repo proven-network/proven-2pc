@@ -20,12 +20,35 @@ pub enum TransactionState {
     Aborted,
 }
 
+/// DDL operation that can be rolled back
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PendingDdl {
+    Create {
+        name: String,
+    },
+    Drop {
+        name: String,
+        old_schema: crate::types::schema::Table,
+    },
+    Alter {
+        name: String,
+        old_schema: crate::types::schema::Table,
+    },
+    Rename {
+        old_name: String,
+        new_name: String,
+        old_schema: crate::types::schema::Table,
+    },
+}
+
 /// Transaction-level context (long-lived, spans multiple operations)
 pub struct TransactionContext {
     /// Transaction ID (HLC timestamp provides total ordering across the distributed system)
     pub id: HlcTimestamp,
     /// Predicates accumulated across all operations in this transaction
     pub predicates: QueryPredicates,
+    /// Pending DDL operations (for rollback)
+    pub pending_ddls: Vec<PendingDdl>,
 }
 
 impl TransactionContext {
@@ -34,7 +57,13 @@ impl TransactionContext {
         Self {
             id: hlc_timestamp,
             predicates: QueryPredicates::new(),
+            pending_ddls: Vec::new(),
         }
+    }
+
+    /// Record a pending DDL operation
+    pub fn add_pending_ddl(&mut self, ddl: PendingDdl) {
+        self.pending_ddls.push(ddl);
     }
 
     /// Add predicates from a query to this transaction
@@ -68,6 +97,7 @@ impl Clone for TransactionContext {
         Self {
             id: self.id,
             predicates: self.predicates.clone(),
+            pending_ddls: self.pending_ddls.clone(),
         }
     }
 }

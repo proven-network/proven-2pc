@@ -96,7 +96,7 @@ pub fn execute_with_params(
                 }
             }
 
-            storage.create_table(name.clone(), schema)?;
+            storage.create_table(batch, name.clone(), schema)?;
             Ok(ExecutionResult::Ddl(format!("Created table {}", name)))
         }
 
@@ -119,7 +119,7 @@ pub fn execute_with_params(
                 }
             }
 
-            storage.drop_table(name)?;
+            storage.drop_table(batch, name)?;
             Ok(ExecutionResult::Ddl(format!("Dropped table {}", name)))
         }
 
@@ -222,7 +222,7 @@ pub fn execute_with_params(
                 }
             }
 
-            storage.create_table(name.clone(), schema)?;
+            storage.create_table(batch, name.clone(), schema)?;
 
             // Then execute the VALUES insertion
             if let Plan::Query {
@@ -273,7 +273,7 @@ pub fn execute_with_params(
                 }
             }
 
-            storage.create_table(name.clone(), schema)?;
+            storage.create_table(batch, name.clone(), schema)?;
 
             // Then execute the SELECT insertion
             if let Plan::Query {
@@ -465,7 +465,12 @@ pub fn execute_with_params(
                         return Err(Error::AlreadyExistingColumn(new_column_name.clone()));
                     }
 
-                    storage.alter_table_rename_column(&name, &old_column_name, &new_column_name)?;
+                    storage.alter_table_rename_column(
+                        batch,
+                        &name,
+                        &old_column_name,
+                        &new_column_name,
+                    )?;
 
                     Ok(ExecutionResult::Ddl(format!(
                         "Renamed column {} to {} in table {}",

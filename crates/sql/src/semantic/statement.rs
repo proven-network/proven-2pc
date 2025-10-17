@@ -243,7 +243,9 @@ impl AnalyzedStatement {
                 DmlStatement::Delete { .. } => (true, true, false),  // Read then write
                 DmlStatement::Values(_) => (false, false, false),    // No table access
             },
-            _ => (false, false, false), // DDL operations
+            // DDL operations acquire write locks on tables (prevents concurrent DML/DDL)
+            Statement::Ddl(_) => (false, true, false),
+            _ => (false, false, false),
         };
 
         let mut reads = Vec::new();

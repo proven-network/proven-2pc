@@ -77,8 +77,8 @@ impl MetadataBuilder {
     ) -> Result<Vec<PredicateTemplate>> {
         let mut templates = Vec::new();
 
-        if let Statement::Dml(dml) = statement.as_ref() {
-            match dml {
+        match statement.as_ref() {
+            Statement::Dml(dml) => match dml {
                 DmlStatement::Select(select) => {
                     // Count predicates before extracting from WHERE
                     let initial_count = templates.len();
@@ -166,7 +166,52 @@ impl MetadataBuilder {
                 DmlStatement::Values(_) => {
                     // VALUES statements don't have predicates
                 }
+            },
+
+            // DDL operations: generate write predicates on affected tables
+            Statement::Ddl(ddl) => {
+                use crate::parsing::ast::DdlStatement;
+                match ddl {
+                    DdlStatement::CreateTable { name, .. }
+                    | DdlStatement::CreateTableAsSelect { name, .. }
+                    | DdlStatement::CreateTableAsValues { name, .. } => {
+                        // Full table write lock for creation (prevents concurrent access)
+                        templates.push(PredicateTemplate::FullTable {
+                            table: name.clone(),
+                        });
+                    }
+
+                    DdlStatement::DropTable { names, .. } => {
+                        // Write lock on each table being dropped
+                        for name in names {
+                            templates.push(PredicateTemplate::FullTable {
+                                table: name.clone(),
+                            });
+                        }
+                    }
+
+                    DdlStatement::AlterTable { name, .. } => {
+                        // Full table write lock for alteration
+                        templates.push(PredicateTemplate::FullTable {
+                            table: name.clone(),
+                        });
+                    }
+
+                    DdlStatement::CreateIndex { table, .. } => {
+                        // Write lock while building index (prevents concurrent writes)
+                        templates.push(PredicateTemplate::FullTable {
+                            table: table.clone(),
+                        });
+                    }
+
+                    DdlStatement::DropIndex { .. } => {
+                        // TODO: Extract table name from index metadata
+                        // For now, no predicate (lower risk - just affects query plans)
+                    }
+                }
             }
+
+            _ => {} // Explain, etc.
         }
 
         Ok(templates)

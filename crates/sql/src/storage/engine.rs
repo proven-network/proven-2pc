@@ -10,6 +10,7 @@
 use crate::error::{Error, Result};
 use crate::semantic::predicate::{Predicate, QueryPredicates};
 use crate::storage::codec::{decode_row, encode_row};
+use crate::storage::ddl_store::DdlStore;
 use crate::storage::entity::{IndexDelta, IndexEntity, IndexKey, TableDelta, TableEntity};
 use crate::storage::predicate_store::PredicateStore;
 use crate::types::Value;
@@ -65,6 +66,9 @@ pub struct SqlStorage {
     /// Shared keyspace for atomic batching across all tables and indexes
     keyspace: Keyspace,
 
+    /// Cached metadata partition handle (opened once, used frequently)
+    metadata: fjall::PartitionHandle,
+
     /// One MvccStorage per table (table_name -> storage)
     /// Each table gets separate partitions via with_shared_keyspace()
     table_storages: HashMap<String, MvccStorage<TableEntity>>,
@@ -77,11 +81,19 @@ pub struct SqlStorage {
     /// Needed for schema-aware row encoding/decoding
     schemas: HashMap<String, Arc<TableSchema>>,
 
+    /// Table generation counters (table_name -> generation)
+    /// Incremented each time a table is created (including after DROP)
+    /// Used to create unique partition names to avoid data reuse
+    table_generations: HashMap<String, u64>,
+
     /// Index metadata (index_name -> metadata)
     index_metadata: HashMap<String, IndexMetadata>,
 
     /// Predicate store for crash recovery
     predicate_store: PredicateStore,
+
+    /// DDL store for crash recovery
+    ddl_store: DdlStore,
 
     /// Row ID counters per table (for generating unique row IDs)
     next_row_ids: HashMap<String, AtomicU64>,
@@ -106,16 +118,30 @@ impl SqlStorage {
             .cache_size(config.block_cache_size as u64)
             .open()?;
 
+        // Open metadata partition once (used frequently)
+        let metadata = keyspace.open_partition(
+            "_metadata",
+            PartitionCreateOptions::default()
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
+        )?;
+
         // Create predicate store with dedicated partition
         let predicate_store = PredicateStore::new(&keyspace)?;
 
+        // Create DDL store with dedicated partition
+        let ddl_store = DdlStore::new(&keyspace)?;
+
         let mut storage = Self {
             keyspace,
+            metadata,
             table_storages: HashMap::new(),
             index_storages: HashMap::new(),
             schemas: HashMap::new(),
+            table_generations: HashMap::new(),
             index_metadata: HashMap::new(),
             predicate_store,
+            ddl_store,
             next_row_ids: HashMap::new(),
             config,
         };
@@ -128,16 +154,8 @@ impl SqlStorage {
 
     /// Load table schemas and indexes from metadata partition
     fn load_metadata(&mut self) -> Result<()> {
-        // Open metadata partition
-        let metadata = self.keyspace.open_partition(
-            "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
-        )?;
-
         // Scan for table schemas
-        for result in metadata.prefix(b"schema_") {
+        for result in self.metadata.prefix(b"schema_") {
             let (key, value) = result?;
             let key_str = String::from_utf8_lossy(&key);
 
@@ -145,6 +163,18 @@ impl SqlStorage {
                 // Decode schema
                 let schema: TableSchema = ciborium::from_reader(&value[..])
                     .map_err(|e| Error::Serialization(e.to_string()))?;
+
+                // Load table generation
+                let gen_key = format!("table_generation_{}", table_name);
+                let generation = self
+                    .metadata
+                    .get(&gen_key)?
+                    .map(|bytes| {
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(&bytes);
+                        u64::from_be_bytes(buf)
+                    })
+                    .unwrap_or(1); // Default to 1 if not found (for old tables)
 
                 // Create MvccStorage for this table
                 let mvcc_config = MvccConfig {
@@ -159,15 +189,18 @@ impl SqlStorage {
                     cleanup_interval: std::time::Duration::from_secs(30),
                 };
 
+                // Use generation in partition name
+                let partition_name = format!("{}_g{}", table_name, generation);
                 let table_storage = MvccStorage::<TableEntity>::with_shared_keyspace(
                     self.keyspace.clone(),
-                    table_name.to_string(),
+                    partition_name,
                     mvcc_config,
                 )?;
 
                 // Load or initialize next_row_id counter
                 let row_id_key = format!("next_row_id_{}", table_name);
-                let next_row_id = metadata
+                let next_row_id = self
+                    .metadata
                     .get(&row_id_key)?
                     .map(|bytes| {
                         let mut buf = [0u8; 8];
@@ -180,13 +213,15 @@ impl SqlStorage {
                     .insert(table_name.to_string(), table_storage);
                 self.schemas
                     .insert(table_name.to_string(), Arc::new(schema));
+                self.table_generations
+                    .insert(table_name.to_string(), generation);
                 self.next_row_ids
                     .insert(table_name.to_string(), AtomicU64::new(next_row_id));
             }
         }
 
         // Scan for index metadata
-        for result in metadata.prefix(b"index_") {
+        for result in self.metadata.prefix(b"index_") {
             let (key, value) = result?;
             let key_str = String::from_utf8_lossy(&key);
 
@@ -239,14 +274,134 @@ impl SqlStorage {
         self.index_metadata.clone()
     }
 
+    /// Reload schemas and indexes from metadata (used after rollback)
+    pub fn reload_metadata(&mut self) -> Result<()> {
+        // Clear existing state
+        self.table_storages.clear();
+        self.index_storages.clear();
+        self.schemas.clear();
+        self.table_generations.clear();
+        self.index_metadata.clear();
+        self.next_row_ids.clear();
+
+        // Reload from persistent metadata
+        self.load_metadata()
+    }
+
+    /// Rollback CREATE TABLE: remove schema from metadata (batched)
+    pub fn rollback_create_table(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+    ) -> Result<()> {
+        let schema_key = format!("schema_{}", table_name);
+        batch.remove(self.metadata.clone(), schema_key);
+
+        let row_id_key = format!("next_row_id_{}", table_name);
+        batch.remove(self.metadata.clone(), row_id_key);
+
+        Ok(())
+    }
+
+    /// Rollback DROP TABLE: restore old schema to metadata (batched)
+    pub fn rollback_drop_table(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+        old_schema: &crate::types::schema::Table,
+    ) -> Result<()> {
+        let schema_key = format!("schema_{}", table_name);
+        let mut schema_bytes = Vec::new();
+        ciborium::into_writer(old_schema, &mut schema_bytes)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+
+        batch.insert(&self.metadata, schema_key, schema_bytes);
+
+        Ok(())
+    }
+
+    /// Rollback ALTER TABLE: restore old schema to metadata (batched)
+    pub fn rollback_alter_table(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+        old_schema: &crate::types::schema::Table,
+    ) -> Result<()> {
+        // Same as rollback_drop_table - just restore the old schema
+        self.rollback_drop_table(batch, table_name, old_schema)
+    }
+
+    /// Rollback RENAME TABLE: restore old name's schema AND remove new name's schema (batched)
+    pub fn rollback_rename_table(
+        &mut self,
+        batch: &mut fjall::Batch,
+        old_name: &str,
+        new_name: &str,
+        old_schema: &crate::types::schema::Table,
+    ) -> Result<()> {
+        // Restore old name's schema
+        let old_schema_key = format!("schema_{}", old_name);
+        let mut schema_bytes = Vec::new();
+        ciborium::into_writer(old_schema, &mut schema_bytes)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        batch.insert(&self.metadata, old_schema_key, schema_bytes);
+
+        // Remove new name's schema
+        let new_schema_key = format!("schema_{}", new_name);
+        batch.remove(self.metadata.clone(), new_schema_key);
+
+        Ok(())
+    }
+
+    /// Get and increment table generation counter
+    /// This ensures each CREATE gets a unique generation, even after DROP
+    fn get_and_increment_table_generation(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+    ) -> Result<u64> {
+        let gen_key = format!("table_generation_{}", table_name);
+
+        // Read current generation (0 if doesn't exist)
+        let current_gen = if let Some(gen_bytes) = self.metadata.get(&gen_key)? {
+            u64::from_be_bytes(
+                gen_bytes[..8]
+                    .try_into()
+                    .map_err(|_| Error::Other("Invalid generation bytes".to_string()))?,
+            )
+        } else {
+            0
+        };
+
+        // Increment generation
+        let new_gen = current_gen + 1;
+
+        // Store new generation in batch
+        batch.insert(&self.metadata, gen_key, new_gen.to_be_bytes());
+
+        // Update in-memory cache
+        self.table_generations
+            .insert(table_name.to_string(), new_gen);
+
+        Ok(new_gen)
+    }
+
     /// Create a new table
-    pub fn create_table(&mut self, table_name: String, schema: TableSchema) -> Result<()> {
+    pub fn create_table(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: String,
+        schema: TableSchema,
+    ) -> Result<()> {
         // Check if table already exists
         if self.schemas.contains_key(&table_name) {
             return Err(Error::DuplicateTable(table_name));
         }
 
-        // Create MvccStorage for this table
+        // Get and increment generation for this table name
+        let generation = self.get_and_increment_table_generation(batch, &table_name)?;
+
+        // Create MvccStorage for this table with generation-based partition name
         let mvcc_config = MvccConfig {
             data_dir: self.config.data_dir.clone(),
             block_cache_size: self.config.block_cache_size as u64,
@@ -259,30 +414,21 @@ impl SqlStorage {
             cleanup_interval: std::time::Duration::from_secs(30),
         };
 
+        // Use generation in partition name to avoid reusing old data
+        let partition_name = format!("{}_g{}", table_name, generation);
         let table_storage = MvccStorage::<TableEntity>::with_shared_keyspace(
             self.keyspace.clone(),
-            table_name.clone(),
+            partition_name,
             mvcc_config,
         )?;
 
-        // Persist schema to metadata
-        let metadata = self.keyspace.open_partition(
-            "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
-        )?;
+        // Persist schema to batch (atomic with transaction)
+        self.persist_schema_to_batch(batch, &table_name, &schema)?;
 
-        let schema_key = format!("schema_{}", table_name);
-        let mut schema_bytes = Vec::new();
-        ciborium::into_writer(&schema, &mut schema_bytes)
-            .map_err(|e| Error::Serialization(e.to_string()))?;
+        // Initialize next_row_id counter in batch
 
-        metadata.insert(schema_key, schema_bytes)?;
-
-        // Initialize next_row_id counter
         let row_id_key = format!("next_row_id_{}", table_name);
-        metadata.insert(row_id_key, 1u64.to_be_bytes())?;
+        batch.insert(&self.metadata, row_id_key, 1u64.to_be_bytes());
 
         // Store in memory
         self.table_storages
@@ -310,24 +456,25 @@ impl SqlStorage {
     }
 
     /// Drop a table
-    pub fn drop_table(&mut self, table_name: &str) -> Result<()> {
+    pub fn drop_table(&mut self, batch: &mut fjall::Batch, table_name: &str) -> Result<()> {
         // Remove from in-memory state
         self.table_storages.remove(table_name);
         self.schemas.remove(table_name);
+        self.next_row_ids.remove(table_name);
 
-        // Remove schema from metadata
-        let metadata = self.keyspace.open_partition(
-            "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
-        )?;
+        // NOTE: We don't physically delete the partition here because:
+        // 1. delete_partition() is not transactional (commits immediately)
+        // 2. If transaction aborts, we'd have deleted data but schema remains
+        // The partition becomes orphaned but will be cleaned up by removing
+        // schema metadata (so it won't be loaded on restart)
+
+        // Remove schema from metadata using batch (atomic with transaction)
 
         let schema_key = format!("schema_{}", table_name);
-        metadata.remove(schema_key)?;
+        batch.remove(self.metadata.clone(), schema_key);
 
-        // Note: MvccStorage partitions will be cleaned up when dropped
-        // or can be manually cleaned via fjall keyspace operations
+        let row_id_key = format!("next_row_id_{}", table_name);
+        batch.remove(self.metadata.clone(), row_id_key);
 
         Ok(())
     }
@@ -388,8 +535,8 @@ impl SqlStorage {
             self.write_row(batch, table_name, row_id, &values, txn_id, log_index)?;
         }
 
-        // Persist updated schema to metadata
-        self.persist_schema(table_name, &schema)?;
+        // Persist updated schema to batch (atomic with transaction)
+        self.persist_schema_to_batch(batch, table_name, &schema)?;
 
         Ok(())
     }
@@ -483,8 +630,8 @@ impl SqlStorage {
             self.write_row(batch, table_name, row_id, &values, txn_id, log_index)?;
         }
 
-        // Persist updated schema
-        self.persist_schema(table_name, &schema)?;
+        // Persist updated schema to batch (atomic with transaction)
+        self.persist_schema_to_batch(batch, table_name, &schema)?;
 
         Ok(())
     }
@@ -492,6 +639,7 @@ impl SqlStorage {
     /// Rename a column in an existing table
     pub fn alter_table_rename_column(
         &mut self,
+        batch: &mut fjall::Batch,
         table_name: &str,
         old_column_name: &str,
         new_column_name: &str,
@@ -534,25 +682,18 @@ impl SqlStorage {
             }
         }
 
-        // Update schema in memory and persist
+        // Update schema in memory and persist to batch (atomic with transaction)
         let schema_arc = Arc::new(schema.clone());
         self.schemas.insert(table_name.to_string(), schema_arc);
-        self.persist_schema(table_name, &schema)?;
+        self.persist_schema_to_batch(batch, table_name, &schema)?;
 
         Ok(())
     }
 
     /// Rename a table (metadata-only operation)
-    ///
-    /// NOTE: This operation does not use the batch for metadata updates.
-    /// Schema metadata is committed immediately via metadata.insert().
-    /// This means there's a potential consistency window where schema could be
-    /// updated but the transaction could still abort. This matches the pattern
-    /// used by CREATE TABLE, but ideally all DDL metadata should be batched.
-    /// TODO: Investigate using batch for metadata operations for true atomicity.
     pub fn alter_table_rename_table(
         &mut self,
-        _batch: &mut fjall::Batch,
+        batch: &mut fjall::Batch,
         old_name: &str,
         new_name: &str,
         _txn_id: HlcTimestamp,
@@ -597,41 +738,32 @@ impl SqlStorage {
             }
         }
 
-        // Persist new schema and remove old
-        self.persist_schema(new_name, &schema)?;
-
-        let metadata = self.keyspace.open_partition(
-            "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
-        )?;
+        // Persist new schema and remove old using batch (atomic with transaction)
+        self.persist_schema_to_batch(batch, new_name, &schema)?;
 
         let old_schema_key = format!("schema_{}", old_name);
-        metadata.remove(old_schema_key)?;
+        batch.remove(self.metadata.clone(), old_schema_key);
 
         Ok(())
     }
 
-    /// Helper: Persist schema to metadata partition
+    /// Helper: Persist schema to metadata partition using a batch (transactional)
     ///
-    /// WARNING: This commits metadata immediately, not as part of a batch.
-    /// This creates a consistency window where schema metadata could be updated
-    /// but the transaction could still abort, leaving inconsistent state.
-    fn persist_schema(&self, table_name: &str, schema: &TableSchema) -> Result<()> {
-        let metadata = self.keyspace.open_partition(
-            "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
-        )?;
-
+    /// This adds the schema update to the provided batch, ensuring it commits
+    /// atomically with other operations (data modifications, etc.).
+    fn persist_schema_to_batch(
+        &self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+        schema: &TableSchema,
+    ) -> Result<()> {
         let schema_key = format!("schema_{}", table_name);
         let mut schema_bytes = Vec::new();
         ciborium::into_writer(schema, &mut schema_bytes)
             .map_err(|e| Error::Serialization(e.to_string()))?;
 
-        metadata.insert(schema_key, schema_bytes)?;
+        // Add to batch instead of immediate insert - commits atomically
+        batch.insert(&self.metadata, schema_key, schema_bytes);
 
         Ok(())
     }
@@ -837,6 +969,9 @@ impl SqlStorage {
         // Remove predicates (on commit)
         self.predicate_store.remove_all(&mut batch, txn_id)?;
 
+        // Remove pending DDLs (on commit)
+        self.cleanup_pending_ddls(&mut batch, txn_id)?;
+
         // Atomic commit across ALL entities!
         batch.commit()?;
 
@@ -852,25 +987,28 @@ impl SqlStorage {
     }
 
     /// Abort a transaction (atomic across all tables and indexes)
-    pub fn abort_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
-        // Create shared batch for atomic abort
-        let mut batch = self.keyspace.batch();
-
+    /// Now accepts an external batch for full atomicity with DDL rollbacks
+    pub fn abort_transaction_to_batch(
+        &mut self,
+        batch: &mut fjall::Batch,
+        txn_id: HlcTimestamp,
+        log_index: u64,
+    ) -> Result<()> {
         // Abort all table storages
         for table_storage in self.table_storages.values_mut() {
-            table_storage.abort_transaction_to_batch(&mut batch, txn_id, log_index)?;
+            table_storage.abort_transaction_to_batch(batch, txn_id, log_index)?;
         }
 
         // Abort all index storages
         for index_storage in self.index_storages.values_mut() {
-            index_storage.abort_transaction_to_batch(&mut batch, txn_id, log_index)?;
+            index_storage.abort_transaction_to_batch(batch, txn_id, log_index)?;
         }
 
         // Remove predicates (on abort)
-        self.predicate_store.remove_all(&mut batch, txn_id)?;
+        self.predicate_store.remove_all(batch, txn_id)?;
 
-        // Atomic abort across ALL entities!
-        batch.commit()?;
+        // Remove pending DDLs (on abort)
+        self.cleanup_pending_ddls(batch, txn_id)?;
 
         // Cleanup old buckets if needed (throttled internally by each storage)
         for table_storage in self.table_storages.values_mut() {
@@ -892,6 +1030,40 @@ impl SqlStorage {
             .next()
             .map(|s| s.get_log_index())
             .unwrap_or(0)
+    }
+
+    // ========================================================================
+    // DDL Persistence (for crash recovery)
+    // ========================================================================
+
+    /// Persist pending DDL immediately (for crash recovery)
+    pub fn persist_pending_ddl(
+        &self,
+        txn_id: HlcTimestamp,
+        ddl: &crate::types::context::PendingDdl,
+    ) -> Result<()> {
+        let mut batch = self.batch();
+        self.ddl_store.add_to_batch(&mut batch, txn_id, ddl)?;
+        batch
+            .commit()
+            .map_err(|e| Error::Other(format!("Failed to persist DDL: {}", e)))?;
+        Ok(())
+    }
+
+    /// Get all active DDL operations (for recovery)
+    pub fn get_active_ddls(
+        &self,
+    ) -> Result<HashMap<HlcTimestamp, Vec<crate::types::context::PendingDdl>>> {
+        self.ddl_store.get_all_active_ddls()
+    }
+
+    /// Remove all pending DDLs for a transaction (on commit/abort)
+    pub fn cleanup_pending_ddls(
+        &self,
+        batch: &mut fjall::Batch,
+        txn_id: HlcTimestamp,
+    ) -> Result<()> {
+        self.ddl_store.remove_all(batch, txn_id)
     }
 
     // ========================================================================
@@ -1498,7 +1670,11 @@ mod tests {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
 
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         assert!(storage.schemas.contains_key("users"));
         assert!(storage.table_storages.contains_key("users"));
@@ -1508,7 +1684,11 @@ mod tests {
     fn test_write_and_read_row() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
         let values = vec![Value::integer(123), Value::string("Alice")];
@@ -1529,7 +1709,11 @@ mod tests {
     fn test_delete_row() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
         let values = vec![Value::integer(123), Value::string("Alice")];
@@ -1559,7 +1743,11 @@ mod tests {
     fn test_create_index() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Create index
         storage
@@ -1579,7 +1767,11 @@ mod tests {
     fn test_index_entries() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Create index
         storage
@@ -1626,7 +1818,11 @@ mod tests {
     fn test_commit_abort_atomic() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
         let values = vec![Value::integer(123), Value::string("Alice")];
@@ -1651,7 +1847,11 @@ mod tests {
     fn test_table_scan() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -1710,7 +1910,11 @@ mod tests {
     fn test_index_lookup() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema_with_city();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -1868,7 +2072,11 @@ mod tests {
     fn test_index_range_scan() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema_with_age();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -2047,7 +2255,11 @@ mod tests {
     fn test_check_unique_violation() {
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -2200,7 +2412,11 @@ mod tests {
 
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -2246,7 +2462,11 @@ mod tests {
 
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -2297,7 +2517,11 @@ mod tests {
 
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -2350,7 +2574,11 @@ mod tests {
 
         let mut storage = SqlStorage::new(test_config()).unwrap();
         let schema = create_test_schema();
-        storage.create_table("users".to_string(), schema).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .create_table(&mut batch, "users".to_string(), schema)
+            .unwrap();
+        batch.commit().unwrap();
 
         let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
 
@@ -2375,7 +2603,11 @@ mod tests {
         assert_eq!(active_txns.len(), 1, "Should have one active transaction");
 
         // Abort transaction
-        storage.abort_transaction(txn_id, 1).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .abort_transaction_to_batch(&mut batch, txn_id, 1)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Verify predicates are cleaned up
         let active_txns = storage.get_active_transactions().unwrap();

@@ -4,7 +4,6 @@
 mod common;
 
 use common::TestContext;
-use proven_value::Value;
 
 #[ignore = "Index usage verification requires EXPLAIN support"]
 #[test]

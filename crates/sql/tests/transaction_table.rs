@@ -6,7 +6,6 @@ mod common;
 use common::TestContext;
 use proven_value::Value;
 
-#[ignore = "DDL rollback not fully implemented - CREATE TABLE persists after ROLLBACK"]
 #[test]
 fn test_create_table_with_rollback() {
     let mut ctx = TestContext::new();
@@ -46,7 +45,6 @@ fn test_create_table_with_commit() {
     assert_eq!(results[0].get("id").unwrap(), &Value::I32(3));
 }
 
-#[ignore = "DDL rollback not fully implemented - DROP TABLE persists after ROLLBACK"]
 #[test]
 fn test_drop_table_with_rollback() {
     let mut ctx = TestContext::new();
@@ -94,7 +92,6 @@ fn test_drop_table_with_commit() {
     ctx.assert_error_contains("SELECT * FROM Test", "TableNotFound");
 }
 
-#[ignore = "ALTER TABLE rollback not fully implemented"]
 #[test]
 fn test_alter_table_rename_table_with_rollback() {
     let mut ctx = TestContext::new();
@@ -155,7 +152,6 @@ fn test_alter_table_rename_table_with_commit() {
     assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
 }
 
-#[ignore = "ALTER TABLE rollback not fully implemented"]
 #[test]
 fn test_alter_table_rename_column_with_rollback() {
     let mut ctx = TestContext::new();
@@ -210,7 +206,6 @@ fn test_alter_table_rename_column_with_commit() {
     assert_eq!(results[0].get("new_id").unwrap(), &Value::I32(1));
 }
 
-#[ignore = "ALTER TABLE rollback not fully implemented"]
 #[test]
 fn test_alter_table_add_column_with_rollback() {
     let mut ctx = TestContext::new();
@@ -269,7 +264,6 @@ fn test_alter_table_add_column_with_commit() {
     assert_eq!(results[0].get("new_col").unwrap(), &Value::I32(3));
 }
 
-#[ignore = "ALTER TABLE rollback not fully implemented"]
 #[test]
 fn test_alter_table_drop_column_with_rollback() {
     let mut ctx = TestContext::new();

@@ -11,6 +11,7 @@
 //! - Preserves schema-aware row encoding (36.1 bytes/row)
 
 pub mod codec;
+pub mod ddl_store;
 pub mod engine;
 pub mod entity;
 pub mod predicate_store;

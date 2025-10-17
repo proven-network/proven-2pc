@@ -124,6 +124,33 @@ impl SqlTransactionEngine {
                 // Continue without recovery - predicates will be rebuilt as operations execute
             }
         }
+
+        // Get all active DDL operations from DDL storage
+        match self.storage.get_active_ddls() {
+            Ok(ddl_map) => {
+                for (txn_id, pending_ddls) in ddl_map {
+                    // Get or create transaction context
+                    let tx_ctx = self.active_transactions.entry(txn_id).or_insert_with(|| {
+                        let ctx = TransactionContext::new(txn_id);
+                        self.transaction_states
+                            .insert(txn_id, TransactionState::Active);
+                        ctx
+                    });
+
+                    // Restore pending DDLs
+                    for ddl in pending_ddls {
+                        tx_ctx.add_pending_ddl(ddl);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to recover pending DDLs from storage: {:?}",
+                    e
+                );
+                // Continue without recovery
+            }
+        }
     }
 
     /// Execute SQL snapshot read (read-only, no mutations)
@@ -370,10 +397,68 @@ impl SqlTransactionEngine {
         let tx_ctx = self.active_transactions.get(&txn_id).unwrap();
         let mut exec_ctx = tx_ctx.create_execution_context(log_index, query_predicates.clone());
 
-        // Step 7: Create batch for atomic commit (data + predicates + log_index)
+        // Step 7: Record pending DDL BEFORE execution (to capture old schema)
+        // Also persist to storage for crash recovery
+        if plan.is_ddl()
+            && let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id)
+        {
+            use crate::types::context::PendingDdl;
+
+            let pending_ddl = match plan.as_ref() {
+                crate::planning::plan::Plan::CreateTable { name, .. } => {
+                    Some(PendingDdl::Create { name: name.clone() })
+                }
+                crate::planning::plan::Plan::DropTable { names, .. } => {
+                    // Capture schema BEFORE drop
+                    names.iter().find_map(|name| {
+                        self.storage
+                            .get_schemas()
+                            .get(name)
+                            .map(|old_schema| PendingDdl::Drop {
+                                name: name.clone(),
+                                old_schema: old_schema.as_ref().clone(),
+                            })
+                    })
+                }
+                crate::planning::plan::Plan::AlterTable {
+                    name, operation, ..
+                } => {
+                    // Capture schema BEFORE alter
+                    self.storage.get_schemas().get(name).map(|old_schema| {
+                        // Check if this is a RENAME TABLE (needs special rollback handling)
+                        if let crate::parsing::ast::ddl::AlterTableOperation::RenameTable {
+                            new_table_name,
+                        } = operation
+                        {
+                            PendingDdl::Rename {
+                                old_name: name.clone(),
+                                new_name: new_table_name.clone(),
+                                old_schema: old_schema.as_ref().clone(),
+                            }
+                        } else {
+                            PendingDdl::Alter {
+                                name: name.clone(),
+                                old_schema: old_schema.as_ref().clone(),
+                            }
+                        }
+                    })
+                }
+                _ => None,
+            };
+
+            if let Some(ddl) = pending_ddl {
+                tx_ctx.add_pending_ddl(ddl.clone());
+                // Persist to storage immediately for crash recovery
+                if let Err(e) = self.storage.persist_pending_ddl(txn_id, &ddl) {
+                    eprintln!("Warning: Failed to persist pending DDL: {:?}", e);
+                }
+            }
+        }
+
+        // Step 8: Create batch for atomic commit (data + predicates + log_index)
         let mut batch = self.storage.batch();
 
-        // Step 8: Execute with batch
+        // Step 9: Execute with batch
         match execution::execute_with_params(
             (*plan).clone(),
             &mut self.storage,
@@ -526,14 +611,86 @@ impl TransactionEngine for SqlTransactionEngine {
 
     fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
         // Remove transaction if it exists
-        if self.active_transactions.remove(&txn_id).is_some() {
+        if let Some(tx_ctx) = self.active_transactions.remove(&txn_id) {
             self.transaction_states.remove(&txn_id);
 
             // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
 
-            // Abort in storage with log_index (this also cleans up predicates internally)
-            let _ = self.storage.abort_transaction(txn_id, log_index);
+            // Create single atomic batch for abort + DDL rollback
+            let mut batch = self.storage.batch();
+
+            // Abort in storage (MVCC + predicates + pending DDLs cleanup)
+            if let Err(e) = self
+                .storage
+                .abort_transaction_to_batch(&mut batch, txn_id, log_index)
+            {
+                eprintln!("Warning: Failed to abort transaction: {:?}", e);
+                return;
+            }
+
+            // Roll back DDL metadata changes (in same batch for atomicity)
+            if !tx_ctx.pending_ddls.is_empty() {
+                // Process pending DDLs in reverse order
+                for ddl in tx_ctx.pending_ddls.iter().rev() {
+                    use crate::types::context::PendingDdl;
+
+                    if let Err(e) = match ddl {
+                        PendingDdl::Create { name } => {
+                            // Undo CREATE TABLE: remove schema from metadata
+                            self.storage.rollback_create_table(&mut batch, name)
+                        }
+                        PendingDdl::Drop { name, old_schema } => {
+                            // Undo DROP TABLE: restore schema to metadata
+                            self.storage
+                                .rollback_drop_table(&mut batch, name, old_schema)
+                        }
+                        PendingDdl::Alter { name, old_schema } => {
+                            // Undo ALTER TABLE: restore old schema to metadata
+                            self.storage
+                                .rollback_alter_table(&mut batch, name, old_schema)
+                        }
+                        PendingDdl::Rename {
+                            old_name,
+                            new_name,
+                            old_schema,
+                        } => {
+                            // Undo RENAME TABLE: restore old schema AND remove new schema
+                            self.storage
+                                .rollback_rename_table(&mut batch, old_name, new_name, old_schema)
+                        }
+                    } {
+                        eprintln!("Warning: Failed to add DDL rollback to batch: {:?}", e);
+                    }
+                }
+            }
+
+            // Commit the entire abort atomically (MVCC + predicates + metadata)
+            if let Err(e) = batch.commit() {
+                eprintln!("Warning: Failed to commit abort batch: {:?}", e);
+                return;
+            }
+
+            // Reload all metadata to sync in-memory state (only if we had DDL)
+            if !tx_ctx.pending_ddls.is_empty() {
+                if let Err(e) = self.storage.reload_metadata() {
+                    eprintln!("Warning: Failed to reload metadata after rollback: {:?}", e);
+                }
+
+                // Update caches with reloaded schemas
+                let schemas_arc = self.storage.get_schemas();
+                let indexes = self.storage.get_index_metadata();
+
+                let schemas: HashMap<String, crate::types::schema::Table> = schemas_arc
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.as_ref().clone()))
+                    .collect();
+
+                self.parser.clear();
+                self.analyzer.update_schemas(schemas.clone());
+                self.planner.update_schemas(schemas);
+                self.planner.update_indexes(indexes);
+            }
         }
         // If transaction doesn't exist, that's fine - may have been aborted already
     }
