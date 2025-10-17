@@ -56,16 +56,22 @@ pub trait DmlParser: TokenHelper {
         } else if matches!(self.peek()?, Some(Token::Keyword(Keyword::Select))) {
             // Parse the SELECT statement - parse_select_clause will consume SELECT
             let (distinct, select) = self.parse_select_clause()?;
+            let from = self.parse_from_clause()?;
+            let r#where = self.parse_where_clause()?;
+            let group_by = self.parse_group_by_clause()?;
+            let having = self.parse_having_clause()?;
+            let order_by = self.parse_order_by_clause()?;
+            let (offset, limit) = self.parse_limit_offset_clause()?;
             let select = Box::new(SelectStatement {
                 distinct,
                 select,
-                from: self.parse_from_clause()?,
-                r#where: self.parse_where_clause()?,
-                group_by: self.parse_group_by_clause()?,
-                having: self.parse_having_clause()?,
-                order_by: self.parse_order_by_clause()?,
-                limit: self.parse_limit_clause()?,
-                offset: self.parse_offset_clause()?,
+                from,
+                r#where,
+                group_by,
+                having,
+                order_by,
+                offset,
+                limit,
             });
             InsertSource::Select(select)
         } else {
@@ -114,17 +120,23 @@ pub trait DmlParser: TokenHelper {
     /// Parses a SELECT statement.
     fn parse_select(&mut self) -> Result<Statement> {
         let (distinct, select) = self.parse_select_clause()?;
+        let from = self.parse_from_clause()?;
+        let r#where = self.parse_where_clause()?;
+        let group_by = self.parse_group_by_clause()?;
+        let having = self.parse_having_clause()?;
+        let order_by = self.parse_order_by_clause()?;
+        let (offset, limit) = self.parse_limit_offset_clause()?;
         Ok(Statement::Dml(DmlStatement::Select(Box::new(
             SelectStatement {
                 distinct,
                 select,
-                from: self.parse_from_clause()?,
-                r#where: self.parse_where_clause()?,
-                group_by: self.parse_group_by_clause()?,
-                having: self.parse_having_clause()?,
-                order_by: self.parse_order_by_clause()?,
-                limit: self.parse_limit_clause()?,
-                offset: self.parse_offset_clause()?,
+                from,
+                r#where,
+                group_by,
+                having,
+                order_by,
+                offset,
+                limit,
             },
         ))))
     }
@@ -208,16 +220,22 @@ pub trait DmlParser: TokenHelper {
                 Some(Token::Keyword(Keyword::Select)) => {
                     // Parse SELECT subquery - parse_select_clause will consume SELECT
                     let (distinct, select) = self.parse_select_clause()?;
+                    let from = self.parse_from_clause()?;
+                    let r#where = self.parse_where_clause()?;
+                    let group_by = self.parse_group_by_clause()?;
+                    let having = self.parse_having_clause()?;
+                    let order_by = self.parse_order_by_clause()?;
+                    let (offset, limit) = self.parse_limit_offset_clause()?;
                     let select = Box::new(SelectStatement {
                         distinct,
                         select,
-                        from: self.parse_from_clause()?,
-                        r#where: self.parse_where_clause()?,
-                        group_by: self.parse_group_by_clause()?,
-                        having: self.parse_having_clause()?,
-                        order_by: self.parse_order_by_clause()?,
-                        limit: self.parse_limit_clause()?,
-                        offset: self.parse_offset_clause()?,
+                        from,
+                        r#where,
+                        group_by,
+                        having,
+                        order_by,
+                        offset,
+                        limit,
                     });
                     SubquerySource::Select(select)
                 }
@@ -439,20 +457,85 @@ pub trait DmlParser: TokenHelper {
         Ok(order_by)
     }
 
-    /// Parses a LIMIT clause, if present.
-    fn parse_limit_clause(&mut self) -> Result<Option<Expression>> {
-        if !self.next_is(Keyword::Limit.into()) {
-            return Ok(None);
-        }
-        Ok(Some(self.parse_expression()?))
-    }
+    /// Parses LIMIT and OFFSET clauses, if present.
+    /// Supports multiple syntaxes:
+    /// - LIMIT n [OFFSET m] (traditional MySQL/PostgreSQL syntax)
+    /// - OFFSET n [ROWS] [FETCH FIRST/NEXT m ROW[S] ONLY] (SQL standard syntax)
+    ///
+    /// Returns (offset, limit) tuple
+    fn parse_limit_offset_clause(&mut self) -> Result<(Option<Expression>, Option<Expression>)> {
+        let mut offset = None;
+        let mut limit = None;
 
-    /// Parses an OFFSET clause, if present.
-    fn parse_offset_clause(&mut self) -> Result<Option<Expression>> {
-        if !self.next_is(Keyword::Offset.into()) {
-            return Ok(None);
+        // Check for LIMIT first (traditional syntax)
+        if self.next_is(Keyword::Limit.into()) {
+            limit = Some(self.parse_expression()?);
+
+            // Check for OFFSET after LIMIT
+            if self.next_is(Keyword::Offset.into()) {
+                offset = Some(self.parse_expression()?);
+                // Optional ROW or ROWS keyword after OFFSET
+                self.skip(Keyword::Row.into());
+                self.skip(Keyword::Rows.into());
+            }
+
+            return Ok((offset, limit));
         }
-        Ok(Some(self.parse_expression()?))
+
+        // Check for OFFSET first (SQL standard syntax with FETCH)
+        if self.next_is(Keyword::Offset.into()) {
+            offset = Some(self.parse_expression()?);
+
+            // Optional ROW or ROWS keyword after OFFSET
+            self.skip(Keyword::Row.into());
+            self.skip(Keyword::Rows.into());
+
+            // Check for FETCH FIRST/NEXT after OFFSET
+            if self.next_is(Keyword::Fetch.into()) {
+                // FIRST or NEXT are interchangeable
+                if !self.next_is(Keyword::First.into()) && !self.next_is(Keyword::Next.into()) {
+                    return Err(Error::ParseError(
+                        "expected FIRST or NEXT after FETCH".to_string(),
+                    ));
+                }
+
+                // Parse the count expression
+                limit = Some(self.parse_expression()?);
+
+                // Optional ROW or ROWS keyword (singular or plural)
+                self.skip(Keyword::Row.into());
+                self.skip(Keyword::Rows.into());
+
+                // Require ONLY keyword
+                self.expect(Keyword::Only.into())?;
+            }
+
+            return Ok((offset, limit));
+        }
+
+        // Check for standalone FETCH FIRST/NEXT (no OFFSET)
+        if self.next_is(Keyword::Fetch.into()) {
+            // FIRST or NEXT are interchangeable
+            if !self.next_is(Keyword::First.into()) && !self.next_is(Keyword::Next.into()) {
+                return Err(Error::ParseError(
+                    "expected FIRST or NEXT after FETCH".to_string(),
+                ));
+            }
+
+            // Parse the count expression
+            limit = Some(self.parse_expression()?);
+
+            // Optional ROW or ROWS keyword (singular or plural)
+            self.skip(Keyword::Row.into());
+            self.skip(Keyword::Rows.into());
+
+            // Require ONLY keyword
+            self.expect(Keyword::Only.into())?;
+
+            return Ok((offset, limit));
+        }
+
+        Ok((offset, limit))
     }
 
     /// Parses a VALUES statement.
@@ -460,8 +543,7 @@ pub trait DmlParser: TokenHelper {
         self.expect(Keyword::Values.into())?;
         let rows = self.parse_values_rows()?;
         let order_by = self.parse_order_by_clause()?;
-        let limit = self.parse_limit_clause()?;
-        let offset = self.parse_offset_clause()?;
+        let (offset, limit) = self.parse_limit_offset_clause()?;
 
         Ok(Statement::Dml(DmlStatement::Values(ValuesStatement {
             rows,

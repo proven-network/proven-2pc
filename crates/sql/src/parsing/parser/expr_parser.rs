@@ -303,16 +303,22 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                     ));
                 }
                 let (distinct, select) = self.parse_select_clause()?;
+                let from = self.parse_from_clause()?;
+                let r#where = self.parse_where_clause()?;
+                let group_by = self.parse_group_by_clause()?;
+                let having = self.parse_having_clause()?;
+                let order_by = self.parse_order_by_clause()?;
+                let (offset, limit) = self.parse_limit_offset_clause()?;
                 let select = Box::new(SelectStatement {
                     distinct,
                     select,
-                    from: self.parse_from_clause()?,
-                    r#where: self.parse_where_clause()?,
-                    group_by: self.parse_group_by_clause()?,
-                    having: self.parse_having_clause()?,
-                    order_by: self.parse_order_by_clause()?,
-                    limit: self.parse_limit_clause()?,
-                    offset: self.parse_offset_clause()?,
+                    from,
+                    r#where,
+                    group_by,
+                    having,
+                    order_by,
+                    offset,
+                    limit,
                 });
                 self.expect(Token::CloseParen)?;
                 Operator::Exists {
@@ -397,16 +403,22 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                     ));
                 }
                 let (distinct, select) = self.parse_select_clause()?;
+                let from = self.parse_from_clause()?;
+                let r#where = self.parse_where_clause()?;
+                let group_by = self.parse_group_by_clause()?;
+                let having = self.parse_having_clause()?;
+                let order_by = self.parse_order_by_clause()?;
+                let (offset, limit) = self.parse_limit_offset_clause()?;
                 let select = Box::new(SelectStatement {
                     distinct,
                     select,
-                    from: self.parse_from_clause()?,
-                    r#where: self.parse_where_clause()?,
-                    group_by: self.parse_group_by_clause()?,
-                    having: self.parse_having_clause()?,
-                    order_by: self.parse_order_by_clause()?,
-                    limit: self.parse_limit_clause()?,
-                    offset: self.parse_offset_clause()?,
+                    from,
+                    r#where,
+                    group_by,
+                    having,
+                    order_by,
+                    offset,
+                    limit,
                 });
                 self.expect(Token::CloseParen)?;
                 Operator::Exists {
@@ -653,16 +665,22 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 if self.peek()? == Some(&Token::Keyword(Keyword::Select)) {
                     // Parse subquery
                     let (distinct, select) = self.parse_select_clause()?;
+                    let from = self.parse_from_clause()?;
+                    let r#where = self.parse_where_clause()?;
+                    let group_by = self.parse_group_by_clause()?;
+                    let having = self.parse_having_clause()?;
+                    let order_by = self.parse_order_by_clause()?;
+                    let (offset, limit) = self.parse_limit_offset_clause()?;
                     let select = Box::new(SelectStatement {
                         distinct,
                         select,
-                        from: self.parse_from_clause()?,
-                        r#where: self.parse_where_clause()?,
-                        group_by: self.parse_group_by_clause()?,
-                        having: self.parse_having_clause()?,
-                        order_by: self.parse_order_by_clause()?,
-                        limit: self.parse_limit_clause()?,
-                        offset: self.parse_offset_clause()?,
+                        from,
+                        r#where,
+                        group_by,
+                        having,
+                        order_by,
+                        offset,
+                        limit,
                     });
                     self.expect(Token::CloseParen)?;
                     Expression::Subquery(select)
@@ -830,16 +848,22 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
             if self.peek()? == Some(&Token::Keyword(Keyword::Select)) {
                 // Parse subquery
                 let (distinct, select) = self.parse_select_clause()?;
+                let from = self.parse_from_clause()?;
+                let r#where = self.parse_where_clause()?;
+                let group_by = self.parse_group_by_clause()?;
+                let having = self.parse_having_clause()?;
+                let order_by = self.parse_order_by_clause()?;
+                let (offset, limit) = self.parse_limit_offset_clause()?;
                 let select = Box::new(SelectStatement {
                     distinct,
                     select,
-                    from: self.parse_from_clause()?,
-                    r#where: self.parse_where_clause()?,
-                    group_by: self.parse_group_by_clause()?,
-                    having: self.parse_having_clause()?,
-                    order_by: self.parse_order_by_clause()?,
-                    limit: self.parse_limit_clause()?,
-                    offset: self.parse_offset_clause()?,
+                    from,
+                    r#where,
+                    group_by,
+                    having,
+                    order_by,
+                    offset,
+                    limit,
                 });
                 self.expect(Token::CloseParen)?;
                 return Ok(Some(PostfixOperator::InSubquery(select, negated)));

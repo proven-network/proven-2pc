@@ -359,7 +359,6 @@ fn test_limit_in_subquery() {
 }
 
 #[test]
-#[ignore = "FETCH FIRST syntax not yet implemented"]
 fn test_fetch_first_syntax() {
     let mut ctx = setup_test();
     setup_limit_test_table(&mut ctx);
@@ -367,6 +366,33 @@ fn test_fetch_first_syntax() {
     // Test SQL standard FETCH FIRST syntax
     let results = ctx.query("SELECT * FROM LimitTest FETCH FIRST 3 ROWS ONLY");
     assert_eq!(results.len(), 3);
+
+    // Test FETCH NEXT variant
+    let results = ctx.query("SELECT * FROM LimitTest FETCH NEXT 2 ROWS ONLY");
+    assert_eq!(results.len(), 2);
+
+    // Test with singular ROW
+    let results = ctx.query("SELECT * FROM LimitTest FETCH FIRST 1 ROW ONLY");
+    assert_eq!(results.len(), 1);
+
+    // Test without ROW/ROWS keyword (optional)
+    let results = ctx.query("SELECT * FROM LimitTest FETCH FIRST 5 ONLY");
+    assert_eq!(results.len(), 5);
+
+    // Test with OFFSET and FETCH FIRST
+    let results =
+        ctx.query("SELECT id FROM LimitTest ORDER BY id ASC OFFSET 3 FETCH FIRST 2 ROWS ONLY");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(4));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(5));
+
+    // Test with OFFSET ROWS and FETCH FIRST
+    let results =
+        ctx.query("SELECT id FROM LimitTest ORDER BY id ASC OFFSET 5 ROWS FETCH NEXT 3 ROWS ONLY");
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(6));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(7));
+    assert_eq!(results[2].get("id").unwrap(), &Value::I32(8));
 
     ctx.commit();
 }
