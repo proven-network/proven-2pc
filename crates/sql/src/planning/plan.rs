@@ -85,6 +85,12 @@ pub enum Plan {
 
     /// DROP INDEX
     DropIndex { name: String, if_exists: bool },
+
+    /// ALTER TABLE
+    AlterTable {
+        name: String,
+        operation: crate::parsing::ast::ddl::AlterTableOperation,
+    },
 }
 
 impl Plan {
@@ -96,6 +102,7 @@ impl Plan {
                 | Plan::CreateTableAsValues { .. }
                 | Plan::CreateTableAsSelect { .. }
                 | Plan::DropTable { .. }
+                | Plan::AlterTable { .. }
                 | Plan::CreateIndex { .. }
                 | Plan::DropIndex { .. }
         )

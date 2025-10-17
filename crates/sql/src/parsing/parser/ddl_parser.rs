@@ -326,4 +326,111 @@ pub trait DdlParser: TypeParser + DmlParser {
             cascade,
         }))
     }
+
+    /// Parses an ALTER statement (TABLE is currently the only supported variant).
+    fn parse_alter(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Alter.into())?;
+        match self.peek()? {
+            Some(Token::Keyword(Keyword::Table)) => self.parse_alter_table_inner(),
+            Some(token) => Err(Error::ParseError(format!(
+                "expected TABLE after ALTER, found {}",
+                token
+            ))),
+            None => Err(Error::ParseError(
+                "unexpected end of input after ALTER".into(),
+            )),
+        }
+    }
+
+    /// Parses an ALTER TABLE statement (after ALTER).
+    fn parse_alter_table_inner(&mut self) -> Result<Statement> {
+        self.expect(Keyword::Table.into())?;
+        let name = self.next_ident()?;
+
+        let operation = self.parse_alter_table_operation()?;
+
+        Ok(Statement::Ddl(DdlStatement::AlterTable { name, operation }))
+    }
+
+    /// Parses the ALTER TABLE operation (ADD, DROP, RENAME).
+    fn parse_alter_table_operation(
+        &mut self,
+    ) -> Result<crate::parsing::ast::ddl::AlterTableOperation> {
+        match self.next()? {
+            Token::Keyword(Keyword::Add) => self.parse_alter_add_column(),
+            Token::Keyword(Keyword::Drop) => self.parse_alter_drop_column(),
+            Token::Keyword(Keyword::Rename) => self.parse_alter_rename(),
+            token => Err(Error::ParseError(format!(
+                "expected ADD, DROP, or RENAME after ALTER TABLE, found {}",
+                token
+            ))),
+        }
+    }
+
+    /// Parses ADD COLUMN operation.
+    fn parse_alter_add_column(&mut self) -> Result<crate::parsing::ast::ddl::AlterTableOperation> {
+        // Check if this is ADD CONSTRAINT (unsupported)
+        if self.peek()? == Some(&Token::Keyword(Keyword::Constraint)) {
+            return Err(Error::UnsupportedAlterTableOperation);
+        }
+
+        self.expect(Keyword::Column.into())?;
+
+        // Parse column definition (same as CREATE TABLE column)
+        let column = self.parse_create_table_column()?;
+
+        Ok(crate::parsing::ast::ddl::AlterTableOperation::AddColumn { column })
+    }
+
+    /// Parses DROP COLUMN operation.
+    fn parse_alter_drop_column(&mut self) -> Result<crate::parsing::ast::ddl::AlterTableOperation> {
+        self.expect(Keyword::Column.into())?;
+
+        // Check for IF EXISTS
+        let if_exists = if self.next_is(Keyword::If.into()) {
+            self.expect(Keyword::Exists.into())?;
+            true
+        } else {
+            false
+        };
+
+        let column_name = self.next_ident()?;
+
+        Ok(crate::parsing::ast::ddl::AlterTableOperation::DropColumn {
+            column_name,
+            if_exists,
+        })
+    }
+
+    /// Parses RENAME operation (could be RENAME COLUMN or RENAME TO).
+    fn parse_alter_rename(&mut self) -> Result<crate::parsing::ast::ddl::AlterTableOperation> {
+        match self.peek()? {
+            Some(Token::Keyword(Keyword::Column)) => {
+                self.next()?; // consume COLUMN
+                let old_column_name = self.next_ident()?;
+                self.expect(Keyword::To.into())?;
+                let new_column_name = self.next_ident()?;
+
+                Ok(
+                    crate::parsing::ast::ddl::AlterTableOperation::RenameColumn {
+                        old_column_name,
+                        new_column_name,
+                    },
+                )
+            }
+            Some(Token::Keyword(Keyword::To)) => {
+                self.next()?; // consume TO
+                let new_table_name = self.next_ident()?;
+
+                Ok(crate::parsing::ast::ddl::AlterTableOperation::RenameTable { new_table_name })
+            }
+            Some(token) => Err(Error::ParseError(format!(
+                "expected COLUMN or TO after RENAME, found {}",
+                token
+            ))),
+            None => Err(Error::ParseError(
+                "unexpected end of input after RENAME".into(),
+            )),
+        }
+    }
 }

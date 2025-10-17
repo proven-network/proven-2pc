@@ -161,6 +161,7 @@ impl Parser<'_> {
         match self.peek()?.cloned() {
             Some(Token::Keyword(Keyword::Create)) => self.parse_create(),
             Some(Token::Keyword(Keyword::Drop)) => self.parse_drop(),
+            Some(Token::Keyword(Keyword::Alter)) => self.parse_alter(),
             Some(Token::Keyword(Keyword::Insert)) => self.parse_insert(),
             Some(Token::Keyword(Keyword::Delete)) => self.parse_delete(),
             Some(Token::Keyword(Keyword::Update)) => self.parse_update(),

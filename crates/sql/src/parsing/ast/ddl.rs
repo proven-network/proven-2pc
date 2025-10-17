@@ -6,7 +6,7 @@ use super::expressions::Expression;
 use crate::types::data_type::DataType;
 
 /// CREATE TABLE column definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Column {
     pub name: String,
     pub data_type: DataType,
@@ -58,6 +58,35 @@ pub struct ForeignKeyConstraint {
     pub on_delete: ReferentialAction,
     /// Action to take on UPDATE of referenced row
     pub on_update: ReferentialAction,
+}
+
+/// ALTER TABLE operations
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlterTableOperation {
+    /// ADD COLUMN: adds a new column to the table
+    AddColumn {
+        /// The column definition
+        column: Column,
+    },
+    /// DROP COLUMN: removes a column from the table
+    DropColumn {
+        /// The column name to drop
+        column_name: String,
+        /// IF EXISTS: if true, don't error if the column doesn't exist
+        if_exists: bool,
+    },
+    /// RENAME COLUMN: renames an existing column
+    RenameColumn {
+        /// The current column name
+        old_column_name: String,
+        /// The new column name
+        new_column_name: String,
+    },
+    /// RENAME TO: renames the table itself
+    RenameTable {
+        /// The new table name
+        new_table_name: String,
+    },
 }
 
 /// DDL statements
@@ -120,5 +149,12 @@ pub enum DdlStatement {
         name: String,
         /// IF EXISTS: if true, don't error if the index doesn't exist.
         if_exists: bool,
+    },
+    /// ALTER TABLE: modifies an existing table.
+    AlterTable {
+        /// The table name to alter.
+        name: String,
+        /// The ALTER TABLE operation to perform.
+        operation: AlterTableOperation,
     },
 }

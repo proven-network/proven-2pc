@@ -133,6 +133,11 @@ impl Planner {
                 name: name.clone(),
                 if_exists: *if_exists,
             }),
+
+            DdlStatement::AlterTable { name, operation } => Ok(Plan::AlterTable {
+                name: name.clone(),
+                operation: operation.clone(),
+            }),
         }
     }
 

@@ -158,6 +158,7 @@ pub enum StatementType {
     Delete,
     CreateTable,
     DropTable,
+    AlterTable,
     CreateIndex,
     DropIndex,
     Explain,

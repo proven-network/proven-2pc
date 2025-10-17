@@ -112,6 +112,31 @@ pub enum Error {
     #[error("Check constraint violation: {0}")]
     CheckConstraintViolation(String),
 
+    // ALTER TABLE errors
+    #[error("Column '{0}' already exists")]
+    AlreadyExistingColumn(String),
+
+    #[error("Column '{0}' not found for renaming")]
+    RenamingColumnNotFound(String),
+
+    #[error("Column '{0}' not found for dropping")]
+    DroppingColumnNotFound(String),
+
+    #[error("Default value required for NOT NULL column '{0}'")]
+    DefaultValueRequired(String),
+
+    #[error("Cannot alter column '{0}' referenced by foreign key")]
+    CannotAlterReferencedColumn(String),
+
+    #[error("Cannot alter column '{0}' that references foreign key")]
+    CannotAlterReferencingColumn(String),
+
+    #[error("Unsupported data type for unique column: {0}")]
+    UnsupportedDataTypeForUniqueColumn(String),
+
+    #[error("Unsupported ALTER TABLE operation")]
+    UnsupportedAlterTableOperation,
+
     // System errors
     #[error("Internal error: {0}")]
     Internal(String),

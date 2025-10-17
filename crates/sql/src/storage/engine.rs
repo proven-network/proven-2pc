@@ -332,6 +332,346 @@ impl SqlStorage {
         Ok(())
     }
 
+    /// Add a column to an existing table
+    pub fn alter_table_add_column(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+        column: crate::types::schema::Column,
+        default_value: Value,
+        txn_id: HlcTimestamp,
+        log_index: u64,
+    ) -> Result<()> {
+        // Get current schema
+        let mut schema = self
+            .schemas
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?
+            .as_ref()
+            .clone();
+
+        // Increment schema version
+        schema.schema_version += 1;
+
+        // Add column to schema
+        schema.columns.push(column);
+
+        // Scan all existing rows and append default value
+        let table_storage = self
+            .table_storages
+            .get_mut(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Collect all rows (row_id, values) to update
+        let mut rows_to_update = Vec::new();
+        {
+            let old_schema = self
+                .schemas
+                .get(table_name)
+                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+            let iter = table_storage.iter(txn_id)?;
+            for result in iter {
+                let (row_id, encoded_row) = result?;
+                let mut values = decode_row(&encoded_row, old_schema)?;
+                values.push(default_value.clone());
+                rows_to_update.push((row_id, values));
+            }
+        }
+
+        // Update schema first (needed for encode_row to work correctly)
+        let schema_arc = Arc::new(schema.clone());
+        self.schemas.insert(table_name.to_string(), schema_arc);
+
+        // Write all updated rows with new schema
+        for (row_id, values) in rows_to_update {
+            self.write_row(batch, table_name, row_id, &values, txn_id, log_index)?;
+        }
+
+        // Persist updated schema to metadata
+        self.persist_schema(table_name, &schema)?;
+
+        Ok(())
+    }
+
+    /// Drop a column from an existing table
+    pub fn alter_table_drop_column(
+        &mut self,
+        batch: &mut fjall::Batch,
+        table_name: &str,
+        column_name: &str,
+        if_exists: bool,
+        txn_id: HlcTimestamp,
+        log_index: u64,
+    ) -> Result<()> {
+        // Get current schema
+        let mut schema = self
+            .schemas
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?
+            .as_ref()
+            .clone();
+
+        // Find column index
+        let column_index = match schema.columns.iter().position(|c| c.name == column_name) {
+            Some(idx) => idx,
+            None => {
+                if if_exists {
+                    // Column doesn't exist but IF EXISTS was specified, so just succeed
+                    return Ok(());
+                } else {
+                    return Err(Error::DroppingColumnNotFound(column_name.to_string()));
+                }
+            }
+        };
+
+        // Check if column is referenced by foreign key in other tables
+        self.check_column_not_referenced_by_fk(table_name, column_name)?;
+
+        // Check if column has foreign key constraint
+        self.check_column_not_referencing_fk(&schema, column_name)?;
+
+        // Drop any indexes on this column
+        let indexes_to_drop: Vec<String> = self
+            .index_metadata
+            .iter()
+            .filter(|(_, idx)| {
+                idx.table == table_name && idx.columns.contains(&column_name.to_string())
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        for index_name in indexes_to_drop {
+            self.drop_index(&index_name)?;
+        }
+
+        // Increment schema version
+        schema.schema_version += 1;
+
+        // Remove column from schema
+        schema.columns.remove(column_index);
+
+        // Scan all existing rows and remove column value
+        let table_storage = self
+            .table_storages
+            .get_mut(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+        // Collect all rows to update
+        let mut rows_to_update = Vec::new();
+        {
+            let old_schema = self
+                .schemas
+                .get(table_name)
+                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+
+            let iter = table_storage.iter(txn_id)?;
+            for result in iter {
+                let (row_id, encoded_row) = result?;
+                let mut values = decode_row(&encoded_row, old_schema)?;
+                values.remove(column_index);
+                rows_to_update.push((row_id, values));
+            }
+        }
+
+        // Update schema first
+        let schema_arc = Arc::new(schema.clone());
+        self.schemas.insert(table_name.to_string(), schema_arc);
+
+        // Write all updated rows with new schema
+        for (row_id, values) in rows_to_update {
+            self.write_row(batch, table_name, row_id, &values, txn_id, log_index)?;
+        }
+
+        // Persist updated schema
+        self.persist_schema(table_name, &schema)?;
+
+        Ok(())
+    }
+
+    /// Rename a column in an existing table
+    pub fn alter_table_rename_column(
+        &mut self,
+        table_name: &str,
+        old_column_name: &str,
+        new_column_name: &str,
+    ) -> Result<()> {
+        // Get current schema
+        let mut schema = self
+            .schemas
+            .get(table_name)
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?
+            .as_ref()
+            .clone();
+
+        // Find and rename column
+        let column = schema
+            .columns
+            .iter_mut()
+            .find(|c| c.name == old_column_name)
+            .ok_or_else(|| Error::RenamingColumnNotFound(old_column_name.to_string()))?;
+
+        column.name = new_column_name.to_string();
+
+        // Check if column is referenced by foreign key in other tables
+        self.check_column_not_referenced_by_fk(table_name, old_column_name)?;
+
+        // Check if column has foreign key constraint
+        self.check_column_not_referencing_fk(&schema, old_column_name)?;
+
+        // DON'T increment schema version for rename - row structure doesn't change
+        // Rows are still compatible with the schema, only the column name changes
+        // schema.schema_version += 1;
+
+        // Update indexes that reference this column
+        for (_, index_meta) in self.index_metadata.iter_mut() {
+            if index_meta.table == table_name {
+                for col in index_meta.columns.iter_mut() {
+                    if col == old_column_name {
+                        *col = new_column_name.to_string();
+                    }
+                }
+            }
+        }
+
+        // Update schema in memory and persist
+        let schema_arc = Arc::new(schema.clone());
+        self.schemas.insert(table_name.to_string(), schema_arc);
+        self.persist_schema(table_name, &schema)?;
+
+        Ok(())
+    }
+
+    /// Rename a table (metadata-only operation)
+    ///
+    /// NOTE: This operation does not use the batch for metadata updates.
+    /// Schema metadata is committed immediately via metadata.insert().
+    /// This means there's a potential consistency window where schema could be
+    /// updated but the transaction could still abort. This matches the pattern
+    /// used by CREATE TABLE, but ideally all DDL metadata should be batched.
+    /// TODO: Investigate using batch for metadata operations for true atomicity.
+    pub fn alter_table_rename_table(
+        &mut self,
+        _batch: &mut fjall::Batch,
+        old_name: &str,
+        new_name: &str,
+        _txn_id: HlcTimestamp,
+        _log_index: u64,
+    ) -> Result<()> {
+        // Get current schema
+        let mut schema = self
+            .schemas
+            .get(old_name)
+            .ok_or_else(|| Error::TableNotFound(old_name.to_string()))?
+            .as_ref()
+            .clone();
+
+        // Update table name in schema
+        schema.name = new_name.to_string();
+        // DON'T increment schema version - row structure doesn't change, just metadata
+        // schema.schema_version += 1;
+
+        // Move storage reference (the underlying partition stays the same)
+        let storage = self
+            .table_storages
+            .remove(old_name)
+            .ok_or_else(|| Error::TableNotFound(old_name.to_string()))?;
+
+        self.table_storages.insert(new_name.to_string(), storage);
+
+        // Update schema references
+        let schema_arc = Arc::new(schema.clone());
+        self.schemas.remove(old_name);
+        self.schemas
+            .insert(new_name.to_string(), schema_arc.clone());
+
+        // Move row ID counter
+        if let Some(counter) = self.next_row_ids.remove(old_name) {
+            self.next_row_ids.insert(new_name.to_string(), counter);
+        }
+
+        // Update index metadata
+        for (_, index_meta) in self.index_metadata.iter_mut() {
+            if index_meta.table == old_name {
+                index_meta.table = new_name.to_string();
+            }
+        }
+
+        // Persist new schema and remove old
+        self.persist_schema(new_name, &schema)?;
+
+        let metadata = self.keyspace.open_partition(
+            "_metadata",
+            PartitionCreateOptions::default()
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
+        )?;
+
+        let old_schema_key = format!("schema_{}", old_name);
+        metadata.remove(old_schema_key)?;
+
+        Ok(())
+    }
+
+    /// Helper: Persist schema to metadata partition
+    ///
+    /// WARNING: This commits metadata immediately, not as part of a batch.
+    /// This creates a consistency window where schema metadata could be updated
+    /// but the transaction could still abort, leaving inconsistent state.
+    fn persist_schema(&self, table_name: &str, schema: &TableSchema) -> Result<()> {
+        let metadata = self.keyspace.open_partition(
+            "_metadata",
+            PartitionCreateOptions::default()
+                .block_size(16 * 1024)
+                .compression(fjall::CompressionType::None),
+        )?;
+
+        let schema_key = format!("schema_{}", table_name);
+        let mut schema_bytes = Vec::new();
+        ciborium::into_writer(schema, &mut schema_bytes)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+
+        metadata.insert(schema_key, schema_bytes)?;
+
+        Ok(())
+    }
+
+    /// Check if a column is referenced by foreign key in other tables
+    fn check_column_not_referenced_by_fk(&self, table_name: &str, column_name: &str) -> Result<()> {
+        // Check all other tables for FK constraints referencing this column
+        for (other_table_name, other_schema) in &self.schemas {
+            if other_table_name == table_name {
+                continue; // Skip self
+            }
+
+            for fk in &other_schema.foreign_keys {
+                if fk.referenced_table == table_name
+                    && fk.referenced_columns.contains(&column_name.to_string())
+                {
+                    return Err(Error::CannotAlterReferencedColumn(column_name.to_string()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a column has a foreign key constraint pointing to another table
+    fn check_column_not_referencing_fk(
+        &self,
+        schema: &TableSchema,
+        column_name: &str,
+    ) -> Result<()> {
+        // Check if this column has an outgoing FK constraint
+        for fk in &schema.foreign_keys {
+            if fk.columns.contains(&column_name.to_string()) {
+                return Err(Error::CannotAlterReferencingColumn(column_name.to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Read a row from a table
     pub fn read_row(
         &self,

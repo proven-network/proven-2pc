@@ -113,6 +113,8 @@ impl From<Keyword> for Token {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Keyword {
     Action,
+    Add,
+    Alter,
     And,
     Array,
     As,
@@ -126,6 +128,7 @@ pub enum Keyword {
     Cascade,
     Case,
     Cast,
+    Column,
     Constraint,
     Create,
     Cross,
@@ -200,6 +203,7 @@ pub enum Keyword {
     Read,
     Real,
     References,
+    Rename,
     Restrict,
     Right,
     Row,
@@ -249,6 +253,8 @@ impl TryFrom<&str> for Keyword {
         );
         Ok(match value {
             "action" => Self::Action,
+            "add" => Self::Add,
+            "alter" => Self::Alter,
             "and" => Self::And,
             "array" => Self::Array,
             "as" => Self::As,
@@ -262,6 +268,7 @@ impl TryFrom<&str> for Keyword {
             "cascade" => Self::Cascade,
             "case" => Self::Case,
             "cast" => Self::Cast,
+            "column" => Self::Column,
             "constraint" => Self::Constraint,
             "create" => Self::Create,
             "cross" => Self::Cross,
@@ -336,6 +343,7 @@ impl TryFrom<&str> for Keyword {
             "read" => Self::Read,
             "real" => Self::Real,
             "references" => Self::References,
+            "rename" => Self::Rename,
             "restrict" => Self::Restrict,
             "right" => Self::Right,
             "row" => Self::Row,
@@ -380,6 +388,8 @@ impl Display for Keyword {
         // Display keywords as uppercase.
         f.write_str(match self {
             Self::Action => "ACTION",
+            Self::Add => "ADD",
+            Self::Alter => "ALTER",
             Self::And => "AND",
             Self::Array => "ARRAY",
             Self::As => "AS",
@@ -393,6 +403,7 @@ impl Display for Keyword {
             Self::Cascade => "CASCADE",
             Self::Case => "CASE",
             Self::Cast => "CAST",
+            Self::Column => "COLUMN",
             Self::Constraint => "CONSTRAINT",
             Self::Create => "CREATE",
             Self::Cross => "CROSS",
@@ -467,6 +478,7 @@ impl Display for Keyword {
             Self::Read => "READ",
             Self::Real => "REAL",
             Self::References => "REFERENCES",
+            Self::Rename => "RENAME",
             Self::Restrict => "RESTRICT",
             Self::Right => "RIGHT",
             Self::Row => "ROW",

@@ -305,6 +305,190 @@ pub fn execute_with_params(
                 Ok(ExecutionResult::Ddl(format!("Created table {}", name)))
             }
         }
+
+        Plan::AlterTable { name, operation } => {
+            use crate::parsing::ast::ddl::AlterTableOperation;
+
+            match operation {
+                AlterTableOperation::AddColumn { column } => {
+                    // Validate column doesn't already exist
+                    let schemas = storage.get_schemas();
+                    let table_schema = schemas
+                        .get(&name)
+                        .ok_or_else(|| Error::TableNotFound(name.clone()))?;
+
+                    if table_schema.columns.iter().any(|c| c.name == column.name) {
+                        return Err(Error::AlreadyExistingColumn(column.name.clone()));
+                    }
+
+                    // Validate unique constraint on float
+                    if column.unique
+                        && matches!(
+                            column.data_type,
+                            crate::types::data_type::DataType::F32
+                                | crate::types::data_type::DataType::F64
+                        )
+                    {
+                        return Err(Error::UnsupportedDataTypeForUniqueColumn(
+                            column.data_type.to_string(),
+                        ));
+                    }
+
+                    // Convert AST column to schema column
+                    let mut schema_col = crate::types::schema::Column::new(
+                        column.name.clone(),
+                        column.data_type.clone(),
+                    );
+
+                    if column.primary_key {
+                        return Err(Error::InvalidOperation(
+                            "Cannot add PRIMARY KEY column via ALTER TABLE".into(),
+                        ));
+                    }
+
+                    if let Some(nullable) = column.nullable {
+                        schema_col = schema_col.nullable(nullable);
+                    }
+
+                    if column.unique {
+                        schema_col = schema_col.unique();
+                    }
+
+                    if column.index {
+                        schema_col = schema_col.with_index(true);
+                    }
+
+                    // Evaluate default expression
+                    let default_value = if let Some(ref default_expr) = column.default {
+                        // For ALTER TABLE, evaluate default immediately as a constant literal
+                        use crate::parsing::ast::Expression;
+                        use crate::types::data_type::DataType;
+                        match default_expr {
+                            Expression::Literal(lit) => {
+                                use crate::parsing::ast::Literal;
+                                match lit {
+                                    Literal::Integer(i) => {
+                                        // Convert based on column data type
+                                        match &column.data_type {
+                                            DataType::I8 => Value::I8(*i as i8),
+                                            DataType::I16 => Value::I16(*i as i16),
+                                            DataType::I32 => Value::I32(*i as i32),
+                                            DataType::I64 => Value::I64(*i as i64),
+                                            DataType::I128 => Value::I128(*i),
+                                            DataType::U8 => Value::U8(*i as u8),
+                                            DataType::U16 => Value::U16(*i as u16),
+                                            DataType::U32 => Value::U32(*i as u32),
+                                            DataType::U64 => Value::U64(*i as u64),
+                                            DataType::U128 => Value::U128(*i as u128),
+                                            _ => Value::I64(*i as i64), // Default fallback
+                                        }
+                                    }
+                                    Literal::Float(f) => match &column.data_type {
+                                        DataType::F32 => Value::F32(*f as f32),
+                                        DataType::F64 => Value::F64(*f),
+                                        _ => Value::F64(*f),
+                                    },
+                                    Literal::String(s) => Value::Str(s.clone()),
+                                    Literal::Boolean(b) => Value::Bool(*b),
+                                    Literal::Null => Value::Null,
+                                    _ => {
+                                        return Err(Error::InvalidOperation(
+                                            "Unsupported DEFAULT value for ALTER TABLE ADD COLUMN"
+                                                .into(),
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => return Err(Error::InvalidOperation(
+                                "Expression type not supported for ALTER TABLE ADD COLUMN DEFAULT"
+                                    .into(),
+                            )),
+                        }
+                    } else if matches!(column.nullable, Some(false)) {
+                        // NOT NULL without default
+                        return Err(Error::DefaultValueRequired(column.name.clone()));
+                    } else {
+                        // NULL column without default gets NULL
+                        Value::Null
+                    };
+
+                    // Execute ADD COLUMN
+                    storage.alter_table_add_column(
+                        batch,
+                        &name,
+                        schema_col,
+                        default_value,
+                        tx_ctx.txn_id,
+                        tx_ctx.log_index,
+                    )?;
+
+                    Ok(ExecutionResult::Ddl(format!(
+                        "Added column {} to table {}",
+                        column.name, name
+                    )))
+                }
+
+                AlterTableOperation::DropColumn {
+                    column_name,
+                    if_exists,
+                } => {
+                    storage.alter_table_drop_column(
+                        batch,
+                        &name,
+                        &column_name,
+                        if_exists,
+                        tx_ctx.txn_id,
+                        tx_ctx.log_index,
+                    )?;
+
+                    Ok(ExecutionResult::Ddl(format!(
+                        "Dropped column {} from table {}",
+                        column_name, name
+                    )))
+                }
+
+                AlterTableOperation::RenameColumn {
+                    old_column_name,
+                    new_column_name,
+                } => {
+                    // Validate new column name doesn't exist
+                    let schemas = storage.get_schemas();
+                    let table_schema = schemas
+                        .get(&name)
+                        .ok_or_else(|| Error::TableNotFound(name.clone()))?;
+
+                    if table_schema
+                        .columns
+                        .iter()
+                        .any(|c| c.name == *new_column_name)
+                    {
+                        return Err(Error::AlreadyExistingColumn(new_column_name.clone()));
+                    }
+
+                    storage.alter_table_rename_column(&name, &old_column_name, &new_column_name)?;
+
+                    Ok(ExecutionResult::Ddl(format!(
+                        "Renamed column {} to {} in table {}",
+                        old_column_name, new_column_name, name
+                    )))
+                }
+
+                AlterTableOperation::RenameTable { new_table_name } => {
+                    storage.alter_table_rename_table(
+                        batch,
+                        &name,
+                        &new_table_name,
+                        tx_ctx.txn_id,
+                        tx_ctx.log_index,
+                    )?;
+
+                    Ok(ExecutionResult::Ddl(format!(
+                        "Renamed table {} to {}",
+                        name, new_table_name
+                    )))
+                }
+            }
+        }
     }
 }
 
