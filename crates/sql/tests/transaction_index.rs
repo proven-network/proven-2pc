@@ -1,98 +1,161 @@
 //! Transaction index DDL tests
 //! Based on gluesql/test-suite/src/transaction/index.rs
 
-#[ignore = "not yet implemented"]
+mod common;
+
+use common::TestContext;
+use proven_value::Value;
+
+#[ignore = "Index usage verification requires EXPLAIN support"]
 #[test]
-fn test_setup_table_for_index_transactions() {
-    // TODO: Test CREATE TABLE IdxCreate (id INTEGER), INSERT INTO IdxCreate VALUES (1)
+fn test_create_index_with_rollback() {
+    let mut ctx = TestContext::new();
+
+    // Setup: Create table and insert data
+    ctx.begin();
+    ctx.exec("CREATE TABLE IdxCreate (id INTEGER)");
+    ctx.exec("INSERT INTO IdxCreate VALUES (1)");
+    ctx.commit();
+
+    // Test: Create index within transaction, then rollback
+    ctx.begin();
+    ctx.exec("CREATE INDEX idx_id ON IdxCreate (id)");
+
+    // Verify query still works within transaction
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id = 1", 1);
+    // TODO: Verify index is used (requires EXPLAIN or query plan inspection)
+
+    // Rollback
+    ctx.abort();
+
+    // Verify query still works after rollback
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id = 1", 1);
+    // TODO: Verify index is NOT used (requires EXPLAIN or query plan inspection)
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "Index usage verification requires EXPLAIN support"]
 #[test]
-fn test_create_index_in_transaction_then_rollback() {
-    // TODO: Test BEGIN, CREATE INDEX idx_id ON IdxCreate (id), verify index usage, ROLLBACK
+fn test_create_index_with_commit() {
+    let mut ctx = TestContext::new();
+
+    // Setup: Create table and insert data
+    ctx.begin();
+    ctx.exec("CREATE TABLE IdxCreate (id INTEGER)");
+    ctx.exec("INSERT INTO IdxCreate VALUES (1)");
+    ctx.commit();
+
+    // Test: Create index within transaction, then commit
+    ctx.begin();
+    ctx.exec("CREATE INDEX idx_id ON IdxCreate (id)");
+
+    // Verify query works within transaction
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id = 1", 1);
+    // TODO: Verify index is used (requires EXPLAIN or query plan inspection)
+
+    // Commit
+    ctx.commit();
+
+    // Verify query still works after commit
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id = 1", 1);
+    // TODO: Verify index is used (requires EXPLAIN or query plan inspection)
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "Index usage verification requires EXPLAIN support"]
 #[test]
-fn test_verify_index_usage_within_create_transaction() {
-    // TODO: Test SELECT id FROM IdxCreate WHERE id = 1 within transaction - should use idx_id index
+fn test_create_multiple_indexes_with_rollback() {
+    let mut ctx = TestContext::new();
+
+    // Setup: Create table with index and insert data
+    ctx.begin();
+    ctx.exec("CREATE TABLE IdxCreate (id INTEGER)");
+    ctx.exec("INSERT INTO IdxCreate VALUES (1)");
+    ctx.commit();
+
+    ctx.begin();
+    ctx.exec("CREATE INDEX idx_id ON IdxCreate (id)");
+    ctx.commit();
+
+    // Clear and insert new data
+    ctx.begin();
+    ctx.exec("DELETE FROM IdxCreate");
+    ctx.exec("INSERT INTO IdxCreate VALUES (3)");
+    ctx.commit();
+
+    // Test: Create expression index, then rollback
+    ctx.begin();
+    ctx.exec("CREATE INDEX idx_id2 ON IdxCreate (id * 2)");
+
+    // Verify both queries work within transaction
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id = 3", 1);
+    // TODO: Verify idx_id is used
+
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id * 2 = 6", 1);
+    // TODO: Verify idx_id2 is used
+
+    // Rollback
+    ctx.abort();
+
+    // Verify original index still works
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id = 3", 1);
+    // TODO: Verify idx_id is used
+
+    // Verify expression query works but without index
+    ctx.assert_row_count("SELECT id FROM IdxCreate WHERE id * 2 = 6", 1);
+    // TODO: Verify idx_id2 is NOT used
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "Index usage verification requires EXPLAIN support"]
 #[test]
-fn test_verify_create_index_rollback() {
-    // TODO: Test SELECT id FROM IdxCreate WHERE id = 1 after rollback - should not use index (no idx_id)
+fn test_drop_index_with_rollback() {
+    let mut ctx = TestContext::new();
+
+    // Setup: Create table with index and insert data
+    ctx.begin();
+    ctx.exec("CREATE TABLE IdxDrop (id INTEGER)");
+    ctx.exec("INSERT INTO IdxDrop VALUES (1)");
+    ctx.exec("CREATE INDEX idx_id ON IdxDrop (id)");
+    ctx.commit();
+
+    // Test: Drop index within transaction, then rollback
+    ctx.begin();
+    ctx.exec("DROP INDEX IdxDrop.idx_id");
+
+    // Verify query still works within transaction
+    ctx.assert_row_count("SELECT id FROM IdxDrop WHERE id = 1", 1);
+    // TODO: Verify index is NOT used (requires EXPLAIN or query plan inspection)
+
+    // Rollback
+    ctx.abort();
+
+    // Verify query still works after rollback
+    ctx.assert_row_count("SELECT id FROM IdxDrop WHERE id = 1", 1);
+    // TODO: Verify index is used again (requires EXPLAIN or query plan inspection)
 }
 
-#[ignore = "not yet implemented"]
+#[ignore = "Index usage verification requires EXPLAIN support"]
 #[test]
-fn test_create_index_in_transaction_then_commit() {
-    // TODO: Test BEGIN, CREATE INDEX idx_id ON IdxCreate (id), verify index usage, COMMIT
-}
+fn test_drop_index_with_commit() {
+    let mut ctx = TestContext::new();
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_verify_create_index_commit() {
-    // TODO: Test SELECT id FROM IdxCreate WHERE id = 1 after commit - should use idx_id index
-}
+    // Setup: Create table with index and insert data
+    ctx.begin();
+    ctx.exec("CREATE TABLE IdxDrop (id INTEGER)");
+    ctx.exec("INSERT INTO IdxDrop VALUES (1)");
+    ctx.exec("CREATE INDEX idx_id ON IdxDrop (id)");
+    ctx.commit();
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_setup_data_for_multiple_index_test() {
-    // TODO: Test DELETE FROM IdxCreate, INSERT INTO IdxCreate VALUES (3) - prepare for expression index test
-}
+    // Test: Drop index within transaction, then commit
+    ctx.begin();
+    ctx.exec("DROP INDEX IdxDrop.idx_id");
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_create_expression_index_then_rollback() {
-    // TODO: Test BEGIN, CREATE INDEX idx_id2 ON IdxCreate (id * 2), verify both indexes work, ROLLBACK
-}
+    // Verify query still works within transaction
+    ctx.assert_row_count("SELECT id FROM IdxDrop WHERE id = 1", 1);
+    // TODO: Verify index is NOT used (requires EXPLAIN or query plan inspection)
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_verify_original_index_still_works() {
-    // TODO: Test SELECT id FROM IdxCreate WHERE id = 3 - should use idx_id index
-}
+    // Commit
+    ctx.commit();
 
-#[ignore = "not yet implemented"]
-#[test]
-fn test_verify_expression_index_rollback() {
-    // TODO: Test SELECT id FROM IdxCreate WHERE id * 2 = 6 after rollback - should not use expression index
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_setup_table_for_index_drop_transactions() {
-    // TODO: Test CREATE TABLE IdxDrop (id INTEGER), INSERT INTO IdxDrop VALUES (1), CREATE INDEX idx_id ON IdxDrop (id)
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_drop_index_in_transaction_then_rollback() {
-    // TODO: Test BEGIN, DROP INDEX IdxDrop.idx_id, verify no index usage, ROLLBACK
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_verify_index_not_used_within_drop_transaction() {
-    // TODO: Test SELECT id FROM IdxDrop WHERE id = 1 within transaction - should not use index
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_verify_drop_index_rollback() {
-    // TODO: Test SELECT id FROM IdxDrop WHERE id = 1 after rollback - should use idx_id index (restored)
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_drop_index_in_transaction_then_commit() {
-    // TODO: Test BEGIN, DROP INDEX IdxDrop.idx_id, verify no index usage, COMMIT
-}
-
-#[ignore = "not yet implemented"]
-#[test]
-fn test_verify_drop_index_commit() {
-    // TODO: Test SELECT id FROM IdxDrop WHERE id = 1 after commit - should not use index (permanently dropped)
+    // Verify query still works after commit
+    ctx.assert_row_count("SELECT id FROM IdxDrop WHERE id = 1", 1);
+    // TODO: Verify index is NOT used (requires EXPLAIN or query plan inspection)
 }
