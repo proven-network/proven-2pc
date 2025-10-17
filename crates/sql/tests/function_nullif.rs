@@ -50,7 +50,6 @@ fn test_nullif_different_strings() {
     ctx.commit();
 }
 
-#[ignore = "TO_DATE function not yet implemented"]
 #[test]
 fn test_nullif_equal_dates() {
     let mut ctx = setup_test();
@@ -64,7 +63,6 @@ fn test_nullif_equal_dates() {
     ctx.commit();
 }
 
-#[ignore = "TO_DATE function not yet implemented"]
 #[test]
 fn test_nullif_different_dates() {
     let mut ctx = setup_test();

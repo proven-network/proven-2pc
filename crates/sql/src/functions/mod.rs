@@ -58,6 +58,7 @@ mod current_date;
 mod current_time;
 mod current_timestamp;
 mod extract;
+mod to_date;
 
 // Collection functions
 mod append;
@@ -166,6 +167,7 @@ impl FunctionRegistry {
         current_date::register(&mut registry);
         current_time::register(&mut registry);
         extract::register(&mut registry);
+        to_date::register(&mut registry);
 
         // Register collection functions
         is_empty::register(&mut registry);
