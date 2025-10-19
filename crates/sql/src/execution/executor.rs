@@ -1098,6 +1098,41 @@ pub fn execute_node_read_with_outer<'a>(
             Ok(Box::new(distinct_rows.into_iter().map(Ok)))
         }
 
+        Node::DistinctOn { source, on } => {
+            let rows = execute_node_read_with_outer(*source, storage, tx_ctx, params, outer_row)?;
+
+            // DISTINCT ON keeps the first row for each distinct value of the ON expressions
+            // PostgreSQL semantics: rows should be sorted by ON expressions first (via ORDER BY)
+            let mut seen = std::collections::HashSet::new();
+            let mut distinct_rows = Vec::new();
+
+            for row_result in rows {
+                let row = row_result?;
+
+                // Evaluate the ON expressions for this row
+                let mut on_values = Vec::new();
+                for expr in &on {
+                    let value = expression::evaluate_with_arc_and_storage(
+                        expr,
+                        Some(&row),
+                        tx_ctx,
+                        params,
+                        Some(storage),
+                    )?;
+                    on_values.push(value);
+                }
+
+                // Check if we've seen this combination of ON values
+                let hash_key = crate::execution::aggregator::HashableValue(Value::List(on_values));
+                if seen.insert(hash_key) {
+                    // First occurrence of this ON combination - keep it
+                    distinct_rows.push(row);
+                }
+            }
+
+            Ok(Box::new(distinct_rows.into_iter().map(Ok)))
+        }
+
         // Aggregation works with immutable storage
         Node::Aggregate {
             source,

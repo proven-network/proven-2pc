@@ -122,15 +122,47 @@ impl TypeChecker {
                     }
 
                     // Type check ORDER BY
+                    // Build alias map from SELECT clause for ORDER BY resolution
+                    let mut alias_types: HashMap<String, TypeInfo> = HashMap::new();
+                    for (idx, (_, alias_opt)) in select.select.iter().enumerate() {
+                        if let Some(alias) = alias_opt {
+                            // Get the type of the aliased expression from the type_map
+                            let select_expr_id = ExpressionId::from_path(vec![idx]);
+                            if let Some(type_info) = type_map.get(&select_expr_id) {
+                                alias_types.insert(alias.clone(), type_info.clone());
+                            }
+                        }
+                    }
+
                     for (idx, (expr, _)) in select.order_by.iter().enumerate() {
                         let expr_id = ExpressionId::from_path(vec![4000 + idx]);
-                        let type_info = self.infer_expr_type_new(
-                            expr,
-                            &expr_id,
-                            resolution_view.column_map,
-                            param_types,
-                            &mut type_map,
-                        )?;
+
+                        // Check if this is a simple column reference that matches a SELECT alias
+                        let type_info = if let Expression::Column(None, col_name) = expr {
+                            if let Some(alias_type) = alias_types.get(col_name) {
+                                // Use the type from the aliased SELECT expression
+                                alias_type.clone()
+                            } else {
+                                // Not an alias, resolve normally
+                                self.infer_expr_type_new(
+                                    expr,
+                                    &expr_id,
+                                    resolution_view.column_map,
+                                    param_types,
+                                    &mut type_map,
+                                )?
+                            }
+                        } else {
+                            // Not a simple column reference, resolve normally
+                            self.infer_expr_type_new(
+                                expr,
+                                &expr_id,
+                                resolution_view.column_map,
+                                param_types,
+                                &mut type_map,
+                            )?
+                        };
+
                         type_map.insert(expr_id, type_info);
                     }
                 }

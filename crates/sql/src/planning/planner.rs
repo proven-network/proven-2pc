@@ -255,7 +255,14 @@ impl Planner {
         let needs_extended_projection = !select.order_by.is_empty() && {
             select.order_by.iter().any(|(expr, _)| {
                 // Check if this expression is not in the SELECT list
-                !select.select.iter().any(|(sel_expr, _)| {
+                !select.select.iter().any(|(sel_expr, sel_alias)| {
+                    // Check if ORDER BY references a SELECT alias
+                    if let AstExpression::Column(None, col_name) = expr
+                        && let Some(alias) = sel_alias
+                        && alias == col_name
+                    {
+                        return true; // ORDER BY references SELECT alias
+                    }
                     // Simple structural check
                     match (expr, sel_expr) {
                         (AstExpression::Column(t1, c1), AstExpression::Column(t2, c2)) => {
@@ -318,10 +325,27 @@ impl Planner {
         };
 
         // Apply DISTINCT (SQL standard: after projection, before ORDER BY)
-        if select.distinct {
-            node = Node::Distinct {
-                source: Box::new(node),
-            };
+        match &select.distinct {
+            crate::parsing::ast::DistinctClause::All => {
+                node = Node::Distinct {
+                    source: Box::new(node),
+                };
+            }
+            crate::parsing::ast::DistinctClause::On(exprs) => {
+                // Resolve DISTINCT ON expressions
+                let distinct_exprs = exprs
+                    .iter()
+                    .map(|e| context.resolve_expression(e))
+                    .collect::<Result<Vec<_>>>()?;
+
+                node = Node::DistinctOn {
+                    source: Box::new(node),
+                    on: distinct_exprs,
+                };
+            }
+            crate::parsing::ast::DistinctClause::None => {
+                // No DISTINCT
+            }
         }
 
         // Apply ORDER BY after projection (only if it wasn't applied before)

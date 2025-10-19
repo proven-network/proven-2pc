@@ -336,6 +336,11 @@ fn write_node(f: &mut fmt::Formatter<'_>, node: &Node, indent: usize) -> fmt::Re
             writeln!(f, "{}-> Distinct", prefix)?;
             write_node(f, source, indent + 1)
         }
+        Node::DistinctOn { source, on } => {
+            writeln!(f, "{}-> Distinct On", prefix)?;
+            writeln!(f, "{}   On: {} expressions", prefix, on.len())?;
+            write_node(f, source, indent + 1)
+        }
         Node::Aggregate {
             source,
             group_by,
@@ -452,6 +457,12 @@ pub enum Node {
     /// Distinct - deduplicate result rows
     Distinct { source: Box<Node> },
 
+    /// DISTINCT ON - keep first row for each distinct value of ON expressions (PostgreSQL extension)
+    DistinctOn {
+        source: Box<Node>,
+        on: Vec<Expression>,
+    },
+
     /// Aggregate functions with GROUP BY
     Aggregate {
         source: Box<Node>,
@@ -504,6 +515,7 @@ impl Node {
             Node::Limit { source, .. } => source.column_count(schemas),
             Node::Offset { source, .. } => source.column_count(schemas),
             Node::Distinct { source } => source.column_count(schemas),
+            Node::DistinctOn { source, .. } => source.column_count(schemas),
             Node::Aggregate {
                 group_by,
                 aggregates,
@@ -553,7 +565,8 @@ impl Node {
             | Node::Order { source, .. }
             | Node::Limit { source, .. }
             | Node::Offset { source, .. }
-            | Node::Distinct { source } => source.get_column_names(schemas),
+            | Node::Distinct { source }
+            | Node::DistinctOn { source, .. } => source.get_column_names(schemas),
 
             // SeriesScan produces column "n" (lowercase for SQL case-insensitivity)
             Node::SeriesScan { .. } => vec!["n".to_string()],

@@ -13,7 +13,7 @@ pub mod expressions;
 // Re-export commonly used types at the module level
 pub use common::FromClause;
 pub use ddl::{Column, DdlStatement, IndexColumn};
-pub use dml::{DmlStatement, InsertSource, SelectStatement};
+pub use dml::{DistinctClause, DmlStatement, InsertSource, SelectStatement};
 pub use expressions::{Expression, Literal, Operator};
 
 /// SQL statements represented as an Abstract Syntax Tree (AST).

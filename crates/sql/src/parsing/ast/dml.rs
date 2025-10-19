@@ -28,11 +28,22 @@ pub struct ValuesStatement {
     pub offset: Option<Expression>,
 }
 
+/// DISTINCT clause variants
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DistinctClause {
+    /// No DISTINCT
+    None,
+    /// DISTINCT (all columns)
+    All,
+    /// DISTINCT ON (expr1, expr2, ...) - PostgreSQL extension
+    On(Vec<Expression>),
+}
+
 /// SELECT statement structure
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SelectStatement {
     /// DISTINCT: whether to deduplicate result rows.
-    pub distinct: bool,
+    pub distinct: DistinctClause,
     /// Expressions to select, with an optional column alias.
     pub select: Vec<(Expression, Option<String>)>,
     /// FROM: tables to select from.

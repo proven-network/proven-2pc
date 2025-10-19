@@ -6,12 +6,12 @@ use super::super::{Keyword, Token};
 use super::token_helper::TokenHelper;
 use crate::error::{Error, Result};
 use crate::parsing::ast::common::{Direction, FromClause, JoinType, SubquerySource, TableAlias};
-use crate::parsing::ast::dml::{DmlStatement, ValuesStatement};
+use crate::parsing::ast::dml::{DistinctClause, DmlStatement, ValuesStatement};
 use crate::parsing::ast::{Expression, InsertSource, SelectStatement, Statement};
 use std::collections::BTreeMap;
 
-/// Type alias for SELECT clause parsing result: (distinct_flag, select_expressions)
-type SelectClauseResult = (bool, Vec<(Expression, Option<String>)>);
+/// Type alias for SELECT clause parsing result: (distinct_clause, select_expressions)
+type SelectClauseResult = (DistinctClause, Vec<(Expression, Option<String>)>);
 
 /// Parser trait for DML statements
 pub trait DmlParser: TokenHelper {
@@ -144,11 +144,29 @@ pub trait DmlParser: TokenHelper {
     /// Parses a SELECT clause, if present.
     fn parse_select_clause(&mut self) -> Result<SelectClauseResult> {
         if !self.next_is(Keyword::Select.into()) {
-            return Ok((false, Vec::new()));
+            return Ok((DistinctClause::None, Vec::new()));
         }
 
         // Check for DISTINCT keyword
-        let distinct = self.next_is(Keyword::Distinct.into());
+        let distinct = if self.next_is(Keyword::Distinct.into()) {
+            // Check for DISTINCT ON (expr_list)
+            if self.next_is(Keyword::On.into()) {
+                self.expect(Token::OpenParen)?;
+                let mut exprs = Vec::new();
+                loop {
+                    exprs.push(self.parse_expression()?);
+                    if !self.next_is(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::CloseParen)?;
+                DistinctClause::On(exprs)
+            } else {
+                DistinctClause::All
+            }
+        } else {
+            DistinctClause::None
+        };
 
         let mut select = Vec::new();
         loop {

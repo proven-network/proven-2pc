@@ -201,25 +201,29 @@ fn test_distinct_with_limit() {
 }
 
 #[test]
-#[ignore = "ORDER BY with alias not yet supported"]
 fn test_distinct_with_expressions() {
     let mut ctx = setup_test();
 
     TableBuilder::new(&mut ctx, "DistinctTest")
         .create_simple("a INTEGER, b INTEGER")
         .insert_values(
-            "(1, 9),
-             (2, 8),
-             (3, 7),
-             (1, 9),
-             (4, 6),
-             (2, 8)",
+            "(1, 2),
+             (2, 3),
+             (3, 4),
+             (1, 2),
+             (4, 5),
+             (2, 3)",
         );
 
     // Test DISTINCT with expressions
+    // Data produces sums: 3, 5, 7, 3 (dup), 9, 5 (dup)
+    // DISTINCT should give us: 3, 5, 7, 9
     let results = ctx.query("SELECT DISTINCT a + b AS sum FROM DistinctTest ORDER BY sum");
-    assert_eq!(results.len(), 4); // 10, 10, 10, 10 becomes just 10
-    assert_eq!(results[0].get("sum").unwrap(), &Value::I64(10));
+    assert_eq!(results.len(), 4);
+    assert_eq!(results[0].get("sum").unwrap(), &Value::I32(3));
+    assert_eq!(results[1].get("sum").unwrap(), &Value::I32(5));
+    assert_eq!(results[2].get("sum").unwrap(), &Value::I32(7));
+    assert_eq!(results[3].get("sum").unwrap(), &Value::I32(9));
 
     ctx.commit();
 }
@@ -336,7 +340,6 @@ fn test_distinct_single_row() {
 }
 
 #[test]
-#[ignore = "DISTINCT ON not yet implemented"]
 fn test_distinct_on() {
     let mut ctx = setup_test();
 
