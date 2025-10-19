@@ -208,7 +208,7 @@ impl Planner {
         let has_aggregates = select
             .select
             .iter()
-            .any(|(expr, _)| self.is_aggregate_expr(expr))
+            .any(|(expr, _)| self.contains_aggregate_expr(expr))
             || select
                 .having
                 .as_ref()
@@ -1261,7 +1261,56 @@ impl Planner {
                 }
                 Operator::Exists { subquery, .. } => self.contains_aggregate_expr(subquery),
             },
-            _ => false,
+            // CASE expressions
+            AstExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                // Check operand
+                if let Some(op) = operand
+                    && self.contains_aggregate_expr(op)
+                {
+                    return true;
+                }
+                // Check all WHEN/THEN pairs
+                for (when_expr, then_expr) in when_clauses {
+                    if self.contains_aggregate_expr(when_expr)
+                        || self.contains_aggregate_expr(then_expr)
+                    {
+                        return true;
+                    }
+                }
+                // Check ELSE clause
+                if let Some(else_expr) = else_clause
+                    && self.contains_aggregate_expr(else_expr)
+                {
+                    return true;
+                }
+                false
+            }
+            // Array access: base[index]
+            AstExpression::ArrayAccess { base, index } => {
+                self.contains_aggregate_expr(base) || self.contains_aggregate_expr(index)
+            }
+            // Field access: base.field
+            AstExpression::FieldAccess { base, .. } => self.contains_aggregate_expr(base),
+            // Array literal: [expr1, expr2, ...]
+            AstExpression::ArrayLiteral(elements) => {
+                elements.iter().any(|e| self.contains_aggregate_expr(e))
+            }
+            // Map literal: {key1: value1, key2: value2, ...}
+            AstExpression::MapLiteral(pairs) => pairs
+                .iter()
+                .any(|(k, v)| self.contains_aggregate_expr(k) || self.contains_aggregate_expr(v)),
+            // Subquery - already handled separately
+            AstExpression::Subquery(_) => false,
+            // These don't contain nested expressions
+            AstExpression::All
+            | AstExpression::QualifiedWildcard(_)
+            | AstExpression::Column(_, _)
+            | AstExpression::Literal(_)
+            | AstExpression::Parameter(_) => false,
         }
     }
 
@@ -1676,7 +1725,56 @@ impl Planner {
                     self.extract_aggregates_from_expr(arg, aggregates, context)?;
                 }
             }
-            _ => {}
+            // CASE expressions
+            AstExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                // Extract from operand if present
+                if let Some(op) = operand {
+                    self.extract_aggregates_from_expr(op, aggregates, context)?;
+                }
+                // Extract from all WHEN/THEN pairs
+                for (when_expr, then_expr) in when_clauses {
+                    self.extract_aggregates_from_expr(when_expr, aggregates, context)?;
+                    self.extract_aggregates_from_expr(then_expr, aggregates, context)?;
+                }
+                // Extract from ELSE clause if present
+                if let Some(else_expr) = else_clause {
+                    self.extract_aggregates_from_expr(else_expr, aggregates, context)?;
+                }
+            }
+            // Array access: base[index]
+            AstExpression::ArrayAccess { base, index } => {
+                self.extract_aggregates_from_expr(base, aggregates, context)?;
+                self.extract_aggregates_from_expr(index, aggregates, context)?;
+            }
+            // Field access: base.field
+            AstExpression::FieldAccess { base, .. } => {
+                self.extract_aggregates_from_expr(base, aggregates, context)?;
+            }
+            // Array literal: [expr1, expr2, ...]
+            AstExpression::ArrayLiteral(elements) => {
+                for elem in elements {
+                    self.extract_aggregates_from_expr(elem, aggregates, context)?;
+                }
+            }
+            // Map literal: {key1: value1, key2: value2, ...}
+            AstExpression::MapLiteral(pairs) => {
+                for (key, value) in pairs {
+                    self.extract_aggregates_from_expr(key, aggregates, context)?;
+                    self.extract_aggregates_from_expr(value, aggregates, context)?;
+                }
+            }
+            // Subquery - already handled separately, don't recurse
+            AstExpression::Subquery(_) => {}
+            // These don't contain nested expressions
+            AstExpression::All
+            | AstExpression::QualifiedWildcard(_)
+            | AstExpression::Column(_, _)
+            | AstExpression::Literal(_)
+            | AstExpression::Parameter(_) => {}
         }
 
         Ok(())
@@ -2037,17 +2135,20 @@ impl Planner {
         select: &[(AstExpression, Option<String>)],
         group_by: &[AstExpression],
         group_by_count: usize,
-        _context: &mut AnalyzedPlanContext,
+        context: &mut AnalyzedPlanContext,
     ) -> Result<(Vec<Expression>, Vec<Option<String>>)> {
+        // First, need to get the aggregates list to resolve complex expressions
+        let aggregates = self.extract_aggregates(select, None, context)?;
+
         let mut expressions = Vec::new();
         let mut aliases = Vec::new();
-        let mut col_idx = group_by_count; // Start after GROUP BY columns
 
         for (expr, alias) in select {
             if self.is_aggregate_expr(expr) {
-                // For aggregate functions, project the corresponding aggregate result column
-                expressions.push(Expression::Column(col_idx));
-                col_idx += 1;
+                // For simple aggregate functions, find the corresponding column
+                let aggregate_idx =
+                    self.find_aggregate_index(expr, &aggregates, group_by_count, context)?;
+                expressions.push(Expression::Column(aggregate_idx));
 
                 // Generate alias for aggregate function
                 let func_alias = alias.clone().or_else(|| {
@@ -2077,6 +2178,18 @@ impl Planner {
                     }
                 });
                 aliases.push(func_alias);
+            } else if self.contains_aggregate_expr(expr) {
+                // For complex expressions containing aggregates (e.g., CASE with aggregates),
+                // resolve them by replacing aggregate calls with column references
+                let resolved_expr = self.resolve_aggregate_expression(
+                    expr,
+                    group_by,
+                    &aggregates,
+                    group_by_count,
+                    context,
+                )?;
+                expressions.push(resolved_expr);
+                aliases.push(alias.clone().or_else(|| Some(expr.to_column_name())));
             } else {
                 // For non-aggregate expressions in GROUP BY context,
                 // they must be GROUP BY columns - find which position
@@ -2092,6 +2205,195 @@ impl Planner {
         }
 
         Ok((expressions, aliases))
+    }
+
+    /// Find the index of an aggregate function in the aggregates list
+    fn find_aggregate_index(
+        &self,
+        expr: &AstExpression,
+        aggregates: &[AggregateFunc],
+        group_by_count: usize,
+        context: &mut AnalyzedPlanContext,
+    ) -> Result<usize> {
+        if let AstExpression::Function(name, args) = expr {
+            let func_name = name.to_uppercase();
+
+            let arg = if args.is_empty() {
+                Expression::Constant(crate::types::Value::integer(1))
+            } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
+                if func_name.ends_with("_DISTINCT") {
+                    Expression::All
+                } else {
+                    Expression::Constant(crate::types::Value::integer(1))
+                }
+            } else {
+                context.resolve_expression(&args[0])?
+            };
+
+            let target_agg = match func_name.as_str() {
+                "COUNT" => AggregateFunc::Count(arg),
+                "COUNT_DISTINCT" => AggregateFunc::CountDistinct(arg),
+                "SUM" => AggregateFunc::Sum(arg),
+                "SUM_DISTINCT" => AggregateFunc::SumDistinct(arg),
+                "AVG" => AggregateFunc::Avg(arg),
+                "AVG_DISTINCT" => AggregateFunc::AvgDistinct(arg),
+                "MIN" => AggregateFunc::Min(arg),
+                "MIN_DISTINCT" => AggregateFunc::MinDistinct(arg),
+                "MAX" => AggregateFunc::Max(arg),
+                "MAX_DISTINCT" => AggregateFunc::MaxDistinct(arg),
+                "STDEV" => AggregateFunc::StDev(arg),
+                "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg),
+                "VARIANCE" => AggregateFunc::Variance(arg),
+                "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg),
+                _ => {
+                    return Err(Error::ExecutionError(format!(
+                        "Unknown aggregate function: {}",
+                        name
+                    )));
+                }
+            };
+
+            if let Some(idx) = aggregates.iter().position(|a| a == &target_agg) {
+                Ok(group_by_count + idx)
+            } else {
+                Err(Error::ExecutionError(format!(
+                    "Aggregate function {} not found in aggregate list",
+                    name
+                )))
+            }
+        } else {
+            Err(Error::ExecutionError("Not an aggregate function".into()))
+        }
+    }
+
+    /// Resolve an expression containing aggregates by replacing aggregate calls with column references
+    /// Similar to resolve_having_expression but for SELECT clause
+    fn resolve_aggregate_expression(
+        &self,
+        expr: &AstExpression,
+        group_by: &[AstExpression],
+        aggregates: &[AggregateFunc],
+        group_by_count: usize,
+        context: &mut AnalyzedPlanContext,
+    ) -> Result<Expression> {
+        use crate::parsing::ast::Operator;
+
+        match expr {
+            // Check if this is an aggregate function that needs to be replaced with a column reference
+            AstExpression::Function(_, _) if self.is_aggregate_expr(expr) => {
+                let idx = self.find_aggregate_index(expr, aggregates, group_by_count, context)?;
+                Ok(Expression::Column(idx))
+            }
+            // Recursively handle operators
+            AstExpression::Operator(op) => {
+                let resolved_op = match op {
+                    Operator::Between {
+                        expr,
+                        low,
+                        high,
+                        negated,
+                    } => {
+                        let resolved_expr = self.resolve_aggregate_expression(
+                            expr,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let resolved_low = self.resolve_aggregate_expression(
+                            low,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let resolved_high = self.resolve_aggregate_expression(
+                            high,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::Between(
+                            Box::new(resolved_expr),
+                            Box::new(resolved_low),
+                            Box::new(resolved_high),
+                            *negated,
+                        )
+                    }
+                    _ => {
+                        // For other operators, use the existing resolve_having_expression logic
+                        return self.resolve_having_expression(
+                            expr,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        );
+                    }
+                };
+                Ok(resolved_op)
+            }
+            // CASE expressions
+            AstExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                let resolved_operand = if let Some(op) = operand {
+                    Some(Box::new(self.resolve_aggregate_expression(
+                        op,
+                        group_by,
+                        aggregates,
+                        group_by_count,
+                        context,
+                    )?))
+                } else {
+                    None
+                };
+
+                let mut resolved_when_clauses = Vec::new();
+                for (when_expr, then_expr) in when_clauses {
+                    let resolved_when = self.resolve_aggregate_expression(
+                        when_expr,
+                        group_by,
+                        aggregates,
+                        group_by_count,
+                        context,
+                    )?;
+                    let resolved_then = self.resolve_aggregate_expression(
+                        then_expr,
+                        group_by,
+                        aggregates,
+                        group_by_count,
+                        context,
+                    )?;
+                    resolved_when_clauses.push((resolved_when, resolved_then));
+                }
+
+                let resolved_else = if let Some(else_expr) = else_clause {
+                    Some(Box::new(self.resolve_aggregate_expression(
+                        else_expr,
+                        group_by,
+                        aggregates,
+                        group_by_count,
+                        context,
+                    )?))
+                } else {
+                    None
+                };
+
+                Ok(Expression::Case {
+                    operand: resolved_operand,
+                    when_clauses: resolved_when_clauses,
+                    else_clause: resolved_else,
+                })
+            }
+            // For other expressions, delegate to resolve_having_expression
+            _ => {
+                self.resolve_having_expression(expr, group_by, aggregates, group_by_count, context)
+            }
+        }
     }
 
     /// Find the index of an expression in the GROUP BY clause
