@@ -8,7 +8,7 @@ use proven_value::Value;
 
 /// Setup test table with unordered list
 fn setup_sort_table(ctx: &mut common::TestContext) {
-    TableBuilder::new(ctx, "Test1").create_simple("items LIST");
+    TableBuilder::new(ctx, "Test1").create_simple("items INT[]");
 
     ctx.exec("INSERT INTO Test1 (items) VALUES ('[2, 1, 4, 3]')");
 }
@@ -17,7 +17,7 @@ fn setup_sort_table(ctx: &mut common::TestContext) {
 fn test_create_table_with_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Test1 (items LIST)");
+    ctx.exec("CREATE TABLE Test1 (items INT[])");
 
     ctx.commit();
 }
@@ -43,10 +43,10 @@ fn test_sort_list_default_order() {
     let result_value = results[0].get("items").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 4, "Should have 4 elements");
-        assert_eq!(list[0], Value::I64(1), "First should be 1");
-        assert_eq!(list[1], Value::I64(2), "Second should be 2");
-        assert_eq!(list[2], Value::I64(3), "Third should be 3");
-        assert_eq!(list[3], Value::I64(4), "Fourth should be 4");
+        assert_eq!(list[0], Value::I32(1), "First should be 1");
+        assert_eq!(list[1], Value::I32(2), "Second should be 2");
+        assert_eq!(list[2], Value::I32(3), "Third should be 3");
+        assert_eq!(list[3], Value::I32(4), "Fourth should be 4");
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -65,10 +65,10 @@ fn test_sort_list_ascending() {
     let result_value = results[0].get("items").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 4, "Should have 4 elements");
-        assert_eq!(list[0], Value::I64(1));
-        assert_eq!(list[1], Value::I64(2));
-        assert_eq!(list[2], Value::I64(3));
-        assert_eq!(list[3], Value::I64(4));
+        assert_eq!(list[0], Value::I32(1));
+        assert_eq!(list[1], Value::I32(2));
+        assert_eq!(list[2], Value::I32(3));
+        assert_eq!(list[3], Value::I32(4));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -87,10 +87,10 @@ fn test_sort_list_descending() {
     let result_value = results[0].get("items").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 4, "Should have 4 elements");
-        assert_eq!(list[0], Value::I64(4), "First should be 4");
-        assert_eq!(list[1], Value::I64(3), "Second should be 3");
-        assert_eq!(list[2], Value::I64(2), "Third should be 2");
-        assert_eq!(list[3], Value::I64(1), "Fourth should be 1");
+        assert_eq!(list[0], Value::I32(4), "First should be 4");
+        assert_eq!(list[1], Value::I32(3), "Second should be 3");
+        assert_eq!(list[2], Value::I32(2), "Third should be 2");
+        assert_eq!(list[3], Value::I32(1), "Fourth should be 1");
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -153,7 +153,7 @@ fn test_sort_non_string_order_should_error() {
 fn test_create_table_for_mixed_types() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Test2 (id INTEGER, items LIST)");
+    ctx.exec("CREATE TABLE Test2 (id INTEGER, items INT[])");
 
     ctx.commit();
 }
@@ -162,7 +162,7 @@ fn test_create_table_for_mixed_types() {
 fn test_insert_mixed_type_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Test2 (id INTEGER, items LIST)");
+    ctx.exec("CREATE TABLE Test2 (id INTEGER, items INT[])");
 
     // This implementation may be stricter about list type validation
     // Try to insert mixed types - may fail
@@ -188,7 +188,7 @@ fn test_insert_mixed_type_list() {
 fn test_sort_non_list_should_error() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Test2 (id INTEGER, items LIST)");
+    ctx.exec("CREATE TABLE Test2 (id INTEGER, items INT[])");
     ctx.exec("INSERT INTO Test2 (id, items) VALUES (1, '[2, 1, 3]')");
 
     // The error message differs from GlueSQL
@@ -201,7 +201,7 @@ fn test_sort_non_list_should_error() {
 fn test_sort_incomparable_types_should_error() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Test2 (id INTEGER, items LIST)");
+    ctx.exec("CREATE TABLE Test2 (id INTEGER, items INT[])");
 
     // Try to insert mixed types - may fail at insert time due to stricter validation
     let error_or_result = ctx

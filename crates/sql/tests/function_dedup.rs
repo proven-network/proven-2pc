@@ -9,7 +9,7 @@ use common::setup_test;
 fn test_dedup_integer_list() {
     let mut ctx = setup_test();
 
-    let results = ctx.query("SELECT DEDUP(CAST('[1, 2, 3, 3, 4, 5, 5]' AS List)) as actual");
+    let results = ctx.query("SELECT DEDUP(CAST('[1, 2, 3, 3, 4, 5, 5]' AS INT[])) as actual");
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("actual").unwrap();
@@ -28,7 +28,7 @@ fn test_dedup_integer_list() {
 fn test_dedup_mixed_types() {
     let mut ctx = setup_test();
 
-    let results = ctx.query(r#"SELECT DEDUP(CAST('["1", 1, 1, "1", "1"]' AS List)) as actual"#);
+    let results = ctx.query(r#"SELECT DEDUP(CAST('["1", 1, 1, "1", "1"]' AS INT[])) as actual"#);
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("actual").unwrap();
@@ -61,7 +61,7 @@ fn test_dedup_preserves_order() {
     let mut ctx = setup_test();
 
     // Test that DEDUP preserves the order of first occurrences
-    let results = ctx.query("SELECT DEDUP(CAST('[5, 3, 5, 1, 3, 2]' AS List)) as actual");
+    let results = ctx.query("SELECT DEDUP(CAST('[5, 3, 5, 1, 3, 2]' AS INT[])) as actual");
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("actual").unwrap();
@@ -76,7 +76,7 @@ fn test_dedup_preserves_order() {
 fn test_dedup_empty_list() {
     let mut ctx = setup_test();
 
-    let results = ctx.query("SELECT DEDUP(CAST('[]' AS List)) as actual");
+    let results = ctx.query("SELECT DEDUP(CAST('[]' AS INT[])) as actual");
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("actual").unwrap();
@@ -91,7 +91,7 @@ fn test_dedup_empty_list() {
 fn test_dedup_single_element() {
     let mut ctx = setup_test();
 
-    let results = ctx.query("SELECT DEDUP(CAST('[42]' AS List)) as actual");
+    let results = ctx.query("SELECT DEDUP(CAST('[42]' AS INT[])) as actual");
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("actual").unwrap();
@@ -106,7 +106,7 @@ fn test_dedup_single_element() {
 fn test_dedup_no_duplicates() {
     let mut ctx = setup_test();
 
-    let results = ctx.query("SELECT DEDUP(CAST('[1, 2, 3, 4, 5]' AS List)) as actual");
+    let results = ctx.query("SELECT DEDUP(CAST('[1, 2, 3, 4, 5]' AS INT[])) as actual");
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("actual").unwrap();
@@ -125,7 +125,7 @@ fn test_dedup_no_duplicates() {
 fn test_dedup_all_same_values() {
     let mut ctx = setup_test();
 
-    let results = ctx.query("SELECT DEDUP(CAST('[7, 7, 7, 7]' AS List)) as actual");
+    let results = ctx.query("SELECT DEDUP(CAST('[7, 7, 7, 7]' AS INT[])) as actual");
 
     assert_eq!(results.len(), 1);
     let value = results[0].get("actual").unwrap();

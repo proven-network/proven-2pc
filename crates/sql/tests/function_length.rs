@@ -27,7 +27,7 @@ fn test_length_with_string() {
 fn test_length_with_list() {
     let mut ctx = setup_test();
 
-    let results = ctx.query("SELECT LENGTH(CAST('[1, 2, 3]' AS LIST)) as len");
+    let results = ctx.query("SELECT LENGTH(CAST('[1, 2, 3]' AS INT[])) as len");
     assert_eq!(results.len(), 1);
 
     match results[0].get("len").unwrap() {

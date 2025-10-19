@@ -10,7 +10,7 @@ fn test_append_integer_to_list() {
     let mut ctx = setup_test();
 
     TableBuilder::new(&mut ctx, "Append")
-        .create_simple("id INTEGER, items LIST, element INTEGER, element2 TEXT")
+        .create_simple("id INTEGER, items INT[], element INTEGER, element2 TEXT")
         .insert_values("(1, '[1, 2, 3]', 4, 'Foo')");
 
     let results = ctx.query("SELECT APPEND(items, element) as myappend FROM Append");
@@ -33,7 +33,7 @@ fn test_append_with_type_coercion() {
 
     // Test that APPEND properly coerces types (I32 -> I64)
     TableBuilder::new(&mut ctx, "AppendCoercion")
-        .create_simple("id INTEGER, items LIST, small_num INTEGER")
+        .create_simple("id INTEGER, items INT[], small_num INTEGER")
         .insert_values("(1, '[100, 200, 300]', 42)");
 
     // Appending an I32 to a LIST<I64> should coerce to I64
@@ -51,7 +51,7 @@ fn test_append_non_list_should_error() {
     let mut ctx = setup_test();
 
     TableBuilder::new(&mut ctx, "Append")
-        .create_simple("id INTEGER, items LIST, element INTEGER, element2 TEXT")
+        .create_simple("id INTEGER, items INT[], element INTEGER, element2 TEXT")
         .insert_values("(1, '[1, 2, 3]', 4, 'Foo')");
 
     ctx.assert_error_contains(
@@ -66,9 +66,9 @@ fn test_append_non_list_should_error() {
 fn test_insert_with_append_function() {
     let mut ctx = setup_test();
 
-    TableBuilder::new(&mut ctx, "Foo").create_simple("elements LIST");
+    TableBuilder::new(&mut ctx, "Foo").create_simple("elements INT[]");
 
-    ctx.exec("INSERT INTO Foo VALUES (APPEND(CAST('[1, 2, 3]' AS LIST), 4))");
+    ctx.exec("INSERT INTO Foo VALUES (APPEND(CAST('[1, 2, 3]' AS INT[]), 4))");
 
     let results = ctx.query("SELECT elements as myappend FROM Foo");
     assert_eq!(results.len(), 1);

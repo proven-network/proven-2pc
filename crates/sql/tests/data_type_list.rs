@@ -10,7 +10,7 @@ fn test_create_table_with_list_column() {
     let mut ctx = setup_test();
 
     // LIST is variable-length, each row can have different number of elements
-    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items INT[])");
     ctx.commit();
 }
 
@@ -18,7 +18,7 @@ fn test_create_table_with_list_column() {
 fn test_insert_simple_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items INT[])");
 
     // Different rows can have different list lengths
     ctx.exec("INSERT INTO ListData VALUES (1, '[1, 2, 3]')");
@@ -58,7 +58,7 @@ fn test_insert_simple_list() {
 fn test_nested_lists() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE NestedList (id INT, matrix INTEGER[][])");
+    ctx.exec("CREATE TABLE NestedList (id INT, matrix INT[][])");
 
     // Lists can contain other lists
     ctx.exec("INSERT INTO NestedList VALUES (1, '[[1, 2], [3, 4], [5, 6]]')");
@@ -74,7 +74,7 @@ fn test_nested_lists() {
 fn test_unwrap_list_elements() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items INT[])");
     ctx.exec("INSERT INTO ListData VALUES (1, '[10, 20, 30]')");
     ctx.exec("INSERT INTO ListData VALUES (2, '[40, 50]')");
 
@@ -82,10 +82,10 @@ fn test_unwrap_list_elements() {
     let results = ctx.query("SELECT id, UNWRAP(items, '0') AS first, UNWRAP(items, '1') AS second FROM ListData ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert_eq!(results[0].get("first").unwrap(), &Value::I64(10));
-    assert_eq!(results[0].get("second").unwrap(), &Value::I64(20));
-    assert_eq!(results[1].get("first").unwrap(), &Value::I64(40));
-    assert_eq!(results[1].get("second").unwrap(), &Value::I64(50));
+    assert_eq!(results[0].get("first").unwrap(), &Value::I32(10));
+    assert_eq!(results[0].get("second").unwrap(), &Value::I32(20));
+    assert_eq!(results[1].get("first").unwrap(), &Value::I32(40));
+    assert_eq!(results[1].get("second").unwrap(), &Value::I32(50));
 
     ctx.commit();
 }
@@ -94,7 +94,7 @@ fn test_unwrap_list_elements() {
 fn test_list_bracket_access() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items INT[])");
     ctx.exec("INSERT INTO ListData VALUES (1, '[100, 200, 300]')");
     ctx.exec("INSERT INTO ListData VALUES (2, '[400, 500]')");
 
@@ -103,10 +103,10 @@ fn test_list_bracket_access() {
         ctx.query("SELECT id, items[0] AS first, items[1] AS second FROM ListData ORDER BY id");
     assert_eq!(results.len(), 2);
 
-    assert_eq!(results[0].get("first").unwrap(), &Value::I64(100));
-    assert_eq!(results[0].get("second").unwrap(), &Value::I64(200));
-    assert_eq!(results[1].get("first").unwrap(), &Value::I64(400));
-    assert_eq!(results[1].get("second").unwrap(), &Value::I64(500));
+    assert_eq!(results[0].get("first").unwrap(), &Value::I32(100));
+    assert_eq!(results[0].get("second").unwrap(), &Value::I32(200));
+    assert_eq!(results[1].get("first").unwrap(), &Value::I32(400));
+    assert_eq!(results[1].get("second").unwrap(), &Value::I32(500));
 
     ctx.commit();
 }
@@ -115,7 +115,7 @@ fn test_list_bracket_access() {
 fn test_list_with_nulls() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items INT[])");
 
     ctx.exec("INSERT INTO ListData VALUES (1, '[1, 2, 3]')");
     ctx.exec("INSERT INTO ListData VALUES (2, NULL)");
@@ -138,7 +138,7 @@ fn test_cast_to_list() {
     let mut ctx = setup_test();
 
     // CAST string literals to LIST
-    let results = ctx.query("SELECT CAST('[1, 2, 3]' AS INTEGER[]) AS my_list");
+    let results = ctx.query("SELECT CAST('[1, 2, 3]' AS INT[]) AS my_list");
     assert_eq!(results.len(), 1);
     assert!(
         results[0]
@@ -176,7 +176,7 @@ fn test_list_in_where_clause() {
 fn test_insert_json_object_into_list_should_error() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items INT[])");
 
     // JSON objects should not be allowed in LIST columns
     ctx.exec(r#"INSERT INTO ListData VALUES (1, '{"key": "value"}')"#);
@@ -187,7 +187,7 @@ fn test_insert_json_object_into_list_should_error() {
 fn test_insert_invalid_json_should_error() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, items LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, items INT[])");
 
     // Invalid JSON should error
     ctx.exec("INSERT INTO ListData VALUES (1, '{{not valid json}}')");
@@ -197,7 +197,7 @@ fn test_insert_invalid_json_should_error() {
 fn test_group_by_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListData (id INT, tags LIST)");
+    ctx.exec("CREATE TABLE ListData (id INT, tags INT[])");
 
     ctx.exec(r#"INSERT INTO ListData VALUES (1, '[1, 2]')"#);
     ctx.exec(r#"INSERT INTO ListData VALUES (2, '[3, 4]')"#);

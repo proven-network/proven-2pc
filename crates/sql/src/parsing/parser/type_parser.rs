@@ -83,19 +83,24 @@ pub trait TypeParser: TokenHelper {
             Token::Ident(s) if s.to_uppercase() == "JSON" => DataType::Json,
             Token::Ident(s) if s.to_uppercase() == "ANY" => DataType::I64, // ANY defaults to I64
 
-            // Collection types can be recursive
-            Token::Keyword(Keyword::Array) => DataType::Array(Box::new(DataType::I64), None),
-            Token::Keyword(Keyword::List) => DataType::List(Box::new(DataType::I64)),
+            // Collection types - require explicit type parameters
+            Token::Keyword(Keyword::Array) => {
+                return Err(Error::ParseError(
+                    "ARRAY requires element type and size, use TYPE[SIZE] syntax (e.g., INTEGER[10])".to_string()
+                ));
+            }
+            Token::Keyword(Keyword::List) => {
+                return Err(Error::ParseError(
+                    "LIST requires element type, use TYPE[] syntax (e.g., INTEGER[])".to_string(),
+                ));
+            }
             Token::Keyword(Keyword::Map) => {
-                if self.next_if(|t| t == &Token::OpenParen).is_some() {
-                    let key_type = self.parse_type()?;
-                    self.expect(Token::Comma)?;
-                    let value_type = self.parse_type()?;
-                    self.expect(Token::CloseParen)?;
-                    DataType::Map(Box::new(key_type), Box::new(value_type))
-                } else {
-                    DataType::Map(Box::new(DataType::Str), Box::new(DataType::I64))
-                }
+                self.expect(Token::OpenParen)?;
+                let key_type = self.parse_type()?;
+                self.expect(Token::Comma)?;
+                let value_type = self.parse_type()?;
+                self.expect(Token::CloseParen)?;
+                DataType::Map(Box::new(key_type), Box::new(value_type))
             }
             Token::Keyword(Keyword::Struct) => {
                 if self.next_if(|t| t == &Token::OpenParen).is_some() {

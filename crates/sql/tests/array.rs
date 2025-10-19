@@ -279,7 +279,7 @@ fn test_array_literal_data_types() {
 
     // However, when storing in tables, arrays must have uniform types
     // that match the declared column type
-    ctx.exec("CREATE TABLE TypedArrayTest (id INTEGER, str_data TEXT[], int_data INTEGER[])");
+    ctx.exec("CREATE TABLE TypedArrayTest (id INTEGER, str_data TEXT[], int_data INT[])");
 
     // Homogeneous arrays work fine
     ctx.exec("INSERT INTO TypedArrayTest VALUES (1, ['a', 'b', 'c'], [1, 2, 3])");

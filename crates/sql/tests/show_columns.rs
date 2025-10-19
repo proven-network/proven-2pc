@@ -6,7 +6,7 @@
 fn test_create_table_with_all_data_types() {
     // TODO: Test CREATE TABLE mytable with various data types:
     // id8 INT8, id INTEGER, rate FLOAT, dec DECIMAL, flag BOOLEAN, text TEXT,
-    // DOB DATE, Tm TIME, ival INTERVAL, tstamp TIMESTAMP, uid UUID, hash MAP, glist LIST
+    // DOB DATE, Tm TIME, ival INTERVAL, tstamp TIMESTAMP, uid UUID, hash MAP, glist INT[]
 }
 
 #[ignore = "not yet implemented"]
@@ -42,5 +42,5 @@ fn test_show_columns_from_nonexistent_table_should_error() {
 #[test]
 fn test_show_columns_displays_all_supported_data_types() {
     // TODO: Test that SHOW COLUMNS correctly identifies all supported data types:
-    // INT8, INT, FLOAT, DECIMAL, BOOLEAN, TEXT, DATE, TIME, INTERVAL, TIMESTAMP, UUID, MAP, LIST
+    // INT8, INT, FLOAT, DECIMAL, BOOLEAN, TEXT, DATE, TIME, INTERVAL, TIMESTAMP, UUID, MAP, INT[]
 }

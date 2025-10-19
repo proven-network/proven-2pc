@@ -10,7 +10,7 @@ use proven_value::Value;
 fn test_create_table_with_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListTable (id INTEGER, items LIST)");
+    ctx.exec("CREATE TABLE ListTable (id INTEGER, items INT[])");
 
     ctx.commit();
 }
@@ -19,7 +19,7 @@ fn test_create_table_with_list() {
 fn test_insert_various_list_types() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListTable (id INTEGER, items LIST)");
+    ctx.exec("CREATE TABLE ListTable (id INTEGER, items INT[])");
 
     // This implementation is stricter - it validates list element types against schema
     // Insert integer list first

@@ -9,7 +9,7 @@ use proven_value::Value;
 /// Setup test table with list and map data
 fn setup_is_empty_table(ctx: &mut common::TestContext) {
     TableBuilder::new(ctx, "IsEmpty")
-        .create_simple("id INTEGER, list_items LIST, map_items MAP(VARCHAR, VARCHAR)");
+        .create_simple("id INTEGER, list_items INT[], map_items MAP(VARCHAR, VARCHAR)");
 
     // Insert rows with empty and non-empty lists/maps
     ctx.exec("INSERT INTO IsEmpty VALUES (1, '[]', '{\"a\": \"1\", \"b\": \"20\"}')");
@@ -22,7 +22,9 @@ fn setup_is_empty_table(ctx: &mut common::TestContext) {
 fn test_create_table_with_list_and_map() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE IsEmpty (id INTEGER, list_items LIST, map_items MAP(VARCHAR, VARCHAR))");
+    ctx.exec(
+        "CREATE TABLE IsEmpty (id INTEGER, list_items INT[], map_items MAP(VARCHAR, VARCHAR))",
+    );
 
     ctx.commit();
 }
@@ -146,7 +148,7 @@ fn test_is_empty_with_null_values() {
     let mut ctx = setup_test();
 
     TableBuilder::new(&mut ctx, "NullTest")
-        .create_simple("id INTEGER, list_items LIST, map_items MAP(VARCHAR, VARCHAR)")
+        .create_simple("id INTEGER, list_items INT[], map_items MAP(VARCHAR, VARCHAR)")
         .insert_values("(1, NULL, NULL)");
 
     // IS_EMPTY should handle NULL values (likely returns NULL)

@@ -8,7 +8,7 @@ use proven_value::Value;
 
 /// Setup test table with list data
 fn setup_skip_table(ctx: &mut common::TestContext) {
-    TableBuilder::new(ctx, "Test").create_simple("id INTEGER, items LIST");
+    TableBuilder::new(ctx, "Test").create_simple("id INTEGER, items INT[]");
 
     ctx.exec("INSERT INTO Test (id, items) VALUES (1, '[1,2,3,4,5]')");
 }
@@ -17,7 +17,7 @@ fn setup_skip_table(ctx: &mut common::TestContext) {
 fn test_create_table_with_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Test (id INTEGER, list LIST)");
+    ctx.exec("CREATE TABLE Test (id INTEGER, list INT[])");
 
     ctx.commit();
 }
@@ -43,9 +43,9 @@ fn test_skip_elements_normal_usage() {
     let result_value = results[0].get("col1").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 3, "Should have 3 elements after skipping 2");
-        assert_eq!(list[0], Value::I64(3), "First element should be 3");
-        assert_eq!(list[1], Value::I64(4), "Second element should be 4");
-        assert_eq!(list[2], Value::I64(5), "Third element should be 5");
+        assert_eq!(list[0], Value::I32(3), "First element should be 3");
+        assert_eq!(list[1], Value::I32(4), "Second element should be 4");
+        assert_eq!(list[2], Value::I32(5), "Third element should be 5");
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -160,11 +160,11 @@ fn test_skip_edge_cases() {
     let result_value = results[0].get("col1").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 5, "Should have all 5 elements when skip=0");
-        assert_eq!(list[0], Value::I64(1), "First element should be 1");
-        assert_eq!(list[1], Value::I64(2), "Second element should be 2");
-        assert_eq!(list[2], Value::I64(3), "Third element should be 3");
-        assert_eq!(list[3], Value::I64(4), "Fourth element should be 4");
-        assert_eq!(list[4], Value::I64(5), "Fifth element should be 5");
+        assert_eq!(list[0], Value::I32(1), "First element should be 1");
+        assert_eq!(list[1], Value::I32(2), "Second element should be 2");
+        assert_eq!(list[2], Value::I32(3), "Third element should be 3");
+        assert_eq!(list[3], Value::I32(4), "Fourth element should be 4");
+        assert_eq!(list[4], Value::I32(5), "Fifth element should be 5");
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }

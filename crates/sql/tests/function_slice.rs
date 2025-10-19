@@ -8,7 +8,7 @@ use proven_value::Value;
 
 /// Setup test table with list data
 fn setup_slice_table(ctx: &mut common::TestContext) {
-    TableBuilder::new(ctx, "Test").create_simple("items LIST");
+    TableBuilder::new(ctx, "Test").create_simple("items INT[]");
 
     ctx.exec("INSERT INTO Test VALUES ('[1,2,3,4]')");
 }
@@ -17,7 +17,7 @@ fn setup_slice_table(ctx: &mut common::TestContext) {
 fn test_create_table_with_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Test (items LIST)");
+    ctx.exec("CREATE TABLE Test (items INT[])");
 
     ctx.commit();
 }
@@ -43,8 +43,8 @@ fn test_slice_from_start_with_length() {
     let result_value = results[0].get("value").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 2, "Should have 2 elements");
-        assert_eq!(list[0], Value::I64(1), "First element should be 1");
-        assert_eq!(list[1], Value::I64(2), "Second element should be 2");
+        assert_eq!(list[0], Value::I32(1), "First element should be 1");
+        assert_eq!(list[1], Value::I32(2), "Second element should be 2");
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -63,10 +63,10 @@ fn test_slice_full_array() {
     let result_value = results[0].get("value").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 4, "Should have 4 elements");
-        assert_eq!(list[0], Value::I64(1));
-        assert_eq!(list[1], Value::I64(2));
-        assert_eq!(list[2], Value::I64(3));
-        assert_eq!(list[3], Value::I64(4));
+        assert_eq!(list[0], Value::I32(1));
+        assert_eq!(list[1], Value::I32(2));
+        assert_eq!(list[2], Value::I32(3));
+        assert_eq!(list[3], Value::I32(4));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -85,8 +85,8 @@ fn test_slice_beyond_array_size() {
     let result_value = results[0].get("value").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 2, "Should have 2 elements (clips to bounds)");
-        assert_eq!(list[0], Value::I64(3));
-        assert_eq!(list[1], Value::I64(4));
+        assert_eq!(list[0], Value::I32(3));
+        assert_eq!(list[1], Value::I32(4));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -169,7 +169,7 @@ fn test_slice_negative_index_from_end() {
     let result_value = results[0].get("value").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 1, "Should have 1 element");
-        assert_eq!(list[0], Value::I64(4), "Should be last element");
+        assert_eq!(list[0], Value::I32(4), "Should be last element");
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -216,8 +216,8 @@ fn test_slice_negative_index_multiple_elements() {
     let result_value = results[0].get("value").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 2, "Should have 2 elements");
-        assert_eq!(list[0], Value::I64(3));
-        assert_eq!(list[1], Value::I64(4));
+        assert_eq!(list[0], Value::I32(3));
+        assert_eq!(list[1], Value::I32(4));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -254,10 +254,10 @@ fn test_slice_large_length() {
     let result_value = results[0].get("value").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 4, "Should have 4 elements (clips to size)");
-        assert_eq!(list[0], Value::I64(1));
-        assert_eq!(list[1], Value::I64(2));
-        assert_eq!(list[2], Value::I64(3));
-        assert_eq!(list[3], Value::I64(4));
+        assert_eq!(list[0], Value::I32(1));
+        assert_eq!(list[1], Value::I32(2));
+        assert_eq!(list[2], Value::I32(3));
+        assert_eq!(list[3], Value::I32(4));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -304,10 +304,10 @@ fn test_slice_large_negative_index_clamps_to_zero() {
     let result_value = results[0].get("value").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 4, "Should return all 4 elements (clamped to 0)");
-        assert_eq!(list[0], Value::I64(1));
-        assert_eq!(list[1], Value::I64(2));
-        assert_eq!(list[2], Value::I64(3));
-        assert_eq!(list[3], Value::I64(4));
+        assert_eq!(list[0], Value::I32(1));
+        assert_eq!(list[1], Value::I32(2));
+        assert_eq!(list[2], Value::I32(3));
+        assert_eq!(list[3], Value::I32(4));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }

@@ -11,8 +11,8 @@ fn test_create_table_with_list_syntax_variations() {
 
     // Test various LIST declaration syntaxes
     ctx.exec("CREATE TABLE ListTest1 (id INTEGER, items TEXT[])");
-    ctx.exec("CREATE TABLE ListTest2 (id INTEGER, items INTEGER[])");
-    ctx.exec("CREATE TABLE ListTest3 (id INTEGER, items LIST)"); // defaults to LIST<I64>
+    ctx.exec("CREATE TABLE ListTest2 (id INTEGER, items INT[])");
+    ctx.exec("CREATE TABLE ListTest3 (id INTEGER, items INT[])");
 
     ctx.commit();
 }
@@ -63,7 +63,7 @@ fn test_empty_list() {
 fn test_list_with_nulls() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE ListWithNulls (id INTEGER, items INTEGER[])");
+    ctx.exec("CREATE TABLE ListWithNulls (id INTEGER, items INT[])");
 
     // Lists can contain NULL values
     ctx.exec("INSERT INTO ListWithNulls VALUES (1, [1, NULL, 3])");
@@ -87,7 +87,7 @@ fn test_nested_lists() {
     let mut ctx = setup_test();
 
     // Nested list type declaration is supported!
-    ctx.exec("CREATE TABLE NestedListTest (id INTEGER, matrix INTEGER[][])");
+    ctx.exec("CREATE TABLE NestedListTest (id INTEGER, matrix INT[][])");
 
     // And nested array literals work too!
     ctx.exec("INSERT INTO NestedListTest VALUES (1, [[1, 2], [3, 4]])");
@@ -199,8 +199,8 @@ fn test_list_in_where_clause() {
 fn test_list_default_type() {
     let mut ctx = setup_test();
 
-    // When using bare LIST, it defaults to LIST<I64>
-    ctx.exec("CREATE TABLE DefaultList (id INTEGER, nums LIST)");
+    // Using INT[] creates a list of integers
+    ctx.exec("CREATE TABLE DefaultList (id INTEGER, nums INT[])");
 
     // Should accept integer arrays
     ctx.exec("INSERT INTO DefaultList VALUES (1, [1, 2, 3])");

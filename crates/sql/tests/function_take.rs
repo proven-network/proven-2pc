@@ -8,16 +8,16 @@ use proven_value::Value;
 
 /// Setup test table with a list
 fn setup_take_table(ctx: &mut common::TestContext) {
-    TableBuilder::new(ctx, "Take").create_simple("items LIST");
+    TableBuilder::new(ctx, "Take").create_simple("items INT[]");
 
-    ctx.exec("INSERT INTO Take VALUES (TAKE(CAST('[1, 2, 3, 4, 5]' AS LIST), 5))");
+    ctx.exec("INSERT INTO Take VALUES (TAKE(CAST('[1, 2, 3, 4, 5]' AS INT[]), 5))");
 }
 
 #[test]
 fn test_create_table_with_list() {
     let mut ctx = setup_test();
 
-    ctx.exec("CREATE TABLE Take (items LIST)");
+    ctx.exec("CREATE TABLE Take (items INT[])");
 
     ctx.commit();
 }
@@ -61,9 +61,9 @@ fn test_take_partial_elements() {
     let result_value = results[0].get("mygoodtake").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 3, "Should take 3 elements");
-        assert_eq!(list[0], Value::I64(1));
-        assert_eq!(list[1], Value::I64(2));
-        assert_eq!(list[2], Value::I64(3));
+        assert_eq!(list[0], Value::I32(1));
+        assert_eq!(list[1], Value::I32(2));
+        assert_eq!(list[2], Value::I32(3));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -82,11 +82,11 @@ fn test_take_all_elements() {
     let result_value = results[0].get("mygoodtake").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 5, "Should take all 5 elements");
-        assert_eq!(list[0], Value::I64(1));
-        assert_eq!(list[1], Value::I64(2));
-        assert_eq!(list[2], Value::I64(3));
-        assert_eq!(list[3], Value::I64(4));
-        assert_eq!(list[4], Value::I64(5));
+        assert_eq!(list[0], Value::I32(1));
+        assert_eq!(list[1], Value::I32(2));
+        assert_eq!(list[2], Value::I32(3));
+        assert_eq!(list[3], Value::I32(4));
+        assert_eq!(list[4], Value::I32(5));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
@@ -105,11 +105,11 @@ fn test_take_more_than_available() {
     let result_value = results[0].get("mygoodtake").unwrap();
     if let Value::List(list) = result_value {
         assert_eq!(list.len(), 5, "Should clip to available elements");
-        assert_eq!(list[0], Value::I64(1));
-        assert_eq!(list[1], Value::I64(2));
-        assert_eq!(list[2], Value::I64(3));
-        assert_eq!(list[3], Value::I64(4));
-        assert_eq!(list[4], Value::I64(5));
+        assert_eq!(list[0], Value::I32(1));
+        assert_eq!(list[1], Value::I32(2));
+        assert_eq!(list[2], Value::I32(3));
+        assert_eq!(list[3], Value::I32(4));
+        assert_eq!(list[4], Value::I32(5));
     } else {
         panic!("Expected List value, got: {:?}", result_value);
     }
