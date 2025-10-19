@@ -230,26 +230,22 @@ fn test_default_with_stateless_functions() {
 }
 
 #[test]
-#[ignore = "Subqueries in DEFAULT not yet implemented"]
-fn test_invalid_stateless_expression_in_default() {
+fn test_subquery_in_default_clause_prohibited() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE Foo (id INTEGER)");
     ctx.exec("INSERT INTO Foo VALUES (1)");
 
-    ctx.exec(
+    // Subqueries in DEFAULT clauses should fail (non-deterministic)
+    let error = ctx.exec_error(
         "CREATE TABLE FunctionTest (
-            id UUID,
-            num FLOAT
+            id UUID DEFAULT GENERATE_UUID(),
+            num FLOAT DEFAULT (SELECT id FROM Foo)
         )",
     );
-
-    // Subqueries in stateless context should fail
-    let error =
-        ctx.exec_error("INSERT INTO FunctionTest VALUES (GENERATE_UUID(), (SELECT id FROM Foo))");
     assert!(
-        error.contains("UnsupportedStatelessExpr") || error.contains("subquery"),
-        "Expected error for subquery in stateless context, got: {}",
+        error.contains("subquery") || error.contains("not allowed") || error.contains("DEFAULT"),
+        "Expected error for subquery in DEFAULT clause, got: {}",
         error
     );
 
