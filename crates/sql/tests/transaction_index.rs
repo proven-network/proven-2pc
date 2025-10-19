@@ -5,7 +5,6 @@ mod common;
 
 use common::TestContext;
 
-#[ignore = "DDL rollback not yet properly isolated - index persists after abort"]
 #[test]
 fn test_create_index_with_rollback() {
     let mut ctx = TestContext::new();
@@ -68,7 +67,6 @@ fn test_create_index_with_commit() {
     ctx.commit();
 }
 
-#[ignore = "DDL rollback not yet properly isolated - index persists after abort"]
 #[test]
 fn test_create_multiple_indexes_with_rollback() {
     let mut ctx = TestContext::new();
@@ -115,7 +113,6 @@ fn test_create_multiple_indexes_with_rollback() {
     );
 }
 
-#[ignore = "DDL rollback not yet properly isolated - DROP persists after abort"]
 #[test]
 fn test_drop_index_with_rollback() {
     let mut ctx = TestContext::new();

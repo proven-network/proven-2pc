@@ -1291,6 +1291,24 @@ impl Planner {
                         }
                     }
 
+                    // Expression equality template - check if we have an index on this expression
+                    PredicateTemplate::ExpressionEquality {
+                        table: tbl,
+                        expression,
+                        value,
+                    } if tbl == table => {
+                        if let Some(index_name) = self.find_index_for_expression(table, expression)
+                        {
+                            let value_expr = self.predicate_value_to_expression(value, context)?;
+                            return Ok(Node::IndexScan {
+                                table: table.clone(),
+                                alias: alias.clone(),
+                                index_name,
+                                values: vec![value_expr],
+                            });
+                        }
+                    }
+
                     _ => continue,
                 }
             }
@@ -1332,7 +1350,36 @@ impl Planner {
             // Check if this index is for the right table
             if metadata.table.eq_ignore_ascii_case(table) {
                 // Check if this index includes the column we're looking for
-                if !metadata.columns.is_empty() && metadata.columns[0].eq_ignore_ascii_case(column)
+                if !metadata.columns.is_empty()
+                    && let Some(col_name) = metadata.columns[0].as_column()
+                    && col_name.eq_ignore_ascii_case(column)
+                {
+                    return Some(index_name.clone());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find an index that matches the given expression
+    fn find_index_for_expression(
+        &self,
+        table: &str,
+        expr: &crate::types::expression::Expression,
+    ) -> Option<String> {
+        use crate::semantic::normalize::{expressions_equal, normalize_expression};
+
+        let normalized_expr = normalize_expression(expr);
+
+        // Search through index metadata for an index on this table with matching expression
+        for (index_name, metadata) in &self.index_metadata {
+            // Check if this index is for the right table
+            if metadata.table.eq_ignore_ascii_case(table) {
+                // Check if the first column is an expression that matches
+                if !metadata.columns.is_empty()
+                    && let Some(index_expr) = metadata.columns[0].as_expression()
+                    && expressions_equal(index_expr, &normalized_expr)
                 {
                     return Some(index_name.clone());
                 }
@@ -1383,10 +1430,16 @@ impl Planner {
             // Check if we have equality predicates for a prefix of the index columns
             let mut matched_values = Vec::new();
             for index_col in &metadata.columns {
-                if let Some(value_expr) = equality_map.get(&index_col.to_lowercase()) {
-                    matched_values.push(value_expr.clone());
+                // Only match simple column indexes (skip expression indexes for composite matching)
+                if let Some(col_name) = index_col.as_column() {
+                    if let Some(value_expr) = equality_map.get(&col_name.to_lowercase()) {
+                        matched_values.push(value_expr.clone());
+                    } else {
+                        // Stop at first non-matching column (index prefix rule)
+                        break;
+                    }
                 } else {
-                    // Stop at first non-matching column (index prefix rule)
+                    // Expression index - can't use for composite matching
                     break;
                 }
             }

@@ -99,6 +99,13 @@ pub enum PredicateTemplate {
 
     /// IS NOT NULL predicate
     IsNotNull { table: String, column_name: String },
+
+    /// Expression equality predicate (expr = value) - for expression indexes
+    ExpressionEquality {
+        table: String,
+        expression: crate::types::expression::Expression,
+        value: PredicateValue,
+    },
 }
 
 /// Value in a predicate - either constant, parameter, or expression
@@ -419,6 +426,19 @@ impl AnalyzedStatement {
                     column: column_name.clone(),
                 },
             }),
+
+            PredicateTemplate::ExpressionEquality {
+                table,
+                expression: _,
+                value,
+            } => {
+                // For expression equality, we can't easily translate to a predicate condition
+                // since we don't have expression-based conditions in PredicateCondition.
+                // For now, treat it as a full table scan for conflict detection purposes.
+                // The planner will still use the expression index for optimization.
+                let _evaluated_value = self.evaluate_predicate_value(value, params)?;
+                Some(Predicate::full_table(table.clone()))
+            }
         }
     }
 

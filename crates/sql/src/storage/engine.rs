@@ -504,7 +504,9 @@ impl SqlStorage {
                 self.create_index(
                     index_name,
                     table_name.clone(),
-                    vec![column.name.clone()],
+                    vec![crate::types::index::IndexColumn::Column(
+                        column.name.clone(),
+                    )],
                     true, // unique
                 )?;
             }
@@ -641,7 +643,11 @@ impl SqlStorage {
             .index_metadata
             .iter()
             .filter(|(_, idx)| {
-                idx.table == table_name && idx.columns.contains(&column_name.to_string())
+                idx.table == table_name
+                    && idx
+                        .columns
+                        .iter()
+                        .any(|col| col.as_column().map(|s| s == column_name).unwrap_or(false))
             })
             .map(|(name, _)| name.clone())
             .collect();
@@ -733,8 +739,10 @@ impl SqlStorage {
         for (_, index_meta) in self.index_metadata.iter_mut() {
             if index_meta.table == table_name {
                 for col in index_meta.columns.iter_mut() {
-                    if col == old_column_name {
-                        *col = new_column_name.to_string();
+                    if let crate::types::index::IndexColumn::Column(col_name) = col
+                        && col_name == old_column_name
+                    {
+                        *col_name = new_column_name.to_string();
                     }
                 }
             }
@@ -1206,7 +1214,7 @@ impl SqlStorage {
         &mut self,
         index_name: String,
         table_name: String,
-        columns: Vec<String>,
+        columns: Vec<crate::types::index::IndexColumn>,
         unique: bool,
     ) -> Result<()> {
         // Check if index already exists
@@ -1576,7 +1584,7 @@ struct IndexLookupIterator<'a> {
     storage: &'a SqlStorage,
     table_name: String,
     txn_id: HlcTimestamp,
-    indexed_columns: Vec<String>, // Column names in the index
+    indexed_columns: Vec<crate::types::index::IndexColumn>, // Index columns (can be simple columns or expressions)
 }
 
 impl<'a> Iterator for IndexLookupIterator<'a> {
@@ -1595,15 +1603,30 @@ impl<'a> Iterator for IndexLookupIterator<'a> {
                         Ok(Some(values)) => {
                             // Filter out rows with NULL values in indexed columns
                             // Per SQL standard: NULL never matches equality or range predicates
-                            let has_null = self.indexed_columns.iter().any(|col_name| {
-                                if let Some(schema) = self.storage.schemas.get(&self.table_name)
-                                    && let Some(col_idx) =
-                                        schema.columns.iter().position(|c| &c.name == col_name)
-                                    && let Some(val) = values.get(col_idx)
-                                {
-                                    return val == &Value::Null;
+                            let has_null = self.indexed_columns.iter().any(|index_col| {
+                                use crate::types::index::IndexColumn;
+
+                                match index_col {
+                                    IndexColumn::Column(col_name) => {
+                                        if let Some(schema) =
+                                            self.storage.schemas.get(&self.table_name)
+                                            && let Some(col_idx) = schema
+                                                .columns
+                                                .iter()
+                                                .position(|c| &c.name == col_name)
+                                            && let Some(val) = values.get(col_idx)
+                                        {
+                                            return val == &Value::Null;
+                                        }
+                                        false
+                                    }
+                                    IndexColumn::Expression { .. } => {
+                                        // For expression indexes, we can't easily evaluate here without context
+                                        // The index values themselves would already exclude NULLs during insertion
+                                        // So we don't need to check again here
+                                        false
+                                    }
                                 }
-                                false
                             });
 
                             if has_null {
@@ -1839,7 +1862,7 @@ mod tests {
             .create_index(
                 "idx_name".to_string(),
                 "users".to_string(),
-                vec!["name".to_string()],
+                vec![crate::types::index::IndexColumn::Column("name".to_string())],
                 false,
             )
             .unwrap();
@@ -1863,7 +1886,7 @@ mod tests {
             .create_index(
                 "idx_name".to_string(),
                 "users".to_string(),
-                vec!["name".to_string()],
+                vec![crate::types::index::IndexColumn::Column("name".to_string())],
                 false,
             )
             .unwrap();
@@ -2008,7 +2031,7 @@ mod tests {
             .create_index(
                 "idx_city".to_string(),
                 "users".to_string(),
-                vec!["city".to_string()],
+                vec![crate::types::index::IndexColumn::Column("city".to_string())],
                 false, // non-unique
             )
             .unwrap();
@@ -2170,7 +2193,7 @@ mod tests {
             .create_index(
                 "idx_age".to_string(),
                 "users".to_string(),
-                vec!["age".to_string()],
+                vec![crate::types::index::IndexColumn::Column("age".to_string())],
                 false,
             )
             .unwrap();
@@ -2369,7 +2392,7 @@ mod tests {
             .create_index(
                 "idx_name_unique".to_string(),
                 "users".to_string(),
-                vec!["name".to_string()],
+                vec![crate::types::index::IndexColumn::Column("name".to_string())],
                 true, // unique
             )
             .unwrap();
@@ -2488,7 +2511,7 @@ mod tests {
             .create_index(
                 "idx_name_regular".to_string(),
                 "users".to_string(),
-                vec!["name".to_string()],
+                vec![crate::types::index::IndexColumn::Column("name".to_string())],
                 false, // NOT unique
             )
             .unwrap();

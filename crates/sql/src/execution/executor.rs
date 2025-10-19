@@ -135,27 +135,22 @@ pub fn execute_with_params(
                 return Err(Error::Other(format!("Index {} already exists", name)));
             }
 
-            // Create the index structure (extract column names from IndexColumn)
-            let column_names: Vec<String> = columns
-                .iter()
-                .filter_map(|col| {
-                    // Extract column name from expression (assuming it's a simple column reference)
-                    if let crate::parsing::ast::Expression::Column(_, col_name) = &col.expression {
-                        Some(col_name.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            storage.create_index(name.clone(), table.clone(), column_names.clone(), unique)?;
-
-            // Backfill index with existing data
+            // Get schema for column resolution
             let schema = storage
                 .get_schemas()
                 .get(&table)
                 .ok_or_else(|| Error::TableNotFound(table.clone()))?
                 .clone();
 
+            // Convert AST columns to IndexColumn enum
+            let index_columns: Vec<crate::types::index::IndexColumn> = columns
+                .iter()
+                .map(|col| ast_column_to_index_column(&col.expression, &schema))
+                .collect::<Result<Vec<_>>>()?;
+
+            storage.create_index(name.clone(), table.clone(), index_columns.clone(), unique)?;
+
+            // Backfill index with existing data
             // Collect all rows first to avoid borrow conflicts
             let rows: Vec<_> = storage
                 .scan_table(&table, tx_ctx.txn_id)?
@@ -168,11 +163,12 @@ pub fn execute_with_params(
                     &crate::types::index::IndexMetadata {
                         name: name.clone(),
                         table: table.clone(),
-                        columns: column_names.clone(),
+                        columns: index_columns.clone(),
                         unique,
                         index_type: crate::types::index::IndexType::BTree,
                     },
                     &schema,
+                    tx_ctx,
                 )?;
                 storage.insert_index_entry(
                     &mut batch,
@@ -497,6 +493,151 @@ pub fn execute_with_params(
     }
 }
 
+/// Convert an AST expression to an IndexColumn
+fn ast_column_to_index_column(
+    expr: &crate::parsing::ast::Expression,
+    schema: &crate::types::schema::Table,
+) -> Result<crate::types::index::IndexColumn> {
+    use crate::parsing::ast::Expression as AstExpr;
+    use crate::types::index::IndexColumn;
+
+    match expr {
+        // Simple column reference
+        AstExpr::Column(_, col_name) => Ok(IndexColumn::Column(col_name.clone())),
+
+        // Expression - convert to runtime expression and extract dependencies
+        _ => {
+            // Convert AST expression to runtime expression
+            let runtime_expr = convert_ast_to_runtime_expr(expr, schema)?;
+
+            // Normalize the expression
+            let normalized = crate::semantic::normalize::normalize_expression(&runtime_expr);
+
+            // Extract column dependencies
+            let dependencies = extract_column_dependencies(expr);
+
+            Ok(IndexColumn::new_expression(normalized, dependencies))
+        }
+    }
+}
+
+/// Convert an AST expression to a runtime expression for index creation
+fn convert_ast_to_runtime_expr(
+    expr: &crate::parsing::ast::Expression,
+    schema: &crate::types::schema::Table,
+) -> Result<crate::types::expression::Expression> {
+    use crate::parsing::ast::{Expression as AstExpr, Literal, Operator};
+    use crate::types::expression::Expression as RuntimeExpr;
+
+    match expr {
+        AstExpr::Literal(lit) => {
+            let value = match lit {
+                Literal::Null => Value::Null,
+                Literal::Boolean(b) => Value::Bool(*b),
+                Literal::Integer(i) => {
+                    if *i >= i32::MIN as i128 && *i <= i32::MAX as i128 {
+                        Value::I32(*i as i32)
+                    } else if *i >= i64::MIN as i128 && *i <= i64::MAX as i128 {
+                        Value::I64(*i as i64)
+                    } else {
+                        Value::I128(*i)
+                    }
+                }
+                Literal::Float(f) => Value::F64(*f),
+                Literal::String(s) => Value::Str(s.clone()),
+                Literal::Bytea(b) => Value::Bytea(b.clone()),
+                Literal::Date(d) => Value::Date(*d),
+                Literal::Time(t) => Value::Time(*t),
+                Literal::Timestamp(t) => Value::Timestamp(*t),
+                Literal::Interval(i) => Value::Interval(i.clone()),
+            };
+            Ok(RuntimeExpr::Constant(value))
+        }
+
+        AstExpr::Column(_, col_name) => {
+            // Find column index in schema
+            let (col_idx, _) = schema
+                .get_column(col_name)
+                .ok_or_else(|| Error::ColumnNotFound(col_name.clone()))?;
+            Ok(RuntimeExpr::Column(col_idx))
+        }
+
+        AstExpr::Operator(op) => match op {
+            Operator::Add(l, r) => Ok(RuntimeExpr::Add(
+                Box::new(convert_ast_to_runtime_expr(l, schema)?),
+                Box::new(convert_ast_to_runtime_expr(r, schema)?),
+            )),
+            Operator::Subtract(l, r) => Ok(RuntimeExpr::Subtract(
+                Box::new(convert_ast_to_runtime_expr(l, schema)?),
+                Box::new(convert_ast_to_runtime_expr(r, schema)?),
+            )),
+            Operator::Multiply(l, r) => Ok(RuntimeExpr::Multiply(
+                Box::new(convert_ast_to_runtime_expr(l, schema)?),
+                Box::new(convert_ast_to_runtime_expr(r, schema)?),
+            )),
+            Operator::Divide(l, r) => Ok(RuntimeExpr::Divide(
+                Box::new(convert_ast_to_runtime_expr(l, schema)?),
+                Box::new(convert_ast_to_runtime_expr(r, schema)?),
+            )),
+            Operator::Remainder(l, r) => Ok(RuntimeExpr::Remainder(
+                Box::new(convert_ast_to_runtime_expr(l, schema)?),
+                Box::new(convert_ast_to_runtime_expr(r, schema)?),
+            )),
+            Operator::Concat(l, r) => Ok(RuntimeExpr::Concat(
+                Box::new(convert_ast_to_runtime_expr(l, schema)?),
+                Box::new(convert_ast_to_runtime_expr(r, schema)?),
+            )),
+            Operator::Negate(e) => Ok(RuntimeExpr::Negate(Box::new(convert_ast_to_runtime_expr(
+                e, schema,
+            )?))),
+            Operator::Identity(e) => Ok(RuntimeExpr::Identity(Box::new(
+                convert_ast_to_runtime_expr(e, schema)?,
+            ))),
+            _ => Err(Error::Internal(
+                "Unsupported operator in expression index".to_string(),
+            )),
+        },
+
+        _ => Err(Error::Internal(
+            "Unsupported expression type in index".to_string(),
+        )),
+    }
+}
+
+/// Extract column names referenced in an expression
+fn extract_column_dependencies(expr: &crate::parsing::ast::Expression) -> Vec<String> {
+    use crate::parsing::ast::{Expression as AstExpr, Operator};
+
+    let mut deps = Vec::new();
+
+    match expr {
+        AstExpr::Column(_, col_name) => {
+            deps.push(col_name.clone());
+        }
+        AstExpr::Operator(op) => {
+            use Operator::*;
+            match op {
+                Add(l, r)
+                | Subtract(l, r)
+                | Multiply(l, r)
+                | Divide(l, r)
+                | Remainder(l, r)
+                | Concat(l, r) => {
+                    deps.extend(extract_column_dependencies(l));
+                    deps.extend(extract_column_dependencies(r));
+                }
+                Negate(e) | Identity(e) | Not(e) => {
+                    deps.extend(extract_column_dependencies(e));
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    deps
+}
+
 /// Execute a plan node for reading with immutable storage reference
 pub fn execute_node_read<'a>(
     node: Node,
@@ -611,7 +752,15 @@ pub fn execute_node_read_with_outer<'a>(
             let column_names = storage
                 .get_index_metadata()
                 .get(&index_name)
-                .map(|meta| meta.columns.clone())
+                .and_then(|meta| {
+                    // Extract simple column names (skip expression indexes for now)
+                    let names: Vec<String> = meta
+                        .columns
+                        .iter()
+                        .filter_map(|col| col.as_column().map(|s| s.to_string()))
+                        .collect();
+                    if names.is_empty() { None } else { Some(names) }
+                })
                 .or_else(|| {
                     // Fallback: assume index_name is a column name for backward compatibility
                     if schema.columns.iter().any(|c| c.name == index_name) {
@@ -742,7 +891,15 @@ pub fn execute_node_read_with_outer<'a>(
             let column_names = storage
                 .get_index_metadata()
                 .get(&index_name)
-                .map(|meta| meta.columns.clone())
+                .and_then(|meta| {
+                    // Extract simple column names (skip expression indexes for now)
+                    let names: Vec<String> = meta
+                        .columns
+                        .iter()
+                        .filter_map(|col| col.as_column().map(|s| s.to_string()))
+                        .collect();
+                    if names.is_empty() { None } else { Some(names) }
+                })
                 .or_else(|| {
                     // Fallback: assume index_name is a column name
                     if schema.columns.iter().any(|c| c.name == index_name) {

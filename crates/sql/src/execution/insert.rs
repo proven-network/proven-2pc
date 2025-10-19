@@ -208,7 +208,7 @@ pub fn execute_insert(
     for index in &unique_indexes {
         let mut seen_values: HashMap<Vec<Value>, usize> = HashMap::new();
         for (i, row) in final_rows.iter().enumerate() {
-            let index_values = helpers::extract_index_values(row, index, schema)?;
+            let index_values = helpers::extract_index_values(row, index, schema, tx_ctx)?;
 
             // Skip NULL values in unique constraint checks (SQL standard)
             if index_values.iter().any(|v| v.is_null()) {
@@ -228,7 +228,7 @@ pub fn execute_insert(
     // Then, check against existing data in storage
     for (row, _) in final_rows.iter().zip(&row_ids) {
         for index in &unique_indexes {
-            let index_values = helpers::extract_index_values(row, index, schema)?;
+            let index_values = helpers::extract_index_values(row, index, schema, tx_ctx)?;
 
             // Skip NULL values in unique constraint checks (SQL standard)
             if index_values.iter().any(|v| v.is_null()) {
@@ -262,7 +262,7 @@ pub fn execute_insert(
 
         // Update all indexes for this table
         for index in &all_indexes {
-            let index_values = helpers::extract_index_values(row, index, schema)?;
+            let index_values = helpers::extract_index_values(row, index, schema, tx_ctx)?;
             storage.insert_index_entry(
                 batch,
                 &index.name,

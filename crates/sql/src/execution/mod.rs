@@ -8,7 +8,7 @@
 mod aggregator;
 mod delete;
 mod executor;
-mod expression;
+pub(crate) mod expression;
 pub(crate) mod helpers;
 mod insert;
 mod join;

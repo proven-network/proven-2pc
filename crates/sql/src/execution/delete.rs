@@ -70,7 +70,7 @@ pub fn execute_delete(
 
         // Delete from all indexes
         for index in &all_indexes {
-            let index_values = helpers::extract_index_values(values, index, &schema)?;
+            let index_values = helpers::extract_index_values(values, index, &schema, tx_ctx)?;
             storage.delete_index_entry(
                 batch,
                 &index.name,
@@ -189,8 +189,12 @@ fn handle_foreign_key_on_delete(
 
                         // Delete from indexes
                         for index in &ref_indexes {
-                            let index_values =
-                                helpers::extract_index_values(ref_row_values, index, ref_schema)?;
+                            let index_values = helpers::extract_index_values(
+                                ref_row_values,
+                                index,
+                                ref_schema,
+                                tx_ctx,
+                            )?;
                             storage.delete_index_entry(
                                 batch,
                                 &index.name,
@@ -237,10 +241,18 @@ fn handle_foreign_key_on_delete(
 
                         // Update indexes
                         for index in &ref_indexes {
-                            let old_index_values =
-                                helpers::extract_index_values(ref_row_values, index, ref_schema)?;
-                            let new_index_values =
-                                helpers::extract_index_values(&new_values, index, ref_schema)?;
+                            let old_index_values = helpers::extract_index_values(
+                                ref_row_values,
+                                index,
+                                ref_schema,
+                                tx_ctx,
+                            )?;
+                            let new_index_values = helpers::extract_index_values(
+                                &new_values,
+                                index,
+                                ref_schema,
+                                tx_ctx,
+                            )?;
 
                             if old_index_values != new_index_values {
                                 storage.update_index_entries(
@@ -310,10 +322,18 @@ fn handle_foreign_key_on_delete(
 
                         // Update indexes
                         for index in &ref_indexes {
-                            let old_index_values =
-                                helpers::extract_index_values(ref_row_values, index, ref_schema)?;
-                            let new_index_values =
-                                helpers::extract_index_values(&new_values, index, ref_schema)?;
+                            let old_index_values = helpers::extract_index_values(
+                                ref_row_values,
+                                index,
+                                ref_schema,
+                                tx_ctx,
+                            )?;
+                            let new_index_values = helpers::extract_index_values(
+                                &new_values,
+                                index,
+                                ref_schema,
+                                tx_ctx,
+                            )?;
 
                             if old_index_values != new_index_values {
                                 storage.update_index_entries(

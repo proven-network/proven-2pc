@@ -13,6 +13,7 @@
 
 pub mod analyzer;
 pub mod caching_analyzer;
+pub mod normalize;
 pub mod predicate;
 pub mod statement;
 

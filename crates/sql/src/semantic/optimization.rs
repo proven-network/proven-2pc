@@ -418,6 +418,25 @@ impl MetadataBuilder {
                                 value_expr: value,
                             });
                         }
+                    } else if self.is_constant_or_param(right) {
+                        // Left side is an expression (not a simple column)
+                        // Check if this is an expression we might have an index for
+                        // Extract the table name from the expression
+                        if let Some(table_name) = self.get_table_from_expression(left, input) {
+                            let value = self.expression_to_predicate_value(right);
+
+                            // Convert AST expression to runtime expression and normalize
+                            if let Ok(runtime_expr) = Self::ast_to_runtime_expression(left, input) {
+                                let normalized =
+                                    crate::semantic::normalize::normalize_expression(&runtime_expr);
+
+                                templates.push(PredicateTemplate::ExpressionEquality {
+                                    table: table_name,
+                                    expression: normalized,
+                                    value,
+                                });
+                            }
+                        }
                     }
                 }
                 And(left, right) => {
@@ -744,6 +763,7 @@ impl MetadataBuilder {
             PredicateTemplate::Like { table: t, .. } => t == table,
             PredicateTemplate::IsNull { table: t, .. } => t == table,
             PredicateTemplate::IsNotNull { table: t, .. } => t == table,
+            PredicateTemplate::ExpressionEquality { table: t, .. } => t == table,
         }
     }
 
@@ -900,5 +920,124 @@ impl MetadataBuilder {
             input.column_map.resolve(None, col)?.table_name.clone()
         };
         input.schemas.get(&table_name)
+    }
+
+    /// Check if an expression is a constant or parameter
+    fn is_constant_or_param(&self, expr: &Expression) -> bool {
+        matches!(expr, Expression::Literal(_) | Expression::Parameter(_))
+    }
+
+    /// Extract table name from an expression by finding column references
+    fn get_table_from_expression(
+        &self,
+        expr: &Expression,
+        input: &super::analyzer::OptimizationInput,
+    ) -> Option<String> {
+        match expr {
+            Expression::Column(table, col) => {
+                Some(self.resolve_table_name(table.as_deref(), col, input))
+            }
+            Expression::Operator(op) => {
+                // Recursively search for column references
+                use Operator::*;
+                match op {
+                    Add(l, r)
+                    | Subtract(l, r)
+                    | Multiply(l, r)
+                    | Divide(l, r)
+                    | Remainder(l, r)
+                    | Concat(l, r) => self
+                        .get_table_from_expression(l, input)
+                        .or_else(|| self.get_table_from_expression(r, input)),
+                    Negate(e) | Not(e) | Identity(e) => self.get_table_from_expression(e, input),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Convert AST expression to runtime expression
+    fn ast_to_runtime_expression(
+        expr: &Expression,
+        input: &super::analyzer::OptimizationInput,
+    ) -> Result<crate::types::expression::Expression> {
+        use crate::types::expression::Expression as RuntimeExpr;
+        use Operator::*;
+
+        match expr {
+            Expression::Literal(lit) => {
+                let value = match lit {
+                    Literal::Null => Value::Null,
+                    Literal::Boolean(b) => Value::Bool(*b),
+                    Literal::Integer(i) => {
+                        if *i >= i32::MIN as i128 && *i <= i32::MAX as i128 {
+                            Value::I32(*i as i32)
+                        } else if *i >= i64::MIN as i128 && *i <= i64::MAX as i128 {
+                            Value::I64(*i as i64)
+                        } else {
+                            Value::I128(*i)
+                        }
+                    }
+                    Literal::Float(f) => Value::F64(*f),
+                    Literal::String(s) => Value::Str(s.clone()),
+                    Literal::Bytea(b) => Value::Bytea(b.clone()),
+                    Literal::Date(d) => Value::Date(*d),
+                    Literal::Time(t) => Value::Time(*t),
+                    Literal::Timestamp(t) => Value::Timestamp(*t),
+                    Literal::Interval(i) => Value::Interval(i.clone()),
+                };
+                Ok(RuntimeExpr::Constant(value))
+            }
+            Expression::Column(table, col) => {
+                // Resolve column to its index
+                let column_info = input
+                    .column_map
+                    .resolve(table.as_deref(), col)
+                    .ok_or_else(|| crate::error::Error::ColumnNotFound(col.clone()))?;
+                Ok(RuntimeExpr::Column(column_info.offset))
+            }
+            Expression::Parameter(idx) => Ok(RuntimeExpr::Parameter(*idx)),
+
+            Expression::Operator(op) => match op {
+                Add(l, r) => Ok(RuntimeExpr::Add(
+                    Box::new(Self::ast_to_runtime_expression(l, input)?),
+                    Box::new(Self::ast_to_runtime_expression(r, input)?),
+                )),
+                Subtract(l, r) => Ok(RuntimeExpr::Subtract(
+                    Box::new(Self::ast_to_runtime_expression(l, input)?),
+                    Box::new(Self::ast_to_runtime_expression(r, input)?),
+                )),
+                Multiply(l, r) => Ok(RuntimeExpr::Multiply(
+                    Box::new(Self::ast_to_runtime_expression(l, input)?),
+                    Box::new(Self::ast_to_runtime_expression(r, input)?),
+                )),
+                Divide(l, r) => Ok(RuntimeExpr::Divide(
+                    Box::new(Self::ast_to_runtime_expression(l, input)?),
+                    Box::new(Self::ast_to_runtime_expression(r, input)?),
+                )),
+                Remainder(l, r) => Ok(RuntimeExpr::Remainder(
+                    Box::new(Self::ast_to_runtime_expression(l, input)?),
+                    Box::new(Self::ast_to_runtime_expression(r, input)?),
+                )),
+                Concat(l, r) => Ok(RuntimeExpr::Concat(
+                    Box::new(Self::ast_to_runtime_expression(l, input)?),
+                    Box::new(Self::ast_to_runtime_expression(r, input)?),
+                )),
+                Negate(e) => Ok(RuntimeExpr::Negate(Box::new(
+                    Self::ast_to_runtime_expression(e, input)?,
+                ))),
+                Identity(e) => Ok(RuntimeExpr::Identity(Box::new(
+                    Self::ast_to_runtime_expression(e, input)?,
+                ))),
+                _ => Err(crate::error::Error::Internal(
+                    "Unsupported operator in expression index".to_string(),
+                )),
+            },
+
+            _ => Err(crate::error::Error::Internal(
+                "Unsupported expression type in index".to_string(),
+            )),
+        }
     }
 }

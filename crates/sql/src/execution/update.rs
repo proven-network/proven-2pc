@@ -173,7 +173,7 @@ pub fn execute_update(
     for index in &unique_indexes {
         let mut seen_values: HashMap<Vec<Value>, u64> = HashMap::new();
         for (row_id, _, new_values) in &updates {
-            let index_values = helpers::extract_index_values(new_values, index, &schema)?;
+            let index_values = helpers::extract_index_values(new_values, index, &schema, tx_ctx)?;
 
             // Skip NULL values in unique constraint checks (SQL standard)
             if index_values.iter().any(|v| v.is_null()) {
@@ -193,7 +193,8 @@ pub fn execute_update(
     // Then, check each update against existing data (excluding its own row_id)
     for (row_id, _, new_values) in &updates {
         for index in &unique_indexes {
-            let new_index_values = helpers::extract_index_values(new_values, index, &schema)?;
+            let new_index_values =
+                helpers::extract_index_values(new_values, index, &schema, tx_ctx)?;
 
             // Skip NULL values in unique constraint checks (SQL standard)
             if new_index_values.iter().any(|v| v.is_null()) {
@@ -234,8 +235,10 @@ pub fn execute_update(
 
         // Update indexes if values changed
         for index in &all_indexes {
-            let old_index_values = helpers::extract_index_values(old_values, index, &schema)?;
-            let new_index_values = helpers::extract_index_values(new_values, index, &schema)?;
+            let old_index_values =
+                helpers::extract_index_values(old_values, index, &schema, tx_ctx)?;
+            let new_index_values =
+                helpers::extract_index_values(new_values, index, &schema, tx_ctx)?;
 
             if old_index_values != new_index_values {
                 storage.update_index_entries(

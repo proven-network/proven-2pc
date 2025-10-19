@@ -534,7 +534,10 @@ impl NameResolver {
         self.index_metadata.values().any(|idx| {
             idx.table.eq_ignore_ascii_case(table)
                 && !idx.columns.is_empty()
-                && idx.columns[0].eq_ignore_ascii_case(column)
+                && idx.columns[0]
+                    .as_column()
+                    .map(|col| col.eq_ignore_ascii_case(column))
+                    .unwrap_or(false)
         })
     }
 }
