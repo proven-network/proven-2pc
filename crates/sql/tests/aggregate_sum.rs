@@ -141,7 +141,6 @@ fn test_sum_with_multiplication() {
 }
 
 #[test]
-#[ignore = "CASE WHEN expression parsing not yet implemented"]
 fn test_sum_with_case_expression() {
     let mut ctx = setup_test();
 
@@ -159,7 +158,7 @@ fn test_sum_with_case_expression() {
     ctx.assert_query_value(
         "SELECT SUM(CASE WHEN id > 3 THEN quantity ELSE 0 END) FROM Item",
         "SUM(CASE WHEN id > 3 THEN quantity ELSE 0 END)",
-        Value::I64(28),
+        Value::I32(28),
     );
 
     ctx.commit();

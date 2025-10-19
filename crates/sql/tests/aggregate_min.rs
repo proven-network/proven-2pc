@@ -102,7 +102,6 @@ fn test_min_in_complex_expression() {
 }
 
 #[test]
-#[ignore = "CASE WHEN not yet implemented"]
 fn test_min_with_case_expression() {
     let mut ctx = setup_test();
 

@@ -698,6 +698,101 @@ pub(crate) fn evaluate_expression(
             crate::functions::execute_function(name, &arg_values?, _context)
         }
 
+        // Comparison operators (needed for CASE WHEN)
+        Expression::Equal(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_equal(&l, &r)
+        }
+
+        Expression::NotEqual(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_not_equal(&l, &r)
+        }
+
+        Expression::GreaterThan(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_greater_than(&l, &r)
+        }
+
+        Expression::GreaterThanOrEqual(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_greater_than_equal(&l, &r)
+        }
+
+        Expression::LessThan(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_less_than(&l, &r)
+        }
+
+        Expression::LessThanOrEqual(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_less_than_equal(&l, &r)
+        }
+
+        // Logical operators (needed for CASE WHEN)
+        Expression::And(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_and(&l, &r)
+        }
+
+        Expression::Or(left, right) => {
+            let l = evaluate_expression(left, row, _context)?;
+            let r = evaluate_expression(right, row, _context)?;
+            operators::execute_or(&l, &r)
+        }
+
+        Expression::Not(expr) => {
+            let v = evaluate_expression(expr, row, _context)?;
+            operators::execute_not(&v)
+        }
+
+        // CASE expression
+        Expression::Case {
+            operand,
+            when_clauses,
+            else_clause,
+        } => {
+            // Evaluate operand once if present
+            let operand_value = if let Some(op) = operand {
+                evaluate_expression(op, row, _context)?
+            } else {
+                Value::boolean(true)
+            };
+
+            // Iterate through when/then clauses
+            for (when_expr, then_expr) in when_clauses {
+                let when_value = evaluate_expression(when_expr, row, _context)?;
+
+                // For simple CASE (operand present), compare operand == when_value
+                // For searched CASE (no operand), check if when_value is true
+                let matches = if operand.is_some() {
+                    // Simple CASE: compare values for equality
+                    operators::execute_equal(&operand_value, &when_value)? == Value::boolean(true)
+                } else {
+                    // Searched CASE: evaluate when as boolean condition
+                    when_value == Value::boolean(true)
+                };
+
+                if matches {
+                    return evaluate_expression(then_expr, row, _context);
+                }
+            }
+
+            // No match found, evaluate else clause or return NULL
+            if let Some(else_expr) = else_clause {
+                Ok(evaluate_expression(else_expr, row, _context)?)
+            } else {
+                Ok(Value::Null)
+            }
+        }
+
         _ => Err(Error::InvalidValue(
             "Complex expressions in aggregates not yet implemented".into(),
         )),

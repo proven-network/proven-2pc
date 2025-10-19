@@ -257,6 +257,38 @@ impl Expression {
                     Operator::Negate(e) => format!("-{}", e.to_column_name()),
                     Operator::Identity(e) => format!("+{}", e.to_column_name()),
                     Operator::BitwiseNot(e) => format!("~{}", e.to_column_name()),
+
+                    // Comparison operators
+                    Operator::Equal(l, r) => {
+                        format!("{} = {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::NotEqual(l, r) => {
+                        format!("{} != {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::GreaterThan(l, r) => {
+                        format!("{} > {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::GreaterThanOrEqual(l, r) => {
+                        format!("{} >= {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::LessThan(l, r) => {
+                        format!("{} < {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::LessThanOrEqual(l, r) => {
+                        format!("{} <= {}", l.to_column_name(), r.to_column_name())
+                    }
+
+                    // Logical operators
+                    Operator::And(l, r) => {
+                        format!("{} AND {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Or(l, r) => {
+                        format!("{} OR {}", l.to_column_name(), r.to_column_name())
+                    }
+                    Operator::Xor(l, r) => {
+                        format!("{} XOR {}", l.to_column_name(), r.to_column_name())
+                    }
+
                     _ => "expr".to_string(), // Complex operators get generic name
                 }
             }
@@ -269,6 +301,43 @@ impl Expression {
                 } else {
                     "(SELECT ...)".to_string()
                 }
+            }
+
+            Expression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                // Generate descriptive CASE expression name
+                let mut result = "CASE".to_string();
+
+                // Add operand if present (simple CASE)
+                if let Some(op) = operand {
+                    result.push(' ');
+                    result.push_str(&op.to_column_name());
+                }
+
+                // Add first WHEN clause for brevity
+                if let Some((when, then)) = when_clauses.first() {
+                    result.push_str(" WHEN ");
+                    result.push_str(&when.to_column_name());
+                    result.push_str(" THEN ");
+                    result.push_str(&then.to_column_name());
+
+                    // Indicate if there are more clauses
+                    if when_clauses.len() > 1 {
+                        result.push_str(" ...");
+                    }
+                }
+
+                // Add ELSE if present
+                if let Some(else_expr) = else_clause {
+                    result.push_str(" ELSE ");
+                    result.push_str(&else_expr.to_column_name());
+                }
+
+                result.push_str(" END");
+                result
             }
 
             // All other expression types get generic "expr" name
