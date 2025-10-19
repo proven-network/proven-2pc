@@ -44,6 +44,11 @@ impl Planner {
         self.schemas = schemas.clone();
     }
 
+    /// Update index metadata
+    pub fn update_indexes(&mut self, indexes: HashMap<String, crate::types::index::IndexMetadata>) {
+        self.index_metadata = indexes;
+    }
+
     /// Plan an analyzed statement - the main entry point
     pub fn plan(&self, analyzed: AnalyzedStatement) -> Result<Plan> {
         // Keep the analyzed statement for use throughout planning
@@ -188,7 +193,7 @@ impl Planner {
         });
 
         // Create context that uses the analyzed statement
-        let mut context = AnalyzedPlanContext::new(&self.schemas, analyzed);
+        let mut context = AnalyzedPlanContext::new(&self.schemas, &self.index_metadata, analyzed);
 
         // Start with FROM clause
         let mut node = self.plan_from(&select.from, &mut context)?;
@@ -604,7 +609,8 @@ impl Planner {
         // Build source node - simplified for now
         let source_node = match source {
             InsertSource::Values(values) => {
-                let context = AnalyzedPlanContext::new(&self.schemas, _analyzed);
+                let context =
+                    AnalyzedPlanContext::new(&self.schemas, &self.index_metadata, _analyzed);
                 let rows = values
                     .into_iter()
                     .map(|row| {
@@ -623,8 +629,10 @@ impl Planner {
                 use crate::parsing::ast::dml::DmlStatement;
 
                 let select_stmt = Statement::Dml(DmlStatement::Select(select.clone()));
-                let analyzer =
-                    crate::semantic::analyzer::SemanticAnalyzer::new(self.schemas.clone());
+                let analyzer = crate::semantic::analyzer::SemanticAnalyzer::new(
+                    self.schemas.clone(),
+                    self.index_metadata.clone(),
+                );
                 let select_analyzed = analyzer.analyze(select_stmt, Vec::new())?;
 
                 // Now plan the SELECT statement with its own analysis
@@ -650,7 +658,7 @@ impl Planner {
         r#where: Option<AstExpression>,
         analyzed: &AnalyzedStatement,
     ) -> Result<Plan> {
-        let mut context = AnalyzedPlanContext::new(&self.schemas, analyzed);
+        let mut context = AnalyzedPlanContext::new(&self.schemas, &self.index_metadata, analyzed);
         context.add_table(table.clone(), None)?;
 
         let mut node = Node::Scan {
@@ -703,7 +711,7 @@ impl Planner {
         r#where: Option<AstExpression>,
         analyzed: &AnalyzedStatement,
     ) -> Result<Plan> {
-        let mut context = AnalyzedPlanContext::new(&self.schemas, analyzed);
+        let mut context = AnalyzedPlanContext::new(&self.schemas, &self.index_metadata, analyzed);
         context.add_table(table.clone(), None)?;
 
         let mut node = Node::Scan {
@@ -750,7 +758,7 @@ impl Planner {
         values_stmt: &crate::parsing::ast::dml::ValuesStatement,
         analyzed: &AnalyzedStatement,
     ) -> Result<Plan> {
-        let context = AnalyzedPlanContext::new(&self.schemas, analyzed);
+        let context = AnalyzedPlanContext::new(&self.schemas, &self.index_metadata, analyzed);
 
         // Convert expression rows to planned expressions
         let rows = values_stmt
@@ -1006,7 +1014,10 @@ impl Planner {
         use crate::parsing::ast::dml::DmlStatement;
 
         let select_stmt = Statement::Dml(DmlStatement::Select(Box::new(select.clone())));
-        let analyzer = crate::semantic::analyzer::SemanticAnalyzer::new(self.schemas.clone());
+        let analyzer = crate::semantic::analyzer::SemanticAnalyzer::new(
+            self.schemas.clone(),
+            self.index_metadata.clone(),
+        );
         let select_analyzed = analyzer.analyze(select_stmt, Vec::new())?;
 
         // Now plan the SELECT statement with its own analysis
@@ -1729,6 +1740,7 @@ impl Planner {
 /// Context that uses AnalyzedStatement for resolution
 struct AnalyzedPlanContext<'a> {
     schemas: &'a HashMap<String, Table>,
+    index_metadata: &'a HashMap<String, crate::types::index::IndexMetadata>,
     analyzed: &'a AnalyzedStatement,
     tables: Vec<TableRef>,
     current_column: usize,
@@ -1812,9 +1824,14 @@ impl ProjectionContext {
 }
 
 impl<'a> AnalyzedPlanContext<'a> {
-    fn new(schemas: &'a HashMap<String, Table>, analyzed: &'a AnalyzedStatement) -> Self {
+    fn new(
+        schemas: &'a HashMap<String, Table>,
+        index_metadata: &'a HashMap<String, crate::types::index::IndexMetadata>,
+        analyzed: &'a AnalyzedStatement,
+    ) -> Self {
         Self {
             schemas,
+            index_metadata,
             analyzed,
             tables: Vec::new(),
             current_column: 0,
@@ -1979,8 +1996,11 @@ impl<'a> AnalyzedPlanContext<'a> {
                 let outer_context = OuterQueryContext {
                     column_map: self.analyzed.column_resolution_map.clone(),
                 };
-                let analyzer =
-                    SemanticAnalyzer::with_outer_context(self.schemas.clone(), outer_context);
+                let analyzer = SemanticAnalyzer::with_outer_context(
+                    self.schemas.clone(),
+                    self.index_metadata.clone(),
+                    outer_context,
+                );
                 let subquery_stmt =
                     Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
                 let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;
@@ -2304,8 +2324,11 @@ impl<'a> AnalyzedPlanContext<'a> {
                     let outer_context = OuterQueryContext {
                         column_map: self.analyzed.column_resolution_map.clone(),
                     };
-                    let analyzer =
-                        SemanticAnalyzer::with_outer_context(self.schemas.clone(), outer_context);
+                    let analyzer = SemanticAnalyzer::with_outer_context(
+                        self.schemas.clone(),
+                        self.index_metadata.clone(),
+                        outer_context,
+                    );
                     let subquery_stmt =
                         Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
                     let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;
@@ -2333,8 +2356,11 @@ impl<'a> AnalyzedPlanContext<'a> {
                     let outer_context = OuterQueryContext {
                         column_map: self.analyzed.column_resolution_map.clone(),
                     };
-                    let analyzer =
-                        SemanticAnalyzer::with_outer_context(self.schemas.clone(), outer_context);
+                    let analyzer = SemanticAnalyzer::with_outer_context(
+                        self.schemas.clone(),
+                        self.index_metadata.clone(),
+                        outer_context,
+                    );
                     let subquery_stmt =
                         Statement::Dml(DmlStatement::Select(Box::new(select.as_ref().clone())));
                     let subquery_analyzed = analyzer.analyze(subquery_stmt, Vec::new())?;

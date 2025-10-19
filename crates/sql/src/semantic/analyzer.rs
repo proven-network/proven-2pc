@@ -70,14 +70,17 @@ pub struct OuterQueryContext {
 /// Phase-based analyzer with explicit data flow
 pub struct SemanticAnalyzer {
     schemas: HashMap<String, Table>,
+    /// Index metadata for checking if columns are indexed
+    index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
     /// Optional outer query context for correlated subqueries
     outer_context: Option<Box<OuterQueryContext>>,
 }
 
 impl SemanticAnalyzer {
-    pub fn new(schemas: HashMap<String, Table>) -> Self {
+    pub fn new(schemas: HashMap<String, Table>, index_metadata: HashMap<String, crate::types::index::IndexMetadata>) -> Self {
         Self {
             schemas,
+            index_metadata,
             outer_context: None,
         }
     }
@@ -85,10 +88,12 @@ impl SemanticAnalyzer {
     /// Create a new analyzer with outer query context for correlated subqueries
     pub fn with_outer_context(
         schemas: HashMap<String, Table>,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
         outer_context: OuterQueryContext,
     ) -> Self {
         Self {
             schemas,
+            index_metadata,
             outer_context: Some(Box::new(outer_context)),
         }
     }
@@ -98,12 +103,28 @@ impl SemanticAnalyzer {
         self.schemas = schemas;
     }
 
+    /// Update index metadata (for schema changes)
+    pub fn update_index_metadata(&mut self, index_metadata: HashMap<String, crate::types::index::IndexMetadata>) {
+        self.index_metadata = index_metadata;
+    }
+
     /// Main analysis pipeline with explicit phase outputs
     pub fn analyze(
         &self,
         statement: Statement,
         param_types: Vec<DataType>,
     ) -> Result<AnalyzedStatement> {
+        // Special handling for EXPLAIN: analyze the inner statement instead
+        // but wrap it back in EXPLAIN for the AST
+        if let Statement::Explain(inner) = &statement {
+            let inner_analyzed = self.analyze(*inner.clone(), param_types)?;
+
+            // Create a new analyzed statement with EXPLAIN wrapper but inner statement's analysis
+            let mut explained = inner_analyzed;
+            explained.ast = Arc::new(statement);
+            return Ok(explained);
+        }
+
         let ast = Arc::new(statement);
 
         // Phase 1: Name Resolution
@@ -127,10 +148,11 @@ impl SemanticAnalyzer {
         let resolver = if let Some(outer) = &self.outer_context {
             super::resolution::NameResolver::with_outer_context(
                 self.schemas.clone(),
+                self.index_metadata.clone(),
                 outer.column_map.clone(),
             )
         } else {
-            super::resolution::NameResolver::new(self.schemas.clone())
+            super::resolution::NameResolver::new(self.schemas.clone(), self.index_metadata.clone())
         };
 
         // Build table sources list from FROM clauses

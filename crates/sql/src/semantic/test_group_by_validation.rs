@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn test_group_by_with_aggregate_valid() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Valid: category is in GROUP BY
         let sql = "SELECT category, SUM(amount) FROM sales GROUP BY category";
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn test_group_by_missing_column() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Invalid: product is not in GROUP BY but used with aggregate
         let sql = "SELECT product, SUM(amount) FROM sales GROUP BY category";
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_group_by_multiple_columns() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Valid: both product and category are in GROUP BY
         let sql = "SELECT product, category, SUM(amount) FROM sales GROUP BY product, category";
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn test_group_by_expression_in_select() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Invalid: amount * 2 expression uses column not in GROUP BY
         let sql = "SELECT category, amount * 2, COUNT(*) FROM sales GROUP BY category";
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn test_aggregate_without_group_by() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Valid: aggregate without GROUP BY means entire table is one group
         let sql = "SELECT SUM(amount) FROM sales";
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn test_aggregate_with_literal() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Valid: literals are always allowed
         let sql = "SELECT 'Total', SUM(amount) FROM sales";
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_nested_aggregate_functions() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Invalid: nested aggregates like SUM(AVG(x)) are not allowed
         // But our current validation doesn't catch this yet

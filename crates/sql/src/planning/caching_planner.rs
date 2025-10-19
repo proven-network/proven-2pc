@@ -76,8 +76,8 @@ impl CachingPlanner {
     }
 
     /// Update indexes and invalidate cache
-    pub fn update_indexes(&mut self, _indexes: HashMap<String, IndexMetadata>) {
-        // Indexes are not currently used by the planner
+    pub fn update_indexes(&mut self, indexes: HashMap<String, IndexMetadata>) {
+        self.planner.update_indexes(indexes);
         self.cache.clear();
     }
 }

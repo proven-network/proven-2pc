@@ -33,7 +33,7 @@ mod tests {
         .unwrap();
         schemas.insert("products".to_string(), products);
 
-        SemanticAnalyzer::new(schemas)
+        SemanticAnalyzer::new(schemas, HashMap::new())
     }
 
     #[test]
@@ -132,7 +132,7 @@ mod tests {
         orders.columns[1].references = Some("customers".to_string());
         schemas.insert("orders".to_string(), orders);
 
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Drop customers table WITH CASCADE
         let sql = "DROP TABLE customers CASCADE";

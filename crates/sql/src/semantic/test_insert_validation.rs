@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn test_insert_column_count_mismatch() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Too many values
         let sql = "INSERT INTO users (id, name) VALUES (1, 'Alice', 'extra')";
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn test_insert_column_count_too_few() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Too few values
         let sql = "INSERT INTO users VALUES (1, 'Alice')"; // Missing email
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn test_insert_column_count_valid() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Correct number of values
         let sql = "INSERT INTO users (id, name) VALUES (1, 'Alice')";
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn test_insert_all_columns_valid() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // All columns with VALUES
         let sql = "INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')";
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn test_insert_type_mismatch() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // String value for integer column
         let sql = "INSERT INTO users (id, name) VALUES ('not_an_int', 'Alice')";
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn test_update_null_constraint() {
         let schemas = create_test_schema();
-        let analyzer = SemanticAnalyzer::new(schemas);
+        let analyzer = SemanticAnalyzer::new(schemas, HashMap::new());
 
         // Try to set non-nullable column to NULL
         let sql = "UPDATE users SET name = NULL";

@@ -78,6 +78,11 @@ impl MetadataBuilder {
         let mut templates = Vec::new();
 
         match statement.as_ref() {
+            Statement::Explain(_inner) => {
+                // EXPLAIN statements don't need predicate templates themselves
+                // The inner statement will be analyzed separately
+                return Ok(templates);
+            }
             Statement::Dml(dml) => match dml {
                 DmlStatement::Select(select) => {
                     // Count predicates before extracting from WHERE
@@ -210,8 +215,6 @@ impl MetadataBuilder {
                     }
                 }
             }
-
-            _ => {} // Explain, etc.
         }
 
         Ok(templates)
@@ -399,7 +402,9 @@ impl MetadataBuilder {
                         }
 
                         // Check for indexed column
-                        if self.is_indexed_new(table.as_deref(), col, input) {
+                        let is_indexed = self.is_indexed_new(table.as_deref(), col, input);
+
+                        if is_indexed {
                             templates.push(PredicateTemplate::IndexedColumn {
                                 table: table_name,
                                 column: col.clone(),

@@ -50,15 +50,21 @@ pub enum TableSource {
 pub struct NameResolver {
     /// Available table schemas
     schemas: HashMap<String, Table>,
+    /// Index metadata for checking if columns are indexed
+    index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
     /// Optional outer query column map for correlated subqueries
     outer_column_map: Option<ColumnResolutionMap>,
 }
 
 impl NameResolver {
     /// Create a new name resolver
-    pub fn new(schemas: HashMap<String, Table>) -> Self {
+    pub fn new(
+        schemas: HashMap<String, Table>,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
+    ) -> Self {
         Self {
             schemas,
+            index_metadata,
             outer_column_map: None,
         }
     }
@@ -66,10 +72,12 @@ impl NameResolver {
     /// Create a name resolver with outer query context for correlated subqueries
     pub fn with_outer_context(
         schemas: HashMap<String, Table>,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
         outer_column_map: ColumnResolutionMap,
     ) -> Self {
         Self {
             schemas,
+            index_metadata,
             outer_column_map: Some(outer_column_map),
         }
     }
@@ -215,12 +223,16 @@ impl NameResolver {
                             // Track column name frequency
                             *column_counts.entry(column_name.clone()).or_insert(0) += 1;
 
+                            // Check if column is indexed either via inline declaration or CREATE INDEX
+                            let is_indexed =
+                                column.index || self.is_column_indexed(name, &column.name);
+
                             let resolution = ColumnResolution {
                                 offset,
                                 table_name: name.clone(),
                                 data_type: column.data_type.clone(),
                                 nullable: column.nullable,
-                                is_indexed: column.index,
+                                is_indexed,
                             };
 
                             let table_qualifier = alias.clone().unwrap_or_else(|| name.clone());
@@ -432,13 +444,16 @@ impl NameResolver {
         _schemas: &HashMap<String, Table>,
     ) -> Result<SubqueryAnalysisResult> {
         // Plan the subquery to get its actual output schema
-        let subquery_analyzer = super::analyzer::SemanticAnalyzer::new(self.schemas.clone());
+        let subquery_analyzer = super::analyzer::SemanticAnalyzer::new(
+            self.schemas.clone(),
+            self.index_metadata.clone(),
+        );
         let subquery_statement =
             Statement::Dml(DmlStatement::Select(Box::new(select_stmt.clone())));
         let analyzed = subquery_analyzer.analyze(subquery_statement, Vec::new())?;
 
         // Plan it to get the execution plan with proper output schema
-        let subquery_planner = Planner::new(self.schemas.clone(), HashMap::new());
+        let subquery_planner = Planner::new(self.schemas.clone(), self.index_metadata.clone());
         let subquery_plan = subquery_planner.plan_select(select_stmt, &analyzed)?;
 
         // Extract column names from the plan
@@ -512,5 +527,14 @@ impl NameResolver {
             return Err(Error::TableNotFound(table_name.to_string()));
         }
         Ok(())
+    }
+
+    /// Check if a column has an index created via CREATE INDEX
+    fn is_column_indexed(&self, table: &str, column: &str) -> bool {
+        self.index_metadata.values().any(|idx| {
+            idx.table.eq_ignore_ascii_case(table)
+                && !idx.columns.is_empty()
+                && idx.columns[0].eq_ignore_ascii_case(column)
+        })
     }
 }

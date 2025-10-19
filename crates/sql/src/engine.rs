@@ -67,7 +67,7 @@ impl SqlTransactionEngine {
             .collect();
 
         let parser = CachingParser::new();
-        let analyzer = CachingSemanticAnalyzer::new(schemas_plain.clone());
+        let analyzer = CachingSemanticAnalyzer::new(schemas_plain.clone(), indexes.clone());
         let planner = CachingPlanner::new(schemas_plain, indexes);
 
         let mut engine = Self {
@@ -517,8 +517,9 @@ impl SqlTransactionEngine {
 
                     // Clear parser cache on schema change
                     self.parser.clear();
-                    // Update analyzer with new schemas
+                    // Update analyzer with new schemas and indexes
                     self.analyzer.update_schemas(schemas.clone());
+                    self.analyzer.update_index_metadata(indexes.clone());
                     // Update planner with new schemas and indexes
                     self.planner.update_schemas(schemas);
                     self.planner.update_indexes(indexes);
@@ -702,6 +703,7 @@ impl TransactionEngine for SqlTransactionEngine {
 
                 self.parser.clear();
                 self.analyzer.update_schemas(schemas.clone());
+                self.analyzer.update_index_metadata(indexes.clone());
                 self.planner.update_schemas(schemas);
                 self.planner.update_indexes(indexes);
             }

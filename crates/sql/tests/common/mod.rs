@@ -211,6 +211,40 @@ impl TestContext {
             expected
         );
     }
+
+    /// Assert that a query uses an index scan (checks EXPLAIN output)
+    pub fn assert_uses_index(&mut self, sql: &str, index_name: &str) {
+        let explain_sql = format!("EXPLAIN {}", sql);
+        let plan = self.exec_response(&explain_sql);
+        let plan_text = plan.as_explain_plan()
+            .expect("Expected EXPLAIN plan response");
+
+        assert!(
+            plan_text.contains("Index scan") || plan_text.contains("Index range scan"),
+            "Query '{}' does not use index scan.\nPlan:\n{}",
+            sql, plan_text
+        );
+
+        assert!(
+            plan_text.contains(index_name),
+            "Query '{}' does not use index '{}'.\nPlan:\n{}",
+            sql, index_name, plan_text
+        );
+    }
+
+    /// Assert that a query does NOT use an index scan (checks EXPLAIN output)
+    pub fn assert_no_index_scan(&mut self, sql: &str) {
+        let explain_sql = format!("EXPLAIN {}", sql);
+        let plan = self.exec_response(&explain_sql);
+        let plan_text = plan.as_explain_plan()
+            .expect("Expected EXPLAIN plan response");
+
+        assert!(
+            !plan_text.contains("Index scan") && !plan_text.contains("Index range scan"),
+            "Query '{}' unexpectedly uses index scan.\nPlan:\n{}",
+            sql, plan_text
+        );
+    }
 }
 
 impl Default for TestContext {
