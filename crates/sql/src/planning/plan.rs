@@ -5,6 +5,7 @@
 
 use crate::types::expression::Expression;
 pub use crate::types::query::{Direction, JoinType};
+use std::fmt;
 
 /// An index column in the execution plan
 /// Uses AST expression for now - will be converted to types::expression later
@@ -106,6 +107,285 @@ impl Plan {
                 | Plan::CreateIndex { .. }
                 | Plan::DropIndex { .. }
         )
+    }
+}
+
+impl fmt::Display for Plan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Plan::Query {
+                root, column_names, ..
+            } => {
+                writeln!(f, "Query")?;
+                if let Some(names) = column_names {
+                    writeln!(f, "  Output: {}", names.join(", "))?;
+                }
+                write_node(f, root, 1)
+            }
+            Plan::Insert {
+                table,
+                columns,
+                source,
+            } => {
+                writeln!(f, "Insert into table '{}'", table)?;
+                if let Some(cols) = columns {
+                    writeln!(f, "  Columns: {:?}", cols)?;
+                }
+                write_node(f, source, 1)
+            }
+            Plan::Update {
+                table,
+                assignments,
+                source,
+            } => {
+                writeln!(f, "Update table '{}'", table)?;
+                writeln!(f, "  Assignments: {} columns", assignments.len())?;
+                write_node(f, source, 1)
+            }
+            Plan::Delete { table, source } => {
+                writeln!(f, "Delete from table '{}'", table)?;
+                write_node(f, source, 1)
+            }
+            Plan::CreateTable {
+                name,
+                if_not_exists,
+                ..
+            } => {
+                write!(f, "Create Table '{}'", name)?;
+                if *if_not_exists {
+                    write!(f, " (if not exists)")?;
+                }
+                Ok(())
+            }
+            Plan::CreateTableAsValues {
+                name,
+                if_not_exists,
+                values_plan,
+                ..
+            } => {
+                write!(f, "Create Table '{}' as", name)?;
+                if *if_not_exists {
+                    write!(f, " (if not exists)")?;
+                }
+                writeln!(f)?;
+                write!(f, "{}", values_plan)
+            }
+            Plan::CreateTableAsSelect {
+                name,
+                if_not_exists,
+                select_plan,
+                ..
+            } => {
+                write!(f, "Create Table '{}' as", name)?;
+                if *if_not_exists {
+                    write!(f, " (if not exists)")?;
+                }
+                writeln!(f)?;
+                write!(f, "{}", select_plan)
+            }
+            Plan::DropTable {
+                names,
+                if_exists,
+                cascade,
+            } => {
+                write!(f, "Drop Table {}", names.join(", "))?;
+                if *if_exists {
+                    write!(f, " (if exists)")?;
+                }
+                if *cascade {
+                    write!(f, " (cascade)")?;
+                }
+                Ok(())
+            }
+            Plan::CreateIndex {
+                name,
+                table,
+                columns,
+                unique,
+                included_columns,
+            } => {
+                write!(f, "Create ")?;
+                if *unique {
+                    write!(f, "Unique ")?;
+                }
+                writeln!(f, "Index '{}' on table '{}'", name, table)?;
+                writeln!(f, "  Columns: {} indexed", columns.len())?;
+                if let Some(included) = included_columns {
+                    writeln!(f, "  Included: {}", included.join(", "))?;
+                }
+                Ok(())
+            }
+            Plan::DropIndex { name, if_exists } => {
+                write!(f, "Drop Index '{}'", name)?;
+                if *if_exists {
+                    write!(f, " (if exists)")?;
+                }
+                Ok(())
+            }
+            Plan::AlterTable { name, operation } => {
+                writeln!(f, "Alter Table '{}'", name)?;
+                write!(f, "  Operation: {:?}", operation)
+            }
+        }
+    }
+}
+
+fn write_node(f: &mut fmt::Formatter<'_>, node: &Node, indent: usize) -> fmt::Result {
+    let prefix = "  ".repeat(indent);
+
+    match node {
+        Node::Scan { table, alias } => {
+            write!(f, "{}-> Scan table '{}'", prefix, table)?;
+            if let Some(a) = alias {
+                write!(f, " as '{}'", a)?;
+            }
+            writeln!(f)
+        }
+        Node::SeriesScan { size, alias } => {
+            write!(f, "{}-> Series scan", prefix)?;
+            if let Some(a) = alias {
+                write!(f, " as '{}'", a)?;
+            }
+            writeln!(f)?;
+            writeln!(f, "{}   Size: {:?}", prefix, size)
+        }
+        Node::IndexScan {
+            table,
+            alias,
+            index_name,
+            values,
+        } => {
+            write!(
+                f,
+                "{}-> Index scan on '{}' using index '{}'",
+                prefix, table, index_name
+            )?;
+            if let Some(a) = alias {
+                write!(f, " as '{}'", a)?;
+            }
+            writeln!(f)?;
+            writeln!(f, "{}   Lookup values: {}", prefix, values.len())
+        }
+        Node::IndexRangeScan {
+            table,
+            alias,
+            index_name,
+            start,
+            end,
+            reverse,
+            ..
+        } => {
+            write!(
+                f,
+                "{}-> Index range scan on '{}' using index '{}'",
+                prefix, table, index_name
+            )?;
+            if let Some(a) = alias {
+                write!(f, " as '{}'", a)?;
+            }
+            writeln!(f)?;
+            if start.is_some() || end.is_some() {
+                writeln!(
+                    f,
+                    "{}   Range: {:?} to {:?}",
+                    prefix,
+                    start.as_ref().map(|_| "start"),
+                    end.as_ref().map(|_| "end")
+                )?;
+            }
+            if *reverse {
+                writeln!(f, "{}   Direction: reverse", prefix)?;
+            }
+            Ok(())
+        }
+        Node::Filter { source, predicate } => {
+            writeln!(f, "{}-> Filter", prefix)?;
+            writeln!(f, "{}   Condition: {:?}", prefix, predicate)?;
+            write_node(f, source, indent + 1)
+        }
+        Node::Projection {
+            source,
+            expressions: _,
+            aliases,
+        } => {
+            writeln!(f, "{}-> Projection", prefix)?;
+            let cols: Vec<String> = aliases
+                .iter()
+                .enumerate()
+                .map(|(i, alias)| alias.clone().unwrap_or_else(|| format!("col_{}", i)))
+                .collect();
+            writeln!(f, "{}   Columns: {}", prefix, cols.join(", "))?;
+            write_node(f, source, indent + 1)
+        }
+        Node::Order { source, order_by } => {
+            writeln!(f, "{}-> Order by", prefix)?;
+            for (expr, dir) in order_by {
+                writeln!(f, "{}   {:?} {:?}", prefix, expr, dir)?;
+            }
+            write_node(f, source, indent + 1)
+        }
+        Node::Limit { source, limit } => {
+            writeln!(f, "{}-> Limit {}", prefix, limit)?;
+            write_node(f, source, indent + 1)
+        }
+        Node::Offset { source, offset } => {
+            writeln!(f, "{}-> Offset {}", prefix, offset)?;
+            write_node(f, source, indent + 1)
+        }
+        Node::Distinct { source } => {
+            writeln!(f, "{}-> Distinct", prefix)?;
+            write_node(f, source, indent + 1)
+        }
+        Node::Aggregate {
+            source,
+            group_by,
+            aggregates,
+        } => {
+            writeln!(f, "{}-> Aggregate", prefix)?;
+            if !group_by.is_empty() {
+                writeln!(f, "{}   Group by: {} expressions", prefix, group_by.len())?;
+            }
+            writeln!(f, "{}   Aggregates: {} functions", prefix, aggregates.len())?;
+            write_node(f, source, indent + 1)
+        }
+        Node::HashJoin {
+            left,
+            right,
+            left_col,
+            right_col,
+            join_type,
+        } => {
+            writeln!(f, "{}-> Hash join ({:?})", prefix, join_type)?;
+            writeln!(
+                f,
+                "{}   Join on: left[{}] = right[{}]",
+                prefix, left_col, right_col
+            )?;
+            writeln!(f, "{}   Left:", prefix)?;
+            write_node(f, left, indent + 2)?;
+            writeln!(f, "{}   Right:", prefix)?;
+            write_node(f, right, indent + 2)
+        }
+        Node::NestedLoopJoin {
+            left,
+            right,
+            predicate,
+            join_type,
+        } => {
+            writeln!(f, "{}-> Nested loop join ({:?})", prefix, join_type)?;
+            writeln!(f, "{}   Condition: {:?}", prefix, predicate)?;
+            writeln!(f, "{}   Left:", prefix)?;
+            write_node(f, left, indent + 2)?;
+            writeln!(f, "{}   Right:", prefix)?;
+            write_node(f, right, indent + 2)
+        }
+        Node::Values { rows } => {
+            writeln!(f, "{}-> Values", prefix)?;
+            writeln!(f, "{}   Rows: {}", prefix, rows.len())
+        }
+        Node::Nothing => {
+            writeln!(f, "{}-> Nothing", prefix)
+        }
     }
 }
 

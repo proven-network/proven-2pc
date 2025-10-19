@@ -248,6 +248,13 @@ impl SqlTransactionEngine {
             }
         };
 
+        // Check if this is an EXPLAIN statement - if so, return the plan as text
+        if matches!(&*analyzed.ast, crate::parsing::ast::Statement::Explain(_)) {
+            return OperationResult::Complete(SqlResponse::ExplainPlan {
+                plan: plan.to_string(),
+            });
+        }
+
         // Execute with a temporary context (snapshot reads are stateless)
         let mut exec_ctx = ExecutionContext::new(read_timestamp, log_index);
 
@@ -392,6 +399,13 @@ impl SqlTransactionEngine {
                 )));
             }
         };
+
+        // Check if this is an EXPLAIN statement - if so, return the plan as text
+        if matches!(&*analyzed.ast, crate::parsing::ast::Statement::Explain(_)) {
+            return OperationResult::Complete(SqlResponse::ExplainPlan {
+                plan: plan.to_string(),
+            });
+        }
 
         // Create execution context for this operation
         let tx_ctx = self.active_transactions.get(&txn_id).unwrap();

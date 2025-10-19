@@ -24,6 +24,9 @@ pub enum SqlResponse {
         message: Option<String>,
     },
 
+    /// EXPLAIN plan output
+    ExplainPlan { plan: String },
+
     /// Error occurred
     Error(String),
 }
@@ -49,3 +52,18 @@ pub fn convert_execution_result(result: ExecutionResult) -> SqlResponse {
 }
 
 impl Response for SqlResponse {}
+
+impl SqlResponse {
+    /// Check if this response is an EXPLAIN plan
+    pub fn is_explain_plan(&self) -> bool {
+        matches!(self, SqlResponse::ExplainPlan { .. })
+    }
+
+    /// Get the plan text if this is an EXPLAIN response
+    pub fn as_explain_plan(&self) -> Option<&str> {
+        match self {
+            SqlResponse::ExplainPlan { plan } => Some(plan.as_str()),
+            _ => None,
+        }
+    }
+}

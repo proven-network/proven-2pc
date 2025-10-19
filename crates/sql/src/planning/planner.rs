@@ -50,8 +50,15 @@ impl Planner {
         let statement = analyzed.ast.clone();
 
         match &*statement {
-            Statement::Explain(_) => {
-                Err(Error::ExecutionError("EXPLAIN not yet implemented".into()))
+            Statement::Explain(inner) => {
+                // Create a new AnalyzedStatement with the inner statement
+                let inner_analyzed = AnalyzedStatement {
+                    ast: std::sync::Arc::new(*inner.clone()),
+                    ..analyzed
+                };
+
+                // Plan the inner statement
+                self.plan(inner_analyzed)
             }
 
             Statement::Ddl(ddl) => self.plan_ddl(ddl, &analyzed),
