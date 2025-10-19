@@ -98,8 +98,16 @@ pub enum Operator {
     BitwiseShiftLeft(Box<Expression>, Box<Expression>), // a << b
     BitwiseShiftRight(Box<Expression>, Box<Expression>), // a >> b
 
-    ILike(Box<Expression>, Box<Expression>), // a ILIKE b
-    Like(Box<Expression>, Box<Expression>),  // a LIKE b
+    ILike {
+        expr: Box<Expression>,
+        pattern: Box<Expression>,
+        negated: bool,
+    }, // a ILIKE b or a NOT ILIKE b
+    Like {
+        expr: Box<Expression>,
+        pattern: Box<Expression>,
+        negated: bool,
+    }, // a LIKE b or a NOT LIKE b
 
     // IN and BETWEEN operators
     InList {

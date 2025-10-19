@@ -526,7 +526,11 @@ impl MetadataBuilder {
                 }
 
                 // ILIKE predicates (case-insensitive)
-                ILike(left, right) => {
+                ILike {
+                    expr: left,
+                    pattern: right,
+                    ..
+                } => {
                     if let Expression::Column(table, col) = left.as_ref() {
                         let table_name = self.resolve_table_name(table.as_deref(), col, input);
 
@@ -550,7 +554,11 @@ impl MetadataBuilder {
                 }
 
                 // LIKE predicates
-                Like(left, right) => {
+                Like {
+                    expr: left,
+                    pattern: right,
+                    ..
+                } => {
                     if let Expression::Column(table, col) = left.as_ref() {
                         let table_name = self.resolve_table_name(table.as_deref(), col, input);
 

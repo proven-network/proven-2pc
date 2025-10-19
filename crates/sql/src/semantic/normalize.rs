@@ -140,14 +140,16 @@ pub fn normalize_expression(expr: &Expression) -> Expression {
         }
 
         // Pattern matching
-        Expression::Like(left, right) => Expression::Like(
+        Expression::Like(left, right, negated) => Expression::Like(
             Box::new(normalize_expression(left)),
             Box::new(normalize_expression(right)),
+            *negated,
         ),
 
-        Expression::ILike(left, right) => Expression::ILike(
+        Expression::ILike(left, right, negated) => Expression::ILike(
             Box::new(normalize_expression(left)),
             Box::new(normalize_expression(right)),
+            *negated,
         ),
 
         Expression::Is(expr, val) => {
@@ -314,11 +316,11 @@ pub fn expressions_equal(left: &Expression, right: &Expression) -> bool {
         (Expression::BitwiseNot(e1), Expression::BitwiseNot(e2)) => expressions_equal(e1, e2),
 
         // Pattern matching
-        (Expression::Like(l1, r1), Expression::Like(l2, r2)) => {
-            expressions_equal(l1, l2) && expressions_equal(r1, r2)
+        (Expression::Like(l1, r1, n1), Expression::Like(l2, r2, n2)) => {
+            expressions_equal(l1, l2) && expressions_equal(r1, r2) && n1 == n2
         }
-        (Expression::ILike(l1, r1), Expression::ILike(l2, r2)) => {
-            expressions_equal(l1, l2) && expressions_equal(r1, r2)
+        (Expression::ILike(l1, r1, n1), Expression::ILike(l2, r2, n2)) => {
+            expressions_equal(l1, l2) && expressions_equal(r1, r2) && n1 == n2
         }
         (Expression::Is(e1, v1), Expression::Is(e2, v2)) => expressions_equal(e1, e2) && v1 == v2,
 

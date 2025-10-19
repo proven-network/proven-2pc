@@ -300,17 +300,25 @@ fn test_complex_ilike_patterns() {
     ctx.commit();
 }
 
-#[ignore = "VALUES not yet implemented as standalone statement"]
 #[test]
 fn test_values_with_like_ilike() {
-    // This would test the VALUES statement like in GlueSQL:
-    // VALUES
-    //     ('abc' LIKE '%c'),
-    //     ('abc' NOT LIKE '_c'),
-    //     ('abc' LIKE '_b_'),
-    //     ('HELLO' ILIKE '%el%'),
-    //     ('HELLO' NOT ILIKE '_ELLE')
-    // Should return: true, true, true, true, true
+    let mut ctx = setup_test();
 
-    // For now, we can't test this without VALUES statement support
+    // Test VALUES statement with LIKE and ILIKE expressions
+    let results = ctx.query(
+        "VALUES ('abc' LIKE '%c'), ('abc' NOT LIKE '_c'), ('abc' LIKE '_b_'), ('HELLO' ILIKE '%el%'), ('HELLO' NOT ILIKE '_ELLE')"
+    );
+
+    // Should return 5 rows, all with value true
+    assert_eq!(results.len(), 5);
+
+    // Verify all results are true
+    use proven_value::Value;
+    assert_eq!(results[0].get("column1"), Some(&Value::Bool(true)));
+    assert_eq!(results[1].get("column1"), Some(&Value::Bool(true)));
+    assert_eq!(results[2].get("column1"), Some(&Value::Bool(true)));
+    assert_eq!(results[3].get("column1"), Some(&Value::Bool(true)));
+    assert_eq!(results[4].get("column1"), Some(&Value::Bool(true)));
+
+    ctx.commit();
 }

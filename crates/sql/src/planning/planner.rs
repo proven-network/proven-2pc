@@ -1791,8 +1791,6 @@ impl Planner {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
-                    | Operator::ILike(l, r)
-                    | Operator::Like(l, r)
                     | Operator::BitwiseAnd(l, r)
                     | Operator::BitwiseOr(l, r)
                     | Operator::BitwiseXor(l, r)
@@ -1800,6 +1798,11 @@ impl Planner {
                     | Operator::BitwiseShiftRight(l, r) => {
                         Self::validate_no_subqueries_in_expression(l)?;
                         Self::validate_no_subqueries_in_expression(r)?;
+                    }
+                    Operator::ILike { expr, pattern, .. }
+                    | Operator::Like { expr, pattern, .. } => {
+                        Self::validate_no_subqueries_in_expression(expr)?;
+                        Self::validate_no_subqueries_in_expression(pattern)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
@@ -2403,13 +2406,23 @@ impl<'a> AnalyzedPlanContext<'a> {
                 Box::new(self.resolve_expression_simple(r)?),
             ),
             // String matching
-            ILike(l, r) => Expression::ILike(
-                Box::new(self.resolve_expression_simple(l)?),
-                Box::new(self.resolve_expression_simple(r)?),
+            ILike {
+                expr,
+                pattern,
+                negated,
+            } => Expression::ILike(
+                Box::new(self.resolve_expression_simple(expr)?),
+                Box::new(self.resolve_expression_simple(pattern)?),
+                *negated,
             ),
-            Like(l, r) => Expression::Like(
-                Box::new(self.resolve_expression_simple(l)?),
-                Box::new(self.resolve_expression_simple(r)?),
+            Like {
+                expr,
+                pattern,
+                negated,
+            } => Expression::Like(
+                Box::new(self.resolve_expression_simple(expr)?),
+                Box::new(self.resolve_expression_simple(pattern)?),
+                *negated,
             ),
             // Range operators
             Between {
@@ -2657,13 +2670,23 @@ fn resolve_default_expression(
                 }
 
                 // Pattern matching
-                Like(l, r) => DefaultExpression::Like(
-                    Box::new(resolve_default_expression(l)?),
-                    Box::new(resolve_default_expression(r)?),
+                Like {
+                    expr,
+                    pattern,
+                    negated,
+                } => DefaultExpression::Like(
+                    Box::new(resolve_default_expression(expr)?),
+                    Box::new(resolve_default_expression(pattern)?),
+                    *negated,
                 ),
-                ILike(l, r) => DefaultExpression::ILike(
-                    Box::new(resolve_default_expression(l)?),
-                    Box::new(resolve_default_expression(r)?),
+                ILike {
+                    expr,
+                    pattern,
+                    negated,
+                } => DefaultExpression::ILike(
+                    Box::new(resolve_default_expression(expr)?),
+                    Box::new(resolve_default_expression(pattern)?),
+                    *negated,
                 ),
 
                 // Other operators

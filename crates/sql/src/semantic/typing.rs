@@ -750,13 +750,18 @@ impl TypeChecker {
                 })
             }
 
-            ILike(l, r) => {
+            ILike { expr, pattern, .. } => {
                 let left_id = expr_id.child(0);
                 let right_id = expr_id.child(1);
                 let left_type =
-                    self.infer_expr_type_new(l, &left_id, column_map, param_types, type_map)?;
-                let right_type =
-                    self.infer_expr_type_new(r, &right_id, column_map, param_types, type_map)?;
+                    self.infer_expr_type_new(expr, &left_id, column_map, param_types, type_map)?;
+                let right_type = self.infer_expr_type_new(
+                    pattern,
+                    &right_id,
+                    column_map,
+                    param_types,
+                    type_map,
+                )?;
 
                 let result_type =
                     operators::validate_ilike(&left_type.data_type, &right_type.data_type)?;
@@ -768,13 +773,18 @@ impl TypeChecker {
                 })
             }
 
-            Like(l, r) => {
+            Like { expr, pattern, .. } => {
                 let left_id = expr_id.child(0);
                 let right_id = expr_id.child(1);
                 let left_type =
-                    self.infer_expr_type_new(l, &left_id, column_map, param_types, type_map)?;
-                let right_type =
-                    self.infer_expr_type_new(r, &right_id, column_map, param_types, type_map)?;
+                    self.infer_expr_type_new(expr, &left_id, column_map, param_types, type_map)?;
+                let right_type = self.infer_expr_type_new(
+                    pattern,
+                    &right_id,
+                    column_map,
+                    param_types,
+                    type_map,
+                )?;
 
                 let result_type =
                     operators::validate_like(&left_type.data_type, &right_type.data_type)?;

@@ -82,9 +82,9 @@ pub enum Expression {
     BitwiseShiftRight(Box<Expression>, Box<Expression>),
 
     /// a ILIKE pattern: SQL pattern matching (case-insensitive).
-    ILike(Box<Expression>, Box<Expression>),
+    ILike(Box<Expression>, Box<Expression>, bool), // expr, pattern, negated
     /// a LIKE pattern: SQL pattern matching.
-    Like(Box<Expression>, Box<Expression>),
+    Like(Box<Expression>, Box<Expression>, bool), // expr, pattern, negated
 
     /// a IN (list): checks if value is in list.
     InList(Box<Expression>, Vec<Expression>, bool), // expr, list, negated
@@ -169,8 +169,20 @@ impl Display for Expression {
             BitwiseShiftLeft(lhs, rhs) => write!(f, "({} << {})", lhs, rhs),
             BitwiseShiftRight(lhs, rhs) => write!(f, "({} >> {})", lhs, rhs),
 
-            ILike(lhs, rhs) => write!(f, "({} ILIKE {})", lhs, rhs),
-            Like(lhs, rhs) => write!(f, "({} LIKE {})", lhs, rhs),
+            ILike(lhs, rhs, negated) => {
+                if *negated {
+                    write!(f, "({} NOT ILIKE {})", lhs, rhs)
+                } else {
+                    write!(f, "({} ILIKE {})", lhs, rhs)
+                }
+            }
+            Like(lhs, rhs, negated) => {
+                if *negated {
+                    write!(f, "({} NOT LIKE {})", lhs, rhs)
+                } else {
+                    write!(f, "({} LIKE {})", lhs, rhs)
+                }
+            }
 
             Function(name, args) => {
                 write!(f, "{}(", name)?;
@@ -317,8 +329,8 @@ pub enum DefaultExpression {
     BitwiseShiftRight(Box<DefaultExpression>, Box<DefaultExpression>),
 
     // Pattern matching
-    ILike(Box<DefaultExpression>, Box<DefaultExpression>),
-    Like(Box<DefaultExpression>, Box<DefaultExpression>),
+    ILike(Box<DefaultExpression>, Box<DefaultExpression>, bool), // expr, pattern, negated
+    Like(Box<DefaultExpression>, Box<DefaultExpression>, bool),  // expr, pattern, negated
 
     // IN list (but not subqueries)
     InList(Box<DefaultExpression>, Vec<DefaultExpression>, bool),
@@ -396,8 +408,12 @@ impl From<DefaultExpression> for Expression {
             DE::BitwiseShiftRight(l, r) => {
                 E::BitwiseShiftRight(Box::new((*l).into()), Box::new((*r).into()))
             }
-            DE::ILike(l, r) => E::ILike(Box::new((*l).into()), Box::new((*r).into())),
-            DE::Like(l, r) => E::Like(Box::new((*l).into()), Box::new((*r).into())),
+            DE::ILike(l, r, negated) => {
+                E::ILike(Box::new((*l).into()), Box::new((*r).into()), negated)
+            }
+            DE::Like(l, r, negated) => {
+                E::Like(Box::new((*l).into()), Box::new((*r).into()), negated)
+            }
             DE::InList(e, list, neg) => E::InList(
                 Box::new((*e).into()),
                 list.into_iter().map(|a| a.into()).collect(),

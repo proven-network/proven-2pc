@@ -94,8 +94,6 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
-                    | Operator::ILike(l, r)
-                    | Operator::Like(l, r)
                     | Operator::BitwiseAnd(l, r)
                     | Operator::BitwiseOr(l, r)
                     | Operator::BitwiseXor(l, r)
@@ -103,6 +101,11 @@ impl SemanticValidator {
                     | Operator::BitwiseShiftRight(l, r) => {
                         self.validate_group_by_expr(l, group_by_exprs)?;
                         self.validate_group_by_expr(r, group_by_exprs)?;
+                    }
+                    Operator::ILike { expr, pattern, .. }
+                    | Operator::Like { expr, pattern, .. } => {
+                        self.validate_group_by_expr(expr, group_by_exprs)?;
+                        self.validate_group_by_expr(pattern, group_by_exprs)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
@@ -202,14 +205,17 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
-                    | Operator::ILike(l, r)
-                    | Operator::Like(l, r)
                     | Operator::BitwiseAnd(l, r)
                     | Operator::BitwiseOr(l, r)
                     | Operator::BitwiseXor(l, r)
                     | Operator::BitwiseShiftLeft(l, r)
                     | Operator::BitwiseShiftRight(l, r) => {
                         Self::is_aggregate_expression(l) || Self::is_aggregate_expression(r)
+                    }
+                    Operator::ILike { expr, pattern, .. }
+                    | Operator::Like { expr, pattern, .. } => {
+                        Self::is_aggregate_expression(expr)
+                            || Self::is_aggregate_expression(pattern)
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
@@ -309,8 +315,6 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
-                    | Operator::ILike(l, r)
-                    | Operator::Like(l, r)
                     | Operator::BitwiseAnd(l, r)
                     | Operator::BitwiseOr(l, r)
                     | Operator::BitwiseXor(l, r)
@@ -318,6 +322,11 @@ impl SemanticValidator {
                     | Operator::BitwiseShiftRight(l, r) => {
                         self.validate_aggregate_context(l)?;
                         self.validate_aggregate_context(r)?;
+                    }
+                    Operator::ILike { expr, pattern, .. }
+                    | Operator::Like { expr, pattern, .. } => {
+                        self.validate_aggregate_context(expr)?;
+                        self.validate_aggregate_context(pattern)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)
@@ -419,8 +428,6 @@ impl SemanticValidator {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
-                    | Operator::ILike(l, r)
-                    | Operator::Like(l, r)
                     | Operator::BitwiseAnd(l, r)
                     | Operator::BitwiseOr(l, r)
                     | Operator::BitwiseXor(l, r)
@@ -428,6 +435,11 @@ impl SemanticValidator {
                     | Operator::BitwiseShiftRight(l, r) => {
                         Self::validate_no_nested_aggregates(l)?;
                         Self::validate_no_nested_aggregates(r)?;
+                    }
+                    Operator::ILike { expr, pattern, .. }
+                    | Operator::Like { expr, pattern, .. } => {
+                        Self::validate_no_nested_aggregates(expr)?;
+                        Self::validate_no_nested_aggregates(pattern)?;
                     }
                     Operator::Not(e)
                     | Operator::Negate(e)

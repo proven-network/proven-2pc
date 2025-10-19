@@ -228,20 +228,30 @@ fn evaluate_with_storage_and_outer(
             operators::execute_bitwise_not(&value)?
         }
 
-        ILike(expr, pattern) => {
+        ILike(expr, pattern, negated) => {
             let value =
                 evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             let pattern_value =
                 evaluate_with_storage_and_outer(pattern, row, outer_row, context, params, storage)?;
-            operators::execute_ilike(&value, &pattern_value)?
+            let result = operators::execute_ilike(&value, &pattern_value)?;
+            if *negated {
+                operators::execute_not(&result)?
+            } else {
+                result
+            }
         }
 
-        Like(expr, pattern) => {
+        Like(expr, pattern, negated) => {
             let value =
                 evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             let pattern_value =
                 evaluate_with_storage_and_outer(pattern, row, outer_row, context, params, storage)?;
-            operators::execute_like(&value, &pattern_value)?
+            let result = operators::execute_like(&value, &pattern_value)?;
+            if *negated {
+                operators::execute_not(&result)?
+            } else {
+                result
+            }
         }
 
         // Function calls

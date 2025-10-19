@@ -128,9 +128,11 @@ fn count_parameters(stmt: &Statement) -> usize {
             | Operator::BitwiseOr(l, r)
             | Operator::BitwiseXor(l, r)
             | Operator::BitwiseShiftLeft(l, r)
-            | Operator::BitwiseShiftRight(l, r)
-            | Operator::ILike(l, r)
-            | Operator::Like(l, r) => count_expr_params(l) + count_expr_params(r),
+            | Operator::BitwiseShiftRight(l, r) => count_expr_params(l) + count_expr_params(r),
+
+            Operator::ILike { expr, pattern, .. } | Operator::Like { expr, pattern, .. } => {
+                count_expr_params(expr) + count_expr_params(pattern)
+            }
 
             Operator::Not(e)
             | Operator::Negate(e)

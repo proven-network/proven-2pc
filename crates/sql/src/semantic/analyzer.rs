@@ -572,8 +572,6 @@ impl SemanticAnalyzer {
                     | Operator::Divide(l, r)
                     | Operator::Remainder(l, r)
                     | Operator::Exponentiate(l, r)
-                    | Operator::ILike(l, r)
-                    | Operator::Like(l, r)
                     | Operator::BitwiseAnd(l, r)
                     | Operator::BitwiseOr(l, r)
                     | Operator::BitwiseXor(l, r)
@@ -588,6 +586,23 @@ impl SemanticAnalyzer {
                         );
                         Self::collect_params_from_expr(
                             r,
+                            &expr_id.child(1),
+                            expression_types,
+                            param_types,
+                            slots,
+                        );
+                    }
+                    Operator::ILike { expr, pattern, .. }
+                    | Operator::Like { expr, pattern, .. } => {
+                        Self::collect_params_from_expr(
+                            expr,
+                            &expr_id.child(0),
+                            expression_types,
+                            param_types,
+                            slots,
+                        );
+                        Self::collect_params_from_expr(
+                            pattern,
                             &expr_id.child(1),
                             expression_types,
                             param_types,

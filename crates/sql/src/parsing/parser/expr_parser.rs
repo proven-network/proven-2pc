@@ -80,8 +80,6 @@ pub enum InfixOperator {
     GreaterThanOrEqual, // a >= b
     LessThan,           // a < b
     LessThanOrEqual,    // a <= b
-    ILike,              // a ILIKE b
-    Like,               // a LIKE b
     Multiply,           // a * b
     NotEqual,           // a != b
     Or,                 // a OR b
@@ -111,7 +109,7 @@ impl InfixOperator {
             Self::Or | Self::Xor => 1,
             Self::And => 2,
             // Self::Not => 3
-            Self::Equal | Self::NotEqual | Self::ILike | Self::Like => 4, // also Self::Is
+            Self::Equal | Self::NotEqual => 4, // also Self::Is, Self::Like, Self::ILike (now postfix)
             Self::GreaterThan
             | Self::GreaterThanOrEqual
             | Self::LessThan
@@ -148,8 +146,6 @@ impl InfixOperator {
             Self::GreaterThanOrEqual => Operator::GreaterThanOrEqual(lhs, rhs).into(),
             Self::LessThan => Operator::LessThan(lhs, rhs).into(),
             Self::LessThanOrEqual => Operator::LessThanOrEqual(lhs, rhs).into(),
-            Self::ILike => Operator::ILike(lhs, rhs).into(),
-            Self::Like => Operator::Like(lhs, rhs).into(),
             Self::Multiply => Operator::Multiply(lhs, rhs).into(),
             Self::NotEqual => Operator::NotEqual(lhs, rhs).into(),
             Self::Or => Operator::Or(lhs, rhs).into(),
@@ -173,6 +169,8 @@ pub enum PostfixOperator {
     InList(Vec<Expression>, bool),          // a IN (list) or a NOT IN (list)
     InSubquery(Box<SelectStatement>, bool), // a IN (SELECT...) or a NOT IN (SELECT...)
     Between(Expression, Expression, bool),  // a BETWEEN low AND high or a NOT BETWEEN low AND high
+    Like(Expression, bool),                 // a LIKE pattern or a NOT LIKE pattern
+    ILike(Expression, bool),                // a ILIKE pattern or a NOT ILIKE pattern
     ArrayAccess(Expression),                // a[index]
     FieldAccess(String),                    // a.field
 }
@@ -185,7 +183,9 @@ impl PostfixOperator {
             | Self::IsNot(_)
             | Self::InList(_, _)
             | Self::InSubquery(_, _)
-            | Self::Between(_, _, _) => 4,
+            | Self::Between(_, _, _)
+            | Self::Like(_, _)
+            | Self::ILike(_, _) => 4,
             Self::Factorial => 9,
             Self::ArrayAccess(_) | Self::FieldAccess(_) => 10, // Highest precedence
         }
@@ -214,6 +214,18 @@ impl PostfixOperator {
                 expr: lhs,
                 low: Box::new(low),
                 high: Box::new(high),
+                negated,
+            }
+            .into(),
+            Self::Like(pattern, negated) => Operator::Like {
+                expr: lhs,
+                pattern: Box::new(pattern),
+                negated,
+            }
+            .into(),
+            Self::ILike(pattern, negated) => Operator::ILike {
+                expr: lhs,
+                pattern: Box::new(pattern),
                 negated,
             }
             .into(),
@@ -765,8 +777,6 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 Token::GreaterThan => InfixOperator::GreaterThan,
                 Token::GreaterThanOrEqual => InfixOperator::GreaterThanOrEqual,
                 Token::Keyword(Keyword::And) => InfixOperator::And,
-                Token::Keyword(Keyword::ILike) => InfixOperator::ILike,
-                Token::Keyword(Keyword::Like) => InfixOperator::Like,
                 Token::Keyword(Keyword::Or) => InfixOperator::Or,
                 Token::Keyword(Keyword::Xor) => InfixOperator::Xor,
                 Token::LessOrGreaterThan => InfixOperator::NotEqual,
@@ -814,21 +824,24 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
             return Ok(Some(operator));
         }
 
-        // Handle (NOT) IN and (NOT) BETWEEN
-        // Check if we have NOT followed by IN or BETWEEN
+        // Handle (NOT) IN, (NOT) BETWEEN, (NOT) LIKE, and (NOT) ILIKE
+        // Check if we have NOT followed by IN, BETWEEN, LIKE, or ILIKE
         let negated = if self.peek()? == Some(&Token::Keyword(Keyword::Not)) {
             // Consume NOT and check next token
             self.next()?;
 
-            // If next token is IN or BETWEEN, this is negated form
+            // If next token is IN, BETWEEN, LIKE, or ILIKE, this is negated form
             // Otherwise we consumed NOT incorrectly - but since we're in postfix position
-            // after an expression, NOT shouldn't appear here anyway except for NOT IN/BETWEEN
+            // after an expression, NOT shouldn't appear here anyway except for NOT IN/BETWEEN/LIKE/ILIKE
             match self.peek()? {
-                Some(&Token::Keyword(Keyword::In)) | Some(&Token::Keyword(Keyword::Between)) => {
-                    true
-                }
+                Some(&Token::Keyword(Keyword::In))
+                | Some(&Token::Keyword(Keyword::Between))
+                | Some(&Token::Keyword(Keyword::Like))
+                | Some(&Token::Keyword(Keyword::ILike)) => true,
                 _ => {
-                    return Err(Error::ParseError("expected IN or BETWEEN after NOT".into()));
+                    return Err(Error::ParseError(
+                        "expected IN, BETWEEN, LIKE, or ILIKE after NOT".into(),
+                    ));
                 }
             }
         } else {
@@ -906,6 +919,32 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
             let high = self.parse_expression_at(3)?;
 
             return Ok(Some(PostfixOperator::Between(low, high, negated)));
+        }
+
+        // Handle LIKE
+        if self.peek()? == Some(&Token::Keyword(Keyword::Like)) {
+            // Check precedence before consuming
+            if PostfixOperator::Like(Expression::Literal(Literal::Null), false).precedence()
+                < min_precedence
+            {
+                return Ok(None);
+            }
+            self.expect(Keyword::Like.into())?;
+            let pattern = <Self as ExpressionParser>::parse_expression(self)?;
+            return Ok(Some(PostfixOperator::Like(pattern, negated)));
+        }
+
+        // Handle ILIKE
+        if self.peek()? == Some(&Token::Keyword(Keyword::ILike)) {
+            // Check precedence before consuming
+            if PostfixOperator::ILike(Expression::Literal(Literal::Null), false).precedence()
+                < min_precedence
+            {
+                return Ok(None);
+            }
+            self.expect(Keyword::ILike.into())?;
+            let pattern = <Self as ExpressionParser>::parse_expression(self)?;
+            return Ok(Some(PostfixOperator::ILike(pattern, negated)));
         }
 
         // Handle bracket notation for array/list/map access
