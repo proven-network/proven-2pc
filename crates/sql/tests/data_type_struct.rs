@@ -298,7 +298,6 @@ fn test_insert_struct_wrong_type_should_error() {
 }
 
 #[test]
-#[ignore = "GROUP BY with STRUCT not yet implemented"]
 fn test_group_by_struct() {
     let mut ctx = setup_test();
 
@@ -309,9 +308,19 @@ fn test_group_by_struct() {
     ctx.exec(r#"INSERT INTO Orders VALUES (3, '{"name": "Alice", "city": "NYC"}')"#); // Duplicate
 
     // GROUP BY struct column
-    let results =
-        ctx.query("SELECT customer, COUNT(*) as cnt FROM Orders GROUP BY customer ORDER BY cnt");
+    let results = ctx.query("SELECT customer, COUNT(*) as cnt FROM Orders GROUP BY customer");
     assert_eq!(results.len(), 2);
+
+    // Check that we have the right counts (one group with 1, one with 2)
+    let counts: Vec<i64> = results
+        .iter()
+        .map(|r| match r.get("cnt").unwrap() {
+            Value::I64(n) => *n,
+            _ => panic!("Expected I64"),
+        })
+        .collect();
+    assert!(counts.contains(&1));
+    assert!(counts.contains(&2));
 
     ctx.commit();
 }

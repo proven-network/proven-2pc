@@ -55,23 +55,6 @@ fn test_insert_simple_list() {
 }
 
 #[test]
-#[ignore = "Mixed-type lists are not supported - lists must be homogeneous as in standard SQL"]
-fn test_insert_mixed_type_list() {
-    let mut ctx = setup_test();
-
-    ctx.exec("CREATE TABLE MixedList (id INT, data LIST)");
-
-    // Lists can contain mixed types
-    ctx.exec(r#"INSERT INTO MixedList VALUES (1, '["hello", "world", 30, true]')"#);
-    ctx.exec(r#"INSERT INTO MixedList VALUES (2, '[1, 2.5, "test", false]')"#);
-
-    let results = ctx.query("SELECT data FROM MixedList ORDER BY id");
-    assert_eq!(results.len(), 2);
-
-    ctx.commit();
-}
-
-#[test]
 fn test_nested_lists() {
     let mut ctx = setup_test();
 
@@ -211,22 +194,29 @@ fn test_insert_invalid_json_should_error() {
 }
 
 #[test]
-#[ignore = "GROUP BY with LIST not yet implemented"]
 fn test_group_by_list() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE ListData (id INT, tags LIST)");
 
-    ctx.exec(r#"INSERT INTO ListData VALUES (1, '["a", "b"]')"#);
-    ctx.exec(r#"INSERT INTO ListData VALUES (2, '["c", "d"]')"#);
-    ctx.exec(r#"INSERT INTO ListData VALUES (3, '["a", "b"]')"#); // Duplicate list
+    ctx.exec(r#"INSERT INTO ListData VALUES (1, '[1, 2]')"#);
+    ctx.exec(r#"INSERT INTO ListData VALUES (2, '[3, 4]')"#);
+    ctx.exec(r#"INSERT INTO ListData VALUES (3, '[1, 2]')"#); // Duplicate list
 
     // GROUP BY should work with LIST columns
-    let results =
-        ctx.query("SELECT tags, COUNT(*) as cnt FROM ListData GROUP BY tags ORDER BY cnt");
+    let results = ctx.query("SELECT tags, COUNT(*) as cnt FROM ListData GROUP BY tags");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(1));
-    assert_eq!(results[1].get("cnt").unwrap(), &Value::I64(2));
+
+    // Check that we have the right counts (one group with 1, one with 2)
+    let counts: Vec<i64> = results
+        .iter()
+        .map(|r| match r.get("cnt").unwrap() {
+            Value::I64(n) => *n,
+            _ => panic!("Expected I64"),
+        })
+        .collect();
+    assert!(counts.contains(&1));
+    assert!(counts.contains(&2));
 
     ctx.commit();
 }

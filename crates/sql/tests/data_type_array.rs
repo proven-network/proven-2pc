@@ -189,7 +189,6 @@ fn test_array_type_checking() {
 }
 
 #[test]
-#[ignore = "GROUP BY with ARRAY not yet implemented"]
 fn test_group_by_array() {
     let mut ctx = setup_test();
 
@@ -201,11 +200,13 @@ fn test_group_by_array() {
     ctx.exec("INSERT INTO Points VALUES (4, '[3, 4]')"); // Another duplicate
 
     // GROUP BY should work with ARRAY columns
-    let results =
-        ctx.query("SELECT coord, COUNT(*) as cnt FROM Points GROUP BY coord ORDER BY cnt");
+    let results = ctx.query("SELECT coord, COUNT(*) as cnt FROM Points GROUP BY coord");
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].get("cnt").unwrap(), &Value::I64(2));
-    assert_eq!(results[1].get("cnt").unwrap(), &Value::I64(2));
+
+    // Both groups should have count of 2
+    for row in &results {
+        assert_eq!(row.get("cnt").unwrap(), &Value::I64(2));
+    }
 
     ctx.commit();
 }

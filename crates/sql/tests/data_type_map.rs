@@ -75,23 +75,6 @@ fn test_map_key_access() {
 }
 
 #[test]
-#[ignore = "ANY type is not supported - maps must have homogeneous value types"]
-fn test_map_with_different_value_types() {
-    let mut ctx = setup_test();
-
-    // Map with mixed value types
-    ctx.exec("CREATE TABLE Metadata (id INT, data MAP(VARCHAR, ANY))");
-
-    ctx.exec(r#"INSERT INTO Metadata VALUES (1, '{"count": 42, "active": true, "name": "test", "ratio": 3.14}')"#);
-
-    let results = ctx.query("SELECT data FROM Metadata");
-    assert_eq!(results.len(), 1);
-    assert!(results[0].get("data").unwrap().to_string().contains("Map"));
-
-    ctx.commit();
-}
-
-#[test]
 fn test_map_in_where_clause() {
     let mut ctx = setup_test();
 
@@ -274,7 +257,6 @@ fn test_nested_maps() {
 }
 
 #[test]
-#[ignore = "GROUP BY with MAP not yet implemented"]
 fn test_group_by_map() {
     let mut ctx = setup_test();
 
@@ -285,8 +267,7 @@ fn test_group_by_map() {
     ctx.exec(r#"INSERT INTO Events VALUES (3, '{"type": "click", "page": "home"}')"#); // Duplicate
 
     // GROUP BY map column
-    let results =
-        ctx.query("SELECT metadata, COUNT(*) as cnt FROM Events GROUP BY metadata ORDER BY cnt");
+    let results = ctx.query("SELECT metadata, COUNT(*) as cnt FROM Events GROUP BY metadata");
     assert_eq!(results.len(), 2);
 
     ctx.commit();

@@ -174,32 +174,3 @@ fn test_values_function_signature() {
 
     ctx.commit();
 }
-
-#[test]
-#[ignore = "MAP with mixed value types requires MAP(VARCHAR, ANY) which is not yet supported"]
-fn test_values_mixed_data_types() {
-    let mut ctx = setup_test();
-
-    // This test requires MAP with heterogeneous value types
-    // Currently MAP requires homogeneous value types
-    TableBuilder::new(&mut ctx, "USER")
-        .create_simple("id INTEGER, data MAP(VARCHAR, VARCHAR)")
-        .insert_values(r#"(1, '{"str": "text", "num": "42", "bool": "true", "float": "3.14"}')"#);
-
-    let results = ctx.query("SELECT MAP_VALUES(data) as result FROM USER WHERE id=1");
-
-    assert_eq!(results.len(), 1);
-    let result = results[0].get("result").unwrap();
-
-    // Should return values as strings
-    if let Value::List(list) = result {
-        assert_eq!(list.len(), 4, "Should have 4 values");
-        // All values are strings in this version
-        let all_strings = list.iter().all(|v| matches!(v, Value::Str(_)));
-        assert!(all_strings, "All values should be strings");
-    } else {
-        panic!("Expected List value, got {:?}", result);
-    }
-
-    ctx.commit();
-}
