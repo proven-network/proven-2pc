@@ -457,6 +457,18 @@ impl SqlTransactionEngine {
                         }
                     })
                 }
+                crate::planning::plan::Plan::CreateIndex { name, .. } => {
+                    Some(PendingDdl::CreateIndex { name: name.clone() })
+                }
+                crate::planning::plan::Plan::DropIndex { name, .. } => {
+                    // Capture index metadata BEFORE drop
+                    self.storage.get_index_metadata().get(name).map(|metadata| {
+                        PendingDdl::DropIndex {
+                            name: name.clone(),
+                            metadata: metadata.clone(),
+                        }
+                    })
+                }
                 _ => None,
             };
 
@@ -673,6 +685,14 @@ impl TransactionEngine for SqlTransactionEngine {
                             // Undo RENAME TABLE: restore old schema AND remove new schema
                             self.storage
                                 .rollback_rename_table(&mut batch, old_name, new_name, old_schema)
+                        }
+                        PendingDdl::CreateIndex { name } => {
+                            // Undo CREATE INDEX: remove index from metadata
+                            self.storage.rollback_create_index(&mut batch, name)
+                        }
+                        PendingDdl::DropIndex { name, metadata } => {
+                            // Undo DROP INDEX: restore index metadata
+                            self.storage.rollback_drop_index(&mut batch, name, metadata)
                         }
                     } {
                         eprintln!("Warning: Failed to add DDL rollback to batch: {:?}", e);

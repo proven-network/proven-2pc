@@ -102,7 +102,15 @@ impl TestContext {
 
     /// Execute SQL and return the response
     pub fn exec_response(&mut self, sql: &str) -> SqlResponse {
-        let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
+        let tx = self.current_tx.unwrap_or_else(|| {
+            // No active transaction - create and begin a new one
+            let tx = self.next_timestamp();
+            let log_idx = self.next_log_index();
+            self.engine.begin(tx, log_idx);
+            self.current_tx = Some(tx);
+            self.in_transaction = true;
+            tx
+        });
         let log_index = self.next_log_index();
 
         match self.engine.apply_operation(
@@ -216,19 +224,23 @@ impl TestContext {
     pub fn assert_uses_index(&mut self, sql: &str, index_name: &str) {
         let explain_sql = format!("EXPLAIN {}", sql);
         let plan = self.exec_response(&explain_sql);
-        let plan_text = plan.as_explain_plan()
+        let plan_text = plan
+            .as_explain_plan()
             .expect("Expected EXPLAIN plan response");
 
         assert!(
             plan_text.contains("Index scan") || plan_text.contains("Index range scan"),
             "Query '{}' does not use index scan.\nPlan:\n{}",
-            sql, plan_text
+            sql,
+            plan_text
         );
 
         assert!(
             plan_text.contains(index_name),
             "Query '{}' does not use index '{}'.\nPlan:\n{}",
-            sql, index_name, plan_text
+            sql,
+            index_name,
+            plan_text
         );
     }
 
@@ -236,13 +248,15 @@ impl TestContext {
     pub fn assert_no_index_scan(&mut self, sql: &str) {
         let explain_sql = format!("EXPLAIN {}", sql);
         let plan = self.exec_response(&explain_sql);
-        let plan_text = plan.as_explain_plan()
+        let plan_text = plan
+            .as_explain_plan()
             .expect("Expected EXPLAIN plan response");
 
         assert!(
             !plan_text.contains("Index scan") && !plan_text.contains("Index range scan"),
             "Query '{}' unexpectedly uses index scan.\nPlan:\n{}",
-            sql, plan_text
+            sql,
+            plan_text
         );
     }
 }

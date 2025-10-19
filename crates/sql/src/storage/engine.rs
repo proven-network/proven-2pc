@@ -353,6 +353,64 @@ impl SqlStorage {
         Ok(())
     }
 
+    /// Rollback CREATE INDEX: remove index from metadata (batched)
+    pub fn rollback_create_index(
+        &mut self,
+        batch: &mut fjall::Batch,
+        index_name: &str,
+    ) -> Result<()> {
+        // Remove from in-memory state
+        self.index_storages.remove(index_name);
+        self.index_metadata.remove(index_name);
+
+        // Remove from persistent metadata
+        let index_key = format!("index_{}", index_name);
+        batch.remove(self.metadata.clone(), index_key);
+        Ok(())
+    }
+
+    /// Rollback DROP INDEX: restore index metadata (batched)
+    pub fn rollback_drop_index(
+        &mut self,
+        batch: &mut fjall::Batch,
+        index_name: &str,
+        metadata: &IndexMetadata,
+    ) -> Result<()> {
+        // Restore in-memory metadata
+        self.index_metadata
+            .insert(index_name.to_string(), metadata.clone());
+
+        // Recreate MvccStorage for this index
+        let mvcc_config = MvccConfig {
+            data_dir: self.config.data_dir.clone(),
+            block_cache_size: self.config.block_cache_size as u64,
+            compression: self.config.compression,
+            persist_mode: self.config.persist_mode,
+            history_bucket_duration: std::time::Duration::from_secs(60),
+            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
+            history_retention_window: std::time::Duration::from_secs(300),
+            uncommitted_retention_window: std::time::Duration::from_secs(120),
+            cleanup_interval: std::time::Duration::from_secs(30),
+        };
+
+        let index_storage = MvccStorage::<IndexEntity>::with_shared_keyspace(
+            self.keyspace.clone(),
+            index_name.to_string(),
+            mvcc_config,
+        )?;
+
+        self.index_storages
+            .insert(index_name.to_string(), index_storage);
+
+        // Restore persistent metadata
+        let index_key = format!("index_{}", index_name);
+        let mut index_bytes = Vec::new();
+        ciborium::into_writer(metadata, &mut index_bytes)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        batch.insert(&self.metadata, index_key, index_bytes);
+        Ok(())
+    }
+
     /// Get and increment table generation counter
     /// This ensures each CREATE gets a unique generation, even after DROP
     fn get_and_increment_table_generation(
@@ -1193,45 +1251,32 @@ impl SqlStorage {
             unique,
         };
 
-        // Persist metadata
-        let metadata_partition = self.keyspace.open_partition(
-            "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
-        )?;
+        // Store in memory immediately (for transaction-local visibility)
+        self.index_storages
+            .insert(index_name.clone(), index_storage);
+        self.index_metadata
+            .insert(index_name.clone(), metadata.clone());
 
+        // Persist metadata (will be rolled back if transaction aborts)
         let index_key = format!("index_{}", index_name);
         let mut index_bytes = Vec::new();
         ciborium::into_writer(&metadata, &mut index_bytes)
             .map_err(|e| Error::Serialization(e.to_string()))?;
 
-        metadata_partition.insert(index_key, index_bytes)?;
-
-        // Store in memory
-        self.index_storages
-            .insert(index_name.clone(), index_storage);
-        self.index_metadata.insert(index_name, metadata);
+        self.metadata.insert(index_key, index_bytes)?;
 
         Ok(())
     }
 
     /// Drop an index
     pub fn drop_index(&mut self, index_name: &str) -> Result<()> {
-        // Remove from in-memory state
+        // Remove from in-memory state immediately (for transaction-local visibility)
         self.index_storages.remove(index_name);
         self.index_metadata.remove(index_name);
 
-        // Remove metadata
-        let metadata_partition = self.keyspace.open_partition(
-            "_metadata",
-            PartitionCreateOptions::default()
-                .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
-        )?;
-
+        // Remove metadata from storage (will be rolled back if transaction aborts)
         let index_key = format!("index_{}", index_name);
-        metadata_partition.remove(index_key)?;
+        self.metadata.remove(index_key)?;
 
         // Note: MvccStorage partitions will be cleaned up when dropped
 
@@ -1361,6 +1406,7 @@ impl SqlStorage {
             index_iter,
             storage: self,
             table_name,
+            indexed_columns: index_meta.columns.clone(),
             txn_id,
         };
 
@@ -1375,7 +1421,9 @@ impl SqlStorage {
         &'a self,
         index_name: &str,
         start_values: Option<Vec<Value>>,
+        start_inclusive: bool,
         end_values: Option<Vec<Value>>,
+        end_inclusive: bool,
         txn_id: HlcTimestamp,
     ) -> Result<impl Iterator<Item = Result<(u64, Vec<Value>)>> + 'a> {
         // Get index metadata
@@ -1395,17 +1443,33 @@ impl SqlStorage {
         use std::ops::Bound;
         let start_bound = match start_values {
             Some(values) => {
-                let key = crate::storage::codec::encode_index_key(&values, 0);
-                let prefix_len = key.len() - 8; // Remove row_id
-                Bound::Included(key[..prefix_len].to_vec())
+                if start_inclusive {
+                    // Inclusive: start from (value, row_id=0)
+                    let key = crate::storage::codec::encode_index_key(&values, 0);
+                    let prefix_len = key.len() - 8; // Remove row_id
+                    Bound::Included(key[..prefix_len].to_vec())
+                } else {
+                    // Exclusive: start after (value, row_id=MAX)
+                    // This skips all entries with this value
+                    let key = crate::storage::codec::encode_index_key(&values, u64::MAX);
+                    Bound::Excluded(key)
+                }
             }
             None => Bound::Unbounded,
         };
 
         let end_bound = match end_values {
             Some(values) => {
-                let key = crate::storage::codec::encode_index_key(&values, u64::MAX);
-                Bound::Included(key)
+                if end_inclusive {
+                    // Inclusive: end at (value, row_id=MAX)
+                    let key = crate::storage::codec::encode_index_key(&values, u64::MAX);
+                    Bound::Included(key)
+                } else {
+                    // Exclusive: end before (value, row_id=0)
+                    let key = crate::storage::codec::encode_index_key(&values, 0);
+                    let prefix_len = key.len() - 8; // Remove row_id
+                    Bound::Excluded(key[..prefix_len].to_vec())
+                }
             }
             None => Bound::Unbounded,
         };
@@ -1418,6 +1482,7 @@ impl SqlStorage {
             index_iter,
             storage: self,
             table_name,
+            indexed_columns: index_meta.columns.clone(),
             txn_id,
         };
 
@@ -1511,6 +1576,7 @@ struct IndexLookupIterator<'a> {
     storage: &'a SqlStorage,
     table_name: String,
     txn_id: HlcTimestamp,
+    indexed_columns: Vec<String>, // Column names in the index
 }
 
 impl<'a> Iterator for IndexLookupIterator<'a> {
@@ -1526,7 +1592,26 @@ impl<'a> Iterator for IndexLookupIterator<'a> {
 
                     // Look up the row
                     match self.storage.read_row(&self.table_name, row_id, self.txn_id) {
-                        Ok(Some(values)) => return Some(Ok((row_id, values))),
+                        Ok(Some(values)) => {
+                            // Filter out rows with NULL values in indexed columns
+                            // Per SQL standard: NULL never matches equality or range predicates
+                            let has_null = self.indexed_columns.iter().any(|col_name| {
+                                if let Some(schema) = self.storage.schemas.get(&self.table_name)
+                                    && let Some(col_idx) =
+                                        schema.columns.iter().position(|c| &c.name == col_name)
+                                    && let Some(val) = values.get(col_idx)
+                                {
+                                    return val == &Value::Null;
+                                }
+                                false
+                            });
+
+                            if has_null {
+                                continue; // Skip rows with NULL in indexed columns
+                            }
+
+                            return Some(Ok((row_id, values)));
+                        }
                         Ok(None) => continue, // Row was deleted, skip to next
                         Err(e) => return Some(Err(e)),
                     }
@@ -2215,7 +2300,9 @@ mod tests {
             .index_range_scan(
                 "idx_age",
                 Some(vec![Value::integer(30)]),
+                true,
                 Some(vec![Value::integer(40)]),
+                true,
                 txn_id,
             )
             .unwrap()
@@ -2229,7 +2316,14 @@ mod tests {
 
         // Range scan: age >= 35 (no upper bound)
         let results: Vec<_> = storage
-            .index_range_scan("idx_age", Some(vec![Value::integer(35)]), None, txn_id)
+            .index_range_scan(
+                "idx_age",
+                Some(vec![Value::integer(35)]),
+                true,
+                None,
+                true,
+                txn_id,
+            )
             .unwrap()
             .collect::<Result<Vec<_>>>()
             .unwrap();
@@ -2241,7 +2335,14 @@ mod tests {
 
         // Range scan: age <= 30 (no lower bound)
         let results: Vec<_> = storage
-            .index_range_scan("idx_age", None, Some(vec![Value::integer(30)]), txn_id)
+            .index_range_scan(
+                "idx_age",
+                None,
+                true,
+                Some(vec![Value::integer(30)]),
+                true,
+                txn_id,
+            )
             .unwrap()
             .collect::<Result<Vec<_>>>()
             .unwrap();

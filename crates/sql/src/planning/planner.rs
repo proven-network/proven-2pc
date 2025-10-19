@@ -1206,7 +1206,20 @@ impl Planner {
     ) -> Result<Node> {
         // Try to use indexes if source is a Scan node
         if let Node::Scan { table, alias } = &source {
-            // Check predicate templates for index opportunities
+            // First, check for composite index opportunities (multiple equality predicates)
+            let predicate_refs: Vec<_> = context.analyzed.predicate_templates.iter().collect();
+            if let Some((index_name, values)) =
+                self.find_composite_index_match(table, &predicate_refs, context)?
+            {
+                return Ok(Node::IndexScan {
+                    table: table.clone(),
+                    alias: alias.clone(),
+                    index_name,
+                    values,
+                });
+            }
+
+            // Check predicate templates for single-column index opportunities
             for template in &context.analyzed.predicate_templates {
                 use crate::semantic::statement::PredicateTemplate;
 
@@ -1327,6 +1340,69 @@ impl Planner {
         }
 
         None
+    }
+
+    /// Find a composite index that matches multiple equality predicates
+    /// Returns (index_name, column_values) where column_values are in index column order
+    fn find_composite_index_match(
+        &self,
+        table: &str,
+        predicates: &[&crate::semantic::statement::PredicateTemplate],
+        context: &AnalyzedPlanContext,
+    ) -> Result<Option<(String, Vec<crate::types::expression::Expression>)>> {
+        use crate::semantic::statement::PredicateTemplate;
+
+        // Extract equality predicates for this table
+        let mut equality_map = std::collections::HashMap::new();
+        for template in predicates {
+            match template {
+                PredicateTemplate::Equality {
+                    table: tbl,
+                    column_name,
+                    value_expr,
+                } if tbl.eq_ignore_ascii_case(table) => {
+                    equality_map.insert(column_name.to_lowercase(), value_expr.clone());
+                }
+                PredicateTemplate::IndexedColumn {
+                    table: tbl,
+                    column,
+                    value: value_expr,
+                } if tbl.eq_ignore_ascii_case(table) => {
+                    equality_map.insert(column.to_lowercase(), value_expr.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Check each index to see if it's a composite index we can use
+        for (index_name, metadata) in &self.index_metadata {
+            if !metadata.table.eq_ignore_ascii_case(table) {
+                continue;
+            }
+
+            // Check if we have equality predicates for a prefix of the index columns
+            let mut matched_values = Vec::new();
+            for index_col in &metadata.columns {
+                if let Some(value_expr) = equality_map.get(&index_col.to_lowercase()) {
+                    matched_values.push(value_expr.clone());
+                } else {
+                    // Stop at first non-matching column (index prefix rule)
+                    break;
+                }
+            }
+
+            // If we matched more than one column, we found a composite index match
+            if matched_values.len() > 1 {
+                // Convert PredicateValues to Expressions
+                let mut expr_values = Vec::new();
+                for val in matched_values {
+                    expr_values.push(self.predicate_value_to_expression(&val, context)?);
+                }
+                return Ok(Some((index_name.clone(), expr_values)));
+            }
+        }
+
+        Ok(None)
     }
 
     fn extract_aggregates(

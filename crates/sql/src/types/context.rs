@@ -39,6 +39,13 @@ pub enum PendingDdl {
         new_name: String,
         old_schema: crate::types::schema::Table,
     },
+    CreateIndex {
+        name: String,
+    },
+    DropIndex {
+        name: String,
+        metadata: crate::types::index::IndexMetadata,
+    },
 }
 
 /// Transaction-level context (long-lived, spans multiple operations)

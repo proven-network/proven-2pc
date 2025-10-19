@@ -77,7 +77,10 @@ pub struct SemanticAnalyzer {
 }
 
 impl SemanticAnalyzer {
-    pub fn new(schemas: HashMap<String, Table>, index_metadata: HashMap<String, crate::types::index::IndexMetadata>) -> Self {
+    pub fn new(
+        schemas: HashMap<String, Table>,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
+    ) -> Self {
         Self {
             schemas,
             index_metadata,
@@ -104,7 +107,10 @@ impl SemanticAnalyzer {
     }
 
     /// Update index metadata (for schema changes)
-    pub fn update_index_metadata(&mut self, index_metadata: HashMap<String, crate::types::index::IndexMetadata>) {
+    pub fn update_index_metadata(
+        &mut self,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
+    ) {
         self.index_metadata = index_metadata;
     }
 

@@ -41,12 +41,19 @@ pub struct CachingSemanticAnalyzer {
 
 impl CachingSemanticAnalyzer {
     /// Create a new caching semantic analyzer with default capacity
-    pub fn new(schemas: HashMap<String, Table>, index_metadata: HashMap<String, crate::types::index::IndexMetadata>) -> Self {
+    pub fn new(
+        schemas: HashMap<String, Table>,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
+    ) -> Self {
         Self::with_capacity(schemas, index_metadata, DEFAULT_CACHE_CAPACITY)
     }
 
     /// Create a new caching semantic analyzer with specified capacity
-    pub fn with_capacity(schemas: HashMap<String, Table>, index_metadata: HashMap<String, crate::types::index::IndexMetadata>, capacity: usize) -> Self {
+    pub fn with_capacity(
+        schemas: HashMap<String, Table>,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
+        capacity: usize,
+    ) -> Self {
         Self {
             analyzer: SemanticAnalyzer::new(schemas, index_metadata),
             cache: LruCache::new(
@@ -91,7 +98,10 @@ impl CachingSemanticAnalyzer {
     }
 
     /// Update index metadata and invalidate cache
-    pub fn update_index_metadata(&mut self, index_metadata: HashMap<String, crate::types::index::IndexMetadata>) {
+    pub fn update_index_metadata(
+        &mut self,
+        index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
+    ) {
         self.analyzer.update_index_metadata(index_metadata);
         self.cache.clear();
     }

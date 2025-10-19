@@ -720,7 +720,9 @@ pub fn execute_node_read_with_outer<'a>(
                 let rows = storage.index_range_scan(
                     &index_name,
                     start_values,
+                    start_inclusive,
                     end_values,
+                    end_inclusive,
                     tx_ctx.txn_id,
                 )?;
 
