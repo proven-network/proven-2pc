@@ -114,28 +114,6 @@ fn test_group_by_with_multiple_aggregates() {
 }
 
 #[test]
-#[ignore = "Selecting non-grouped column without aggregate not yet supported"]
-fn test_group_by_select_non_aggregate_column() {
-    let mut ctx = setup_test();
-
-    TableBuilder::new(&mut ctx, "Item")
-        .create_simple("id INTEGER, city TEXT")
-        .insert_values(
-            "(1, 'New York'), \
-             (2, 'Boston'), \
-             (3, 'New York'), \
-             (4, 'Boston'), \
-             (5, 'Chicago')",
-        );
-
-    // This should fail or return arbitrary values for id within each city group
-    let results = ctx.query("SELECT id, city FROM Item GROUP BY city");
-    assert_eq!(results.len(), 3); // 3 distinct cities
-
-    ctx.commit();
-}
-
-#[test]
 fn test_group_by_numeric_column() {
     let mut ctx = setup_test();
 
@@ -202,28 +180,6 @@ fn test_group_by_multiple_columns() {
 }
 
 #[test]
-#[ignore = "HAVING clause not yet implemented"]
-fn test_group_by_with_having_clause() {
-    let mut ctx = setup_test();
-
-    TableBuilder::new(&mut ctx, "Item")
-        .create_simple("id INTEGER, city TEXT, ratio FLOAT")
-        .insert_values(
-            "(1, 'New York', 5.5), \
-             (2, 'Boston', 7.5), \
-             (3, 'Chicago', 8.0), \
-             (4, 'Boston', 3.0)",
-        );
-
-    // Only groups where ratio > 6
-    let results = ctx.query("SELECT id, ratio FROM Item GROUP BY id, city HAVING ratio > 6");
-    assert_eq!(results.len(), 2); // Only ids 2 and 3
-
-    ctx.commit();
-}
-
-#[test]
-#[ignore = "HAVING clause not yet implemented"]
 fn test_group_by_having_with_aggregate() {
     let mut ctx = setup_test();
 

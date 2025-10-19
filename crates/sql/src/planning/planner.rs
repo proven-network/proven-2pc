@@ -204,11 +204,16 @@ impl Planner {
         }
 
         // Apply GROUP BY and aggregates
-        // Check if there are any aggregate functions in the SELECT clause
+        // Check if there are any aggregate functions in the SELECT clause or HAVING clause
         let has_aggregates = select
             .select
             .iter()
-            .any(|(expr, _)| self.is_aggregate_expr(expr));
+            .any(|(expr, _)| self.is_aggregate_expr(expr))
+            || select
+                .having
+                .as_ref()
+                .map(|h| self.contains_aggregate_expr(h))
+                .unwrap_or(false);
         let group_by_count = select.group_by.len();
 
         if !select.group_by.is_empty() || has_aggregates {
@@ -218,17 +223,26 @@ impl Planner {
                 .map(|e| context.resolve_expression(e))
                 .collect::<Result<Vec<_>>>()?;
 
-            let aggregates = self.extract_aggregates(&select.select, &mut context)?;
+            let aggregates =
+                self.extract_aggregates(&select.select, select.having.as_ref(), &mut context)?;
+            let group_by_count = group_exprs.len();
 
             node = Node::Aggregate {
                 source: Box::new(node),
                 group_by: group_exprs,
-                aggregates,
+                aggregates: aggregates.clone(),
             };
 
             // Apply HAVING filter
             if let Some(ref having_expr) = select.having {
-                let predicate = context.resolve_expression(having_expr)?;
+                // Resolve HAVING with aggregate-to-column mapping
+                let predicate = self.resolve_having_expression(
+                    having_expr,
+                    &select.group_by,
+                    &aggregates,
+                    group_by_count,
+                    &mut context,
+                )?;
                 node = Node::Filter {
                     source: Box::new(node),
                     predicate,
@@ -1187,6 +1201,70 @@ impl Planner {
         }
     }
 
+    fn contains_aggregate_expr(&self, expr: &AstExpression) -> bool {
+        use crate::parsing::ast::Operator;
+
+        match expr {
+            // Check if this is an aggregate function
+            AstExpression::Function(_name, _) if self.is_aggregate_expr(expr) => true,
+            // Check function arguments
+            AstExpression::Function(_name, args) => {
+                args.iter().any(|arg| self.contains_aggregate_expr(arg))
+            }
+            // Recursively check operators
+            AstExpression::Operator(op) => match op {
+                Operator::And(l, r)
+                | Operator::Or(l, r)
+                | Operator::Xor(l, r)
+                | Operator::Equal(l, r)
+                | Operator::NotEqual(l, r)
+                | Operator::GreaterThan(l, r)
+                | Operator::GreaterThanOrEqual(l, r)
+                | Operator::LessThan(l, r)
+                | Operator::LessThanOrEqual(l, r)
+                | Operator::Add(l, r)
+                | Operator::Concat(l, r)
+                | Operator::Subtract(l, r)
+                | Operator::Multiply(l, r)
+                | Operator::Divide(l, r)
+                | Operator::Remainder(l, r)
+                | Operator::Exponentiate(l, r)
+                | Operator::BitwiseAnd(l, r)
+                | Operator::BitwiseOr(l, r)
+                | Operator::BitwiseXor(l, r)
+                | Operator::BitwiseShiftLeft(l, r)
+                | Operator::BitwiseShiftRight(l, r) => {
+                    self.contains_aggregate_expr(l) || self.contains_aggregate_expr(r)
+                }
+                Operator::Not(e)
+                | Operator::Negate(e)
+                | Operator::Identity(e)
+                | Operator::Factorial(e)
+                | Operator::BitwiseNot(e) => self.contains_aggregate_expr(e),
+                Operator::Between {
+                    expr, low, high, ..
+                } => {
+                    self.contains_aggregate_expr(expr)
+                        || self.contains_aggregate_expr(low)
+                        || self.contains_aggregate_expr(high)
+                }
+                Operator::InList { expr, list, .. } => {
+                    self.contains_aggregate_expr(expr)
+                        || list.iter().any(|item| self.contains_aggregate_expr(item))
+                }
+                Operator::Like { expr, pattern, .. } | Operator::ILike { expr, pattern, .. } => {
+                    self.contains_aggregate_expr(expr) || self.contains_aggregate_expr(pattern)
+                }
+                Operator::Is(e, _) => self.contains_aggregate_expr(e),
+                Operator::InSubquery { expr, subquery, .. } => {
+                    self.contains_aggregate_expr(expr) || self.contains_aggregate_expr(subquery)
+                }
+                Operator::Exists { subquery, .. } => self.contains_aggregate_expr(subquery),
+            },
+            _ => false,
+        }
+    }
+
     fn eval_constant(&self, expr: &AstExpression) -> Result<usize> {
         match expr {
             AstExpression::Literal(Literal::Integer(n)) if *n >= 0 && *n <= usize::MAX as i128 => {
@@ -1461,16 +1539,42 @@ impl Planner {
     fn extract_aggregates(
         &self,
         select: &[(AstExpression, Option<String>)],
+        having: Option<&AstExpression>,
         context: &mut AnalyzedPlanContext,
     ) -> Result<Vec<AggregateFunc>> {
         let mut aggregates = Vec::new();
 
         // Extract aggregate functions from SELECT expressions
         for (expr, _) in select.iter() {
-            // Check if this expression is an aggregate function
-            if self.is_aggregate_expr(expr)
-                && let AstExpression::Function(name, args) = expr
-            {
+            self.extract_aggregates_from_expr(expr, &mut aggregates, context)?;
+        }
+
+        // Extract aggregate functions from HAVING clause
+        if let Some(having_expr) = having {
+            self.extract_aggregates_from_expr(having_expr, &mut aggregates, context)?;
+        }
+
+        // Deduplicate aggregates while preserving order
+        // We need to maintain the original order because the projection depends on it
+        let mut seen = std::collections::HashSet::new();
+        aggregates.retain(|agg| {
+            let key = format!("{:?}", agg);
+            seen.insert(key)
+        });
+
+        Ok(aggregates)
+    }
+
+    fn extract_aggregates_from_expr(
+        &self,
+        expr: &AstExpression,
+        aggregates: &mut Vec<AggregateFunc>,
+        context: &mut AnalyzedPlanContext,
+    ) -> Result<()> {
+        use crate::parsing::ast::Operator;
+
+        match expr {
+            AstExpression::Function(name, args) if self.is_aggregate_expr(expr) => {
                 let func_name = name.to_uppercase();
 
                 let arg = if args.is_empty() {
@@ -1500,14 +1604,310 @@ impl Planner {
                     "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg),
                     "VARIANCE" => AggregateFunc::Variance(arg),
                     "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg),
-                    _ => continue,
+                    _ => return Ok(()),
                 };
 
                 aggregates.push(agg);
             }
+            // Recursively search for aggregates in operators
+            AstExpression::Operator(op) => match op {
+                Operator::And(l, r)
+                | Operator::Or(l, r)
+                | Operator::Xor(l, r)
+                | Operator::Equal(l, r)
+                | Operator::NotEqual(l, r)
+                | Operator::GreaterThan(l, r)
+                | Operator::GreaterThanOrEqual(l, r)
+                | Operator::LessThan(l, r)
+                | Operator::LessThanOrEqual(l, r)
+                | Operator::Add(l, r)
+                | Operator::Concat(l, r)
+                | Operator::Subtract(l, r)
+                | Operator::Multiply(l, r)
+                | Operator::Divide(l, r)
+                | Operator::Remainder(l, r)
+                | Operator::Exponentiate(l, r)
+                | Operator::BitwiseAnd(l, r)
+                | Operator::BitwiseOr(l, r)
+                | Operator::BitwiseXor(l, r)
+                | Operator::BitwiseShiftLeft(l, r)
+                | Operator::BitwiseShiftRight(l, r) => {
+                    self.extract_aggregates_from_expr(l, aggregates, context)?;
+                    self.extract_aggregates_from_expr(r, aggregates, context)?;
+                }
+                Operator::Not(e)
+                | Operator::Negate(e)
+                | Operator::Identity(e)
+                | Operator::Factorial(e)
+                | Operator::BitwiseNot(e) => {
+                    self.extract_aggregates_from_expr(e, aggregates, context)?;
+                }
+                Operator::Between {
+                    expr, low, high, ..
+                } => {
+                    self.extract_aggregates_from_expr(expr, aggregates, context)?;
+                    self.extract_aggregates_from_expr(low, aggregates, context)?;
+                    self.extract_aggregates_from_expr(high, aggregates, context)?;
+                }
+                Operator::InList { expr, list, .. } => {
+                    self.extract_aggregates_from_expr(expr, aggregates, context)?;
+                    for item in list {
+                        self.extract_aggregates_from_expr(item, aggregates, context)?;
+                    }
+                }
+                Operator::Like { expr, pattern, .. } | Operator::ILike { expr, pattern, .. } => {
+                    self.extract_aggregates_from_expr(expr, aggregates, context)?;
+                    self.extract_aggregates_from_expr(pattern, aggregates, context)?;
+                }
+                Operator::Is(e, _) => {
+                    self.extract_aggregates_from_expr(e, aggregates, context)?;
+                }
+                Operator::InSubquery { expr, subquery, .. } => {
+                    self.extract_aggregates_from_expr(expr, aggregates, context)?;
+                    self.extract_aggregates_from_expr(subquery, aggregates, context)?;
+                }
+                Operator::Exists { subquery, .. } => {
+                    self.extract_aggregates_from_expr(subquery, aggregates, context)?;
+                }
+            },
+            // Non-aggregate functions - check their arguments
+            AstExpression::Function(_name, args) => {
+                for arg in args {
+                    self.extract_aggregates_from_expr(arg, aggregates, context)?;
+                }
+            }
+            _ => {}
         }
 
-        Ok(aggregates)
+        Ok(())
+    }
+
+    /// Resolve HAVING expression, replacing aggregate functions with column references
+    fn resolve_having_expression(
+        &self,
+        having_expr: &AstExpression,
+        group_by: &[AstExpression],
+        aggregates: &[AggregateFunc],
+        group_by_count: usize,
+        context: &mut AnalyzedPlanContext,
+    ) -> Result<Expression> {
+        use crate::parsing::ast::Operator;
+
+        match having_expr {
+            // Check if this is an aggregate function that needs to be replaced with a column reference
+            AstExpression::Function(name, args) if self.is_aggregate_expr(having_expr) => {
+                // Find this aggregate in the aggregates list
+                let func_name = name.to_uppercase();
+
+                let arg = if args.is_empty() {
+                    Expression::Constant(crate::types::Value::integer(1))
+                } else if args.len() == 1 && matches!(args[0], AstExpression::All) {
+                    if func_name.ends_with("_DISTINCT") {
+                        Expression::All
+                    } else {
+                        Expression::Constant(crate::types::Value::integer(1))
+                    }
+                } else {
+                    context.resolve_expression(&args[0])?
+                };
+
+                let target_agg = match func_name.as_str() {
+                    "COUNT" => AggregateFunc::Count(arg.clone()),
+                    "COUNT_DISTINCT" => AggregateFunc::CountDistinct(arg.clone()),
+                    "SUM" => AggregateFunc::Sum(arg.clone()),
+                    "SUM_DISTINCT" => AggregateFunc::SumDistinct(arg.clone()),
+                    "AVG" => AggregateFunc::Avg(arg.clone()),
+                    "AVG_DISTINCT" => AggregateFunc::AvgDistinct(arg.clone()),
+                    "MIN" => AggregateFunc::Min(arg.clone()),
+                    "MIN_DISTINCT" => AggregateFunc::MinDistinct(arg.clone()),
+                    "MAX" => AggregateFunc::Max(arg.clone()),
+                    "MAX_DISTINCT" => AggregateFunc::MaxDistinct(arg.clone()),
+                    "STDEV" => AggregateFunc::StDev(arg.clone()),
+                    "STDEV_DISTINCT" => AggregateFunc::StDevDistinct(arg.clone()),
+                    "VARIANCE" => AggregateFunc::Variance(arg.clone()),
+                    "VARIANCE_DISTINCT" => AggregateFunc::VarianceDistinct(arg.clone()),
+                    _ => {
+                        return Err(Error::ExecutionError(format!(
+                            "Unknown aggregate function: {}",
+                            name
+                        )));
+                    }
+                };
+
+                // Find the index of this aggregate
+                if let Some(idx) = aggregates.iter().position(|a| a == &target_agg) {
+                    // Return column reference: GROUP BY columns + aggregate index
+                    Ok(Expression::Column(group_by_count + idx))
+                } else {
+                    Err(Error::ExecutionError(format!(
+                        "Aggregate function {} not found in aggregate list",
+                        name
+                    )))
+                }
+            }
+            // Check if this is a column reference from GROUP BY
+            AstExpression::Column(table, col) => {
+                // First check if it's in GROUP BY
+                for (idx, group_expr) in group_by.iter().enumerate() {
+                    if let AstExpression::Column(gt, gc) = group_expr
+                        && gc == col
+                        && (table.is_none() || table == gt)
+                    {
+                        return Ok(Expression::Column(idx));
+                    }
+                }
+                // If not in GROUP BY, resolve normally
+                context.resolve_expression(having_expr)
+            }
+            // Recursively handle operators
+            AstExpression::Operator(op) => {
+                let resolved_op = match op {
+                    Operator::And(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::And(Box::new(left), Box::new(right))
+                    }
+                    Operator::Or(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::Or(Box::new(left), Box::new(right))
+                    }
+                    Operator::GreaterThan(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::GreaterThan(Box::new(left), Box::new(right))
+                    }
+                    Operator::GreaterThanOrEqual(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::GreaterThanOrEqual(Box::new(left), Box::new(right))
+                    }
+                    Operator::LessThan(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::LessThan(Box::new(left), Box::new(right))
+                    }
+                    Operator::LessThanOrEqual(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::LessThanOrEqual(Box::new(left), Box::new(right))
+                    }
+                    Operator::Equal(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::Equal(Box::new(left), Box::new(right))
+                    }
+                    Operator::NotEqual(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::NotEqual(Box::new(left), Box::new(right))
+                    }
+                    _ => {
+                        // For other operators, resolve normally
+                        return context.resolve_expression(having_expr);
+                    }
+                };
+                Ok(resolved_op)
+            }
+            // For other expressions, resolve normally
+            _ => context.resolve_expression(having_expr),
+        }
     }
 
     fn plan_projection(

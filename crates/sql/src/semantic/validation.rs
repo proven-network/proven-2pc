@@ -43,6 +43,11 @@ impl SemanticValidator {
             self.validate_group_by_expr(expr, &group_by_exprs)?;
         }
 
+        // Check HAVING clause for non-aggregate, non-GROUP BY expressions
+        if let Some(ref having_expr) = select.having {
+            self.validate_group_by_expr(having_expr, &group_by_exprs)?;
+        }
+
         // Check ORDER BY for non-aggregate, non-GROUP BY expressions
         for (expr, _) in &select.order_by {
             self.validate_group_by_expr(expr, &group_by_exprs)?;
