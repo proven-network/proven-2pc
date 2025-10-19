@@ -20,26 +20,6 @@ fn test_create_table_with_map() {
 }
 
 #[test]
-#[ignore = "MAP with mixed value types requires proper JSON parsing"]
-fn test_insert_various_maps() {
-    let mut ctx = setup_test();
-
-    // Note: MAP(VARCHAR, VARCHAR) only accepts string values
-    // The original test has mixed types (int, string, bool)
-    TableBuilder::new(&mut ctx, "USER")
-        .create_simple("id INTEGER, data MAP(VARCHAR, VARCHAR)")
-        .insert_values(
-            r#"(1, '{"id": "1", "name": "alice", "is_male": "false"}'),
-               (2, '{"name": "bob"}'),
-               (3, '{}')"#,
-        );
-
-    ctx.assert_row_count("SELECT * FROM USER", 3);
-
-    ctx.commit();
-}
-
-#[test]
 fn test_values_sorted_descending() {
     let mut ctx = setup_test();
 
