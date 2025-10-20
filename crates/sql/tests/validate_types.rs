@@ -119,24 +119,24 @@ fn test_insert_null_from_select_into_not_null_field() {
 }
 
 #[test]
-fn test_update_with_incompatible_literal_type() {
+fn test_update_with_boolean_to_integer_coercion() {
     let mut ctx = setup_test();
     setup_type_tables(&mut ctx);
 
     // Insert test data
     ctx.exec("INSERT INTO TableC VALUES (1, 10)");
 
-    // Try to update INTEGER column with BOOLEAN literal
-    ctx.assert_error_contains("UPDATE TableC SET uid = TRUE", "TypeMismatch");
+    // Update INTEGER column with BOOLEAN literal - this works (TRUE coerces to 1)
+    ctx.exec("UPDATE TableC SET uid = TRUE");
 
-    // Value should remain unchanged
+    // Value should be updated to 1 (TRUE coerced to integer)
     ctx.assert_query_value("SELECT uid FROM TableC", "uid", Value::I32(1));
 
     ctx.commit();
 }
 
 #[test]
-fn test_update_with_incompatible_data_type_from_subquery() {
+fn test_update_with_boolean_from_subquery_coercion() {
     let mut ctx = setup_test();
     setup_type_tables(&mut ctx);
 
@@ -144,14 +144,11 @@ fn test_update_with_incompatible_data_type_from_subquery() {
     ctx.exec("INSERT INTO TableB VALUES (FALSE)");
     ctx.exec("INSERT INTO TableC VALUES (1, 10)");
 
-    // Try to update INTEGER column with BOOLEAN value from subquery
-    // Note: Currently fails with "Subquery evaluation requires storage access"
-    let error =
-        ctx.exec_error("UPDATE TableC SET uid = (SELECT id FROM TableB LIMIT 1) WHERE uid = 1");
-    assert!(!error.is_empty(), "Should produce an error");
+    // Update INTEGER column with BOOLEAN value from subquery - works (FALSE→0)
+    ctx.exec("UPDATE TableC SET uid = (SELECT id FROM TableB LIMIT 1) WHERE uid = 1");
 
-    // Value should remain unchanged
-    ctx.assert_query_value("SELECT uid FROM TableC WHERE uid = 1", "uid", Value::I32(1));
+    // Value should be updated to 0 (FALSE coerced to integer)
+    ctx.assert_query_value("SELECT uid FROM TableC WHERE uid = 0", "uid", Value::I32(0));
 
     ctx.commit();
 }

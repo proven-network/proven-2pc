@@ -507,17 +507,13 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
                 // Parse the target type using parse_type() to support complex types
                 let target_type = self.parse_type()?;
 
-                // Convert the DataType to a string representation for cast_value
-                let type_string = data_type_to_cast_string(&target_type);
-
                 self.expect(Token::CloseParen)?;
 
-                // Use the Function expression with a special CAST function name
-                // We'll encode the type as the second argument
-                Expression::Function(
-                    "CAST".to_string(),
-                    vec![expr, Expression::Literal(Literal::String(type_string))],
-                )
+                // Use the dedicated Cast expression variant
+                Expression::Cast {
+                    expr: Box::new(expr),
+                    target_type,
+                }
             }
 
             // EXTRACT expression: EXTRACT(field FROM source)
@@ -979,63 +975,5 @@ pub trait ExpressionParser: TokenHelper + LiteralParser + DmlParser {
             };
             Some(operator).filter(|op| op.precedence() >= min_precedence)
         }))
-    }
-}
-
-/// Helper function to convert DataType to a cast string.
-fn data_type_to_cast_string(data_type: &DataType) -> String {
-    // This should match the reverse of what's expected in cast_value
-    match data_type {
-        DataType::Bool => "BOOLEAN".to_string(),
-        DataType::I8 => "TINYINT".to_string(),
-        DataType::I16 => "SMALLINT".to_string(),
-        DataType::I32 => "INT".to_string(),
-        DataType::I64 => "BIGINT".to_string(),
-        DataType::I128 => "HUGEINT".to_string(),
-        DataType::U8 => "TINYINT UNSIGNED".to_string(),
-        DataType::U16 => "SMALLINT UNSIGNED".to_string(),
-        DataType::U32 => "INT UNSIGNED".to_string(),
-        DataType::U64 => "BIGINT UNSIGNED".to_string(),
-        DataType::U128 => "HUGEINT UNSIGNED".to_string(),
-        DataType::F32 => "REAL".to_string(),
-        DataType::F64 => "DOUBLE".to_string(),
-        DataType::Text => "TEXT".to_string(),
-        DataType::Str => "STRING".to_string(),
-        DataType::Bytea => "BYTEA".to_string(),
-        DataType::Date => "DATE".to_string(),
-        DataType::Time => "TIME".to_string(),
-        DataType::Timestamp => "TIMESTAMP".to_string(),
-        DataType::Interval => "INTERVAL".to_string(),
-        DataType::Uuid => "UUID".to_string(),
-        DataType::Array(inner, size) => {
-            if let Some(s) = size {
-                format!("{}[{}]", data_type_to_cast_string(inner), s)
-            } else {
-                format!("{}[]", data_type_to_cast_string(inner))
-            }
-        }
-        DataType::List(inner) => format!("{}[]", data_type_to_cast_string(inner)),
-        DataType::Map(key, value) => format!(
-            "MAP<{}, {}>",
-            data_type_to_cast_string(key),
-            data_type_to_cast_string(value)
-        ),
-        DataType::Struct(fields) => {
-            let field_strs: Vec<String> = fields
-                .iter()
-                .map(|(name, dt)| format!("{}: {}", name, data_type_to_cast_string(dt)))
-                .collect();
-            format!("STRUCT<{}>", field_strs.join(", "))
-        }
-        DataType::Decimal(p, s) => match (p, s) {
-            (Some(precision), Some(scale)) => format!("DECIMAL({}, {})", precision, scale),
-            (Some(precision), None) => format!("DECIMAL({})", precision),
-            _ => "DECIMAL".to_string(),
-        },
-        DataType::Inet => "INET".to_string(),
-        DataType::Point => "POINT".to_string(),
-        DataType::Json => "JSON".to_string(),
-        DataType::Nullable(inner) => format!("{}?", data_type_to_cast_string(inner)),
-        DataType::Null => "NULL".to_string(),
     }
 }

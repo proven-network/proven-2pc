@@ -972,6 +972,11 @@ impl StatementPlanner {
                     "CASE expressions are not allowed in index expressions".to_string(),
                 ));
             }
+
+            AstExpression::Cast { expr, .. } => {
+                // Validate the inner expression
+                Self::validate_no_subqueries_in_expression(expr)?;
+            }
         }
         Ok(())
     }

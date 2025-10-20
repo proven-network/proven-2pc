@@ -128,6 +128,8 @@ impl AggregatePlanner {
                 .any(|(k, v)| Self::contains_aggregate_expr(k) || Self::contains_aggregate_expr(v)),
             // Subquery - already handled separately, don't recurse
             AstExpression::Subquery(_) => false,
+            // CAST expression - check the inner expression
+            AstExpression::Cast { expr, .. } => Self::contains_aggregate_expr(expr),
             // These don't contain nested expressions
             AstExpression::All
             | AstExpression::QualifiedWildcard(_)
@@ -299,6 +301,10 @@ impl AggregatePlanner {
             }
             // Subquery - already handled separately, don't recurse
             AstExpression::Subquery(_) => {}
+            // CAST expression - extract from the inner expression
+            AstExpression::Cast { expr, .. } => {
+                Self::extract_aggregates_from_expr(expr, aggregates, resolve_expression)?;
+            }
             // These don't contain nested expressions
             AstExpression::All
             | AstExpression::QualifiedWildcard(_)

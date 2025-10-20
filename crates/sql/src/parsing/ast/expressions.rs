@@ -44,6 +44,11 @@ pub enum Expression {
     MapLiteral(Vec<(Expression, Expression)>),
     /// Subquery
     Subquery(Box<super::SelectStatement>),
+    /// CAST expression: CAST(expr AS type)
+    Cast {
+        expr: Box<Expression>,
+        target_type: crate::types::data_type::DataType,
+    },
 }
 
 /// Expression literal values.

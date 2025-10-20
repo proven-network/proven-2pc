@@ -228,9 +228,11 @@ fn test_cast_to_array() {
 
     // Verify it rejects wrong size
     let error = ctx.exec_error("SELECT CAST('[1, 2]' AS INT[3])");
+    let error_str = error.to_string();
     assert!(
-        error.to_string().contains("array with 3 elements")
-            || error.to_string().contains("array with 2 elements")
+        error_str.contains("3") && error_str.contains("2"),
+        "Expected error to mention sizes 3 and 2, got: {}",
+        error_str
     );
 
     ctx.commit();

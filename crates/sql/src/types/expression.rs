@@ -123,6 +123,9 @@ pub enum Expression {
         when_clauses: Vec<(Expression, Expression)>,
         else_clause: Option<Box<Expression>>,
     },
+
+    /// CAST expression: CAST(expr AS type)
+    Cast(Box<Expression>, crate::types::data_type::DataType),
 }
 
 impl Display for Expression {
@@ -275,6 +278,8 @@ impl Display for Expression {
                 }
                 write!(f, " END")
             }
+
+            Cast(expr, target_type) => write!(f, "CAST({} AS {})", expr, target_type),
         }
     }
 }
@@ -349,6 +354,9 @@ pub enum DefaultExpression {
         when_clauses: Vec<(DefaultExpression, DefaultExpression)>,
         else_clause: Option<Box<DefaultExpression>>,
     },
+
+    // Type conversion
+    Cast(Box<DefaultExpression>, crate::types::data_type::DataType),
 }
 
 impl Display for DefaultExpression {
@@ -442,6 +450,7 @@ impl From<DefaultExpression> for Expression {
                     .collect(),
                 else_clause: else_clause.map(|e| Box::new((*e).into())),
             },
+            DE::Cast(expr, target_type) => E::Cast(Box::new((*expr).into()), target_type),
         }
     }
 }

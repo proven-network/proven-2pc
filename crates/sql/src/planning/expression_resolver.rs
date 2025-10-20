@@ -349,6 +349,15 @@ impl<'a> AnalyzedPlanContext<'a> {
                     else_clause: resolved_else,
                 })
             }
+
+            AstExpression::Cast { expr, target_type } => {
+                // Resolve the inner expression and wrap with Cast
+                let resolved_expr = self.resolve_expression_simple(expr)?;
+                Ok(Expression::Cast(
+                    Box::new(resolved_expr),
+                    target_type.clone(),
+                ))
+            }
         }
     }
 
@@ -912,6 +921,12 @@ pub(super) fn resolve_default_expression(
                 })
                 .collect::<Result<Vec<_>>>()?;
             Ok(DefaultExpression::MapLiteral(resolved_pairs))
+        }
+
+        AstExpression::Cast { expr, target_type } => {
+            // CAST is allowed in DEFAULT expressions
+            let resolved_expr = Box::new(resolve_default_expression(expr)?);
+            Ok(DefaultExpression::Cast(resolved_expr, target_type.clone()))
         }
 
         _ => Err(Error::ExecutionError(

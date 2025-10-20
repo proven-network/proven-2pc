@@ -612,6 +612,26 @@ impl TypeChecker {
                 }
             }
 
+            Expression::Cast { expr, target_type } => {
+                // Infer the type of the expression being cast
+                let cast_expr_id = expr_id.child(0);
+                let expr_type = self.infer_expr_type_new(
+                    expr,
+                    &cast_expr_id,
+                    column_map,
+                    param_types,
+                    type_map,
+                )?;
+
+                // The result type is the target type
+                // Preserve nullability from the source expression
+                TypeInfo {
+                    data_type: target_type.clone(),
+                    nullable: expr_type.nullable,
+                    is_aggregate: expr_type.is_aggregate,
+                }
+            }
+
             Expression::Subquery(_) => {
                 // For now, assume subqueries return a nullable value
                 // The actual type would need to be inferred from the SELECT statement

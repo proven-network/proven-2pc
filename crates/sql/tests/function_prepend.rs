@@ -67,7 +67,7 @@ fn test_prepend_text_to_list() {
     // Prepending TEXT to INTEGER[] should error - lists can't have mixed types
     ctx.assert_error_contains(
         "SELECT PREPEND(element2, items) as myprepend FROM Prepend",
-        "TypeMismatch",
+        "Cannot cast",
     );
 
     ctx.abort();
@@ -142,7 +142,7 @@ fn test_prepend_mixed_types() {
     // Prepending a string to an integer list should error - lists can't have mixed types
     ctx.assert_error_contains(
         "SELECT PREPEND(str_val, items) as result FROM MixedTest",
-        "TypeMismatch",
+        "Cannot cast",
     );
 
     ctx.abort();

@@ -689,14 +689,23 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
                             let coerced_val =
                                 coerce_value_impl(val.clone(), field_type).map_err(|e| {
                                     // If coercion fails, provide more specific error for struct fields
-                                    if let Error::TypeMismatch { expected, found } = e {
-                                        Error::StructFieldTypeMismatch {
-                                            field: field_name.clone(),
-                                            expected,
-                                            found,
+                                    match e {
+                                        Error::TypeMismatch { expected, found } => {
+                                            Error::StructFieldTypeMismatch {
+                                                field: field_name.clone(),
+                                                expected,
+                                                found,
+                                            }
                                         }
-                                    } else {
-                                        e
+                                        Error::ExecutionError(msg) => {
+                                            // Convert ExecutionError to StructFieldTypeMismatch
+                                            Error::StructFieldTypeMismatch {
+                                                field: field_name.clone(),
+                                                expected: field_type.to_string(),
+                                                found: format!("conversion failed: {}", msg),
+                                            }
+                                        }
+                                        _ => e,
                                     }
                                 })?;
                             fields.push((field_name.clone(), coerced_val));
@@ -890,6 +899,139 @@ pub fn coerce_value_impl(value: Value, target_type: &DataType) -> Result<Value> 
 
         // JSON to String (serialize JSON to string)
         (Value::Json(j), DataType::Str | DataType::Text) => Ok(Value::Str(j.to_string())),
+
+        // String to signed integer types (parsing)
+        (Value::Str(s), DataType::I8) => s
+            .parse::<i8>()
+            .map(Value::I8)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to TINYINT", s))),
+        (Value::Str(s), DataType::I16) => s
+            .parse::<i16>()
+            .map(Value::I16)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to SMALLINT", s))),
+        (Value::Str(s), DataType::I32) => s
+            .parse::<i32>()
+            .map(Value::I32)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to INT", s))),
+        (Value::Str(s), DataType::I64) => s
+            .parse::<i64>()
+            .map(Value::I64)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to BIGINT", s))),
+        (Value::Str(s), DataType::I128) => s
+            .parse::<i128>()
+            .map(Value::I128)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to HUGEINT", s))),
+
+        // String to unsigned integer types (parsing)
+        (Value::Str(s), DataType::U8) => s
+            .parse::<u8>()
+            .map(Value::U8)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to TINYINT UNSIGNED", s))),
+        (Value::Str(s), DataType::U16) => s.parse::<u16>().map(Value::U16).map_err(|_| {
+            Error::ExecutionError(format!("Cannot cast '{}' to SMALLINT UNSIGNED", s))
+        }),
+        (Value::Str(s), DataType::U32) => s
+            .parse::<u32>()
+            .map(Value::U32)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to INT UNSIGNED", s))),
+        (Value::Str(s), DataType::U64) => s
+            .parse::<u64>()
+            .map(Value::U64)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to BIGINT UNSIGNED", s))),
+        (Value::Str(s), DataType::U128) => s
+            .parse::<u128>()
+            .map(Value::U128)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to HUGEINT UNSIGNED", s))),
+
+        // String to float types (parsing)
+        (Value::Str(s), DataType::F32) => s
+            .parse::<f32>()
+            .map(Value::F32)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to REAL", s))),
+        (Value::Str(s), DataType::F64) => s
+            .parse::<f64>()
+            .map(Value::F64)
+            .map_err(|_| Error::ExecutionError(format!("Cannot cast '{}' to DOUBLE PRECISION", s))),
+
+        // String to boolean (parsing)
+        (Value::Str(s), DataType::Bool) => match s.to_uppercase().as_str() {
+            "TRUE" | "T" | "YES" | "Y" | "1" => Ok(Value::Bool(true)),
+            "FALSE" | "F" | "NO" | "N" | "0" => Ok(Value::Bool(false)),
+            _ => Err(Error::ExecutionError(format!(
+                "Cannot cast '{}' to BOOLEAN",
+                s
+            ))),
+        },
+
+        // Float to signed integer types (truncating CAST)
+        (Value::F32(v), DataType::I8) => {
+            let truncated = v.trunc();
+            if truncated >= i8::MIN as f32 && truncated <= i8::MAX as f32 {
+                Ok(Value::I8(truncated as i8))
+            } else {
+                Err(Error::ExecutionError(format!(
+                    "Float {} out of range for TINYINT",
+                    v
+                )))
+            }
+        }
+        (Value::F32(v), DataType::I16) => {
+            let truncated = v.trunc();
+            if truncated >= i16::MIN as f32 && truncated <= i16::MAX as f32 {
+                Ok(Value::I16(truncated as i16))
+            } else {
+                Err(Error::ExecutionError(format!(
+                    "Float {} out of range for SMALLINT",
+                    v
+                )))
+            }
+        }
+        (Value::F32(v), DataType::I32) => Ok(Value::I32(v.trunc() as i32)),
+        (Value::F32(v), DataType::I64) => Ok(Value::I64(v.trunc() as i64)),
+        (Value::F32(v), DataType::I128) => Ok(Value::I128(v.trunc() as i128)),
+
+        (Value::F64(v), DataType::I8) => {
+            let truncated = v.trunc();
+            if truncated >= i8::MIN as f64 && truncated <= i8::MAX as f64 {
+                Ok(Value::I8(truncated as i8))
+            } else {
+                Err(Error::ExecutionError(format!(
+                    "Double {} out of range for TINYINT",
+                    v
+                )))
+            }
+        }
+        (Value::F64(v), DataType::I16) => {
+            let truncated = v.trunc();
+            if truncated >= i16::MIN as f64 && truncated <= i16::MAX as f64 {
+                Ok(Value::I16(truncated as i16))
+            } else {
+                Err(Error::ExecutionError(format!(
+                    "Double {} out of range for SMALLINT",
+                    v
+                )))
+            }
+        }
+        (Value::F64(v), DataType::I32) => Ok(Value::I32(v.trunc() as i32)),
+        (Value::F64(v), DataType::I64) => Ok(Value::I64(v.trunc() as i64)),
+        (Value::F64(v), DataType::I128) => Ok(Value::I128(v.trunc() as i128)),
+
+        // Boolean to integer types
+        (Value::Bool(b), DataType::I8) => Ok(Value::I8(if *b { 1 } else { 0 })),
+        (Value::Bool(b), DataType::I16) => Ok(Value::I16(if *b { 1 } else { 0 })),
+        (Value::Bool(b), DataType::I32) => Ok(Value::I32(if *b { 1 } else { 0 })),
+        (Value::Bool(b), DataType::I64) => Ok(Value::I64(if *b { 1 } else { 0 })),
+        (Value::Bool(b), DataType::I128) => Ok(Value::I128(if *b { 1 } else { 0 })),
+
+        // Integer to boolean
+        (Value::I8(v), DataType::Bool) => Ok(Value::Bool(*v != 0)),
+        (Value::I16(v), DataType::Bool) => Ok(Value::Bool(*v != 0)),
+        (Value::I32(v), DataType::Bool) => Ok(Value::Bool(*v != 0)),
+        (Value::I64(v), DataType::Bool) => Ok(Value::Bool(*v != 0)),
+        (Value::I128(v), DataType::Bool) => Ok(Value::Bool(*v != 0)),
+
+        // Any type to string (using Display)
+        (_, DataType::Str | DataType::Text) => Ok(Value::Str(value.to_string())),
 
         // No coercion possible
         _ => Err(Error::TypeMismatch {

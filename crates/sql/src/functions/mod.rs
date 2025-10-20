@@ -35,7 +35,6 @@ mod variance;
 mod variance_distinct;
 
 // Type functions
-mod cast;
 pub(crate) mod coalesce;
 mod ifnull;
 mod nullif;
@@ -149,7 +148,6 @@ impl FunctionRegistry {
         variance_distinct::register(&mut registry);
 
         // Register type functions
-        cast::register(&mut registry);
         coalesce::register(&mut registry);
         ifnull::register(&mut registry);
         nullif::register(&mut registry);

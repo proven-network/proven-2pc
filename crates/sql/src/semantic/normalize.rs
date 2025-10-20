@@ -213,6 +213,11 @@ pub fn normalize_expression(expr: &Expression) -> Expression {
                 .map(|e| Box::new(normalize_expression(e))),
         },
 
+        // Cast: normalize the inner expression
+        Expression::Cast(inner, target_type) => {
+            Expression::Cast(Box::new(normalize_expression(inner)), target_type.clone())
+        }
+
         // Subqueries and constants: return as-is
         Expression::InSubquery(_, _, _) => expr.clone(),
         Expression::Exists(_, _) => expr.clone(),
@@ -377,6 +382,11 @@ pub fn expressions_equal(left: &Expression, right: &Expression) -> bool {
 
         (Expression::FieldAccess(b1, f1), Expression::FieldAccess(b2, f2)) => {
             expressions_equal(b1, b2) && f1 == f2
+        }
+
+        // Cast expressions
+        (Expression::Cast(e1, t1), Expression::Cast(e2, t2)) => {
+            t1 == t2 && expressions_equal(e1, e2)
         }
 
         _ => false,
