@@ -43,6 +43,32 @@ fn test_update_all_rows() {
 }
 
 #[test]
+fn test_update_verify_affected_row_count() {
+    let mut ctx = setup_test();
+    setup_test_tables(&mut ctx);
+
+    // Update multiple rows and verify affected count
+    let response = ctx.exec_response("UPDATE TableA SET num2 = 100 WHERE id = 1");
+
+    // Verify the response contains the correct affected row count
+    match response {
+        proven_sql::SqlResponse::ExecuteResult { rows_affected, .. } => {
+            assert_eq!(
+                rows_affected,
+                Some(2),
+                "Should have updated 2 rows with id=1"
+            );
+        }
+        _ => panic!("Expected ExecuteResult response"),
+    }
+
+    // Verify the updates occurred
+    assert_rows!(ctx, "SELECT * FROM TableA WHERE num2 = 100", 2);
+
+    ctx.commit();
+}
+
+#[test]
 fn test_update_with_where_clause() {
     let mut ctx = setup_test();
     setup_test_tables(&mut ctx);
