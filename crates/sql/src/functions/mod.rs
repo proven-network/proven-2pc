@@ -83,6 +83,11 @@ mod take;
 mod unwrap;
 mod values;
 
+// Geometry functions
+mod calc_distance;
+mod get_x;
+mod get_y;
+
 /// Metadata about a function's signature
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
@@ -191,6 +196,11 @@ impl FunctionRegistry {
         fields::register(&mut registry);
         merge::register(&mut registry);
         from_entries::register(&mut registry);
+
+        // Register geometry functions
+        get_x::register(&mut registry);
+        get_y::register(&mut registry);
+        calc_distance::register(&mut registry);
 
         registry
     }
