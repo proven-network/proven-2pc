@@ -73,7 +73,6 @@ fn test_min_with_expression() {
 }
 
 #[test]
-#[ignore = "Multiple aggregates in expression not yet supported"]
 fn test_min_in_complex_expression() {
     let mut ctx = setup_test();
 

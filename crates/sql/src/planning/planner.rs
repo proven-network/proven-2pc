@@ -2020,6 +2020,74 @@ impl Planner {
                         )?;
                         Expression::NotEqual(Box::new(left), Box::new(right))
                     }
+                    Operator::Add(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::Add(Box::new(left), Box::new(right))
+                    }
+                    Operator::Subtract(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::Subtract(Box::new(left), Box::new(right))
+                    }
+                    Operator::Multiply(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::Multiply(Box::new(left), Box::new(right))
+                    }
+                    Operator::Divide(l, r) => {
+                        let left = self.resolve_having_expression(
+                            l,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        let right = self.resolve_having_expression(
+                            r,
+                            group_by,
+                            aggregates,
+                            group_by_count,
+                            context,
+                        )?;
+                        Expression::Divide(Box::new(left), Box::new(right))
+                    }
                     _ => {
                         // For other operators, resolve normally
                         return context.resolve_expression(having_expr);
