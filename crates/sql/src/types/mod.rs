@@ -5,6 +5,7 @@ pub mod data_type;
 pub mod expression;
 pub mod index;
 pub mod operation;
+pub mod plan;
 pub mod query;
 pub mod response;
 pub mod schema;

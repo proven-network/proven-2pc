@@ -6,9 +6,9 @@
 use super::{aggregator::Aggregator, expression, helpers, join};
 use crate::error::{Error, Result};
 use crate::operators;
-use crate::planning::plan::{Node, Plan};
 use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
+use crate::types::plan::{Node, Plan};
 use crate::types::query::Rows;
 use crate::types::{Value, ValueExt};
 use std::collections::HashMap;
@@ -1254,8 +1254,8 @@ pub fn execute_node_read_with_outer<'a>(
                         .unwrap_or(std::cmp::Ordering::Equal);
                     if cmp != std::cmp::Ordering::Equal {
                         return match direction {
-                            crate::planning::plan::Direction::Ascending => cmp,
-                            crate::planning::plan::Direction::Descending => cmp.reverse(),
+                            crate::types::plan::Direction::Ascending => cmp,
+                            crate::types::plan::Direction::Descending => cmp.reverse(),
                         };
                     }
                 }

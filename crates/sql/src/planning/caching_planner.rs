@@ -3,11 +3,11 @@
 //! This module provides a caching wrapper around the query planner that
 //! maintains an LRU cache of query plans to avoid redundant planning.
 
-use super::plan::Plan;
 use super::planner::Planner;
 use crate::error::Result;
 use crate::semantic::statement::AnalyzedStatement;
 use crate::types::index::IndexMetadata;
+use crate::types::plan::Plan;
 use crate::types::schema::Table;
 use lru::LruCache;
 use std::collections::HashMap;

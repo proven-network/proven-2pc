@@ -5,10 +5,10 @@
 
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, expression, helpers};
-use crate::planning::plan::Node;
 use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::Expression;
+use crate::types::plan::Node;
 use crate::types::schema::Table;
 use crate::types::{Value, ValueExt};
 

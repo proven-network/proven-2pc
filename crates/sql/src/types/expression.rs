@@ -109,17 +109,13 @@ pub enum Expression {
 
     /// IN subquery: expr IN (SELECT ...)
     /// Store the subquery plan for execution
-    InSubquery(
-        Box<Expression>,
-        Box<super::super::planning::plan::Plan>,
-        bool,
-    ), // expr, subquery plan, negated
+    InSubquery(Box<Expression>, Box<crate::types::plan::Plan>, bool), // expr, subquery plan, negated
 
     /// EXISTS subquery: EXISTS (SELECT ...)
-    Exists(Box<super::super::planning::plan::Plan>, bool), // subquery plan, negated
+    Exists(Box<crate::types::plan::Plan>, bool), // subquery plan, negated
 
     /// Scalar subquery: (SELECT ...)
-    Subquery(Box<super::super::planning::plan::Plan>),
+    Subquery(Box<crate::types::plan::Plan>),
 
     /// CASE expression with optional operand and when/then clauses
     Case {

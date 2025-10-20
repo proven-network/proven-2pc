@@ -5,11 +5,11 @@
 
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, helpers};
-use crate::planning::plan::Node;
 use crate::storage::SqlStorage;
 use crate::types::Value;
 use crate::types::context::ExecutionContext;
 use crate::types::expression::{DefaultExpression, Expression};
+use crate::types::plan::Node;
 use crate::types::schema::Table;
 
 /// Evaluate a DEFAULT expression at INSERT time with transaction context

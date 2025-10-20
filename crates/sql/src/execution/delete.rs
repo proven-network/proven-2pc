@@ -5,9 +5,9 @@
 
 use crate::error::{Error, Result};
 use crate::execution::{ExecutionResult, expression, helpers};
-use crate::planning::plan::Node;
 use crate::storage::SqlStorage;
 use crate::types::context::ExecutionContext;
+use crate::types::plan::Node;
 use crate::types::{Value, ValueExt};
 
 /// Execute DELETE with phased read-then-write approach

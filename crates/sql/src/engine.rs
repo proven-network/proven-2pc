@@ -419,10 +419,10 @@ impl SqlTransactionEngine {
             use crate::types::context::PendingDdl;
 
             let pending_ddl = match plan.as_ref() {
-                crate::planning::plan::Plan::CreateTable { name, .. } => {
+                crate::types::plan::Plan::CreateTable { name, .. } => {
                     Some(PendingDdl::Create { name: name.clone() })
                 }
-                crate::planning::plan::Plan::DropTable { names, .. } => {
+                crate::types::plan::Plan::DropTable { names, .. } => {
                     // Capture schema BEFORE drop
                     names.iter().find_map(|name| {
                         self.storage
@@ -434,7 +434,7 @@ impl SqlTransactionEngine {
                             })
                     })
                 }
-                crate::planning::plan::Plan::AlterTable {
+                crate::types::plan::Plan::AlterTable {
                     name, operation, ..
                 } => {
                     // Capture schema BEFORE alter
@@ -457,10 +457,10 @@ impl SqlTransactionEngine {
                         }
                     })
                 }
-                crate::planning::plan::Plan::CreateIndex { name, .. } => {
+                crate::types::plan::Plan::CreateIndex { name, .. } => {
                     Some(PendingDdl::CreateIndex { name: name.clone() })
                 }
-                crate::planning::plan::Plan::DropIndex { name, .. } => {
+                crate::types::plan::Plan::DropIndex { name, .. } => {
                     // Capture index metadata BEFORE drop
                     self.storage.get_index_metadata().get(name).map(|metadata| {
                         PendingDdl::DropIndex {

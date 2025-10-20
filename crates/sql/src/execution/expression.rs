@@ -410,7 +410,7 @@ fn evaluate_with_storage_and_outer(
 
             // Execute the subquery plan
             let node = match plan.as_ref() {
-                crate::planning::plan::Plan::Query { root, .. } => root.as_ref().clone(),
+                crate::types::plan::Plan::Query { root, .. } => root.as_ref().clone(),
                 _ => {
                     return Err(Error::ExecutionError(
                         "IN subquery must be a Query".to_string(),
@@ -466,7 +466,7 @@ fn evaluate_with_storage_and_outer(
 
             // Execute the subquery plan
             let node = match plan.as_ref() {
-                crate::planning::plan::Plan::Query { root, .. } => root.as_ref().clone(),
+                crate::types::plan::Plan::Query { root, .. } => root.as_ref().clone(),
                 _ => {
                     return Err(Error::ExecutionError(
                         "EXISTS subquery must be a Query".to_string(),
@@ -504,7 +504,7 @@ fn evaluate_with_storage_and_outer(
 
             // Execute the subquery plan
             let node = match plan.as_ref() {
-                crate::planning::plan::Plan::Query { root, .. } => root.as_ref().clone(),
+                crate::types::plan::Plan::Query { root, .. } => root.as_ref().clone(),
                 _ => {
                     return Err(Error::ExecutionError(
                         "Scalar subquery must be a Query".to_string(),

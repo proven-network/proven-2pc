@@ -5,10 +5,10 @@
 
 use crate::error::Result;
 use crate::execution::ExecutionResult;
-use crate::planning::plan::Node;
 use crate::storage::SqlStorage;
 use crate::types::Value;
 use crate::types::context::ExecutionContext;
+use crate::types::plan::Node;
 
 /// Execute a SELECT query using immutable storage reference
 pub fn execute_select(

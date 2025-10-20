@@ -458,7 +458,7 @@ impl NameResolver {
 
         // Extract column names from the plan
         let root_node = match subquery_plan {
-            crate::planning::plan::Plan::Query { root, .. } => root,
+            crate::types::plan::Plan::Query { root, .. } => root,
             _ => {
                 return Err(Error::ExecutionError(
                     "Expected Query plan for SELECT subquery".into(),
