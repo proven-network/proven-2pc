@@ -351,19 +351,19 @@ fn test_various_data_types() {
 
     assert_rows!(ctx, "SELECT * FROM TableE", 2);
 
-    // Invalid type combinations
+    // Integer to TEXT - rejected at semantic level (explicit CAST needed)
     ctx.assert_error_contains(
         "INSERT INTO TableE VALUES (3, 123, NULL, TRUE, FALSE, 100)",
         "TypeMismatch",
     );
 
-    ctx.assert_error_contains(
-        "INSERT INTO TableE VALUES (3, 'Test', NULL, 'yes', FALSE, 100)",
-        "TypeMismatch",
-    );
+    ctx.exec("INSERT INTO TableE VALUES (3, 'Test', NULL, 'yes', FALSE, 100)");
 
+    assert_rows!(ctx, "SELECT * FROM TableE", 3);
+
+    // Invalid: String 'high' cannot be parsed as INTEGER
     ctx.assert_error_contains(
-        "INSERT INTO TableE VALUES (3, 'Test', NULL, TRUE, FALSE, 'high')",
+        "INSERT INTO TableE VALUES (4, 'Test', NULL, TRUE, FALSE, 'high')",
         "TypeMismatch",
     );
 

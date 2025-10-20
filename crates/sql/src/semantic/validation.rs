@@ -713,7 +713,10 @@ impl SemanticValidator {
                                 }
 
                                 // Check if value can be coerced to target type (for non-NULL values)
-                                if !coercion::can_coerce(&value_type, &target_col.data_type) {
+                                if !coercion::allows_implicit_conversion(
+                                    &value_type,
+                                    &target_col.data_type,
+                                ) {
                                     return Err(Error::TypeMismatch {
                                         expected: format!("{:?}", target_col.data_type),
                                         found: format!("{:?}", value_type),
@@ -749,7 +752,7 @@ impl SemanticValidator {
                                             };
 
                                             if !matches!(lit, Literal::Null)
-                                                && !coercion::can_coerce(
+                                                && !coercion::allows_implicit_conversion(
                                                     &elem_value_type,
                                                     elem_type,
                                                 )
@@ -800,7 +803,7 @@ impl SemanticValidator {
                                             };
 
                                             if !matches!(lit, Literal::Null)
-                                                && !coercion::can_coerce(
+                                                && !coercion::allows_implicit_conversion(
                                                     &elem_value_type,
                                                     elem_type,
                                                 )

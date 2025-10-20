@@ -584,7 +584,8 @@ fn evaluate_with_storage_and_outer(
 
         Cast(expr, target_type) => {
             // Evaluate the inner expression
-            let value = evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
+            let value =
+                evaluate_with_storage_and_outer(expr, row, outer_row, context, params, storage)?;
             // Use the coercion system to cast the value to the target type
             crate::coercion::coerce_value(value, target_type)?
         }

@@ -1,14 +1,47 @@
 //! Type coercion for SQL values
-//! Simplified coercion module that handles type conversions and compatibility checks
+//!
+//! This module provides type coercion and compatibility checking for SQL values.
+//! It is organized into several submodules:
+//!
+//! - `numeric`: Integer, float, and decimal coercions
+//! - `string`: String parsing to various types
+//! - `temporal`: Date, time, timestamp, and interval coercions
+//! - `special`: UUID, INET, Point, Bytea, and JSON coercions
+//! - `collection`: List, Array, Map, and Struct coercions
+//! - `value`: Main coercion implementation that orchestrates all coercions
 
 use crate::error::Result;
 use crate::types::{DataType, Value};
 
+mod collection;
+mod numeric;
+mod special;
+mod string;
+mod temporal;
 mod value;
+
 pub use value::coerce_row;
 
-/// Check if a value type can be coerced to a target type
-pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
+/// Check if a value type can be implicitly coerced to a target type.
+///
+/// This function checks whether an implicit type conversion is possible at runtime.
+/// It follows SQL standard principles for implicit coercion:
+///
+/// - **Information-preserving conversions** (e.g., `I32` → `I64`) are always allowed
+/// - **Numeric promotions** (e.g., `I32` → `F64`) are allowed
+/// - **String to typed conversions** (e.g., `"2024-01-15"` → `DATE`) are allowed
+/// - **Any type to string** (via Display trait) is allowed
+///
+/// # Note on Semantic Validation
+///
+/// The semantic validator may apply stricter rules than this function suggests.
+/// For example, while `I64` → `Str` returns `true` here (conversion is possible),
+/// the semantic validator may reject `INSERT INTO t(text_col) VALUES (123)`
+/// and require an explicit `CAST(123 AS TEXT)`.
+///
+/// This two-layer approach provides both safety (semantic validation) and
+/// flexibility (runtime coercion for valid cases).
+pub fn allows_implicit_conversion(from: &DataType, to: &DataType) -> bool {
     // Same type is always valid
     if from == to {
         return true;
@@ -38,7 +71,7 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
         (DataType::U32, DataType::U64 | DataType::U128) => true,
         (DataType::U64, DataType::U128) => true,
 
-        // Small unsigned to larger signed is safe
+        // Small unsigned to larger signed is safe (needs extra bit for sign)
         (DataType::U8, DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128) => true,
         (DataType::U16, DataType::I32 | DataType::I64 | DataType::I128) => true,
         (DataType::U32, DataType::I64 | DataType::I128) => true,
@@ -49,17 +82,47 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
         (DataType::F64, DataType::F32) => true, // Narrowing allowed (runtime will check range)
 
         // Integer to float (may lose precision but allowed)
-        (DataType::I8 | DataType::I16 | DataType::I32, DataType::F32 | DataType::F64) => true,
-        (DataType::I64, DataType::F64) => true,
+        (
+            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64,
+            DataType::F32 | DataType::F64,
+        ) => true,
+        (DataType::I128, DataType::F32 | DataType::F64) => true,
+
+        // Unsigned to float
+        (
+            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64,
+            DataType::F32 | DataType::F64,
+        ) => true,
+        (DataType::U128, DataType::F32 | DataType::F64) => true,
 
         // Integer to Decimal
         (
-            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128,
+            DataType::I8
+            | DataType::I16
+            | DataType::I32
+            | DataType::I64
+            | DataType::I128
+            | DataType::U8
+            | DataType::U16
+            | DataType::U32
+            | DataType::U64
+            | DataType::U128,
             DataType::Decimal(_, _),
         ) => true,
 
         // Float to Decimal
         (DataType::F32 | DataType::F64, DataType::Decimal(_, _)) => true,
+
+        // Decimal to Integer/Float
+        (
+            DataType::Decimal(_, _),
+            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128,
+        ) => true,
+        (
+            DataType::Decimal(_, _),
+            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128,
+        ) => true,
+        (DataType::Decimal(_, _), DataType::F32 | DataType::F64) => true,
 
         // Float to unsigned integers (for large literals parsed as float)
         // This happens when literals exceed I128::MAX
@@ -69,16 +132,21 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
         ) => true,
         (DataType::F32, DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8) => true,
 
-        // String to date/time/uuid/inet/point types (parsing)
+        // String to date/time/uuid/inet/point/bytea/interval types (parsing)
         (
             DataType::Str,
             DataType::Date
             | DataType::Time
             | DataType::Timestamp
+            | DataType::Interval
             | DataType::Uuid
             | DataType::Inet
-            | DataType::Point,
+            | DataType::Point
+            | DataType::Bytea,
         ) => true,
+
+        // Bytea to String (hex encoding)
+        (DataType::Bytea, DataType::Str | DataType::Text) => true,
 
         // Integer to INET (convert integers to IPv4/IPv6)
         (
@@ -142,6 +210,35 @@ pub fn can_coerce(from: &DataType, to: &DataType) -> bool {
         (
             DataType::I8,
             DataType::U128 | DataType::U64 | DataType::U32 | DataType::U16 | DataType::U8,
+        ) => true,
+
+        // Boolean to integer
+        (
+            DataType::Bool,
+            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128,
+        ) => true,
+        (
+            DataType::Bool,
+            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128,
+        ) => true,
+
+        // Integer to boolean
+        (
+            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128,
+            DataType::Bool,
+        ) => true,
+        (
+            DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 | DataType::U128,
+            DataType::Bool,
+        ) => true,
+
+        // String to boolean
+        (DataType::Str, DataType::Bool) => true,
+
+        // Float to integer (truncating cast)
+        (
+            DataType::F32 | DataType::F64,
+            DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 | DataType::I128,
         ) => true,
 
         _ => false,
