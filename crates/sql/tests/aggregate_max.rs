@@ -194,7 +194,6 @@ fn test_max_strings() {
 }
 
 #[test]
-#[ignore = "Date literal parsing not yet implemented"]
 fn test_max_dates() {
     let mut ctx = setup_test();
 
@@ -208,13 +207,12 @@ fn test_max_dates() {
              (5, '2024-06-30')",
         );
 
-    // MAX on dates returns latest date
-    // FIXME: Need proper Date value comparison
-    // ctx.assert_query_value(
-    //     "SELECT MAX(event_date) FROM Events",
-    //     "MAX(event_date)",
-    //     ...,
-    // );
+    // MAX on dates returns latest date (2024-12-25)
+    ctx.assert_query_value(
+        "SELECT MAX(event_date) FROM Events",
+        "MAX(event_date)",
+        Value::Date(chrono::NaiveDate::from_ymd_opt(2024, 12, 25).unwrap()),
+    );
 
     ctx.commit();
 }

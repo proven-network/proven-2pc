@@ -192,3 +192,51 @@ fn test_min_handles_nulls() {
 
     ctx.commit();
 }
+
+#[test]
+fn test_min_strings() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Item")
+        .create_simple("id INTEGER, name TEXT")
+        .insert_values(
+            "(1, 'zebra'), \
+             (2, 'apple'), \
+             (3, 'banana'), \
+             (4, NULL), \
+             (5, 'cherry')",
+        );
+
+    // MIN on strings returns lexicographically smallest
+    ctx.assert_query_value(
+        "SELECT MIN(name) FROM Item",
+        "MIN(name)",
+        Value::Str("apple".to_string()),
+    );
+
+    ctx.commit();
+}
+
+#[test]
+fn test_min_dates() {
+    let mut ctx = setup_test();
+
+    TableBuilder::new(&mut ctx, "Events")
+        .create_simple("id INTEGER, event_date DATE")
+        .insert_values(
+            "(1, '2024-03-15'), \
+             (2, '2024-01-10'), \
+             (3, '2024-12-25'), \
+             (4, NULL), \
+             (5, '2024-06-30')",
+        );
+
+    // MIN on dates returns earliest date (2024-01-10)
+    ctx.assert_query_value(
+        "SELECT MIN(event_date) FROM Events",
+        "MIN(event_date)",
+        Value::Date(chrono::NaiveDate::from_ymd_opt(2024, 1, 10).unwrap()),
+    );
+
+    ctx.commit();
+}
