@@ -58,13 +58,20 @@ fn test_delete_all_rows() {
 }
 
 #[test]
-#[ignore = "DELETE response counting not yet verified"]
 fn test_delete_verify_affected_row_count() {
     let mut ctx = setup_test();
     setup_test_table(&mut ctx);
 
     // Delete specific rows and check response
-    let _response = ctx.exec_response("DELETE FROM Foo WHERE score > 200");
+    let response = ctx.exec_response("DELETE FROM Foo WHERE score > 200");
+
+    // Verify the response contains the correct affected row count
+    match response {
+        proven_sql::SqlResponse::ExecuteResult { rows_affected, .. } => {
+            assert_eq!(rows_affected, Some(2), "Should have deleted 2 rows");
+        }
+        _ => panic!("Expected ExecuteResult response"),
+    }
 
     // Should have deleted 2 rows (score=300 and score=700)
     assert_rows!(ctx, "SELECT * FROM Foo", 1);
