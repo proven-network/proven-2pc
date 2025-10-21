@@ -60,6 +60,7 @@ impl AggregateBuilder {
             "STDEV_DISTINCT" => Ok(AggregateFunc::StDevDistinct(arg)),
             "VARIANCE" => Ok(AggregateFunc::Variance(arg)),
             "VARIANCE_DISTINCT" => Ok(AggregateFunc::VarianceDistinct(arg)),
+            "ARRAY_AGG" => Ok(AggregateFunc::ArrayAgg(arg)),
             _ => Err(Error::ExecutionError(format!(
                 "Unknown aggregate function: {}",
                 func_name
@@ -86,6 +87,7 @@ impl AggregateBuilder {
                 | "STDEV_DISTINCT"
                 | "VARIANCE"
                 | "VARIANCE_DISTINCT"
+                | "ARRAY_AGG"
         )
     }
 }

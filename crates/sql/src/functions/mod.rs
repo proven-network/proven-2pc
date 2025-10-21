@@ -19,6 +19,7 @@ mod trim;
 mod upper;
 
 // Aggregate functions
+mod array_agg;
 mod avg;
 mod avg_distinct;
 mod count;
@@ -132,6 +133,7 @@ impl FunctionRegistry {
         replace::register(&mut registry);
 
         // Register aggregate functions
+        array_agg::register(&mut registry);
         count::register(&mut registry);
         count_distinct::register(&mut registry);
         sum::register(&mut registry);

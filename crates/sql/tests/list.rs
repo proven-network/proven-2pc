@@ -132,15 +132,25 @@ fn test_list_type_flexibility() {
 }
 
 #[test]
-#[ignore = "ARRAY_AGG function not yet implemented"]
 fn test_list_aggregation() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE Items (category TEXT, value INTEGER)");
     ctx.exec("INSERT INTO Items VALUES ('A', 1), ('A', 2), ('B', 3), ('B', 4)");
 
-    // ARRAY_AGG would aggregate values into lists - not yet implemented
-    ctx.exec("SELECT category, ARRAY_AGG(value) as values FROM Items GROUP BY category");
+    // ARRAY_AGG aggregates values into lists
+    let result = ctx.query("SELECT category, ARRAY_AGG(value) as values FROM Items GROUP BY category ORDER BY category");
+    assert_eq!(result.len(), 2);
+
+    // Category A should have [1, 2]
+    assert_eq!(result[0].get("category").unwrap().to_string(), "A");
+    let a_values = result[0].get("values").unwrap().to_string();
+    assert!(a_values.contains("1") && a_values.contains("2"));
+
+    // Category B should have [3, 4]
+    assert_eq!(result[1].get("category").unwrap().to_string(), "B");
+    let b_values = result[1].get("values").unwrap().to_string();
+    assert!(b_values.contains("3") && b_values.contains("4"));
 
     ctx.commit();
 }

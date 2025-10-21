@@ -556,6 +556,35 @@ impl Accumulator for VarianceAccumulator {
     }
 }
 
+/// ARRAY_AGG aggregate accumulator
+struct ArrayAggAccumulator {
+    values: Vec<Value>,
+}
+
+impl Accumulator for ArrayAggAccumulator {
+    fn add(
+        &mut self,
+        row: &Arc<Vec<Value>>,
+        agg: &AggregateFunc,
+        context: &ExecutionContext,
+    ) -> Result<()> {
+        let expr = match agg {
+            AggregateFunc::ArrayAgg(expr) => expr,
+            _ => return Ok(()),
+        };
+
+        let val = evaluate_expression(expr, Some(row), context)?;
+        // Collect all values including NULLs
+        self.values.push(val);
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Value> {
+        // Return as a List value
+        Ok(Value::List(self.values))
+    }
+}
+
 /// Create an accumulator for an aggregate function
 fn create_accumulator(agg: &AggregateFunc) -> Box<dyn Accumulator> {
     match agg {
@@ -631,6 +660,7 @@ fn create_accumulator(agg: &AggregateFunc) -> Box<dyn Accumulator> {
             distinct: true,
             seen_values: HashSet::new(),
         }),
+        AggregateFunc::ArrayAgg(_) => Box::new(ArrayAggAccumulator { values: Vec::new() }),
     }
 }
 

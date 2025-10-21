@@ -630,6 +630,7 @@ impl Node {
                         AggregateFunc::StDevDistinct(_) => format!("STDEV_DISTINCT_{}", i),
                         AggregateFunc::Variance(_) => format!("VARIANCE_{}", i),
                         AggregateFunc::VarianceDistinct(_) => format!("VARIANCE_DISTINCT_{}", i),
+                        AggregateFunc::ArrayAgg(_) => format!("ARRAY_AGG_{}", i),
                     };
                     names.push(name);
                 }
@@ -672,4 +673,5 @@ pub enum AggregateFunc {
     StDevDistinct(Expression),
     Variance(Expression),
     VarianceDistinct(Expression),
+    ArrayAgg(Expression),
 }
