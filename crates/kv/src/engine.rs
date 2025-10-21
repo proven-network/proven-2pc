@@ -344,7 +344,6 @@ impl TransactionEngine for KvTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
-        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             KvOperation::Get { ref key } => self.execute_get_without_locking(key, read_timestamp),

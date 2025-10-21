@@ -159,7 +159,6 @@ impl SqlTransactionEngine {
         sql: &str,
         params: Option<Vec<crate::types::Value>>,
         read_timestamp: HlcTimestamp,
-        log_index: u64,
     ) -> OperationResult<SqlResponse> {
         // Parse SQL with caching
         let statement = match self.parser.parse(sql) {
@@ -256,7 +255,8 @@ impl SqlTransactionEngine {
         }
 
         // Execute with a temporary context (snapshot reads are stateless)
-        let mut exec_ctx = ExecutionContext::new(read_timestamp, log_index);
+        // Use log_index=0 since snapshot reads don't have a position in the ordered stream
+        let mut exec_ctx = ExecutionContext::new(read_timestamp, 0);
 
         // Create batch (even for reads, for consistency - will be empty for SELECT)
         let mut batch = self.storage.batch();
@@ -553,12 +553,11 @@ impl TransactionEngine for SqlTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
-        log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             SqlOperation::Query { sql, params } => {
                 // Execute as a snapshot read using the read_timestamp as txn_id
-                self.execute_sql_snapshot(&sql, params, read_timestamp, log_index)
+                self.execute_sql_snapshot(&sql, params, read_timestamp)
             }
             _ => panic!("Must be read-only operation"),
         }

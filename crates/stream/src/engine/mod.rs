@@ -69,11 +69,12 @@ pub trait TransactionEngine: Send + Sync {
     /// changes must not be allowed.
     ///
     /// Returns the value as it existed at the given timestamp.
+    ///
+    /// Note: Read-only operations bypass the ordered stream and don't have a log_index.
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
-        log_index: u64,
     ) -> OperationResult<Self::Response>;
 
     /// Apply an operation within a transaction context

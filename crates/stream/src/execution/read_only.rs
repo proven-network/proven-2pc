@@ -14,17 +14,23 @@ use std::sync::Arc;
 /// - Does not acquire locks
 /// - Can be blocked by exclusive write locks
 /// - Does not participate in 2PC
+///
+/// Read-only operations come via pubsub and must have a read_timestamp header
+/// set by the coordinator (ReadOnlyExecutor).
 pub async fn execute_read_only<E: TransactionEngine>(
     engine: &mut E,
     message: Message,
-    msg_timestamp: HlcTimestamp,
-    log_index: u64,
     client: &Arc<proven_engine::MockClient>,
     stream_name: &str,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
 ) -> Result<()> {
-    // Extract read timestamp (default to message timestamp)
-    let read_timestamp = super::get_read_timestamp(&message, msg_timestamp);
+    // Extract read timestamp from message header (required)
+    let read_timestamp = message
+        .get_header("read_timestamp")
+        .and_then(|s| HlcTimestamp::parse(s).ok())
+        .ok_or({
+            ProcessorError::MissingHeader("read_timestamp header required for read-only operations")
+        })?;
 
     // Extract coordinator and request ID for response
     let coordinator_id = message
@@ -37,7 +43,7 @@ pub async fn execute_read_only<E: TransactionEngine>(
         .map_err(|e| ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e)))?;
 
     // Execute the read at the specified timestamp
-    match engine.read_at_timestamp(operation.clone(), read_timestamp, log_index) {
+    match engine.read_at_timestamp(operation.clone(), read_timestamp) {
         OperationResult::Complete(response) => {
             // Send successful response
             send_read_response(
@@ -54,14 +60,11 @@ pub async fn execute_read_only<E: TransactionEngine>(
         OperationResult::WouldBlock { blockers } => {
             // Read-only operations can be blocked by exclusive write locks
             // Defer the operation to retry when the blocking transaction completes
-            println!(
-                "[{}] Read operation blocked at timestamp {} by {:?}",
-                stream_name,
-                read_timestamp,
-                blockers
-                    .iter()
-                    .map(|b| b.txn.to_string())
-                    .collect::<Vec<_>>()
+            tracing::debug!(
+                stream = %stream_name,
+                timestamp = %read_timestamp,
+                blockers = ?blockers.iter().map(|b| b.txn.to_string()).collect::<Vec<_>>(),
+                "Read operation blocked"
             );
 
             // For read-only ops, we use the read timestamp as the "transaction ID" for tracking

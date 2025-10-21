@@ -660,7 +660,6 @@ fn test_snapshot_read_doesnt_block_write() {
             key: "key1".to_string(),
         },
         read_ts,
-        3,
     );
 
     match result {
@@ -700,7 +699,6 @@ fn test_snapshot_read_blocks_on_earlier_write() {
             key: "key1".to_string(),
         },
         read_ts,
-        3,
     );
 
     match result {
@@ -721,7 +719,6 @@ fn test_snapshot_read_blocks_on_earlier_write() {
             key: "key1".to_string(),
         },
         read_ts,
-        5,
     );
 
     match result {
@@ -744,7 +741,6 @@ fn test_snapshot_read_doesnt_take_locks() {
             key: "key1".to_string(),
         },
         read_ts,
-        1,
     );
     assert!(matches!(result, OperationResult::Complete(_)));
 
@@ -791,21 +787,18 @@ fn test_multiple_snapshot_reads_concurrent() {
             key: "key1".to_string(),
         },
         read_ts1,
-        4,
     );
     let result2 = engine.read_at_timestamp(
         KvOperation::Get {
             key: "key1".to_string(),
         },
         read_ts2,
-        5,
     );
     let result3 = engine.read_at_timestamp(
         KvOperation::Get {
             key: "key1".to_string(),
         },
         read_ts3,
-        6,
     );
 
     // All should complete successfully
@@ -851,7 +844,6 @@ fn test_snapshot_read_sees_committed_writes() {
             key: "key1".to_string(),
         },
         read_ts,
-        7,
     );
 
     match result {
@@ -868,7 +860,6 @@ fn test_snapshot_read_sees_committed_writes() {
             key: "key1".to_string(),
         },
         read_ts2,
-        8,
     );
 
     match result {
@@ -903,7 +894,6 @@ fn test_snapshot_read_ignores_aborted_writes() {
             key: "key1".to_string(),
         },
         read_ts,
-        4,
     );
 
     match result {

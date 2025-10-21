@@ -104,7 +104,6 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
         &mut self,
         operation: Self::Operation,
         _read_timestamp: HlcTimestamp,
-        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             LockOp::Lock { .. } => {
@@ -184,7 +183,6 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
         &mut self,
         operation: Self::Operation,
         _read_timestamp: HlcTimestamp,
-        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             BasicOp::Read { key } => {

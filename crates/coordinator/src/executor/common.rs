@@ -85,6 +85,33 @@ impl ExecutorInfra {
             .await
     }
 
+    /// Send a message via pubsub and wait for response
+    pub async fn send_pubsub_and_wait(
+        &self,
+        subject: &str,
+        headers: HashMap<String, String>,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<ResponseMessage> {
+        // Get request ID from headers
+        let request_id = headers
+            .get("request_id")
+            .ok_or_else(|| CoordinatorError::Other("Missing request_id in headers".to_string()))?
+            .clone();
+
+        // Send message via pubsub
+        let message = Message::new(body, headers);
+        self.client
+            .publish(subject, vec![message])
+            .await
+            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+
+        // Wait for response (same response channel)
+        self.response_collector
+            .wait_for_response(request_id, timeout)
+            .await
+    }
+
     /// Send messages to multiple streams (fire and forget)
     pub async fn send_messages_batch(
         &self,
@@ -109,16 +136,22 @@ impl ExecutorInfra {
 
     /// Execute predictions speculatively
     ///
-    /// Takes predictions and a function to build headers for each stream/operation pair
+    /// Takes predictions, a function to build headers, and a function to send batched messages
     /// Returns receivers for each prediction's result
-    pub async fn execute_predictions<F>(
+    ///
+    /// The send_messages closure receives a HashMap<String, Vec<Message>> where the key is the
+    /// stream name, allowing for optimized batch sending (e.g., publish_to_streams for consensus groups)
+    pub async fn execute_predictions<H, S, Fut>(
         &self,
         predictions: &[PredictedOperation],
         timeout: Duration,
-        mut build_headers: F,
+        mut build_headers: H,
+        send_messages: S,
     ) -> Result<HashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>
     where
-        F: FnMut(&str) -> HashMap<String, String>,
+        H: FnMut() -> HashMap<String, String>,
+        S: FnOnce(HashMap<String, Vec<Message>>) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
     {
         if predictions.is_empty() {
             return Ok(HashMap::new());
@@ -148,66 +181,62 @@ impl ExecutorInfra {
             senders.insert(index, tx);
         }
 
-        // Execute operations for each stream concurrently
-        let mut handles = Vec::new();
-
-        for (stream, operations) in stream_operations {
-            // Build headers for this stream
-            let headers = build_headers(&stream);
-
-            // Clone what we need for the async task
-            let client = self.client.clone();
-            let response_collector = self.response_collector.clone();
-            let runner = self.runner.clone();
-            let stream_senders: Vec<_> = operations
-                .iter()
-                .map(|(idx, _)| (*idx, senders.remove(idx).unwrap()))
-                .collect();
-
-            let handle = tokio::spawn(async move {
-                // Ensure processor is running
-                if let Err(e) = runner.ensure_processor(&stream, timeout).await {
-                    for (_, sender) in stream_senders {
+        // Ensure all processors are running
+        for stream in stream_operations.keys() {
+            if let Err(e) = self.runner.ensure_processor(stream, timeout).await {
+                for (idx, _) in &stream_operations[stream] {
+                    if let Some(sender) = senders.remove(idx) {
                         let _ = sender.send(Err(CoordinatorError::EngineError(format!(
                             "Failed to ensure processor: {}",
                             e
                         ))));
                     }
-                    return;
                 }
-
-                // Execute each operation in order for this stream
-                for ((_, body), (_, sender)) in operations.into_iter().zip(stream_senders) {
-                    let request_id = uuid::Uuid::new_v4().to_string();
-                    let mut op_headers = headers.clone();
-                    op_headers.insert("request_id".to_string(), request_id.clone());
-
-                    // Send message
-                    let message = Message::new(body, op_headers);
-                    if let Err(e) = client
-                        .publish_to_stream(stream.clone(), vec![message])
-                        .await
-                    {
-                        let _ = sender.send(Err(CoordinatorError::EngineError(e.to_string())));
-                        continue;
-                    }
-
-                    // Wait for response
-                    let result = response_collector
-                        .wait_for_response(request_id, timeout)
-                        .await
-                        .and_then(Self::handle_response);
-
-                    let _ = sender.send(result);
-                }
-            });
-
-            handles.push(handle);
+            }
         }
 
-        // Wait for all to complete
-        for handle in handles {
-            let _ = handle.await;
+        // Build headers once
+        let headers = build_headers();
+
+        // Build all messages for all streams with unique request IDs
+        let mut all_messages: HashMap<String, Vec<Message>> = HashMap::new();
+        let mut request_ids = Vec::new();
+
+        for (stream, operations) in &stream_operations {
+            let stream_messages = all_messages.entry(stream.clone()).or_default();
+
+            for (idx, body) in operations {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let mut op_headers = headers.clone();
+                op_headers.insert("request_id".to_string(), request_id.clone());
+
+                stream_messages.push(Message::new(body.clone(), op_headers));
+                request_ids.push((*idx, request_id));
+            }
+        }
+
+        // Send all messages at once via caller-provided closure
+        if let Err(e) = send_messages(all_messages).await {
+            let error_msg = format!("{}", e);
+            for (idx, _) in request_ids {
+                if let Some(sender) = senders.remove(&idx) {
+                    let _ = sender.send(Err(CoordinatorError::EngineError(error_msg.clone())));
+                }
+            }
+            return Ok(receivers);
+        }
+
+        // Wait for all responses
+        for (idx, request_id) in request_ids {
+            let result = self
+                .response_collector
+                .wait_for_response(request_id, timeout)
+                .await
+                .and_then(Self::handle_response);
+
+            if let Some(sender) = senders.remove(&idx) {
+                let _ = sender.send(result);
+            }
         }
 
         Ok(receivers)

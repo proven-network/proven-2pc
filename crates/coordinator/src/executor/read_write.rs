@@ -94,14 +94,31 @@ impl ReadWriteExecutor {
             let txn_id_str = txn_id.to_string();
             let deadline_str = deadline.to_string();
 
+            let client = infra.client.clone();
             infra
-                .execute_predictions(prediction_context.predictions(), timeout, |_stream| {
-                    let mut headers = HashMap::new();
-                    headers.insert("txn_id".to_string(), txn_id_str.clone());
-                    headers.insert("coordinator_id".to_string(), coordinator_id.clone());
-                    headers.insert("txn_deadline".to_string(), deadline_str.clone());
-                    headers
-                })
+                .execute_predictions(
+                    prediction_context.predictions(),
+                    timeout,
+                    || {
+                        let mut headers = HashMap::new();
+                        headers.insert("txn_id".to_string(), txn_id_str.clone());
+                        headers.insert("coordinator_id".to_string(), coordinator_id.clone());
+                        headers.insert("txn_deadline".to_string(), deadline_str.clone());
+                        headers
+                    },
+                    |streams_and_messages| {
+                        let client = client.clone();
+                        async move {
+                            // Use publish_to_streams for batched consensus round-trip
+                            // All streams in a 2PC transaction must be in the same consensus group
+                            client
+                                .publish_to_streams(streams_and_messages)
+                                .await
+                                .map(|_| ())
+                                .map_err(|e| CoordinatorError::EngineError(e.to_string()))
+                        }
+                    },
+                )
                 .await
         } else {
             Ok(HashMap::new())

@@ -295,6 +295,23 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         Ok(())
     }
 
+    /// Process a readonly message from pubsub (no timestamp/offset)
+    async fn process_readonly_message(&mut self, message: Message) -> Result<()> {
+        // Only valid in Live phase
+        if !matches!(self.phase, ProcessorPhase::Live) {
+            tracing::warn!(
+                "Received readonly message during {:?} phase for stream {}, ignoring",
+                self.phase,
+                self.stream_name
+            );
+            return Ok(());
+        }
+
+        // Route through readonly execution path
+        // The message contains the read_timestamp header set by the coordinator
+        self.router.route_readonly_message(message).await
+    }
+
     /// Perform the replay phase
     async fn perform_replay(&mut self) -> Result<()> {
         use proven_engine::DeadlineStreamItem;
@@ -351,30 +368,58 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         mut shutdown_rx: oneshot::Receiver<()>,
         mut live_stream: MessageStream,
     ) -> Result<()> {
-        loop {
-            // Check for shutdown
-            if shutdown_rx.try_recv().is_ok() {
-                tracing::info!("Stream processor for {} shutting down", self.stream_name);
-                break;
+        // Subscribe to readonly messages via pubsub
+        let mut readonly_stream = match self
+            .client
+            .subscribe(&format!("stream.{}.readonly", self.stream_name), None)
+            .await
+        {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::error!("Failed to subscribe to readonly messages: {}", e);
+                return Err(ProcessorError::EngineError(e.to_string()));
             }
+        };
 
-            // Check for messages with timeout for periodic snapshots
-            let timeout =
-                tokio::time::timeout(Duration::from_millis(100), live_stream.recv()).await;
+        // Timeout interval for periodic maintenance
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            match timeout {
-                Ok(Some((message, timestamp, offset))) => {
-                    if let Err(e) = self.process_message(message, timestamp, offset).await {
-                        tracing::error!("Error processing message at offset {}: {:?}", offset, e);
-                    }
-                }
-                Ok(None) => {
-                    // Stream ended
+        loop {
+            tokio::select! {
+                // Prioritize ordered stream (biased select)
+                biased;
+
+                // Check for shutdown
+                _ = &mut shutdown_rx => {
+                    tracing::info!("Stream processor for {} shutting down", self.stream_name);
                     break;
                 }
-                Err(_) => {
-                    // Timeout - check for recovery and snapshots
 
+                // Ordered stream messages (ReadWrite/AdHoc)
+                result = live_stream.recv() => {
+                    match result {
+                        Some((message, timestamp, offset)) => {
+                            if let Err(e) = self.process_message(message, timestamp, offset).await {
+                                tracing::error!("Error processing message at offset {}: {:?}", offset, e);
+                            }
+                        }
+                        None => {
+                            // Stream ended
+                            break;
+                        }
+                    }
+                }
+
+                // Unordered readonly messages via pubsub
+                Some(message) = readonly_stream.recv() => {
+                    if let Err(e) = self.process_readonly_message(message).await {
+                        tracing::error!("Error processing readonly message: {:?}", e);
+                    }
+                }
+
+                // Periodic maintenance (recovery, snapshots)
+                _ = interval.tick() => {
                     // Run recovery check for expired transactions
                     if let Err(e) = self
                         .router

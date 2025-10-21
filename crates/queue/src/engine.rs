@@ -434,7 +434,6 @@ impl TransactionEngine for QueueTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
-        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
             QueueOperation::Peek => self.execute_peek_without_locking(read_timestamp),
@@ -771,7 +770,7 @@ mod tests {
         engine.commit(tx, 13);
 
         // Snapshot peek at 450 should see value 2
-        let result = engine.read_at_timestamp(QueueOperation::Peek, create_timestamp(450), 14);
+        let result = engine.read_at_timestamp(QueueOperation::Peek, create_timestamp(450));
         println!("Snapshot peek result: {:?}", result);
 
         assert!(

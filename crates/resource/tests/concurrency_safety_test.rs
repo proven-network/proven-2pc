@@ -71,7 +71,7 @@ fn test_supply_delta_merging_within_transaction() {
 
     // Verify final supply is correct (all mints summed)
     let tx2 = make_timestamp(200);
-    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx2, 7);
+    let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx2);
 
     match result {
         OperationResult::Complete(ResourceResponse::TotalSupply { amount }) => {
@@ -376,14 +376,12 @@ fn test_multi_key_atomicity() {
             account: "alice".to_string(),
         },
         tx2,
-        10,
     );
     let bob_final = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
             account: "bob".to_string(),
         },
         tx2,
-        11,
     );
 
     match (alice_final, bob_final) {
@@ -462,27 +460,24 @@ fn test_mint_burn_supply_consistency() {
 
     // Verify supply equals sum of balances
     let tx_check = make_timestamp(300);
-    let supply = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx_check, 9);
+    let supply = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx_check);
     let alice = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
             account: "alice".to_string(),
         },
         tx_check,
-        10,
     );
     let bob = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
             account: "bob".to_string(),
         },
         tx_check,
-        11,
     );
     let charlie = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
             account: "charlie".to_string(),
         },
         tx_check,
-        12,
     );
 
     match (supply, alice, bob, charlie) {
@@ -524,13 +519,12 @@ fn test_mint_burn_supply_consistency() {
 
     // Verify supply consistency after burn
     let tx_check2 = make_timestamp(500);
-    let supply2 = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx_check2, 16);
+    let supply2 = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx_check2);
     let alice2 = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
             account: "alice".to_string(),
         },
         tx_check2,
-        17,
     );
 
     match (supply2, alice2) {
@@ -605,14 +599,12 @@ fn test_abort_rollback_consistency() {
             account: "alice".to_string(),
         },
         tx_check,
-        8,
     );
     let bob_balance = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
             account: "bob".to_string(),
         },
         tx_check,
-        9,
     );
 
     match (alice_balance, bob_balance) {

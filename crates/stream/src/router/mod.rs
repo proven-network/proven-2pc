@@ -74,17 +74,14 @@ impl<E: TransactionEngine> MessageRouter<E> {
 
         match mode {
             TransactionMode::ReadOnly => {
-                // Read-only needs deferred manager for handling blocks
-                execution::read_only::execute_read_only(
-                    &mut self.engine,
-                    message,
-                    msg_timestamp,
-                    log_index,
-                    &self.client,
-                    &self.stream_name,
-                    &mut self.context.deferred_manager,
-                )
-                .await
+                // Read-only transactions should come via pubsub, not the ordered stream
+                // This maintains the optimization where read-only ops bypass Raft consensus
+                Err(ProcessorError::InvalidOperation(
+                    "Read-only transaction received on ordered stream. \
+                     Read-only operations should use pubsub (stream.{stream_name}.readonly) \
+                     to bypass Raft consensus."
+                        .to_string(),
+                ))
             }
             TransactionMode::AdHoc => {
                 // Ad-hoc needs deferred manager
@@ -105,6 +102,18 @@ impl<E: TransactionEngine> MessageRouter<E> {
                     .await
             }
         }
+    }
+
+    /// Route a readonly message from pubsub (no log index)
+    pub async fn route_readonly_message(&mut self, message: Message) -> Result<()> {
+        execution::read_only::execute_read_only(
+            &mut self.engine,
+            message,
+            &self.client,
+            &self.stream_name,
+            &mut self.context.deferred_manager,
+        )
+        .await
     }
 
     /// Track transaction state during replay phase

@@ -35,7 +35,7 @@ impl ReadOnlyExecutor {
         infra: Arc<ExecutorInfra>,
         prediction_context: PredictionContext,
     ) -> Self {
-        // Execute predictions with read-only headers
+        // Execute predictions with read-only headers via pubsub
         let speculation_result = if !prediction_context.predictions().is_empty() {
             let timeout = std::time::Duration::from_secs(30); // Reasonable timeout for reads
 
@@ -43,14 +43,33 @@ impl ReadOnlyExecutor {
             let coordinator_id = infra.coordinator_id.clone();
             let read_timestamp_str = read_timestamp.to_string();
 
+            let client = infra.client.clone();
             infra
-                .execute_predictions(prediction_context.predictions(), timeout, |_stream| {
-                    let mut headers = HashMap::new();
-                    headers.insert("coordinator_id".to_string(), coordinator_id.clone());
-                    headers.insert("read_timestamp".to_string(), read_timestamp_str.clone());
-                    headers.insert("txn_mode".to_string(), "read_only".to_string());
-                    headers
-                })
+                .execute_predictions(
+                    prediction_context.predictions(),
+                    timeout,
+                    || {
+                        let mut headers = HashMap::new();
+                        headers.insert("coordinator_id".to_string(), coordinator_id.clone());
+                        headers.insert("read_timestamp".to_string(), read_timestamp_str.clone());
+                        headers.insert("txn_mode".to_string(), "read_only".to_string());
+                        headers
+                    },
+                    |streams_and_messages| {
+                        let client = client.clone();
+                        async move {
+                            // Pubsub doesn't have a batched API, so send to each stream separately
+                            for (stream, messages) in streams_and_messages {
+                                let subject = format!("stream.{}.readonly", stream);
+                                client
+                                    .publish(&subject, messages)
+                                    .await
+                                    .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+                            }
+                            Ok(())
+                        }
+                    },
+                )
                 .await
         } else {
             Ok(HashMap::new())
@@ -181,10 +200,11 @@ impl ReadOnlyExecutor {
         let operation_bytes =
             serde_json::to_vec(operation).map_err(CoordinatorError::SerializationError)?;
 
-        // Send and wait for response
+        // Send via pubsub to stream.{stream_name}.readonly subject
+        let subject = format!("stream.{}.readonly", stream);
         let response = self
             .infra
-            .send_and_wait(stream, headers, operation_bytes, timeout)
+            .send_pubsub_and_wait(&subject, headers, operation_bytes, timeout)
             .await?;
 
         // Handle response

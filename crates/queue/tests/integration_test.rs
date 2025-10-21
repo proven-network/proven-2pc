@@ -514,7 +514,7 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
     let read_ts = create_timestamp(200);
     let peek_op = QueueOperation::Peek;
 
-    let result = engine.read_at_timestamp(peek_op, read_ts, 6);
+    let result = engine.read_at_timestamp(peek_op, read_ts);
     // Should see only committed data (initial value) without blocking
     assert!(matches!(
         result,
@@ -540,7 +540,7 @@ fn test_snapshot_size_blocks_on_earlier_write() {
     let read_ts = create_timestamp(200);
     let size_op = QueueOperation::Size;
 
-    let result = engine.read_at_timestamp(size_op, read_ts, 3);
+    let result = engine.read_at_timestamp(size_op, read_ts);
     match result {
         OperationResult::WouldBlock { blockers } => {
             assert_eq!(blockers.len(), 1);
@@ -584,28 +584,28 @@ fn test_snapshot_is_empty_sees_committed_state() {
     let is_empty_op = QueueOperation::IsEmpty;
 
     // Read at time 50 (before any data): should be empty
-    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(50), 10);
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(50));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(true))
     ));
 
     // Read at time 150 (after first enqueue): should not be empty
-    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(150), 11);
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(150));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(false))
     ));
 
     // Read at time 250 (after dequeue): still not empty (2 items left)
-    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(250), 12);
+    let result = engine.read_at_timestamp(is_empty_op.clone(), create_timestamp(250));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(false))
     ));
 
     // Read at time 350 (after clear): should be empty
-    let result = engine.read_at_timestamp(is_empty_op, create_timestamp(350), 13);
+    let result = engine.read_at_timestamp(is_empty_op, create_timestamp(350));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(true))
@@ -636,7 +636,7 @@ fn test_snapshot_peek_ignores_aborted_operations() {
 
     // Snapshot read at time 300 should only see committed value
     let peek_op = QueueOperation::Peek;
-    let result = engine.read_at_timestamp(peek_op, create_timestamp(300), 7);
+    let result = engine.read_at_timestamp(peek_op, create_timestamp(300));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Str(s)))) if s == "committed"
@@ -676,18 +676,18 @@ fn test_snapshot_size_with_concurrent_operations() {
 
     // Snapshot read at time 150 should see 2 items
     let size_op = QueueOperation::Size;
-    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(150), 8);
+    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(150));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Size(2))
     ));
 
     // Snapshot read at time 250 should block on tx2
-    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(250), 9);
+    let result = engine.read_at_timestamp(size_op.clone(), create_timestamp(250));
     assert!(matches!(result, OperationResult::WouldBlock { .. }));
 
     // Snapshot read at time 350 should block on both tx2 and tx3
-    let result = engine.read_at_timestamp(size_op, create_timestamp(350), 10);
+    let result = engine.read_at_timestamp(size_op, create_timestamp(350));
     match result {
         OperationResult::WouldBlock { blockers } => {
             assert_eq!(blockers.len(), 2);
@@ -728,21 +728,21 @@ fn test_snapshot_fifo_ordering_preserved() {
     let peek_op = QueueOperation::Peek;
 
     // At time 150: should see first item (0)
-    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(150), 7);
+    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(150));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(0))))
     ));
 
     // At time 350: should still see first item (0)
-    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(350), 8);
+    let result = engine.read_at_timestamp(peek_op.clone(), create_timestamp(350));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(0))))
     ));
 
     // At time 650: should see third item (2) after two dequeues
-    let result = engine.read_at_timestamp(peek_op, create_timestamp(650), 9);
+    let result = engine.read_at_timestamp(peek_op, create_timestamp(650));
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(2))))

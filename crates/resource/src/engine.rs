@@ -560,7 +560,6 @@ impl TransactionEngine for ResourceTransactionEngine {
         &mut self,
         operation: Self::Operation,
         read_timestamp: HlcTimestamp,
-        _log_index: u64,
     ) -> OperationResult<Self::Response> {
         self.execute_read_at_timestamp(&operation, read_timestamp)
     }

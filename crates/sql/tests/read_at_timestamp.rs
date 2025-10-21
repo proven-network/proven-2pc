@@ -57,7 +57,7 @@ fn test_snapshot_read_doesnt_block_later_write() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
+    let result = engine.read_at_timestamp(select, read_ts);
 
     // Should complete successfully
     assert!(matches!(result, OperationResult::Complete(_)));
@@ -113,7 +113,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select.clone(), read_ts, next_log_index());
+    let result = engine.read_at_timestamp(select.clone(), read_ts);
 
     // Should block
     assert!(matches!(result, OperationResult::WouldBlock { .. }));
@@ -127,7 +127,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
     engine.commit(tx_write, next_log_index());
 
     // Now the same read should succeed
-    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
+    let result = engine.read_at_timestamp(select, read_ts);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
@@ -191,7 +191,7 @@ fn test_snapshot_read_ignores_uncommitted_changes() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
+    let result = engine.read_at_timestamp(select, read_ts);
 
     // Should NOT block (transaction was aborted)
     assert!(matches!(result, OperationResult::Complete(_)));
@@ -287,7 +287,7 @@ fn test_snapshot_read_consistency_across_tables() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select_accounts.clone(), read_ts1, next_log_index());
+    let result = engine.read_at_timestamp(select_accounts.clone(), read_ts1);
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows.len(), 2);
@@ -302,7 +302,7 @@ fn test_snapshot_read_consistency_across_tables() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select_txns.clone(), read_ts1, next_log_index());
+    let result = engine.read_at_timestamp(select_txns.clone(), read_ts1);
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows[0][0].to_string(), "0"); // No transactions yet
@@ -313,7 +313,7 @@ fn test_snapshot_read_consistency_across_tables() {
     // Snapshot read at timestamp 250 should see state after transfer
     let read_ts2 = make_timestamp(250);
 
-    let result = engine.read_at_timestamp(select_accounts, read_ts2, next_log_index());
+    let result = engine.read_at_timestamp(select_accounts, read_ts2);
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows.len(), 2);
@@ -323,7 +323,7 @@ fn test_snapshot_read_consistency_across_tables() {
         panic!("Expected query result");
     }
 
-    let result = engine.read_at_timestamp(select_txns, read_ts2, next_log_index());
+    let result = engine.read_at_timestamp(select_txns, read_ts2);
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         assert_eq!(rows[0][0].to_string(), "1"); // One transaction
@@ -392,7 +392,7 @@ fn test_snapshot_read_with_index_scan() {
         params: None,
     };
 
-    let result = engine.read_at_timestamp(select, read_ts, next_log_index());
+    let result = engine.read_at_timestamp(select, read_ts);
 
     if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
         // Should only see items 1 and 3, not 4 (added later)
@@ -428,5 +428,5 @@ fn test_snapshot_read_only_operations_allowed() {
         params: None,
     };
 
-    engine.read_at_timestamp(insert, read_ts, next_log_index());
+    engine.read_at_timestamp(insert, read_ts);
 }
