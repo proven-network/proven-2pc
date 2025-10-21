@@ -146,15 +146,73 @@ fn test_list_aggregation() {
 }
 
 #[test]
-#[ignore = "UNNEST function not yet implemented"]
 fn test_list_unnest() {
     let mut ctx = setup_test();
 
     ctx.exec("CREATE TABLE ListData (id INTEGER, items TEXT[])");
     ctx.exec("INSERT INTO ListData VALUES (1, ['a', 'b', 'c'])");
+    ctx.exec("INSERT INTO ListData VALUES (2, ['x', 'y'])");
 
-    // UNNEST would expand lists into rows - not yet implemented
-    ctx.exec("SELECT id, UNNEST(items) as item FROM ListData");
+    // UNNEST expands arrays into rows - use in FROM clause with cross join
+    let result = ctx.query("SELECT id, item FROM ListData CROSS JOIN UNNEST(items) AS t(item)");
+    assert_eq!(result.len(), 5); // 3 items from first row + 2 from second row
+
+    // Verify first row's items
+    assert_eq!(result[0].get("id").unwrap().to_string(), "1");
+    assert_eq!(result[0].get("item").unwrap().to_string(), "a");
+
+    assert_eq!(result[1].get("id").unwrap().to_string(), "1");
+    assert_eq!(result[1].get("item").unwrap().to_string(), "b");
+
+    assert_eq!(result[2].get("id").unwrap().to_string(), "1");
+    assert_eq!(result[2].get("item").unwrap().to_string(), "c");
+
+    // Verify second row's items
+    assert_eq!(result[3].get("id").unwrap().to_string(), "2");
+    assert_eq!(result[3].get("item").unwrap().to_string(), "x");
+
+    assert_eq!(result[4].get("id").unwrap().to_string(), "2");
+    assert_eq!(result[4].get("item").unwrap().to_string(), "y");
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_unnest_with_order() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE Numbers (id INTEGER, nums INT[])");
+    ctx.exec("INSERT INTO Numbers VALUES (1, [3, 1, 2])");
+
+    // UNNEST and order the results
+    let result =
+        ctx.query("SELECT num FROM Numbers CROSS JOIN UNNEST(nums) AS t(num) ORDER BY num");
+    assert_eq!(result.len(), 3);
+
+    assert_eq!(result[0].get("num").unwrap().to_string(), "1");
+    assert_eq!(result[1].get("num").unwrap().to_string(), "2");
+    assert_eq!(result[2].get("num").unwrap().to_string(), "3");
+
+    ctx.commit();
+}
+
+#[test]
+fn test_list_unnest_empty_array() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE EmptyArrays (id INTEGER, items TEXT[])");
+    ctx.exec("INSERT INTO EmptyArrays VALUES (1, [])");
+    ctx.exec("INSERT INTO EmptyArrays VALUES (2, ['a', 'b'])");
+
+    // UNNEST should produce no rows for empty arrays
+    let result = ctx.query("SELECT id, item FROM EmptyArrays CROSS JOIN UNNEST(items) AS t(item)");
+    assert_eq!(result.len(), 2); // Only rows from id=2
+
+    assert_eq!(result[0].get("id").unwrap().to_string(), "2");
+    assert_eq!(result[0].get("item").unwrap().to_string(), "a");
+
+    assert_eq!(result[1].get("id").unwrap().to_string(), "2");
+    assert_eq!(result[1].get("item").unwrap().to_string(), "b");
 
     ctx.commit();
 }
@@ -178,7 +236,6 @@ fn test_list_comparison() {
 }
 
 #[test]
-#[ignore = "Array containment operators not yet implemented"]
 fn test_list_in_where_clause() {
     let mut ctx = setup_test();
 

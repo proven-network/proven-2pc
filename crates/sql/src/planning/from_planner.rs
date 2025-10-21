@@ -190,6 +190,27 @@ impl FromPlanner {
                     });
                 }
 
+                FromClause::Unnest { array, alias } => {
+                    // Resolve the array expression using the current context
+                    let array_expr = context.resolve_expression(array)?;
+
+                    let unnest_scan = Node::UnnestScan {
+                        array: array_expr,
+                        alias: alias.as_ref().map(|a| a.name.clone()),
+                    };
+
+                    node = Some(if let Some(prev) = node {
+                        Node::NestedLoopJoin {
+                            left: Box::new(prev),
+                            right: Box::new(unnest_scan),
+                            predicate: Expression::Constant(Value::boolean(true)),
+                            join_type: JoinType::Inner,
+                        }
+                    } else {
+                        unnest_scan
+                    });
+                }
+
                 FromClause::Join {
                     left,
                     right,

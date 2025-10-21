@@ -60,6 +60,13 @@ pub enum FromClause {
         /// An optional alias for the series
         alias: Option<TableAlias>,
     },
+    /// UNNEST(array_expr) table-valued function that expands an array into rows
+    Unnest {
+        /// The array expression to unnest
+        array: Expression,
+        /// An optional alias for the unnest result
+        alias: Option<TableAlias>,
+    },
     /// A join of two or more tables (may be nested).
     Join {
         /// The left table to join.

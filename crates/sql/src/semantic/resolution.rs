@@ -44,6 +44,11 @@ pub enum TableSource {
         alias: Option<String>,
         column_aliases: Vec<String>,
     },
+    /// UNNEST(array) table-valued function
+    Unnest {
+        alias: Option<String>,
+        column_aliases: Vec<String>,
+    },
 }
 
 /// Handles all name resolution in the semantic analysis phase
@@ -163,6 +168,16 @@ impl NameResolver {
             FromClause::Series { alias, .. } => {
                 // SERIES(N) generates a single column named "n" (lowercase)
                 sources.push(TableSource::Series {
+                    alias: alias.as_ref().map(|a| a.name.clone()),
+                    column_aliases: alias
+                        .as_ref()
+                        .map(|a| a.columns.clone())
+                        .unwrap_or_default(),
+                });
+            }
+            FromClause::Unnest { alias, .. } => {
+                // UNNEST(array) generates a single column for the unnested values
+                sources.push(TableSource::Unnest {
                     alias: alias.as_ref().map(|a| a.name.clone()),
                     column_aliases: alias
                         .as_ref()
@@ -389,6 +404,53 @@ impl NameResolver {
                         table_name: alias.clone().unwrap_or_else(|| "SERIES".to_string()),
                         data_type: DataType::I64,
                         nullable: false,
+                        is_indexed: false,
+                    };
+
+                    // Add with alias if present
+                    if let Some(table_alias) = alias {
+                        resolution_map.add_resolution(
+                            Some(table_alias.clone()),
+                            column_name.clone(),
+                            resolution.clone(),
+                        );
+                    }
+
+                    // Also add without table qualifier for unambiguous lookups
+                    resolution_map.add_resolution(None, column_name, resolution);
+
+                    offset += 1;
+                }
+                TableSource::Unnest {
+                    alias,
+                    column_aliases,
+                } => {
+                    // UNNEST(array) generates a single column for unnested values
+                    // The data type is unknown at this stage (depends on array element type)
+                    // Validate column aliases count (should be 0 or 1)
+                    if !column_aliases.is_empty() && column_aliases.len() > 1 {
+                        return Err(Error::TooManyColumnAliases(
+                            alias.clone().unwrap_or_else(|| "UNNEST".to_string()),
+                            1,
+                            column_aliases.len(),
+                        ));
+                    }
+
+                    // Use column alias if provided, otherwise use "unnest" (lowercase for case-insensitive matching)
+                    let column_name = if !column_aliases.is_empty() {
+                        column_aliases[0].clone()
+                    } else {
+                        "unnest".to_string()
+                    };
+
+                    // Track column name frequency
+                    *column_counts.entry(column_name.clone()).or_insert(0) += 1;
+
+                    let resolution = ColumnResolution {
+                        offset,
+                        table_name: alias.clone().unwrap_or_else(|| "UNNEST".to_string()),
+                        data_type: DataType::Text, // Placeholder - actual type depends on array element type
+                        nullable: true,            // Array elements might be nullable
                         is_indexed: false,
                     };
 

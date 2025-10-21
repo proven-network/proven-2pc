@@ -850,6 +850,10 @@ impl SemanticValidator {
                                     // Skip validation for SERIES
                                     return Ok(());
                                 }
+                                FromClause::Unnest { .. } => {
+                                    // Skip validation for UNNEST
+                                    return Ok(());
+                                }
                                 FromClause::Join { left, .. } => {
                                     if let FromClause::Table { name, .. } = left.as_ref() {
                                         name

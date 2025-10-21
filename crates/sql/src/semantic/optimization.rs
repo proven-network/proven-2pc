@@ -103,6 +103,9 @@ impl MetadataBuilder {
                             super::resolution::TableSource::Series { alias, .. } => {
                                 alias.as_ref().map(|s| s.as_str()).unwrap_or("SERIES")
                             }
+                            super::resolution::TableSource::Unnest { alias, .. } => {
+                                alias.as_ref().map(|s| s.as_str()).unwrap_or("UNNEST")
+                            }
                         };
                         for template in &templates[initial_count..] {
                             if self.template_covers_table(template, table_name) {
@@ -125,6 +128,9 @@ impl MetadataBuilder {
                                 }
                                 super::resolution::TableSource::Series { alias, .. } => {
                                     alias.clone().unwrap_or_else(|| "SERIES".to_string())
+                                }
+                                super::resolution::TableSource::Unnest { alias, .. } => {
+                                    alias.clone().unwrap_or_else(|| "UNNEST".to_string())
                                 }
                             };
                             templates.push(PredicateTemplate::FullTable { table: table_name });
@@ -296,6 +302,12 @@ impl MetadataBuilder {
                     .as_ref()
                     .map(|a| a.name.clone())
                     .unwrap_or_else(|| "SERIES".to_string()),
+            ),
+            FromClause::Unnest { alias, .. } => Some(
+                alias
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_else(|| "UNNEST".to_string()),
             ),
             FromClause::Join { left, .. } => Self::extract_table_from_clause(left),
         }
@@ -750,6 +762,9 @@ impl MetadataBuilder {
             }
             FromClause::Series { .. } => {
                 // SERIES doesn't reference any real tables, so no predicates needed
+            }
+            FromClause::Unnest { .. } => {
+                // UNNEST doesn't reference any real tables, so no predicates needed
             }
             FromClause::Join { left, right, .. } => {
                 // Recursively extract tables from joins

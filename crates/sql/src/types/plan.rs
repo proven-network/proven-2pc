@@ -249,6 +249,14 @@ fn write_node(f: &mut fmt::Formatter<'_>, node: &Node, indent: usize) -> fmt::Re
             writeln!(f)?;
             writeln!(f, "{}   Size: {:?}", prefix, size)
         }
+        Node::UnnestScan { array, alias } => {
+            write!(f, "{}-> Unnest scan", prefix)?;
+            if let Some(a) = alias {
+                write!(f, " as '{}'", a)?;
+            }
+            writeln!(f)?;
+            writeln!(f, "{}   Array: {:?}", prefix, array)
+        }
         Node::IndexScan {
             table,
             alias,
@@ -409,6 +417,12 @@ pub enum Node {
         alias: Option<String>,
     },
 
+    /// UNNEST(array) scan - expands an array into multiple rows
+    UnnestScan {
+        array: Expression,
+        alias: Option<String>,
+    },
+
     /// Index scan - uses an index to lookup rows (equality)
     IndexScan {
         table: String,
@@ -503,6 +517,7 @@ impl Node {
         match self {
             Node::Scan { table, .. } => schemas.get(table).map(|s| s.columns.len()).unwrap_or(0),
             Node::SeriesScan { .. } => 1, // SERIES(N) produces one column: N
+            Node::UnnestScan { .. } => 1, // UNNEST(array) produces one column: the unnested value
             Node::IndexScan { table, .. } => {
                 schemas.get(table).map(|s| s.columns.len()).unwrap_or(0)
             }
@@ -570,6 +585,9 @@ impl Node {
 
             // SeriesScan produces column "n" (lowercase for SQL case-insensitivity)
             Node::SeriesScan { .. } => vec!["n".to_string()],
+
+            // UnnestScan produces column "unnest" (or the alias if provided)
+            Node::UnnestScan { .. } => vec!["unnest".to_string()],
 
             // Scan nodes get column names from table schema
             Node::Scan { table, .. }

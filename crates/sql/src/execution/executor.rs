@@ -699,6 +699,44 @@ pub fn execute_node_read_with_outer<'a>(
             Ok(Box::new(rows.into_iter().map(Ok)))
         }
 
+        Node::UnnestScan { array, .. } => {
+            // UNNEST requires an outer row context to evaluate the array expression
+            // If no outer_row is provided, this is an error
+            if outer_row.is_none() {
+                return Err(Error::ExecutionError(
+                    "UNNEST must be used in a lateral context (e.g., CROSS JOIN)".into(),
+                ));
+            }
+
+            // Evaluate the array expression with the outer row context
+            let array_value = expression::evaluate_with_storage(
+                &array,
+                outer_row.map(|v| &**v),
+                tx_ctx,
+                params,
+                Some(storage),
+            )?;
+
+            // Extract array/list elements
+            let elements = match array_value {
+                Value::Array(items) | Value::List(items) => items,
+                _ => {
+                    return Err(Error::ExecutionError(format!(
+                        "UNNEST requires an array or list, got {:?}",
+                        array_value
+                    )));
+                }
+            };
+
+            // Convert each element into a row with a single column
+            let rows: Vec<Arc<Vec<Value>>> = elements
+                .into_iter()
+                .map(|elem| Arc::new(vec![elem]))
+                .collect();
+
+            Ok(Box::new(rows.into_iter().map(Ok)))
+        }
+
         Node::IndexScan {
             table,
             index_name,
@@ -1204,22 +1242,57 @@ pub fn execute_node_read_with_outer<'a>(
             let left_columns = left.column_count(&schemas);
             let right_columns = right.column_count(&schemas);
 
-            // IMPORTANT: Do NOT pass outer_row to the join sources!
-            // Inline views in FROM clauses are independent and should not see outer context.
-            // Only pass outer_row for correlated subqueries in WHERE/SELECT clauses.
-            let left_rows = execute_node_read_with_outer(*left, storage, tx_ctx, params, None)?;
-            let right_rows = execute_node_read_with_outer(*right, storage, tx_ctx, params, None)?;
+            // Special handling for UNNEST (lateral join)
+            // UNNEST needs to be re-executed for each left row
+            if matches!(&*right, Node::UnnestScan { .. }) {
+                // Execute left side once
+                let left_rows = execute_node_read_with_outer(*left, storage, tx_ctx, params, None)?;
 
-            // Use the standalone function for nested loop join
-            join::execute_nested_loop_join(
-                left_rows,
-                right_rows,
-                left_columns,
-                right_columns,
-                predicate,
-                join_type,
-                storage,
-            )
+                // For each left row, execute UNNEST and combine results
+                let mut result_rows: Vec<Arc<Vec<Value>>> = Vec::new();
+
+                for left_row_result in left_rows {
+                    let left_row = left_row_result?;
+
+                    // Execute UNNEST with this left row as context
+                    let unnest_rows = execute_node_read_with_outer(
+                        (*right).clone(),
+                        storage,
+                        tx_ctx,
+                        params,
+                        Some(&left_row),
+                    )?;
+
+                    // Combine left row with each unnest result
+                    for unnest_row_result in unnest_rows {
+                        let unnest_row = unnest_row_result?;
+                        let mut combined = Vec::with_capacity(left_columns + right_columns);
+                        combined.extend(left_row.iter().cloned());
+                        combined.extend(unnest_row.iter().cloned());
+                        result_rows.push(Arc::new(combined));
+                    }
+                }
+
+                Ok(Box::new(result_rows.into_iter().map(Ok)))
+            } else {
+                // IMPORTANT: Do NOT pass outer_row to the join sources!
+                // Inline views in FROM clauses are independent and should not see outer context.
+                // Only pass outer_row for correlated subqueries in WHERE/SELECT clauses.
+                let left_rows = execute_node_read_with_outer(*left, storage, tx_ctx, params, None)?;
+                let right_rows =
+                    execute_node_read_with_outer(*right, storage, tx_ctx, params, None)?;
+
+                // Use the standalone function for nested loop join
+                join::execute_nested_loop_join(
+                    left_rows,
+                    right_rows,
+                    left_columns,
+                    right_columns,
+                    predicate,
+                    join_type,
+                    storage,
+                )
+            }
         }
 
         // Order By requires full materialization to sort
