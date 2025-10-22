@@ -65,6 +65,7 @@ pub trait TypeParser: TokenHelper {
 
             // Special types
             Token::Keyword(Keyword::Uuid) => DataType::Uuid,
+            Token::Keyword(Keyword::Identity) => DataType::Identity,
             Token::Keyword(Keyword::Date) => DataType::Date,
             Token::Keyword(Keyword::Time) => DataType::Time,
             Token::Keyword(Keyword::Timestamp) => DataType::Timestamp,

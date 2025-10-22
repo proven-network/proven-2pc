@@ -322,3 +322,67 @@ fn test_cast_to_uuid() {
 
     ctx.commit();
 }
+
+#[test]
+fn test_insert_uuid_via_parameters() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE uuid_table (id INT, uuid_field UUID)");
+
+    // Create UUID values
+    let uuid1 = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let uuid2 = uuid::Uuid::parse_str("f47ac10b-58cc-4372-a567-0e02b2c3d479").unwrap();
+
+    // Insert using parameters
+    ctx.exec_with_params(
+        "INSERT INTO uuid_table VALUES (?, ?)",
+        vec![Value::I32(1), Value::Uuid(uuid1)],
+    );
+
+    ctx.exec_with_params(
+        "INSERT INTO uuid_table VALUES (?, ?)",
+        vec![Value::I32(2), Value::Uuid(uuid2)],
+    );
+
+    // Query all rows
+    let results = ctx.query("SELECT id FROM uuid_table ORDER BY id");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+    assert_eq!(results[1].get("id").unwrap(), &Value::I32(2));
+
+    // Query with parameter
+    let results = ctx.query_with_params(
+        "SELECT id FROM uuid_table WHERE uuid_field = ?",
+        vec![Value::Uuid(uuid1)],
+    );
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].get("id").unwrap(), &Value::I32(1));
+
+    ctx.commit();
+}
+
+#[test]
+fn test_uuid_parameter_where_clause() {
+    let mut ctx = setup_test();
+
+    ctx.exec("CREATE TABLE test_table (id INT, uuid_col UUID)");
+
+    let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+    // Insert via parameter
+    ctx.exec_with_params(
+        "INSERT INTO test_table VALUES (?, ?)",
+        vec![Value::I32(1), Value::Uuid(uuid)],
+    );
+
+    // Query with WHERE clause using parameter
+    let results = ctx.query_with_params(
+        "SELECT * FROM test_table WHERE uuid_col = ?",
+        vec![Value::Uuid(uuid)],
+    );
+
+    println!("UUID WHERE results: {:?}", results);
+    assert_eq!(results.len(), 1, "Should find the row with matching UUID");
+
+    ctx.commit();
+}

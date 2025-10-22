@@ -79,13 +79,18 @@ impl TestContext {
 
     /// Execute SQL without expecting a result
     pub fn exec(&mut self, sql: &str) {
+        self.exec_with_params(sql, vec![]);
+    }
+
+    /// Execute SQL with parameters without expecting a result
+    pub fn exec_with_params(&mut self, sql: &str, params: Vec<Value>) {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
         let log_index = self.next_log_index();
 
         let result = self.engine.apply_operation(
             SqlOperation::Execute {
                 sql: sql.to_string(),
-                params: None,
+                params: Some(params),
             },
             tx,
             log_index,
@@ -128,13 +133,22 @@ impl TestContext {
 
     /// Query SQL and return raw results
     pub fn query(&mut self, sql: &str) -> Vec<HashMap<String, Value>> {
+        self.query_with_params(sql, vec![])
+    }
+
+    /// Query SQL with parameters and return raw results
+    pub fn query_with_params(
+        &mut self,
+        sql: &str,
+        params: Vec<Value>,
+    ) -> Vec<HashMap<String, Value>> {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
         let log_index = self.next_log_index();
 
         let result = self.engine.apply_operation(
             SqlOperation::Execute {
                 sql: sql.to_string(),
-                params: None,
+                params: Some(params),
             },
             tx,
             log_index,

@@ -65,6 +65,9 @@ impl ValueExt for Value {
             (Value::Bytea(_), DataType::Bytea) => Ok(()),
             (Value::Inet(_), DataType::Inet) => Ok(()),
             (Value::Point(_), DataType::Point) => Ok(()),
+            (Value::PrivateKey(_), DataType::PrivateKey) => Ok(()),
+            (Value::PublicKey(_), DataType::PublicKey) => Ok(()),
+            (Value::Identity(_), DataType::Identity) => Ok(()),
 
             // Collection types
             (Value::Array(_), DataType::Array(_, _)) => Ok(()),

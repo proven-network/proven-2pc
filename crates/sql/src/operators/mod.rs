@@ -554,6 +554,15 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         // Point
         (Point(a), Point(b)) => a.cmp(b),
 
+        // PrivateKey
+        (PrivateKey(a), PrivateKey(b)) => a.cmp(b),
+
+        // PublicKey
+        (PublicKey(a), PublicKey(b)) => a.cmp(b),
+
+        // Identity
+        (Identity(a), Identity(b)) => a.cmp(b),
+
         // Collections - Arrays and Lists are comparable
         (Array(a), Array(b)) | (List(a), List(b)) => a.cmp(b),
         (Array(a), List(b)) | (List(a), Array(b)) => a.cmp(b),
