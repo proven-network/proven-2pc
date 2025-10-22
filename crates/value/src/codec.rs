@@ -3,7 +3,11 @@
 //! Provides efficient sortable binary encoding with type tags.
 //! This is based on the SQL crate's sortable index encoding.
 
-use crate::types::{Interval, Point, Value};
+use crate::interval::Interval;
+use crate::point::Point;
+use crate::private_key::PrivateKey;
+use crate::public_key::PublicKey;
+use crate::types::Value;
 use chrono::{NaiveDate, Timelike};
 use std::io::{Cursor, Read};
 use thiserror::Error;
@@ -177,12 +181,44 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
             output.extend_from_slice(&p.x.to_be_bytes());
             output.extend_from_slice(&p.y.to_be_bytes());
         }
+        Value::PrivateKey(k) => {
+            output.push(0x18);
+            // Encode key type discriminant (1 byte) + key bytes (32 bytes)
+            match k {
+                PrivateKey::Ed25519(bytes) => {
+                    output.push(0x01); // Ed25519 discriminant
+                    output.extend_from_slice(bytes);
+                }
+                PrivateKey::Secp256k1(bytes) => {
+                    output.push(0x02); // Secp256k1 discriminant
+                    output.extend_from_slice(bytes);
+                }
+            }
+        }
+        Value::PublicKey(k) => {
+            output.push(0x19);
+            // Encode key type discriminant (1 byte) + key bytes (variable length)
+            match k {
+                PublicKey::Ed25519(bytes) => {
+                    output.push(0x01); // Ed25519 discriminant
+                    output.extend_from_slice(bytes);
+                }
+                PublicKey::Secp256k1Compressed(bytes) => {
+                    output.push(0x02); // Secp256k1 compressed discriminant
+                    output.extend_from_slice(bytes);
+                }
+                PublicKey::Secp256k1Uncompressed(bytes) => {
+                    output.push(0x03); // Secp256k1 uncompressed discriminant
+                    output.extend_from_slice(bytes);
+                }
+            }
+        }
         // Collection types
         Value::Array(arr) | Value::List(arr) => {
             output.push(if matches!(value, Value::Array(_)) {
-                0x18
+                0x1A
             } else {
-                0x19
+                0x1B
             });
             output.extend_from_slice(&(arr.len() as u32).to_be_bytes());
             for item in arr {
@@ -190,7 +226,7 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
             }
         }
         Value::Map(m) => {
-            output.push(0x1A);
+            output.push(0x1C);
             output.extend_from_slice(&(m.len() as u32).to_be_bytes());
             let mut sorted_keys: Vec<_> = m.keys().collect();
             sorted_keys.sort();
@@ -202,7 +238,7 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
             }
         }
         Value::Struct(fields) => {
-            output.push(0x1B);
+            output.push(0x1D);
             output.extend_from_slice(&(fields.len() as u32).to_be_bytes());
             for (name, value) in fields {
                 let name_bytes = name.as_bytes();
@@ -212,7 +248,7 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
             }
         }
         Value::Json(j) => {
-            output.push(0x1C);
+            output.push(0x1E);
             let json_str = j.to_string();
             let bytes = json_str.as_bytes();
             output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
@@ -436,7 +472,62 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
 
             Ok(Value::Point(Point { x, y }))
         }
-        0x18 | 0x19 => {
+        0x18 => {
+            // Decode PrivateKey
+            let mut key_type = [0u8; 1];
+            cursor.read_exact(&mut key_type)?;
+
+            let mut key_bytes = [0u8; 32];
+            cursor.read_exact(&mut key_bytes)?;
+
+            let private_key = match key_type[0] {
+                0x01 => PrivateKey::Ed25519(key_bytes),
+                0x02 => PrivateKey::Secp256k1(key_bytes),
+                _ => {
+                    return Err(Error::Decoding(format!(
+                        "Unknown private key type: 0x{:02X}",
+                        key_type[0]
+                    )));
+                }
+            };
+
+            Ok(Value::PrivateKey(private_key))
+        }
+        0x19 => {
+            // Decode PublicKey
+            let mut key_type = [0u8; 1];
+            cursor.read_exact(&mut key_type)?;
+
+            let public_key = match key_type[0] {
+                0x01 => {
+                    // Ed25519 (32 bytes)
+                    let mut key_bytes = [0u8; 32];
+                    cursor.read_exact(&mut key_bytes)?;
+                    PublicKey::Ed25519(key_bytes)
+                }
+                0x02 => {
+                    // Secp256k1 compressed (33 bytes)
+                    let mut key_bytes = [0u8; 33];
+                    cursor.read_exact(&mut key_bytes)?;
+                    PublicKey::Secp256k1Compressed(key_bytes)
+                }
+                0x03 => {
+                    // Secp256k1 uncompressed (65 bytes)
+                    let mut key_bytes = [0u8; 65];
+                    cursor.read_exact(&mut key_bytes)?;
+                    PublicKey::Secp256k1Uncompressed(key_bytes)
+                }
+                _ => {
+                    return Err(Error::Decoding(format!(
+                        "Unknown public key type: 0x{:02X}",
+                        key_type[0]
+                    )));
+                }
+            };
+
+            Ok(Value::PublicKey(public_key))
+        }
+        0x1A | 0x1B => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;
@@ -446,13 +537,13 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
                 items.push(decode_value_internal(cursor)?);
             }
 
-            Ok(if tag[0] == 0x18 {
+            Ok(if tag[0] == 0x1A {
                 Value::Array(items)
             } else {
                 Value::List(items)
             })
         }
-        0x1A => {
+        0x1C => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;
@@ -474,7 +565,7 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
 
             Ok(Value::Map(map))
         }
-        0x1B => {
+        0x1D => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;
@@ -496,7 +587,7 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
 
             Ok(Value::Struct(fields))
         }
-        0x1C => {
+        0x1E => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;

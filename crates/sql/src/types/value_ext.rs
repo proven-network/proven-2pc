@@ -117,6 +117,8 @@ impl ValueExt for Value {
             Value::Bytea(_) => DataType::Bytea,
             Value::Inet(_) => DataType::Inet,
             Value::Point(_) => DataType::Point,
+            Value::PrivateKey(_) => DataType::PrivateKey,
+            Value::PublicKey(_) => DataType::PublicKey,
             Value::Array(arr) => {
                 if let Some(first) = arr.first() {
                     DataType::Array(Box::new(first.data_type()), Some(arr.len()))

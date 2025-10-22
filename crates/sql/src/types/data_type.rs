@@ -37,6 +37,8 @@ pub enum DataType {
     Bytea,
     Inet,
     Point,
+    PrivateKey,
+    PublicKey,
     // Collection types
     Array(Box<DataType>, Option<usize>), // Fixed-size array (e.g., INTEGER[3])
     List(Box<DataType>),                 // Variable-size list (e.g., INTEGER[])
@@ -126,6 +128,8 @@ impl fmt::Display for DataType {
             DataType::Bytea => write!(f, "BYTEA"),
             DataType::Inet => write!(f, "INET"),
             DataType::Point => write!(f, "POINT"),
+            DataType::PrivateKey => write!(f, "PRIVATE_KEY"),
+            DataType::PublicKey => write!(f, "PUBLIC_KEY"),
             DataType::Array(inner, Some(size)) => write!(f, "{}[{}]", inner, size),
             DataType::Array(inner, None) => write!(f, "{}[]", inner),
             DataType::List(inner) => write!(f, "{}[]", inner),

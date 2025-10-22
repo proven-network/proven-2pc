@@ -1143,6 +1143,7 @@ name = "proven-value"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hex",
  "proven-mvcc",
  "rust_decimal",
  "serde",

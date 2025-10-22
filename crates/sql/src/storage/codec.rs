@@ -242,6 +242,38 @@ fn encode_value_compact(value: &Value, expected_type: &DataType, buf: &mut Vec<u
             buf.extend_from_slice(&p.y.to_bits().to_le_bytes());
         }
 
+        (Value::PrivateKey(k), DataType::PrivateKey) => {
+            // Encode key type (1 byte) + key bytes (32 bytes)
+            match k {
+                proven_value::PrivateKey::Ed25519(bytes) => {
+                    buf.push(0x01);
+                    buf.extend_from_slice(bytes);
+                }
+                proven_value::PrivateKey::Secp256k1(bytes) => {
+                    buf.push(0x02);
+                    buf.extend_from_slice(bytes);
+                }
+            }
+        }
+
+        (Value::PublicKey(k), DataType::PublicKey) => {
+            // Encode key type (1 byte) + key bytes (variable length)
+            match k {
+                proven_value::PublicKey::Ed25519(bytes) => {
+                    buf.push(0x01);
+                    buf.extend_from_slice(bytes);
+                }
+                proven_value::PublicKey::Secp256k1Compressed(bytes) => {
+                    buf.push(0x02);
+                    buf.extend_from_slice(bytes);
+                }
+                proven_value::PublicKey::Secp256k1Uncompressed(bytes) => {
+                    buf.push(0x03);
+                    buf.extend_from_slice(bytes);
+                }
+            }
+        }
+
         // Array/List: encode count + null bitmap + elements recursively
         (Value::Array(arr), DataType::Array(elem_type, _)) => {
             buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
@@ -642,6 +674,63 @@ fn decode_value_compact(cursor: &mut Cursor<&[u8]>, expected_type: &DataType) ->
             let y = f64::from_bits(u64::from_le_bytes(y_bytes));
 
             Value::Point(Point { x, y })
+        }
+
+        DataType::PrivateKey => {
+            // Decode key type (1 byte) + key bytes (32 bytes)
+            let mut key_type = [0u8; 1];
+            cursor.read_exact(&mut key_type)?;
+
+            let mut key_bytes = [0u8; 32];
+            cursor.read_exact(&mut key_bytes)?;
+
+            let private_key = match key_type[0] {
+                0x01 => proven_value::PrivateKey::Ed25519(key_bytes),
+                0x02 => proven_value::PrivateKey::Secp256k1(key_bytes),
+                _ => {
+                    return Err(Error::InvalidValue(format!(
+                        "Unknown private key type: 0x{:02X}",
+                        key_type[0]
+                    )));
+                }
+            };
+
+            Value::PrivateKey(private_key)
+        }
+
+        DataType::PublicKey => {
+            // Decode key type (1 byte) + key bytes (variable length)
+            let mut key_type = [0u8; 1];
+            cursor.read_exact(&mut key_type)?;
+
+            let public_key = match key_type[0] {
+                0x01 => {
+                    // Ed25519 (32 bytes)
+                    let mut key_bytes = [0u8; 32];
+                    cursor.read_exact(&mut key_bytes)?;
+                    proven_value::PublicKey::Ed25519(key_bytes)
+                }
+                0x02 => {
+                    // Secp256k1 compressed (33 bytes)
+                    let mut key_bytes = [0u8; 33];
+                    cursor.read_exact(&mut key_bytes)?;
+                    proven_value::PublicKey::Secp256k1Compressed(key_bytes)
+                }
+                0x03 => {
+                    // Secp256k1 uncompressed (65 bytes)
+                    let mut key_bytes = [0u8; 65];
+                    cursor.read_exact(&mut key_bytes)?;
+                    proven_value::PublicKey::Secp256k1Uncompressed(key_bytes)
+                }
+                _ => {
+                    return Err(Error::InvalidValue(format!(
+                        "Unknown public key type: 0x{:02X}",
+                        key_type[0]
+                    )));
+                }
+            };
+
+            Value::PublicKey(public_key)
         }
 
         // Array/List: decode count + null bitmap + elements recursively

@@ -9,6 +9,7 @@ mvcc = ["proven-mvcc"]
 
 [dependencies]
 chrono.workspace = true
+hex.workspace = true
 proven-mvcc = { workspace = true, optional = true }
 rust_decimal.workspace = true
 serde.workspace = true

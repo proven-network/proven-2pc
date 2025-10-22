@@ -10,53 +10,10 @@ use std::fmt;
 use std::net::IpAddr;
 use uuid::Uuid;
 
-/// Point type for geometric data
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
-}
-
-impl Point {
-    pub fn new(x: f64, y: f64) -> Self {
-        Self { x, y }
-    }
-}
-
-impl Eq for Point {}
-
-impl PartialOrd for Point {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Point {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.x.partial_cmp(&other.x) {
-            Some(std::cmp::Ordering::Equal) | None => self
-                .y
-                .partial_cmp(&other.y)
-                .unwrap_or(std::cmp::Ordering::Equal),
-            Some(ord) => ord,
-        }
-    }
-}
-
-impl std::hash::Hash for Point {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.x.to_bits().hash(state);
-        self.y.to_bits().hash(state);
-    }
-}
-
-/// Interval type for time durations
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Interval {
-    pub months: i32,
-    pub days: i32,
-    pub microseconds: i64,
-}
+use crate::interval::Interval;
+use crate::point::Point;
+use crate::private_key::PrivateKey;
+use crate::public_key::PublicKey;
 
 /// Universal value type for Proven database components
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -93,6 +50,8 @@ pub enum Value {
     Bytea(Vec<u8>),
     Inet(IpAddr),
     Point(Point),
+    PrivateKey(PrivateKey),
+    PublicKey(PublicKey),
     // Collection types
     Array(Vec<Value>),            // Fixed-size array
     List(Vec<Value>),             // Variable-size list
@@ -298,11 +257,13 @@ impl Value {
             Value::Bytea(_) => 20,
             Value::Inet(_) => 21,
             Value::Point(_) => 22,
-            Value::Array(_) => 23,
-            Value::List(_) => 24,
-            Value::Map(_) => 25,
-            Value::Struct(_) => 26,
-            Value::Json(_) => 27,
+            Value::PrivateKey(_) => 23,
+            Value::PublicKey(_) => 24,
+            Value::Array(_) => 25,
+            Value::List(_) => 26,
+            Value::Map(_) => 27,
+            Value::Struct(_) => 28,
+            Value::Json(_) => 29,
             Value::Null => 255, // NULL sorts last (SQL standard)
         }
     }
@@ -334,6 +295,8 @@ impl Value {
             Value::Bytea(_) => "bytea",
             Value::Inet(_) => "inet",
             Value::Point(_) => "point",
+            Value::PrivateKey(_) => "private_key",
+            Value::PublicKey(_) => "public_key",
             Value::Array(_) => "array",
             Value::List(_) => "list",
             Value::Map(_) => "map",
@@ -392,6 +355,8 @@ impl fmt::Debug for Value {
             Value::Bytea(b) => write!(f, "Bytea({} bytes)", b.len()),
             Value::Inet(ip) => write!(f, "Inet({:?})", ip),
             Value::Point(p) => write!(f, "Point({:?})", p),
+            Value::PrivateKey(k) => write!(f, "PrivateKey({:?})", k),
+            Value::PublicKey(k) => write!(f, "PublicKey({:?})", k),
             Value::Array(arr) => write!(f, "Array({:?})", arr),
             Value::List(list) => write!(f, "List({:?})", list),
             Value::Map(map) => write!(f, "Map({:?})", map),
@@ -428,6 +393,8 @@ impl fmt::Display for Value {
             Value::Bytea(b) => write!(f, "<{} bytes>", b.len()),
             Value::Inet(ip) => write!(f, "{}", ip),
             Value::Point(p) => write!(f, "({}, {})", p.x, p.y),
+            Value::PrivateKey(k) => write!(f, "{}", k),
+            Value::PublicKey(k) => write!(f, "{}", k),
             Value::Array(_) | Value::List(_) | Value::Map(_) | Value::Struct(_) => {
                 write!(f, "{:?}", self)
             }
@@ -480,6 +447,8 @@ impl std::hash::Hash for Value {
                 p.x.to_bits().hash(state);
                 p.y.to_bits().hash(state);
             }
+            Value::PrivateKey(k) => k.hash(state),
+            Value::PublicKey(k) => k.hash(state),
             Value::Array(arr) => arr.hash(state),
             Value::List(list) => list.hash(state),
             Value::Map(map) => {
@@ -573,6 +542,8 @@ impl Ord for Value {
                 Some(Ordering::Equal) | None => a.y.partial_cmp(&b.y).unwrap_or(Ordering::Equal),
                 Some(ord) => ord,
             },
+            (Value::PrivateKey(a), Value::PrivateKey(b)) => a.cmp(b),
+            (Value::PublicKey(a), Value::PublicKey(b)) => a.cmp(b),
             (Value::Array(a), Value::Array(b)) => a.cmp(b),
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Map(a), Value::Map(b)) => {
