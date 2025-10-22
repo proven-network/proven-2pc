@@ -3,6 +3,7 @@
 //! Provides efficient sortable binary encoding with type tags.
 //! This is based on the SQL crate's sortable index encoding.
 
+use crate::identity::Identity;
 use crate::interval::Interval;
 use crate::point::Point;
 use crate::private_key::PrivateKey;
@@ -213,12 +214,17 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
                 }
             }
         }
+        Value::Identity(i) => {
+            output.push(0x1A);
+            // Encode UUID (16 bytes)
+            output.extend_from_slice(i.as_bytes());
+        }
         // Collection types
         Value::Array(arr) | Value::List(arr) => {
             output.push(if matches!(value, Value::Array(_)) {
-                0x1A
-            } else {
                 0x1B
+            } else {
+                0x1C
             });
             output.extend_from_slice(&(arr.len() as u32).to_be_bytes());
             for item in arr {
@@ -226,7 +232,7 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
             }
         }
         Value::Map(m) => {
-            output.push(0x1C);
+            output.push(0x1D);
             output.extend_from_slice(&(m.len() as u32).to_be_bytes());
             let mut sorted_keys: Vec<_> = m.keys().collect();
             sorted_keys.sort();
@@ -238,7 +244,7 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
             }
         }
         Value::Struct(fields) => {
-            output.push(0x1D);
+            output.push(0x1E);
             output.extend_from_slice(&(fields.len() as u32).to_be_bytes());
             for (name, value) in fields {
                 let name_bytes = name.as_bytes();
@@ -248,7 +254,7 @@ fn encode_value_internal(value: &Value, output: &mut Vec<u8>) {
             }
         }
         Value::Json(j) => {
-            output.push(0x1E);
+            output.push(0x1F);
             let json_str = j.to_string();
             let bytes = json_str.as_bytes();
             output.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
@@ -527,7 +533,13 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
 
             Ok(Value::PublicKey(public_key))
         }
-        0x1A | 0x1B => {
+        0x1A => {
+            // Decode Identity (16 bytes UUID)
+            let mut uuid_bytes = [0u8; 16];
+            cursor.read_exact(&mut uuid_bytes)?;
+            Ok(Value::Identity(Identity::from_bytes(uuid_bytes)))
+        }
+        0x1B | 0x1C => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;
@@ -537,13 +549,13 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
                 items.push(decode_value_internal(cursor)?);
             }
 
-            Ok(if tag[0] == 0x1A {
+            Ok(if tag[0] == 0x1B {
                 Value::Array(items)
             } else {
                 Value::List(items)
             })
         }
-        0x1C => {
+        0x1D => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;
@@ -565,7 +577,7 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
 
             Ok(Value::Map(map))
         }
-        0x1D => {
+        0x1E => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;
@@ -587,7 +599,7 @@ fn decode_value_internal(cursor: &mut Cursor<&[u8]>) -> Result<Value> {
 
             Ok(Value::Struct(fields))
         }
-        0x1E => {
+        0x1F => {
             let mut len_bytes = [0u8; 4];
             cursor.read_exact(&mut len_bytes)?;
             let len = u32::from_be_bytes(len_bytes) as usize;

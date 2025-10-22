@@ -8,6 +8,7 @@
 //! It also provides efficient binary encoding for storage and indexes.
 
 pub mod codec;
+pub mod identity;
 pub mod interval;
 pub mod point;
 pub mod private_key;
@@ -18,6 +19,7 @@ pub mod types;
 pub mod mvcc;
 
 pub use codec::{Error, Result, decode_value, encode_value};
+pub use identity::Identity;
 pub use interval::Interval;
 pub use point::Point;
 pub use private_key::PrivateKey;
