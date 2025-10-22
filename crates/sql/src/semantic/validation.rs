@@ -49,7 +49,23 @@ impl SemanticValidator {
         }
 
         // Check ORDER BY for non-aggregate, non-GROUP BY expressions
+        // But skip validation for column references that match SELECT aliases
+        // (they will be resolved to the aliased expression during planning)
         for (expr, _) in &select.order_by {
+            // If this is a simple column reference, check if it matches a SELECT alias
+            if let Expression::Column(_, col_name) = expr {
+                // Check if this column name matches any SELECT alias
+                let is_select_alias = select.select.iter().any(|(_sel_expr, alias)| {
+                    alias.as_ref().map(|a| a == col_name).unwrap_or(false)
+                });
+
+                if is_select_alias {
+                    // This is a SELECT alias - skip GROUP BY validation
+                    // The aliased expression will be validated during planning
+                    continue;
+                }
+            }
+
             self.validate_group_by_expr(expr, &group_by_exprs)?;
         }
 
@@ -180,9 +196,44 @@ impl SemanticValidator {
         }
     }
 
-    /// Validate ORDER BY clause
-    fn validate_order_by(&self, _select: &SelectStatement) -> Result<()> {
-        // ORDER BY validation could be enhanced here
+    /// Validate ORDER BY constraints
+    ///
+    /// Checks:
+    /// 1. Column position references are within bounds
+    /// 2. Aggregates in ORDER BY require aggregates in SELECT
+    fn validate_order_by_constraints(
+        &self,
+        select: &SelectStatement,
+        has_aggregates_in_select: bool,
+    ) -> Result<()> {
+        let select_column_count = select.select.len();
+
+        for (expr, _) in &select.order_by {
+            // Check 1: Validate column position is within bounds
+            if let Expression::Literal(crate::parsing::ast::Literal::Integer(pos)) = expr {
+                let pos_usize = (*pos) as usize;
+                if *pos < 1 || pos_usize > select_column_count {
+                    return Err(Error::ExecutionError(format!(
+                        "Column index {} out of bounds for SELECT with {} columns",
+                        pos, select_column_count
+                    )));
+                }
+            }
+
+            // Check 2: If ORDER BY has aggregates but SELECT doesn't, that's an error
+            // (unless it's a GROUP BY query, which is handled separately)
+            if !has_aggregates_in_select
+                && select.group_by.is_empty()
+                && Self::is_aggregate_expression(expr)
+            {
+                let expr_str = self.expression_to_string(expr);
+                return Err(Error::ExecutionError(format!(
+                    "Column '{}' must appear in GROUP BY clause or be used in an aggregate function",
+                    expr_str
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -578,8 +629,8 @@ impl SemanticValidator {
             self.validate_aggregates_without_group_by(select)?;
         }
 
-        // Validate ORDER BY
-        self.validate_order_by(select)?;
+        // Validate ORDER BY column positions and check for aggregate misuse
+        self.validate_order_by_constraints(select, has_aggregates)?;
 
         // Validate HAVING
         if select.having.is_some() && select.group_by.is_empty() && !has_aggregates {
