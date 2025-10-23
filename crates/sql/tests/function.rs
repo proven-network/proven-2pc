@@ -1,0 +1,42 @@
+mod common;
+
+#[path = "function"]
+mod tests {
+    pub mod abs;
+    pub mod append;
+    pub mod coalesce;
+    pub mod current_date;
+    pub mod current_time;
+    pub mod current_timestamp;
+    pub mod dedup;
+    pub mod entries;
+    pub mod extract;
+    pub mod find_idx;
+    pub mod flatten;
+    pub mod from_entries;
+    pub mod generate_uuid;
+    pub mod geometry_calc_distance;
+    pub mod geometry_get_x;
+    pub mod geometry_get_y;
+    pub mod greatest;
+    pub mod is_empty;
+    pub mod keys;
+    pub mod least;
+    pub mod length;
+    pub mod math_function;
+    pub mod nullif;
+    pub mod prepend;
+    pub mod reverse;
+    pub mod round;
+    pub mod skip;
+    pub mod slice;
+    pub mod sort;
+    pub mod splice;
+    pub mod sqrt_power;
+    pub mod substr;
+    pub mod take;
+    pub mod to_date;
+    pub mod trim;
+    pub mod upper_lower;
+    pub mod values;
+}

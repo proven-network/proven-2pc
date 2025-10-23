@@ -1,7 +1,7 @@
 mod common;
 
-#[path = "dictionary"]
+#[path = "schemaless"]
 mod tests {
     pub mod basic;
-    pub mod index;
+    pub mod error;
 }
