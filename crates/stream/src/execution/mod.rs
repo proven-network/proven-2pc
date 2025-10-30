@@ -2,7 +2,6 @@
 
 pub mod adhoc;
 pub mod read_only;
-pub mod read_write;
 
 use crate::engine::TransactionMode;
 use proven_common::Timestamp;

@@ -2,10 +2,11 @@
 
 use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::{ProcessorError, Result};
+use crate::response::ResponseSender;
 use crate::transaction::DeferredOperationsManager;
 use proven_common::{Timestamp, TransactionId};
 use proven_engine::Message;
-use std::sync::Arc;
+use proven_protocol::CoordinatorMessage;
 
 /// Execute an ad-hoc operation with auto-commit
 ///
@@ -19,21 +20,28 @@ pub async fn execute_adhoc<E: TransactionEngine>(
     message: Message,
     _msg_timestamp: Timestamp,
     log_index: u64,
-    client: &Arc<proven_engine::MockClient>,
-    stream_name: &str,
+    response_sender: &ResponseSender,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
 ) -> Result<()> {
     // Generate a transaction ID for this ad-hoc operation
     let txn_id = TransactionId::new();
 
-    // Extract coordinator and request ID for response
-    let coordinator_id = message
-        .get_header("coordinator_id")
-        .ok_or(ProcessorError::MissingHeader("coordinator_id"))?;
-    let request_id = message.get_header("request_id").map(String::from);
+    // Parse message into typed structure
+    let coord_msg = CoordinatorMessage::from_message(message)
+        .map_err(|e| ProcessorError::InvalidOperation(e.to_string()))?;
+
+    // Extract adhoc fields
+    let (coordinator_id, request_id, operation_bytes) = match coord_msg {
+        CoordinatorMessage::Operation(op) => (op.coordinator_id, Some(op.request_id), op.operation),
+        _ => {
+            return Err(ProcessorError::InvalidOperation(
+                "Expected operation message for ad-hoc execution".to_string(),
+            ));
+        }
+    };
 
     // Deserialize the operation
-    let operation: E::Operation = serde_json::from_slice(&message.body)
+    let operation: E::Operation = serde_json::from_slice(&operation_bytes)
         .map_err(|e| ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e)))?;
 
     // Begin transaction
@@ -46,19 +54,10 @@ pub async fn execute_adhoc<E: TransactionEngine>(
             engine.commit(txn_id, log_index);
 
             // Send successful response
-            send_adhoc_response(
-                client,
-                stream_name,
-                coordinator_id,
-                request_id,
-                response,
-                txn_id,
-            )
-            .await;
+            response_sender.send_success(&coordinator_id, None, request_id, response);
 
             // Retry any deferred operations that were waiting on this transaction
-            retry_deferred_for_transaction(engine, deferred_manager, txn_id, client, stream_name)
-                .await;
+            retry_deferred_for_transaction(engine, deferred_manager, txn_id, response_sender).await;
 
             Ok(())
         }
@@ -67,24 +66,17 @@ pub async fn execute_adhoc<E: TransactionEngine>(
             engine.abort(txn_id, log_index);
 
             let blocker_list: Vec<String> = blockers.iter().map(|b| b.txn.to_string()).collect();
-            tracing::warn!(
-                "[{}] Ad-hoc operation blocked by {:?}, aborting",
-                stream_name,
-                blocker_list
-            );
+            tracing::warn!("Ad-hoc operation blocked by {:?}, aborting", blocker_list);
 
-            send_error_response(
-                client,
-                stream_name,
-                coordinator_id,
-                request_id,
-                &format!(
+            response_sender.send_error(
+                &coordinator_id,
+                None,
+                format!(
                     "Ad-hoc operation blocked by transactions: {:?}",
                     blocker_list
                 ),
-                txn_id,
-            )
-            .await;
+                request_id,
+            );
 
             Ok(())
         }
@@ -96,8 +88,7 @@ async fn retry_deferred_for_transaction<E: TransactionEngine>(
     engine: &mut E,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
     completed_txn: TransactionId,
-    client: &Arc<proven_engine::MockClient>,
-    stream_name: &str,
+    response_sender: &ResponseSender,
 ) {
     // Get operations that can be retried after this transaction
     let ready_operations = deferred_manager.take_commit_waiting_operations(&completed_txn);
@@ -109,37 +100,8 @@ async fn retry_deferred_for_transaction<E: TransactionEngine>(
         let request_id = deferred_op.request_id;
         match engine.apply_operation(operation.clone(), txn_id, 0) {
             OperationResult::Complete(response) => {
-                // Send successful response
-                let serialized = match serde_json::to_vec(&response) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        tracing::error!("[{}] Failed to serialize response: {}", stream_name, e);
-                        continue;
-                    }
-                };
-
-                // Build response headers
-                let mut headers = std::collections::HashMap::new();
-                headers.insert("participant".to_string(), stream_name.to_string());
-                if let Some(req_id) = request_id {
-                    headers.insert("request_id".to_string(), req_id);
-                }
-                headers.insert("status".to_string(), "complete".to_string());
-
-                let message = proven_engine::Message::new(serialized, headers);
-                let subject = format!("coordinator.{}.response", coordinator_id);
-
-                let client_clone = client.clone();
-                let stream_name_clone = stream_name.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) = client_clone.publish(&subject, vec![message]).await {
-                        tracing::warn!(
-                            "[{}] Failed to send deferred response to coordinator: {}",
-                            stream_name_clone,
-                            e
-                        );
-                    }
-                });
+                // Send successful response using ResponseSender
+                response_sender.send_success(&coordinator_id, None, request_id, response);
             }
             OperationResult::WouldBlock { blockers } => {
                 // Re-defer with all blockers
@@ -153,79 +115,4 @@ async fn retry_deferred_for_transaction<E: TransactionEngine>(
             }
         }
     }
-}
-
-/// Send a successful response
-async fn send_adhoc_response<R: proven_common::Response>(
-    client: &Arc<proven_engine::MockClient>,
-    stream_name: &str,
-    coordinator_id: &str,
-    request_id: Option<String>,
-    response: R,
-    _txn_id: TransactionId,
-) {
-    let serialized = match serde_json::to_vec(&response) {
-        Ok(data) => data,
-        Err(e) => {
-            tracing::error!("[{}] Failed to serialize response: {}", stream_name, e);
-            return;
-        }
-    };
-
-    // Build response headers
-    let mut headers = std::collections::HashMap::new();
-    headers.insert("participant".to_string(), stream_name.to_string());
-    if let Some(req_id) = request_id {
-        headers.insert("request_id".to_string(), req_id);
-    }
-    headers.insert("status".to_string(), "complete".to_string());
-
-    let message = proven_engine::Message::new(serialized, headers);
-    let subject = format!("coordinator.{}.response", coordinator_id);
-
-    let client = client.clone();
-    let stream_name = stream_name.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = client.publish(&subject, vec![message]).await {
-            tracing::warn!(
-                "[{}] Failed to send adhoc response to coordinator: {}",
-                stream_name,
-                e
-            );
-        }
-    });
-}
-
-/// Send an error response
-async fn send_error_response(
-    client: &Arc<proven_engine::MockClient>,
-    stream_name: &str,
-    coordinator_id: &str,
-    request_id: Option<String>,
-    error: &str,
-    _txn_id: TransactionId,
-) {
-    // Build error response headers
-    let mut headers = std::collections::HashMap::new();
-    headers.insert("participant".to_string(), stream_name.to_string());
-    if let Some(req_id) = request_id {
-        headers.insert("request_id".to_string(), req_id);
-    }
-    headers.insert("status".to_string(), "error".to_string());
-    headers.insert("error".to_string(), error.to_string());
-
-    let message = proven_engine::Message::new(Vec::new(), headers);
-    let subject = format!("coordinator.{}.response", coordinator_id);
-
-    let client = client.clone();
-    let stream_name = stream_name.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = client.publish(&subject, vec![message]).await {
-            tracing::warn!(
-                "[{}] Failed to send error response to coordinator: {}",
-                stream_name,
-                e
-            );
-        }
-    });
 }

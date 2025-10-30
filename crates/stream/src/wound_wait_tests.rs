@@ -38,6 +38,7 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("coordinator_id".to_string(), coordinator_id.to_string());
+        headers.insert("request_id".to_string(), format!("req-{}", txn_id));
 
         // Add deadline (far in the future to avoid timeout issues in tests)
         let now = Timestamp::now();

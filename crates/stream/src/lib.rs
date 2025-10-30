@@ -31,6 +31,7 @@ pub mod engine;
 pub mod error;
 pub mod execution;
 pub mod processor;
+pub mod response;
 pub mod router;
 pub mod transaction;
 
@@ -50,8 +51,11 @@ pub use error::{ProcessorError, Result};
 // Re-export from processor module
 pub use processor::{ProcessorPhase, SnapshotConfig, StreamProcessor};
 
+// Re-export from response module
+pub use response::ResponseSender;
+
 // Re-export from transaction module (including recovery)
 pub use transaction::{
     DeferredOperationsManager, RecoveryManager, RecoveryState, TransactionContext,
-    TransactionDecision, TransactionState,
+    TransactionDecision,
 };

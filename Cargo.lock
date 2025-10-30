@@ -956,6 +956,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "proven-protocol"
+version = "0.1.0"
+dependencies = [
+ "proven-common",
+ "proven-engine",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "proven-queue"
 version = "0.1.0"
 dependencies = [
@@ -1111,6 +1122,7 @@ dependencies = [
  "parking_lot",
  "proven-common",
  "proven-engine",
+ "proven-protocol",
  "proven-snapshot",
  "proven-snapshot-memory",
  "serde",

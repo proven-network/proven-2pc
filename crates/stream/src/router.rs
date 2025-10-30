@@ -6,10 +6,12 @@
 use crate::engine::{OperationResult, TransactionEngine, TransactionMode};
 use crate::error::{ProcessorError, Result};
 use crate::execution;
+use crate::response::ResponseSender;
 use crate::transaction::TransactionContext;
 use crate::transaction::recovery::TransactionDecision;
 use proven_common::{Timestamp, TransactionId};
 use proven_engine::{Message, MockClient};
+use proven_protocol::{CoordinatorMessage, OperationMessage, TransactionControlMessage};
 use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,8 +30,8 @@ pub struct MessageRouter<E: TransactionEngine> {
     /// Name of this stream
     stream_name: String,
 
-    /// Cached engine name
-    engine_name: String,
+    /// Response sender for coordinator communication
+    response_sender: ResponseSender,
 }
 
 impl<E: TransactionEngine> MessageRouter<E> {
@@ -37,13 +39,15 @@ impl<E: TransactionEngine> MessageRouter<E> {
     pub fn new(engine: E, client: Arc<MockClient>, stream_name: String) -> Self {
         let engine_name = engine.engine_name().to_string();
         let context = TransactionContext::new(client.clone(), stream_name.clone());
+        let response_sender =
+            ResponseSender::new(client.clone(), stream_name.clone(), engine_name.clone());
 
         Self {
             engine,
             context,
             client,
             stream_name,
-            engine_name,
+            response_sender,
         }
     }
 
@@ -88,21 +92,20 @@ impl<E: TransactionEngine> MessageRouter<E> {
                 ))
             }
             TransactionMode::AdHoc => {
-                // Ad-hoc needs deferred manager
+                // Ad-hoc needs deferred manager and response sender
                 execution::adhoc::execute_adhoc(
                     &mut self.engine,
                     message,
                     msg_timestamp,
                     log_index,
-                    &self.client,
-                    &self.stream_name,
+                    &self.response_sender,
                     &mut self.context.deferred_manager,
                 )
                 .await
             }
             TransactionMode::ReadWrite => {
                 // Read-write needs full routing through this router
-                self.process_readwrite_message(message, msg_timestamp, log_index)
+                self.process_read_write_message(message, msg_timestamp, log_index)
                     .await
             }
         }
@@ -113,8 +116,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         execution::read_only::execute_read_only(
             &mut self.engine,
             message,
-            &self.client,
-            &self.stream_name,
+            &self.response_sender,
             &mut self.context.deferred_manager,
         )
         .await
@@ -174,25 +176,40 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Process a read-write transaction message
-    async fn process_readwrite_message(
+    async fn process_read_write_message(
         &mut self,
         message: Message,
         msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
-        // Extract transaction ID
-        let txn_id_str = message
-            .get_header("txn_id")
-            .ok_or(ProcessorError::MissingHeader("txn_id"))?
-            .to_string();
-        let txn_id =
-            TransactionId::parse(&txn_id_str).map_err(ProcessorError::InvalidTransactionId)?;
+        // Parse message into typed structure
+        let coord_msg = CoordinatorMessage::from_message(message)
+            .map_err(|e| ProcessorError::InvalidOperation(e.to_string()))?;
+
+        let (txn_id, txn_id_str, coordinator_id, request_id) = match &coord_msg {
+            CoordinatorMessage::Operation(op) => (
+                op.txn_id,
+                op.txn_id.to_string(),
+                Some(op.coordinator_id.as_str()),
+                Some(op.request_id.clone()),
+            ),
+            CoordinatorMessage::Control(ctrl) => (
+                ctrl.txn_id,
+                ctrl.txn_id.to_string(),
+                ctrl.coordinator_id.as_deref(),
+                ctrl.request_id.clone(),
+            ),
+            CoordinatorMessage::ReadOnly { .. } => {
+                return Err(ProcessorError::InvalidOperation(
+                    "Read-only message received on read-write path".to_string(),
+                ));
+            }
+        };
 
         // Check if wounded first - wounded status takes precedence over deadline
         if let Some(wounded_by) = self.context.is_wounded(&txn_id) {
-            if let Some(coordinator_id) = message.get_header("coordinator_id") {
-                let request_id = message.get_header("request_id").map(String::from);
-                self.send_wounded_response(coordinator_id, &txn_id_str, wounded_by, request_id);
+            if let Some(coord_id) = coordinator_id {
+                self.send_wounded_response(coord_id, &txn_id_str, wounded_by, request_id);
             }
             return Ok(());
         }
@@ -201,10 +218,9 @@ impl<E: TransactionEngine> MessageRouter<E> {
         if let Some(deadline) = self.context.get_deadline(&txn_id)
             && msg_timestamp > deadline
         {
-            if let Some(coordinator_id) = message.get_header("coordinator_id") {
-                let request_id = message.get_header("request_id").map(String::from);
+            if let Some(coord_id) = coordinator_id {
                 self.send_error_response(
-                    coordinator_id,
+                    coord_id,
                     &txn_id_str,
                     "Transaction deadline exceeded".to_string(),
                     request_id,
@@ -213,36 +229,36 @@ impl<E: TransactionEngine> MessageRouter<E> {
             return Ok(());
         }
 
-        // Handle transaction control messages (empty body)
-        if message.body.is_empty() {
-            return self
-                .handle_control_message(message, txn_id, &txn_id_str, msg_timestamp, log_index)
-                .await;
+        // Dispatch based on message type
+        match coord_msg {
+            CoordinatorMessage::Control(ctrl) => {
+                self.handle_control_message(ctrl, txn_id, &txn_id_str, msg_timestamp, log_index)
+                    .await
+            }
+            CoordinatorMessage::Operation(op) => {
+                self.handle_operation_message(op, txn_id, &txn_id_str, log_index)
+                    .await
+            }
+            CoordinatorMessage::ReadOnly { .. } => unreachable!("Already checked above"),
         }
-
-        // Handle regular operations
-        self.handle_operation_message(message, txn_id, &txn_id_str, log_index)
-            .await
     }
 
-    /// Handle transaction control messages (prepare, commit, abort)
+    /// Handle transaction control messages using typed message
     async fn handle_control_message(
         &mut self,
-        message: Message,
+        ctrl: TransactionControlMessage,
         txn_id: TransactionId,
         txn_id_str: &str,
         msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
-        let phase = message
-            .get_header("txn_phase")
-            .ok_or(ProcessorError::MissingHeader("txn_phase"))?;
+        use proven_protocol::TransactionPhase;
 
-        let coordinator_id = message.get_header("coordinator_id");
-        let request_id = message.get_header("request_id").map(String::from);
+        let coordinator_id = ctrl.coordinator_id.as_deref();
+        let request_id = ctrl.request_id;
 
-        match phase {
-            "prepare" => {
+        match ctrl.phase {
+            TransactionPhase::Prepare => {
                 self.handle_prepare(
                     txn_id,
                     txn_id_str,
@@ -253,7 +269,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
                 )
                 .await
             }
-            "prepare_and_commit" => {
+            TransactionPhase::PrepareAndCommit => {
                 self.handle_prepare_and_commit(
                     txn_id,
                     txn_id_str,
@@ -264,54 +280,39 @@ impl<E: TransactionEngine> MessageRouter<E> {
                 )
                 .await
             }
-            "commit" => {
+            TransactionPhase::Commit => {
                 self.handle_commit(txn_id, txn_id_str, coordinator_id, request_id, log_index)
                     .await
             }
-            "abort" => {
+            TransactionPhase::Abort => {
                 self.handle_abort(txn_id, txn_id_str, coordinator_id, request_id, log_index)
                     .await
             }
-            unknown => Err(ProcessorError::UnknownPhase(unknown.to_string())),
         }
     }
 
-    /// Handle a regular operation message
+    /// Handle a regular operation message using typed message
     async fn handle_operation_message(
         &mut self,
-        message: Message,
+        op: OperationMessage,
         txn_id: TransactionId,
         txn_id_str: &str,
         log_index: u64,
     ) -> Result<()> {
         // Deserialize the operation
-        let operation: E::Operation = serde_json::from_slice(&message.body).map_err(|e| {
+        let operation: E::Operation = serde_json::from_slice(&op.operation).map_err(|e| {
             ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e))
         })?;
 
-        // Get coordinator ID for responses
-        let coordinator_id = message
-            .get_header("coordinator_id")
-            .ok_or(ProcessorError::MissingHeader("coordinator_id"))?;
-
-        let request_id = message.get_header("request_id").map(String::from);
+        let coordinator_id = &op.coordinator_id;
+        let request_id = Some(op.request_id.clone());
 
         // Check if this is the first time seeing this transaction
         if !self.context.is_begun(&txn_id) {
             // Ensure we have a deadline
             if self.context.get_deadline(&txn_id).is_none() {
-                if let Some(deadline_str) = message.get_header("txn_deadline") {
-                    if let Ok(deadline) = Timestamp::parse(deadline_str) {
-                        self.context.set_deadline(txn_id, deadline);
-                    } else {
-                        self.send_error_response(
-                            coordinator_id,
-                            txn_id_str,
-                            "Invalid transaction deadline format".to_string(),
-                            request_id,
-                        );
-                        return Ok(());
-                    }
+                if let Some(deadline) = op.txn_deadline {
+                    self.context.set_deadline(txn_id, deadline);
                 } else {
                     self.send_error_response(
                         coordinator_id,
@@ -747,7 +748,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         Ok(())
     }
 
-    // Response sending methods
+    // Response sending methods (delegated to ResponseSender)
 
     fn send_response(
         &self,
@@ -756,36 +757,8 @@ impl<E: TransactionEngine> MessageRouter<E> {
         response: E::Response,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::with_capacity(4);
-        headers.insert("txn_id".to_string(), txn_id.to_string());
-        headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine_name.clone());
-
-        if let Some(req_id) = &request_id {
-            headers.insert("request_id".to_string(), req_id.clone());
-        }
-
-        let body = match serde_json::to_vec(&response) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::error!("Failed to serialize response: {}", e);
-                self.send_error_response(
-                    coordinator_id,
-                    txn_id,
-                    format!("Failed to serialize response: {}", e),
-                    request_id,
-                );
-                return;
-            }
-        };
-
-        let subject = format!("coordinator.{}.response", coordinator_id);
-        let message = Message::new(body, headers);
-
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            let _ = client.publish(&subject, vec![message]).await;
-        });
+        self.response_sender
+            .send_success(coordinator_id, Some(txn_id), request_id, response);
     }
 
     fn send_prepared_response(
@@ -794,23 +767,8 @@ impl<E: TransactionEngine> MessageRouter<E> {
         txn_id: &str,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::with_capacity(5);
-        headers.insert("txn_id".to_string(), txn_id.to_string());
-        headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine_name.clone());
-        headers.insert("status".to_string(), "prepared".to_string());
-
-        if let Some(req_id) = request_id {
-            headers.insert("request_id".to_string(), req_id);
-        }
-
-        let subject = format!("coordinator.{}.response", coordinator_id);
-        let message = Message::new(Vec::new(), headers);
-
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            let _ = client.publish(&subject, vec![message]).await;
-        });
+        self.response_sender
+            .send_prepared(coordinator_id, txn_id, request_id);
     }
 
     fn send_wounded_response(
@@ -820,24 +778,8 @@ impl<E: TransactionEngine> MessageRouter<E> {
         wounded_by: TransactionId,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::with_capacity(6);
-        headers.insert("txn_id".to_string(), txn_id.to_string());
-        headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine_name.clone());
-        headers.insert("status".to_string(), "wounded".to_string());
-        headers.insert("wounded_by".to_string(), wounded_by.to_string());
-
-        if let Some(req_id) = request_id {
-            headers.insert("request_id".to_string(), req_id);
-        }
-
-        let subject = format!("coordinator.{}.response", coordinator_id);
-        let message = Message::new(Vec::new(), headers);
-
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            let _ = client.publish(&subject, vec![message]).await;
-        });
+        self.response_sender
+            .send_wounded(coordinator_id, txn_id, wounded_by, request_id);
     }
 
     fn send_error_response(
@@ -847,23 +789,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         error: String,
         request_id: Option<String>,
     ) {
-        let mut headers = HashMap::with_capacity(6);
-        headers.insert("txn_id".to_string(), txn_id.to_string());
-        headers.insert("participant".to_string(), self.stream_name.clone());
-        headers.insert("engine".to_string(), self.engine_name.clone());
-        headers.insert("status".to_string(), "error".to_string());
-        headers.insert("error".to_string(), error);
-
-        if let Some(req_id) = request_id {
-            headers.insert("request_id".to_string(), req_id);
-        }
-
-        let subject = format!("coordinator.{}.response", coordinator_id);
-        let message = Message::new(Vec::new(), headers);
-
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            let _ = client.publish(&subject, vec![message]).await;
-        });
+        self.response_sender
+            .send_error(coordinator_id, Some(txn_id), error, request_id);
     }
 }

@@ -2,10 +2,10 @@
 
 use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::{ProcessorError, Result};
+use crate::response::ResponseSender;
 use crate::transaction::DeferredOperationsManager;
-use proven_common::TransactionId;
 use proven_engine::Message;
-use std::sync::Arc;
+use proven_protocol::CoordinatorMessage;
 
 /// Execute a read-only operation using snapshot isolation
 ///
@@ -20,49 +20,43 @@ use std::sync::Arc;
 pub async fn execute_read_only<E: TransactionEngine>(
     engine: &mut E,
     message: Message,
-    client: &Arc<proven_engine::MockClient>,
-    stream_name: &str,
+    response_sender: &ResponseSender,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
 ) -> Result<()> {
-    // Extract read transaction ID from message header (required)
-    // This is the transaction ID to use for snapshot reads
-    let read_txn_id = message
-        .get_header("read_timestamp")
-        .and_then(|s| TransactionId::parse(s).ok())
-        .ok_or({
-            ProcessorError::MissingHeader("read_timestamp header required for read-only operations")
-        })?;
+    // Parse message into typed structure
+    let coord_msg = CoordinatorMessage::from_message(message)
+        .map_err(|e| ProcessorError::InvalidOperation(e.to_string()))?;
 
-    // Extract coordinator and request ID for response
-    let coordinator_id = message
-        .get_header("coordinator_id")
-        .ok_or(ProcessorError::MissingHeader("coordinator_id"))?;
-    let request_id = message.get_header("request_id").map(String::from);
+    // Extract read-only specific fields
+    let (read_txn_id, coordinator_id, request_id, operation_bytes) = match coord_msg {
+        CoordinatorMessage::ReadOnly {
+            read_timestamp,
+            coordinator_id,
+            request_id,
+            operation,
+        } => (read_timestamp, coordinator_id, Some(request_id), operation),
+        _ => {
+            return Err(ProcessorError::InvalidOperation(
+                "Expected read-only message".to_string(),
+            ));
+        }
+    };
 
     // Deserialize the operation
-    let operation: E::Operation = serde_json::from_slice(&message.body)
+    let operation: E::Operation = serde_json::from_slice(&operation_bytes)
         .map_err(|e| ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e)))?;
 
     // Execute the read at the specified transaction ID (snapshot)
     match engine.read_at_timestamp(operation.clone(), read_txn_id) {
         OperationResult::Complete(response) => {
             // Send successful response
-            send_read_response(
-                client,
-                stream_name,
-                coordinator_id,
-                request_id,
-                response,
-                read_txn_id,
-            )
-            .await;
+            response_sender.send_success(&coordinator_id, None, request_id, response);
             Ok(())
         }
         OperationResult::WouldBlock { blockers } => {
             // Read-only operations can be blocked by exclusive write locks
             // Defer the operation to retry when the blocking transaction completes
             tracing::debug!(
-                stream = %stream_name,
                 txn_id = %read_txn_id,
                 blockers = ?blockers.iter().map(|b| b.txn.to_string()).collect::<Vec<_>>(),
                 "Read operation blocked"
@@ -74,51 +68,10 @@ pub async fn execute_read_only<E: TransactionEngine>(
                 operation,
                 read_txn_id, // Use read transaction ID as the operation ID
                 blockers,
-                coordinator_id.to_string(),
+                coordinator_id,
                 request_id,
             );
             Ok(())
         }
     }
-}
-
-/// Send a successful read response
-async fn send_read_response<R: proven_common::Response>(
-    client: &Arc<proven_engine::MockClient>,
-    stream_name: &str,
-    coordinator_id: &str,
-    request_id: Option<String>,
-    response: R,
-    _read_txn_id: TransactionId,
-) {
-    let serialized = match serde_json::to_vec(&response) {
-        Ok(data) => data,
-        Err(e) => {
-            tracing::error!("[{}] Failed to serialize response: {}", stream_name, e);
-            return;
-        }
-    };
-
-    // Build response headers
-    let mut headers = std::collections::HashMap::new();
-    headers.insert("participant".to_string(), stream_name.to_string());
-    if let Some(req_id) = request_id {
-        headers.insert("request_id".to_string(), req_id);
-    }
-    headers.insert("status".to_string(), "complete".to_string());
-
-    let message = proven_engine::Message::new(serialized, headers);
-    let subject = format!("coordinator.{}.response", coordinator_id);
-
-    let client = client.clone();
-    let stream_name = stream_name.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = client.publish(&subject, vec![message]).await {
-            tracing::warn!(
-                "[{}] Failed to send read response to coordinator: {}",
-                stream_name,
-                e
-            );
-        }
-    });
 }

@@ -1,0 +1,11 @@
+[package]
+name = "proven-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+proven-common.workspace = true
+proven-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

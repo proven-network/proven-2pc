@@ -10,6 +10,7 @@ members = [
     "crates/kv",
     "crates/kv-client",
     "crates/mvcc",
+    "crates/protocol",
     "crates/queue",
     "crates/queue-client",
     "crates/resource",
@@ -31,6 +32,7 @@ default-members = [
     "crates/kv",
     "crates/kv-client",
     "crates/mvcc",
+    "crates/protocol",
     "crates/queue",
     "crates/queue-client",
     "crates/resource",
@@ -83,6 +85,7 @@ proven-engine = { path = "crates/engine" }
 proven-kv = { path = "crates/kv" }
 proven-kv-client = { path = "crates/kv-client" }
 proven-mvcc = { path = "crates/mvcc" }
+proven-protocol = { path = "crates/protocol" }
 proven-queue = { path = "crates/queue" }
 proven-queue-client = { path = "crates/queue-client" }
 proven-resource = { path = "crates/resource" }
