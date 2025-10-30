@@ -69,6 +69,10 @@ impl<E: TransactionEngine> MessageRouter<E> {
         msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
+        // Track transaction state (deadlines, coordinator, participants)
+        // This is needed for recovery to work correctly
+        self.track_transaction_state(&message, TransactionId::new())?;
+
         // Determine transaction mode
         let mode = execution::get_transaction_mode(&message);
 
@@ -141,7 +145,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
             }
 
             // Track participants
-            if let Some(participants_str) = message.get_header("new_participants")
+            if let Some(participants_str) = message.get_header("participants")
                 && let Ok(participants) =
                     serde_json::from_str::<HashMap<String, u64>>(participants_str)
             {
@@ -685,16 +689,54 @@ impl<E: TransactionEngine> MessageRouter<E> {
 
             match decision {
                 TransactionDecision::Commit => {
-                    self.engine.commit(txn_id, 0); // Recovery uses dummy log index
-                    self.context.cleanup_committed(&txn_id);
-                    // Retry deferred operations
-                    self.retry_deferred_operations(txn_id).await;
+                    // Publish COMMIT message to our own stream so it gets processed normally
+                    let mut headers = HashMap::new();
+                    headers.insert("txn_id".to_string(), txn_id.to_string());
+                    headers.insert("txn_phase".to_string(), "commit".to_string());
+
+                    let message = Message::new(Vec::new(), headers);
+                    if let Err(e) = self
+                        .client
+                        .publish_to_stream(self.stream_name.clone(), vec![message])
+                        .await
+                    {
+                        tracing::error!(
+                            "[{}] Failed to publish recovery COMMIT: {:?}",
+                            self.stream_name,
+                            e
+                        );
+                    } else {
+                        // Mark as resolved immediately to prevent repeated recovery attempts
+                        // The actual commit will be processed when the message comes through
+                        self.context.resolved_transactions.insert(txn_id);
+                        // Remove deadline to stop triggering recovery checks
+                        self.context.transaction_deadlines.remove(&txn_id);
+                    }
                 }
                 TransactionDecision::Abort => {
-                    self.engine.abort(txn_id, 0); // Recovery uses dummy log index
-                    self.context.cleanup_aborted(&txn_id);
-                    // Retry deferred operations that were waiting on this transaction
-                    self.retry_deferred_operations(txn_id).await;
+                    // Publish ABORT message to our own stream so it gets processed normally
+                    let mut headers = HashMap::new();
+                    headers.insert("txn_id".to_string(), txn_id.to_string());
+                    headers.insert("txn_phase".to_string(), "abort".to_string());
+
+                    let message = Message::new(Vec::new(), headers);
+                    if let Err(e) = self
+                        .client
+                        .publish_to_stream(self.stream_name.clone(), vec![message])
+                        .await
+                    {
+                        tracing::error!(
+                            "[{}] Failed to publish recovery ABORT: {:?}",
+                            self.stream_name,
+                            e
+                        );
+                    } else {
+                        // Mark as resolved immediately to prevent repeated recovery attempts
+                        // The actual abort will be processed when the message comes through
+                        self.context.resolved_transactions.insert(txn_id);
+                        // Remove deadline to stop triggering recovery checks
+                        self.context.transaction_deadlines.remove(&txn_id);
+                    }
                 }
                 TransactionDecision::Unknown => {
                     // Leave for future recovery

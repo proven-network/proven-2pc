@@ -52,14 +52,12 @@ pub struct ReadWriteExecutor {
     /// Prepare votes from participants
     prepare_votes: Arc<Mutex<HashMap<String, PrepareVote>>>,
 
-    /// Participants in this transaction
-    participants: Arc<Mutex<Vec<String>>>,
+    /// Participant offsets (stream name -> log offset where first operation was sent)
+    /// This serves as both the participant list (keys) and recovery metadata (offsets)
+    participant_offsets: Arc<Mutex<HashMap<String, u64>>>,
 
     /// Streams that have received the deadline
     streams_with_deadline: Arc<Mutex<HashSet<String>>>,
-
-    /// Which participants each stream knows about
-    participant_awareness: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 
     /// Shared infrastructure
     infra: Arc<ExecutorInfra>,
@@ -79,6 +77,9 @@ impl ReadWriteExecutor {
         infra: Arc<ExecutorInfra>,
         prediction_context: PredictionContext,
     ) -> Self {
+        // Create participant_offsets early so speculation can populate it
+        let participant_offsets = Arc::new(Mutex::new(HashMap::new()));
+
         // Execute predictions with transaction headers
         let speculation_result = if !prediction_context.predictions().is_empty() {
             let timeout = match common::calculate_timeout(deadline) {
@@ -94,6 +95,8 @@ impl ReadWriteExecutor {
             let txn_id_str = txn_id.to_string();
             let deadline_str = deadline.to_string();
 
+            let offsets_for_closure = participant_offsets.clone();
+
             let client = infra.client.clone();
             infra
                 .execute_predictions(
@@ -108,14 +111,18 @@ impl ReadWriteExecutor {
                     },
                     |streams_and_messages| {
                         let client = client.clone();
+                        let offsets = offsets_for_closure.clone();
                         async move {
                             // Use publish_to_streams for batched consensus round-trip
                             // All streams in a 2PC transaction must be in the same consensus group
-                            client
+                            let stream_offsets = client
                                 .publish_to_streams(streams_and_messages)
                                 .await
-                                .map(|_| ())
-                                .map_err(|e| CoordinatorError::EngineError(e.to_string()))
+                                .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+
+                            // Store the offsets for recovery purposes
+                            offsets.lock().extend(stream_offsets);
+                            Ok(())
                         }
                     },
                 )
@@ -134,13 +141,9 @@ impl ReadWriteExecutor {
         };
 
         // Track all streams that we're sending speculative operations to
-        let mut initial_participants = Vec::new();
         let mut initial_streams_with_deadline = HashSet::new();
         for pred_op in prediction_context.predictions() {
-            if !initial_participants.contains(&pred_op.stream) {
-                initial_participants.push(pred_op.stream.clone());
-                initial_streams_with_deadline.insert(pred_op.stream.clone());
-            }
+            initial_streams_with_deadline.insert(pred_op.stream.clone());
         }
 
         Self {
@@ -148,9 +151,8 @@ impl ReadWriteExecutor {
             deadline,
             state: Arc::new(Mutex::new(TransactionState::Active)),
             prepare_votes: Arc::new(Mutex::new(HashMap::new())),
-            participants: Arc::new(Mutex::new(initial_participants)),
+            participant_offsets,
             streams_with_deadline: Arc::new(Mutex::new(initial_streams_with_deadline)),
-            participant_awareness: Arc::new(Mutex::new(HashMap::new())),
             infra,
             prediction_context: Arc::new(AsyncMutex::new(prediction_context)),
             speculation_receivers,
@@ -169,7 +171,6 @@ impl ReadWriteExecutor {
 
     /// Track participant and return deadline string if needed
     fn track_participant(&self, stream: &str) -> Option<String> {
-        let mut participants = self.participants.lock();
         let mut streams_with_deadline = self.streams_with_deadline.lock();
 
         // Check if this is first contact with stream
@@ -179,10 +180,7 @@ impl ReadWriteExecutor {
             streams_with_deadline.insert(stream.to_string());
         }
 
-        // Add to participants if not already present
-        if !participants.contains(&stream.to_string()) {
-            participants.push(stream.to_string());
-        }
+        // Note: participant_offsets will be populated when we get the offset back from send_and_wait
 
         if needs_deadline {
             Some(self.deadline.to_string())
@@ -291,11 +289,17 @@ impl ReadWriteExecutor {
         let operation_bytes =
             serde_json::to_vec(operation).map_err(CoordinatorError::SerializationError)?;
 
-        // Send and wait for response
-        let response = self
+        // Send and wait for response, capturing offset
+        let (offset, response) = self
             .infra
             .send_and_wait(stream, headers, operation_bytes, timeout)
             .await?;
+
+        // Store the offset for this participant (if not already stored)
+        {
+            let mut offsets = self.participant_offsets.lock();
+            offsets.entry(stream.to_string()).or_insert(offset);
+        }
 
         // Handle response
         ExecutorInfra::handle_response(response)
@@ -303,7 +307,7 @@ impl ReadWriteExecutor {
 
     /// Prepare phase of 2PC
     async fn prepare(&self) -> Result<()> {
-        let participants = self.participants.lock().clone();
+        let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
 
         match participants.len() {
             0 => Ok(()), // No participants to prepare
@@ -322,7 +326,7 @@ impl ReadWriteExecutor {
 
         let timeout = common::calculate_timeout(self.deadline)?;
 
-        let response = match self
+        let (_, response) = match self
             .infra
             .send_and_wait(participant, headers, Vec::new(), timeout)
             .await
@@ -352,19 +356,20 @@ impl ReadWriteExecutor {
 
         let request_id = self.infra.generate_request_id();
 
+        // Get all participant offsets to send with PREPARE messages
+        let all_participants = self.participant_offsets.lock().clone();
+
         // Build prepare messages
         let mut prepare_messages = Vec::new();
         for participant in participants {
             let mut headers = self.build_base_headers(&request_id);
             headers.insert("txn_phase".to_string(), "prepare".to_string());
 
-            // Add participant awareness updates
-            let new_participants = self.calculate_new_participants(participant);
-            if !new_participants.is_empty() {
-                self.update_participant_awareness(participant, &new_participants);
+            // Send full participant list with offsets for recovery
+            if !all_participants.is_empty() {
                 headers.insert(
-                    "new_participants".to_string(),
-                    serde_json::to_string(&new_participants).unwrap(),
+                    "participants".to_string(),
+                    serde_json::to_string(&all_participants).unwrap(),
                 );
             }
 
@@ -406,7 +411,7 @@ impl ReadWriteExecutor {
             self.prepare().await?;
         }
 
-        let participants = self.participants.lock().clone();
+        let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
         if participants.is_empty() {
             *self.state.lock() = TransactionState::Committed;
             return Ok(());
@@ -443,7 +448,7 @@ impl ReadWriteExecutor {
             *state = TransactionState::Aborting;
         }
 
-        let participants = self.participants.lock().clone();
+        let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
 
         // Build abort messages
         let mut abort_messages = Vec::new();
@@ -472,28 +477,6 @@ impl ReadWriteExecutor {
             ResponseMessage::Wounded { .. } => PrepareVote::Wounded,
             ResponseMessage::Error { .. } => PrepareVote::Error,
         }
-    }
-
-    /// Calculate new participants this stream doesn't know about
-    fn calculate_new_participants(&self, participant: &str) -> Vec<String> {
-        let awareness = self.participant_awareness.lock();
-        let participants = self.participants.lock();
-
-        let known = awareness.get(participant).cloned().unwrap_or_default();
-        participants
-            .iter()
-            .filter(|p| *p != participant && !known.contains(*p))
-            .cloned()
-            .collect()
-    }
-
-    /// Update participant awareness tracking
-    fn update_participant_awareness(&self, participant: &str, new_participants: &[String]) {
-        let mut awareness = self.participant_awareness.lock();
-        awareness
-            .entry(participant.to_string())
-            .or_default()
-            .extend(new_participants.iter().cloned());
     }
 
     /// Collect prepare votes from all participants

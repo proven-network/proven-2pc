@@ -419,9 +419,11 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                 // Periodic maintenance (recovery, snapshots)
                 _ = interval.tick() => {
                     // Run recovery check for expired transactions
+                    // Use wall-clock time instead of last_log_timestamp so recovery
+                    // can detect expired transactions even when processor is blocked
                     if let Err(e) = self
                         .router
-                        .run_recovery_check(self.last_log_timestamp)
+                        .run_recovery_check(Timestamp::now())
                         .await
                     {
                         tracing::warn!("Failed to run recovery check: {:?}", e);

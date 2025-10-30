@@ -28,6 +28,9 @@ pub struct TransactionContext<E: TransactionEngine> {
     /// Track which transactions have been begun in the engine
     pub begun_transactions: HashSet<TransactionId>,
 
+    /// Track transactions that have been resolved (committed or aborted) to prevent repeated recovery
+    pub resolved_transactions: HashSet<TransactionId>,
+
     /// Manager for deferred operations (blocked on locks)
     pub deferred_manager: DeferredOperationsManager<E::Operation>,
 
@@ -47,6 +50,7 @@ impl<E: TransactionEngine> TransactionContext<E> {
             transaction_deadlines: HashMap::new(),
             transaction_participants: HashMap::new(),
             begun_transactions: HashSet::new(),
+            resolved_transactions: HashSet::new(),
             deferred_manager: DeferredOperationsManager::new(),
             recovery_manager: RecoveryManager::new(client, stream_name),
             commits_since_snapshot: 0,
@@ -99,12 +103,19 @@ impl<E: TransactionEngine> TransactionContext<E> {
         self.transaction_deadlines.remove(txn_id);
         self.transaction_participants.remove(txn_id);
         self.begun_transactions.remove(txn_id);
+        self.resolved_transactions.insert(*txn_id);
         self.commits_since_snapshot += 1;
     }
 
     /// Clean up state for an aborted transaction
     pub fn cleanup_aborted(&mut self, txn_id: &TransactionId) {
-        // NOTE: We keep coordinator, deadline, and wounded state so that late-arriving
+        // Mark as resolved to prevent repeated recovery attempts
+        self.resolved_transactions.insert(*txn_id);
+
+        // Remove deadline to stop triggering recovery checks
+        self.transaction_deadlines.remove(txn_id);
+
+        // NOTE: We keep coordinator and wounded state so that late-arriving
         // messages (like prepare) can still be properly handled and report wound status
         self.transaction_participants.remove(txn_id);
         self.begun_transactions.remove(txn_id);
@@ -117,7 +128,7 @@ impl<E: TransactionEngine> TransactionContext<E> {
         !self.transaction_coordinators.is_empty()
     }
 
-    /// Get all transactions past their deadline
+    /// Get all transactions past their deadline that haven't been resolved
     pub fn get_expired_transactions(&self, current_time: Timestamp) -> Vec<TransactionId> {
         self.transaction_deadlines
             .iter()
@@ -125,6 +136,7 @@ impl<E: TransactionEngine> TransactionContext<E> {
                 if current_time > *deadline
                     && self.transaction_coordinators.contains_key(txn_id)
                     && !self.wounded_transactions.contains_key(txn_id)
+                    && !self.resolved_transactions.contains(txn_id)
                 {
                     Some(*txn_id)
                 } else {

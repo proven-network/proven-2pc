@@ -50,7 +50,7 @@ impl AdHocExecutor {
             .map_err(crate::error::CoordinatorError::SerializationError)?;
 
         // Send and wait for response
-        let response = self
+        let (_, response) = self
             .infra
             .send_and_wait(stream, headers, operation_bytes, timeout)
             .await?;

@@ -58,31 +58,35 @@ impl ExecutorInfra {
         Ok(())
     }
 
-    /// Send a message and wait for response
+    /// Send a message and wait for response, returning both offset and response
     pub async fn send_and_wait(
         &self,
         stream: &str,
         headers: HashMap<String, String>,
         body: Vec<u8>,
         timeout: Duration,
-    ) -> Result<ResponseMessage> {
+    ) -> Result<(u64, ResponseMessage)> {
         // Get request ID from headers
         let request_id = headers
             .get("request_id")
             .ok_or_else(|| CoordinatorError::Other("Missing request_id in headers".to_string()))?
             .clone();
 
-        // Send message
+        // Send message and capture offset
         let message = Message::new(body, headers);
-        self.client
+        let offset = self
+            .client
             .publish_to_stream(stream.to_string(), vec![message])
             .await
             .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
 
         // Wait for response
-        self.response_collector
+        let response = self
+            .response_collector
             .wait_for_response(request_id, timeout)
-            .await
+            .await?;
+
+        Ok((offset, response))
     }
 
     /// Send a message via pubsub and wait for response
