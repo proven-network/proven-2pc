@@ -3,7 +3,7 @@
 //! This benchmark measures the throughput of the Queue engine by enqueuing
 //! 1 million items directly using the engine.
 
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_queue::{QueueOperation, QueueTransactionEngine, QueueValue};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
@@ -37,7 +37,7 @@ fn main() {
     // Process enqueues
     for i in 0..NUM_ENQUEUES {
         // Generate unique transaction ID with incrementing timestamp
-        let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
         queue_engine.begin(txn_id, next_log_index());
 
         // Create enqueue operation with various value types to simulate real usage
@@ -103,7 +103,7 @@ fn main() {
 
     // Verify queue size
     println!("\nVerifying queue size...");
-    let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
+    let verify_txn = TransactionId::new();
     queue_engine.begin(verify_txn, next_log_index());
 
     let size_op = QueueOperation::Size;
@@ -123,7 +123,7 @@ fn main() {
     const SAMPLE_SIZE: usize = 3;
 
     for sample_idx in 0..SAMPLE_SIZE {
-        let dequeue_txn = HlcTimestamp::new(10000000000 + sample_idx as u64, 0, NodeId::new(1));
+        let dequeue_txn = TransactionId::new();
         queue_engine.begin(dequeue_txn, next_log_index());
 
         let dequeue = QueueOperation::Dequeue;

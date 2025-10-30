@@ -28,9 +28,6 @@ Generic transaction engine trait and stream processing infrastructure used by al
 #### `proven-engine` - Mock Consensus Engine
 Test implementation simulating a consensus/streaming layer for development and testing.
 
-#### `proven-hlc` - Hybrid Logical Clocks
-Provides distributed timestamp generation combining physical time with logical counters for causal ordering.
-
 #### `proven-mvcc` - Multi-Version Concurrency Control
 Generic MVCC storage layer providing snapshot isolation, time-travel queries, and crash recovery.
 
@@ -204,7 +201,6 @@ cargo test -p proven-resource
 ## Development Status
 
 ### Production Ready
-- ✅ HLC timestamps
 - ✅ Stream processing framework
 - ✅ KV storage engine
 - ✅ Queue storage engine

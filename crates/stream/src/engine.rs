@@ -3,8 +3,7 @@
 //! This trait defines the interface that SQL, KV, and other storage
 //! systems must implement to work with the generic stream processor.
 
-use proven_common::{Operation, Response};
-use proven_hlc::HlcTimestamp;
+use proven_common::{Operation, Response, TransactionId};
 
 /// When a blocked operation can be retried
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +18,7 @@ pub enum RetryOn {
 #[derive(Debug, Clone)]
 pub struct BlockingInfo {
     /// The blocking transaction
-    pub txn: HlcTimestamp,
+    pub txn: TransactionId,
     /// When we can retry after this specific blocker
     pub retry_on: RetryOn,
 }
@@ -61,20 +60,20 @@ pub trait TransactionEngine: Send + Sync {
     /// The type of responses this engine produces
     type Response: Response;
 
-    /// Read an operation at a specific timestamp (snapshot read)
+    /// Read an operation at a specific transaction ID (snapshot read)
     ///
     /// This is for read-only operations that don't need locks or transaction state.
     ///
     /// Though state mutations are possible for updating caches, etc. - actual data
     /// changes must not be allowed.
     ///
-    /// Returns the value as it existed at the given timestamp.
+    /// Returns the value as it existed at the given transaction ID's snapshot.
     ///
     /// Note: Read-only operations bypass the ordered stream and don't have a log_index.
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
-        read_timestamp: HlcTimestamp,
+        read_txn_id: TransactionId,
     ) -> OperationResult<Self::Response>;
 
     /// Apply an operation within a transaction context
@@ -86,7 +85,7 @@ pub trait TransactionEngine: Send + Sync {
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<Self::Response>;
 
@@ -95,7 +94,7 @@ pub trait TransactionEngine: Send + Sync {
     /// Initialize any necessary transaction state.
     ///
     /// The engine should atomically persist the log_index as metadata.
-    fn begin(&mut self, txn_id: HlcTimestamp, log_index: u64);
+    fn begin(&mut self, txn_id: TransactionId, log_index: u64);
 
     /// Prepare a transaction for commit (2PC phase 1)
     ///
@@ -103,7 +102,7 @@ pub trait TransactionEngine: Send + Sync {
     /// This is an infallible operation - validation should happen in apply_operation.
     ///
     /// The engine should atomically persist the log_index as metadata.
-    fn prepare(&mut self, txn_id: HlcTimestamp, log_index: u64);
+    fn prepare(&mut self, txn_id: TransactionId, log_index: u64);
 
     /// Commit a prepared transaction (2PC phase 2)
     ///
@@ -111,7 +110,7 @@ pub trait TransactionEngine: Send + Sync {
     /// This is an infallible operation - the transaction must exist.
     ///
     /// The engine should atomically persist the log_index as metadata.
-    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64);
+    fn commit(&mut self, txn_id: TransactionId, log_index: u64);
 
     /// Abort a transaction, rolling back any changes
     ///
@@ -119,7 +118,7 @@ pub trait TransactionEngine: Send + Sync {
     /// This is an infallible operation - safe to call even if transaction doesn't exist.
     ///
     /// The engine should atomically persist the log_index as metadata.
-    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64);
+    fn abort(&mut self, txn_id: TransactionId, log_index: u64);
 
     /// Get the name/type of this engine for logging and debugging
     fn engine_name(&self) -> &str;

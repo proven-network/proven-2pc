@@ -6,7 +6,7 @@
 pub mod predicate_index;
 // pub mod stats_cache;
 
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use proven_stream::engine::BlockingInfo;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
@@ -29,10 +29,10 @@ pub struct SqlTransactionEngine {
     storage: SqlStorage,
 
     /// Active transactions with their predicates
-    active_transactions: HashMap<HlcTimestamp, TransactionContext>,
+    active_transactions: HashMap<TransactionId, TransactionContext>,
 
     /// Transaction states (separate from predicates)
-    transaction_states: HashMap<HlcTimestamp, TransactionState>,
+    transaction_states: HashMap<TransactionId, TransactionState>,
 
     /// Fast predicate index for conflict detection
     predicate_index: PredicateIndex,
@@ -158,7 +158,7 @@ impl SqlTransactionEngine {
         &mut self,
         sql: &str,
         params: Option<Vec<crate::types::Value>>,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<SqlResponse> {
         // Parse SQL with caching
         let statement = match self.parser.parse(sql) {
@@ -282,7 +282,7 @@ impl SqlTransactionEngine {
         &mut self,
         sql: &str,
         params: Option<Vec<crate::types::Value>>,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<SqlResponse> {
         // Verify transaction exists
@@ -552,7 +552,7 @@ impl TransactionEngine for SqlTransactionEngine {
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
         match operation {
             SqlOperation::Query { sql, params } => {
@@ -566,7 +566,7 @@ impl TransactionEngine for SqlTransactionEngine {
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
@@ -598,7 +598,7 @@ impl TransactionEngine for SqlTransactionEngine {
         }
     }
 
-    fn begin(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
+    fn begin(&mut self, txn_id: TransactionId, _log_index: u64) {
         // Create transaction context
         self.active_transactions
             .insert(txn_id, TransactionContext::new(txn_id));
@@ -606,7 +606,7 @@ impl TransactionEngine for SqlTransactionEngine {
             .insert(txn_id, TransactionState::Active);
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp, _log_index: u64) {
+    fn prepare(&mut self, txn_id: TransactionId, _log_index: u64) {
         // Get transaction and release read predicates
         if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
             // Prepare the transaction (releases read predicates in-memory)
@@ -621,7 +621,7 @@ impl TransactionEngine for SqlTransactionEngine {
         }
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
             self.transaction_states.remove(&txn_id);
@@ -635,7 +635,7 @@ impl TransactionEngine for SqlTransactionEngine {
         // If transaction doesn't exist, that's fine - may have been committed already
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
         // Remove transaction if it exists
         if let Some(tx_ctx) = self.active_transactions.remove(&txn_id) {
             self.transaction_states.remove(&txn_id);

@@ -4,7 +4,7 @@
 //! and retry it when the blocking transaction completes.
 
 use crate::engine::{BlockingInfo, RetryOn};
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Information about a deferred operation
@@ -14,7 +14,7 @@ pub struct DeferredOperation<O> {
     pub operation: O,
 
     /// The transaction that wants to execute this operation
-    pub txn_id: HlcTimestamp,
+    pub txn_id: TransactionId,
 
     /// Coordinator ID for sending responses
     pub coordinator_id: String,
@@ -27,18 +27,18 @@ pub struct DeferredOperation<O> {
     pub blockers: Vec<BlockingInfo>,
 
     /// Remaining blockers that haven't resolved yet
-    pub remaining_blockers: HashSet<HlcTimestamp>,
+    pub remaining_blockers: HashSet<TransactionId>,
 }
 
 /// Manages operations that are deferred due to lock conflicts
 pub struct DeferredOperationsManager<O> {
     /// Operations waiting for each transaction to complete
     /// Key is the blocking transaction, value is queue of waiting operations
-    waiting_on_commit: HashMap<HlcTimestamp, VecDeque<DeferredOperation<O>>>,
+    waiting_on_commit: HashMap<TransactionId, VecDeque<DeferredOperation<O>>>,
 
     /// Operations that can retry after prepare (read lock release)
     /// Key is the blocking transaction, value is queue of waiting operations
-    waiting_on_prepare: HashMap<HlcTimestamp, VecDeque<DeferredOperation<O>>>,
+    waiting_on_prepare: HashMap<TransactionId, VecDeque<DeferredOperation<O>>>,
 }
 
 impl<O: Clone> DeferredOperationsManager<O> {
@@ -54,7 +54,7 @@ impl<O: Clone> DeferredOperationsManager<O> {
     pub fn defer_operation(
         &mut self,
         operation: O,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         blockers: Vec<BlockingInfo>,
         coordinator_id: String,
         request_id: Option<String>,
@@ -64,7 +64,7 @@ impl<O: Clone> DeferredOperationsManager<O> {
         }
 
         // Create a set of all blocker transaction IDs
-        let remaining_blockers: HashSet<HlcTimestamp> = blockers.iter().map(|b| b.txn).collect();
+        let remaining_blockers: HashSet<TransactionId> = blockers.iter().map(|b| b.txn).collect();
 
         let deferred = DeferredOperation {
             operation,
@@ -100,7 +100,7 @@ impl<O: Clone> DeferredOperationsManager<O> {
     /// Only returns operations where ALL blockers have been resolved.
     pub fn take_prepare_waiting_operations(
         &mut self,
-        prepared_txn: &HlcTimestamp,
+        prepared_txn: &TransactionId,
     ) -> Vec<DeferredOperation<O>> {
         let mut ready_operations = Vec::new();
 
@@ -135,7 +135,7 @@ impl<O: Clone> DeferredOperationsManager<O> {
     /// Only returns operations where ALL blockers have been resolved.
     pub fn take_commit_waiting_operations(
         &mut self,
-        completed_txn: &HlcTimestamp,
+        completed_txn: &TransactionId,
     ) -> Vec<DeferredOperation<O>> {
         let mut ready_operations = Vec::new();
 
@@ -193,7 +193,7 @@ impl<O: Clone> DeferredOperationsManager<O> {
     ///
     /// When a transaction is aborted, we need to clean up any operations
     /// it had deferred.
-    pub fn remove_operations_for_transaction(&mut self, aborted_txn: &HlcTimestamp) {
+    pub fn remove_operations_for_transaction(&mut self, aborted_txn: &TransactionId) {
         for queue in self.waiting_on_commit.values_mut() {
             queue.retain(|op| op.txn_id != *aborted_txn);
         }
@@ -203,7 +203,7 @@ impl<O: Clone> DeferredOperationsManager<O> {
     }
 
     /// Check if there are any operations waiting on a transaction
-    pub fn has_waiting_operations(&self, txn: &HlcTimestamp) -> bool {
+    pub fn has_waiting_operations(&self, txn: &TransactionId) -> bool {
         let has_commit_waiters = self
             .waiting_on_commit
             .get(txn)

@@ -5,8 +5,8 @@ mod tests {
     use crate::engine::{OperationResult, TransactionEngine};
     use crate::processor::StreamProcessor;
     use crate::test_utils::{BasicOp, BasicResponse, TestEngine};
+    use proven_common::TransactionId;
     use proven_engine::{Message, MockClient, MockEngine};
-    use proven_hlc::{HlcTimestamp, NodeId};
     use proven_snapshot_memory::MemorySnapshotStore;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -33,7 +33,7 @@ mod tests {
         };
 
         // Create a proper HLC timestamp
-        let txn_id = HlcTimestamp::new(1, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
@@ -85,7 +85,7 @@ mod tests {
             .await
             .unwrap();
 
-        let txn_id = HlcTimestamp::new(1, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
         let txn_id_str = txn_id.to_string();
         let coord_id = "coord1";
 
@@ -169,7 +169,7 @@ mod tests {
         let mut engine = TestEngine::<BasicOp, BasicResponse>::new();
 
         // Verify the engine accepts log_index in operations
-        let txn_id = HlcTimestamp::new(100, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
         engine.begin(txn_id, 1);
         let result = engine.apply_operation(
             BasicOp::Write {
@@ -248,7 +248,7 @@ mod tests {
 
         // Process some transactions to trigger snapshot
         for i in 0..3 {
-            let txn_id = HlcTimestamp::new(i + 1, 0, NodeId::new(1));
+            let txn_id = TransactionId::new();
             let operation = BasicOp::Write {
                 key: format!("key{}", i),
                 value: format!("value{}", i),
@@ -327,7 +327,7 @@ mod tests {
 
             // Send 5 transactions
             for i in 0..5 {
-                let txn_id = HlcTimestamp::new(i + 1, 0, NodeId::new(1));
+                let txn_id = TransactionId::new();
                 let operation = BasicOp::Write {
                     key: format!("key{}", i),
                     value: format!("value{}", i),

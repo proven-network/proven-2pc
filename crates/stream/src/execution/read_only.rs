@@ -3,8 +3,8 @@
 use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::{ProcessorError, Result};
 use crate::transaction::DeferredOperationsManager;
+use proven_common::TransactionId;
 use proven_engine::Message;
-use proven_hlc::HlcTimestamp;
 use std::sync::Arc;
 
 /// Execute a read-only operation using snapshot isolation
@@ -24,10 +24,11 @@ pub async fn execute_read_only<E: TransactionEngine>(
     stream_name: &str,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
 ) -> Result<()> {
-    // Extract read timestamp from message header (required)
-    let read_timestamp = message
+    // Extract read transaction ID from message header (required)
+    // This is the transaction ID to use for snapshot reads
+    let read_txn_id = message
         .get_header("read_timestamp")
-        .and_then(|s| HlcTimestamp::parse(s).ok())
+        .and_then(|s| TransactionId::parse(s).ok())
         .ok_or({
             ProcessorError::MissingHeader("read_timestamp header required for read-only operations")
         })?;
@@ -42,8 +43,8 @@ pub async fn execute_read_only<E: TransactionEngine>(
     let operation: E::Operation = serde_json::from_slice(&message.body)
         .map_err(|e| ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e)))?;
 
-    // Execute the read at the specified timestamp
-    match engine.read_at_timestamp(operation.clone(), read_timestamp) {
+    // Execute the read at the specified transaction ID (snapshot)
+    match engine.read_at_timestamp(operation.clone(), read_txn_id) {
         OperationResult::Complete(response) => {
             // Send successful response
             send_read_response(
@@ -52,7 +53,7 @@ pub async fn execute_read_only<E: TransactionEngine>(
                 coordinator_id,
                 request_id,
                 response,
-                read_timestamp,
+                read_txn_id,
             )
             .await;
             Ok(())
@@ -62,16 +63,16 @@ pub async fn execute_read_only<E: TransactionEngine>(
             // Defer the operation to retry when the blocking transaction completes
             tracing::debug!(
                 stream = %stream_name,
-                timestamp = %read_timestamp,
+                txn_id = %read_txn_id,
                 blockers = ?blockers.iter().map(|b| b.txn.to_string()).collect::<Vec<_>>(),
                 "Read operation blocked"
             );
 
-            // For read-only ops, we use the read timestamp as the "transaction ID" for tracking
+            // For read-only ops, we use the read transaction ID for tracking
             // Defer to retry when ALL blockers complete
             deferred_manager.defer_operation(
                 operation,
-                read_timestamp, // Use read timestamp as the operation ID
+                read_txn_id, // Use read transaction ID as the operation ID
                 blockers,
                 coordinator_id.to_string(),
                 request_id,
@@ -88,7 +89,7 @@ async fn send_read_response<R: proven_common::Response>(
     coordinator_id: &str,
     request_id: Option<String>,
     response: R,
-    _read_timestamp: HlcTimestamp,
+    _read_txn_id: TransactionId,
 ) {
     let serialized = match serde_json::to_vec(&response) {
         Ok(data) => data,

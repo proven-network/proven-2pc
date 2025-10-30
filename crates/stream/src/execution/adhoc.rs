@@ -3,8 +3,8 @@
 use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::{ProcessorError, Result};
 use crate::transaction::DeferredOperationsManager;
+use proven_common::{Timestamp, TransactionId};
 use proven_engine::Message;
-use proven_hlc::HlcTimestamp;
 use std::sync::Arc;
 
 /// Execute an ad-hoc operation with auto-commit
@@ -17,14 +17,14 @@ use std::sync::Arc;
 pub async fn execute_adhoc<E: TransactionEngine>(
     engine: &mut E,
     message: Message,
-    msg_timestamp: HlcTimestamp,
+    _msg_timestamp: Timestamp,
     log_index: u64,
     client: &Arc<proven_engine::MockClient>,
     stream_name: &str,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
 ) -> Result<()> {
-    // Extract operation timestamp (use as transaction ID)
-    let operation_timestamp = super::get_operation_timestamp(&message, msg_timestamp);
+    // Generate a transaction ID for this ad-hoc operation
+    let txn_id = TransactionId::new();
 
     // Extract coordinator and request ID for response
     let coordinator_id = message
@@ -36,14 +36,14 @@ pub async fn execute_adhoc<E: TransactionEngine>(
     let operation: E::Operation = serde_json::from_slice(&message.body)
         .map_err(|e| ProcessorError::InvalidOperation(format!("Failed to deserialize: {}", e)))?;
 
-    // Begin transaction using operation timestamp as ID
-    engine.begin(operation_timestamp, log_index);
+    // Begin transaction
+    engine.begin(txn_id, log_index);
 
     // Execute the operation
-    match engine.apply_operation(operation.clone(), operation_timestamp, log_index) {
+    match engine.apply_operation(operation.clone(), txn_id, log_index) {
         OperationResult::Complete(response) => {
             // Immediately commit the transaction
-            engine.commit(operation_timestamp, log_index);
+            engine.commit(txn_id, log_index);
 
             // Send successful response
             send_adhoc_response(
@@ -52,25 +52,19 @@ pub async fn execute_adhoc<E: TransactionEngine>(
                 coordinator_id,
                 request_id,
                 response,
-                operation_timestamp,
+                txn_id,
             )
             .await;
 
             // Retry any deferred operations that were waiting on this transaction
-            retry_deferred_for_transaction(
-                engine,
-                deferred_manager,
-                operation_timestamp,
-                client,
-                stream_name,
-            )
-            .await;
+            retry_deferred_for_transaction(engine, deferred_manager, txn_id, client, stream_name)
+                .await;
 
             Ok(())
         }
         OperationResult::WouldBlock { blockers } => {
             // Ad-hoc operations should not block - abort immediately
-            engine.abort(operation_timestamp, log_index);
+            engine.abort(txn_id, log_index);
 
             let blocker_list: Vec<String> = blockers.iter().map(|b| b.txn.to_string()).collect();
             tracing::warn!(
@@ -88,7 +82,7 @@ pub async fn execute_adhoc<E: TransactionEngine>(
                     "Ad-hoc operation blocked by transactions: {:?}",
                     blocker_list
                 ),
-                operation_timestamp,
+                txn_id,
             )
             .await;
 
@@ -101,7 +95,7 @@ pub async fn execute_adhoc<E: TransactionEngine>(
 async fn retry_deferred_for_transaction<E: TransactionEngine>(
     engine: &mut E,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
-    completed_txn: HlcTimestamp,
+    completed_txn: TransactionId,
     client: &Arc<proven_engine::MockClient>,
     stream_name: &str,
 ) {
@@ -168,7 +162,7 @@ async fn send_adhoc_response<R: proven_common::Response>(
     coordinator_id: &str,
     request_id: Option<String>,
     response: R,
-    _operation_timestamp: HlcTimestamp,
+    _txn_id: TransactionId,
 ) {
     let serialized = match serde_json::to_vec(&response) {
         Ok(data) => data,
@@ -209,7 +203,7 @@ async fn send_error_response(
     coordinator_id: &str,
     request_id: Option<String>,
     error: &str,
-    _operation_timestamp: HlcTimestamp,
+    _txn_id: TransactionId,
 ) {
     // Build error response headers
     let mut headers = std::collections::HashMap::new();

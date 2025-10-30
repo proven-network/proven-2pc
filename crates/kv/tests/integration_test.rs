@@ -1,11 +1,11 @@
 //! Integration tests for the KV engine
 
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_kv::{KvOperation, KvResponse, KvTransactionEngine, Value};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
-fn timestamp(n: u64) -> HlcTimestamp {
-    HlcTimestamp::new(n, 0, NodeId::new(0))
+fn create_tx_id() -> TransactionId {
+    TransactionId::new()
 }
 
 // ============================================================================
@@ -15,7 +15,7 @@ fn timestamp(n: u64) -> HlcTimestamp {
 #[test]
 fn test_basic_get_put_delete() {
     let mut engine = KvTransactionEngine::new();
-    let tx = timestamp(100);
+    let tx = create_tx_id();
 
     engine.begin(tx, 1);
 
@@ -89,8 +89,8 @@ fn test_basic_get_put_delete() {
 #[test]
 fn test_transaction_isolation() {
     let mut engine = KvTransactionEngine::new();
-    let tx1 = timestamp(100);
-    let tx2 = timestamp(200);
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
 
     engine.begin(tx1, 1);
     engine.begin(tx2, 2);
@@ -129,7 +129,7 @@ fn test_transaction_isolation() {
 #[test]
 fn test_transaction_abort_rollback() {
     let mut engine = KvTransactionEngine::new();
-    let tx1 = timestamp(100);
+    let tx1 = create_tx_id();
 
     engine.begin(tx1, 1);
 
@@ -146,7 +146,7 @@ fn test_transaction_abort_rollback() {
     engine.abort(tx1, 3);
 
     // Start new transaction - should not see aborted values
-    let tx2 = timestamp(200);
+    let tx2 = create_tx_id();
     engine.begin(tx2, 4);
 
     for i in 0..3 {
@@ -168,7 +168,7 @@ fn test_transaction_abort_rollback() {
 #[test]
 fn test_different_value_types() {
     let mut engine = KvTransactionEngine::new();
-    let tx = timestamp(100);
+    let tx = create_tx_id();
 
     engine.begin(tx, 1);
 
@@ -212,7 +212,7 @@ fn test_concurrent_reads_with_shared_locks() {
     let mut engine = KvTransactionEngine::new();
 
     // First, create some data
-    let tx_setup = timestamp(50);
+    let tx_setup = create_tx_id();
     engine.begin(tx_setup, 1);
     let put_op = KvOperation::Put {
         key: "shared_key".to_string(),
@@ -222,9 +222,9 @@ fn test_concurrent_reads_with_shared_locks() {
     engine.commit(tx_setup, 3);
 
     // Now test concurrent reads
-    let tx1 = timestamp(100);
-    let tx2 = timestamp(200);
-    let tx3 = timestamp(300);
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
+    let tx3 = create_tx_id();
 
     engine.begin(tx1, 4);
     engine.begin(tx2, 5);
@@ -252,8 +252,8 @@ fn test_concurrent_reads_with_shared_locks() {
 #[test]
 fn test_write_write_conflict() {
     let mut engine = KvTransactionEngine::new();
-    let tx1 = timestamp(100);
-    let tx2 = timestamp(200);
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
 
     engine.begin(tx1, 1);
     engine.begin(tx2, 2);
@@ -294,7 +294,7 @@ fn test_write_write_conflict() {
 #[test]
 fn test_delete_non_existent_key() {
     let mut engine = KvTransactionEngine::new();
-    let tx = timestamp(100);
+    let tx = create_tx_id();
 
     engine.begin(tx, 1);
 
@@ -321,8 +321,8 @@ fn test_delete_non_existent_key() {
 #[test]
 fn test_read_lock_released_on_prepare() {
     let mut engine = KvTransactionEngine::new();
-    let tx1 = timestamp(1);
-    let tx2 = timestamp(2);
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
 
     // Begin both transactions
     engine.begin(tx1, 1);
@@ -375,8 +375,8 @@ fn test_read_lock_released_on_prepare() {
 #[test]
 fn test_write_lock_not_released_on_prepare() {
     let mut engine = KvTransactionEngine::new();
-    let tx1 = timestamp(1);
-    let tx2 = timestamp(2);
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
 
     // Begin both transactions
     engine.begin(tx1, 1);
@@ -456,8 +456,8 @@ fn test_write_lock_not_released_on_prepare() {
 #[test]
 fn test_multiple_reads_released_on_prepare() {
     let mut engine = KvTransactionEngine::new();
-    let tx1 = timestamp(1);
-    let tx2 = timestamp(2);
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
 
     // Begin both transactions
     engine.begin(tx1, 1);
@@ -525,8 +525,8 @@ fn test_multiple_reads_released_on_prepare() {
 #[test]
 fn test_mixed_locks_partial_release() {
     let mut engine = KvTransactionEngine::new();
-    let tx1 = timestamp(1);
-    let tx2 = timestamp(2);
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
 
     // Begin both transactions
     engine.begin(tx1, 1);
@@ -636,8 +636,8 @@ fn test_mixed_locks_partial_release() {
 #[test]
 fn test_snapshot_read_doesnt_block_write() {
     let mut engine = KvTransactionEngine::new();
-    let read_ts = timestamp(2);
-    let write_tx = timestamp(3);
+    let read_ts = create_tx_id();
+    let write_tx = create_tx_id();
 
     // Begin write transaction
     engine.begin(write_tx, 1);
@@ -674,8 +674,8 @@ fn test_snapshot_read_doesnt_block_write() {
 #[test]
 fn test_snapshot_read_blocks_on_earlier_write() {
     let mut engine = KvTransactionEngine::new();
-    let write_tx = timestamp(1);
-    let read_ts = timestamp(2);
+    let write_tx = create_tx_id();
+    let read_ts = create_tx_id();
 
     // Begin write transaction at earlier timestamp
     engine.begin(write_tx, 1);
@@ -732,8 +732,8 @@ fn test_snapshot_read_blocks_on_earlier_write() {
 #[test]
 fn test_snapshot_read_doesnt_take_locks() {
     let mut engine = KvTransactionEngine::new();
-    let read_ts = timestamp(1);
-    let write_tx = timestamp(2);
+    let read_ts = create_tx_id();
+    let write_tx = create_tx_id();
 
     // Perform a snapshot read first
     let result = engine.read_at_timestamp(
@@ -763,12 +763,12 @@ fn test_snapshot_read_doesnt_take_locks() {
 #[test]
 fn test_multiple_snapshot_reads_concurrent() {
     let mut engine = KvTransactionEngine::new();
-    let read_ts1 = timestamp(1);
-    let read_ts2 = timestamp(2);
-    let read_ts3 = timestamp(3);
+    let read_ts1 = create_tx_id();
+    let read_ts2 = create_tx_id();
+    let read_ts3 = create_tx_id();
 
     // Set up initial data
-    let setup_tx = timestamp(0);
+    let setup_tx = create_tx_id();
     engine.begin(setup_tx, 1);
     engine.apply_operation(
         KvOperation::Put {
@@ -811,8 +811,8 @@ fn test_multiple_snapshot_reads_concurrent() {
 fn test_snapshot_read_sees_committed_writes() {
     let mut engine = KvTransactionEngine::new();
 
-    // Write and commit at timestamp 1
-    let write_tx1 = timestamp(1);
+    // Write and commit first value
+    let write_tx1 = create_tx_id();
     engine.begin(write_tx1, 1);
     engine.apply_operation(
         KvOperation::Put {
@@ -824,8 +824,11 @@ fn test_snapshot_read_sees_committed_writes() {
     );
     engine.commit(write_tx1, 3);
 
-    // Write and commit at timestamp 3
-    let write_tx2 = timestamp(3);
+    // Create a snapshot transaction ID AFTER first write but BEFORE second write
+    let read_ts = create_tx_id();
+
+    // Write and commit second value AFTER snapshot
+    let write_tx2 = create_tx_id();
     engine.begin(write_tx2, 4);
     engine.apply_operation(
         KvOperation::Put {
@@ -837,8 +840,7 @@ fn test_snapshot_read_sees_committed_writes() {
     );
     engine.commit(write_tx2, 6);
 
-    // Snapshot read at timestamp 2 should see value1 (not value2)
-    let read_ts = timestamp(2);
+    // Snapshot read at read_ts should see value1 (not value2) because read_ts < write_tx2
     let result = engine.read_at_timestamp(
         KvOperation::Get {
             key: "key1".to_string(),
@@ -853,8 +855,8 @@ fn test_snapshot_read_sees_committed_writes() {
         _ => panic!("Expected Complete, got {:?}", result),
     }
 
-    // Snapshot read at timestamp 4 should see value2
-    let read_ts2 = timestamp(4);
+    // Snapshot read AFTER second write should see value2
+    let read_ts2 = create_tx_id();
     let result = engine.read_at_timestamp(
         KvOperation::Get {
             key: "key1".to_string(),
@@ -875,7 +877,7 @@ fn test_snapshot_read_ignores_aborted_writes() {
     let mut engine = KvTransactionEngine::new();
 
     // Write at timestamp 1 but abort
-    let write_tx1 = timestamp(1);
+    let write_tx1 = create_tx_id();
     engine.begin(write_tx1, 1);
     engine.apply_operation(
         KvOperation::Put {
@@ -888,7 +890,7 @@ fn test_snapshot_read_ignores_aborted_writes() {
     engine.abort(write_tx1, 3);
 
     // Snapshot read at timestamp 2 should NOT see the aborted write
-    let read_ts = timestamp(2);
+    let read_ts = create_tx_id();
     let result = engine.read_at_timestamp(
         KvOperation::Get {
             key: "key1".to_string(),

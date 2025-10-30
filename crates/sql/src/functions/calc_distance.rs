@@ -112,13 +112,14 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
     use proven_value::Point;
+    use uuid::Uuid;
 
     #[test]
     fn test_calc_distance_execute() {
         let func = CalcDistanceFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Distance between (0, 0) and (3, 4) = 5.0
         let p1 = Point { x: 0.0, y: 0.0 };

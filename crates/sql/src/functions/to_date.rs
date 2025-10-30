@@ -246,7 +246,8 @@ pub fn register(registry: &mut FunctionRegistry) {
 mod tests {
     use super::*;
     use chrono::{Datelike, Timelike};
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_to_date_signature() {
@@ -259,7 +260,7 @@ mod tests {
     #[test]
     fn test_to_date_execute() {
         let func = ToDateFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Valid date
         let result = func
@@ -282,7 +283,7 @@ mod tests {
     #[test]
     fn test_to_date_with_month_name() {
         let func = ToDateFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Date with month abbreviation
         let result = func
@@ -305,7 +306,7 @@ mod tests {
     #[test]
     fn test_to_date_invalid_format() {
         let func = ToDateFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Invalid date
         let result = func.execute(
@@ -319,7 +320,7 @@ mod tests {
     #[test]
     fn test_to_date_wrong_arg_count() {
         let func = ToDateFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Too few arguments
         let result = func.execute(&[Value::string("2017-06-15")], &context);
@@ -340,7 +341,7 @@ mod tests {
     #[test]
     fn test_to_date_requires_string() {
         let func = ToDateFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Non-string first argument
         let result = func.execute(&[Value::I32(20170615), Value::string("%Y-%m-%d")], &context);
@@ -358,7 +359,7 @@ mod tests {
     #[test]
     fn test_to_time_execute() {
         let func = ToTimeFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Valid time
         let result = func
@@ -381,7 +382,7 @@ mod tests {
     #[test]
     fn test_to_time_invalid_format() {
         let func = ToTimeFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Invalid time (too short)
         let result = func.execute(
@@ -403,7 +404,7 @@ mod tests {
     #[test]
     fn test_to_timestamp_execute() {
         let func = ToTimestampFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Valid timestamp
         let result = func
@@ -432,7 +433,7 @@ mod tests {
     #[test]
     fn test_to_timestamp_invalid_format() {
         let func = ToTimestampFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Invalid format string (ends with %)
         let result = func.execute(

@@ -4,7 +4,7 @@
 //! for executing SQL operations within the stream processor.
 
 use crate::semantic::predicate::QueryPredicates;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use serde::{Deserialize, Serialize};
 
 /// Transaction state
@@ -51,7 +51,7 @@ pub enum PendingDdl {
 /// Transaction-level context (long-lived, spans multiple operations)
 pub struct TransactionContext {
     /// Transaction ID (HLC timestamp provides total ordering across the distributed system)
-    pub id: HlcTimestamp,
+    pub id: TransactionId,
     /// Predicates accumulated across all operations in this transaction
     pub predicates: QueryPredicates,
     /// Pending DDL operations (for rollback)
@@ -60,7 +60,7 @@ pub struct TransactionContext {
 
 impl TransactionContext {
     /// Create a new transaction context with an HLC timestamp
-    pub fn new(hlc_timestamp: HlcTimestamp) -> Self {
+    pub fn new(hlc_timestamp: TransactionId) -> Self {
         Self {
             id: hlc_timestamp,
             predicates: QueryPredicates::new(),
@@ -113,7 +113,7 @@ impl Clone for TransactionContext {
 #[derive(Debug)]
 pub struct ExecutionContext {
     /// Transaction ID
-    pub txn_id: HlcTimestamp,
+    pub txn_id: TransactionId,
     /// Log index for this operation (for deterministic replay)
     pub log_index: u64,
     /// Predicates for this specific operation only
@@ -123,7 +123,7 @@ pub struct ExecutionContext {
 }
 
 impl ExecutionContext {
-    pub fn new(txn_id: HlcTimestamp, log_index: u64) -> Self {
+    pub fn new(txn_id: TransactionId, log_index: u64) -> Self {
         Self {
             txn_id,
             log_index,
@@ -133,7 +133,7 @@ impl ExecutionContext {
     }
 
     /// Get the transaction timestamp for deterministic SQL functions
-    pub fn timestamp(&self) -> &HlcTimestamp {
+    pub fn timestamp(&self) -> &TransactionId {
         &self.txn_id
     }
 

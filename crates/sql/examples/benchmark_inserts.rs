@@ -4,7 +4,7 @@
 //! 1 million rows into a table directly using the engine.
 
 use fjall::{CompressionType, PersistMode};
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine, Value};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
@@ -39,7 +39,7 @@ fn main() {
 
     // Create table
     println!("Creating table...");
-    let txn_id = HlcTimestamp::new(1000000000, 0, NodeId::new(1));
+    let txn_id = TransactionId::new();
     sql_engine.begin(txn_id, next_log_index());
 
     let create_table = SqlOperation::Execute {
@@ -74,8 +74,8 @@ fn main() {
 
     // Process inserts
     for i in 0..NUM_INSERTS {
-        // Generate unique transaction ID with incrementing timestamp
-        let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
+        // Generate unique transaction ID
+        let txn_id = TransactionId::new();
         sql_engine.begin(txn_id, next_log_index());
 
         // Create insert operation
@@ -136,7 +136,7 @@ fn main() {
 
     // Verify count
     println!("\nVerifying insert count...");
-    let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
+    let verify_txn = TransactionId::new();
     sql_engine.begin(verify_txn, next_log_index());
 
     let count_query = SqlOperation::Query {
@@ -195,7 +195,7 @@ fn main() {
 
     // Verify count
     println!("\nVerifying persisted count...");
-    let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
+    let verify_txn = TransactionId::new();
     sql_engine.begin(verify_txn, next_log_index());
 
     let count_query = SqlOperation::Query {

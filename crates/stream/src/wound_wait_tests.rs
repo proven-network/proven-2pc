@@ -7,16 +7,26 @@
 mod tests {
     use crate::processor::StreamProcessor;
     use crate::test_utils::{LockOp, LockResponse, TestEngine};
+    use proven_common::Timestamp;
     use proven_engine::{Message, MockClient, MockEngine};
-    use proven_hlc::{HlcTimestamp, NodeId};
     use proven_snapshot_memory::MemorySnapshotStore;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// Helper to generate transaction ID strings in HLC format
-    fn txn_id(physical: u64, logical: u32) -> String {
-        HlcTimestamp::new(physical, logical, NodeId::new(1)).to_string()
+    /// Helper to generate deterministic transaction ID strings for tests
+    /// Uses well-known UUIDs that maintain lexicographic ordering based on input
+    /// Smaller timestamp_ms = older transaction (smaller UUID)
+    fn txn_id(timestamp_ms: u64) -> String {
+        // Create a UUIDv7-like string where the timestamp portion corresponds to input
+        // Format: xxxxxxxx-xxxx-7xxx-xxxx-xxxxxxxxxxxx (standard UUID format)
+        // We encode timestamp_ms in the first 48 bits to maintain ordering
+
+        // UUIDv7 format: timestamp_ms (48 bits) split into: 32 bits - 16 bits
+        let high = ((timestamp_ms >> 16) & 0xFFFFFFFF) as u32;
+        let mid = (timestamp_ms & 0xFFFF) as u16;
+
+        format!("{:08x}-{:04x}-7000-8000-000000000000", high, mid)
     }
 
     fn create_message(
@@ -30,13 +40,9 @@ mod tests {
         headers.insert("coordinator_id".to_string(), coordinator_id.to_string());
 
         // Add deadline (far in the future to avoid timeout issues in tests)
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u64;
-        let deadline = HlcTimestamp::new(now + 60_000_000, 0, NodeId::new(1)).to_string(); // 60 seconds in the future
-        headers.insert("txn_deadline".to_string(), deadline);
+        let now = Timestamp::now();
+        let deadline = now.add_micros(60_000_000); // 60 seconds in the future
+        headers.insert("txn_deadline".to_string(), deadline.to_string());
 
         if let Some(phase) = txn_phase {
             headers.insert("txn_phase".to_string(), phase.to_string());
@@ -96,7 +102,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000000000, 0),
+            &txn_id(3000),
             "younger",
             None,
         );
@@ -110,7 +116,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000000000, 0),
+            &txn_id(2000),
             "older",
             None,
         );
@@ -190,7 +196,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000000000, 0),
+            &txn_id(2000),
             "older",
             None,
         );
@@ -204,7 +210,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000000000, 0),
+            &txn_id(3000),
             "younger",
             None,
         );
@@ -214,7 +220,7 @@ mod tests {
             .unwrap();
 
         // Commit older to release lock
-        let msg = create_message(None, &txn_id(2000000000000000, 0), "older", Some("commit"));
+        let msg = create_message(None, &txn_id(2000), "older", Some("commit"));
         client
             .publish_to_stream("test-stream".to_string(), vec![msg])
             .await
@@ -283,7 +289,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(4000000000000000, 0),
+            &txn_id(4000),
             "youngest",
             None,
         );
@@ -297,7 +303,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000000000, 0),
+            &txn_id(3000),
             "middle",
             None,
         );
@@ -311,7 +317,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000000000, 0),
+            &txn_id(2000),
             "oldest",
             None,
         );
@@ -377,9 +383,9 @@ mod tests {
 
         // Fixed sequence of operations
         let operations = vec![
-            (txn_id(3000000000000000, 0), "coord3", "resource1"),
-            (txn_id(2000000000000000, 0), "coord2", "resource1"),
-            (txn_id(4000000000000000, 0), "coord1", "resource1"),
+            (txn_id(3000), "coord3", "resource1"),
+            (txn_id(2000), "coord2", "resource1"),
+            (txn_id(4000), "coord1", "resource1"),
         ];
 
         // Publish all operations to stream
@@ -506,7 +512,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(3000000000000000, 0),
+            &txn_id(3000),
             "younger",
             None,
         );
@@ -520,7 +526,7 @@ mod tests {
             Some(LockOp::Lock {
                 resource: "resource1".to_string(),
             }),
-            &txn_id(2000000000000000, 0),
+            &txn_id(2000),
             "older",
             None,
         );
@@ -530,12 +536,7 @@ mod tests {
             .unwrap();
 
         // Try to prepare younger transaction - should fail
-        let msg = create_message(
-            None,
-            &txn_id(3000000000000000, 0),
-            "younger",
-            Some("prepare"),
-        );
+        let msg = create_message(None, &txn_id(3000), "younger", Some("prepare"));
         client
             .publish_to_stream("test-stream".to_string(), vec![msg])
             .await

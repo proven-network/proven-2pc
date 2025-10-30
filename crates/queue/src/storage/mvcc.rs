@@ -4,7 +4,7 @@
 //! enabling quick aborts and consistent reads with minimal memory overhead.
 
 use crate::types::QueueValue;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -14,9 +14,9 @@ pub struct QueueEntry {
     /// The actual value (wrapped in Arc for cheap clones)
     pub value: Arc<QueueValue>,
     /// Transaction that created this entry
-    pub created_by: HlcTimestamp,
+    pub created_by: TransactionId,
     /// When this entry was created
-    pub created_at: HlcTimestamp,
+    pub created_at: TransactionId,
     /// Unique ID for this entry (for ordering)
     pub entry_id: u64,
 }
@@ -38,7 +38,7 @@ struct CommittedOp {
     /// The operation
     op: QueueOp,
     /// When this operation was committed
-    committed_at: HlcTimestamp,
+    committed_at: TransactionId,
 }
 
 /// MVCC storage for a single queue using operation logging
@@ -56,7 +56,7 @@ pub struct MvccStorage {
 
     /// Pending operations by transaction (not yet committed)
     /// Maps transaction ID -> list of operations
-    pending_operations: HashMap<HlcTimestamp, Vec<QueueOp>>,
+    pending_operations: HashMap<TransactionId, Vec<QueueOp>>,
 }
 
 impl MvccStorage {
@@ -71,12 +71,12 @@ impl MvccStorage {
     }
 
     /// Begin a new transaction
-    pub fn begin_transaction(&mut self, tx_id: HlcTimestamp) {
+    pub fn begin_transaction(&mut self, tx_id: TransactionId) {
         self.pending_operations.insert(tx_id, Vec::new());
     }
 
     /// Mark a transaction as committed
-    pub fn commit_transaction(&mut self, tx_id: HlcTimestamp) {
+    pub fn commit_transaction(&mut self, tx_id: TransactionId) {
         // Move pending operations to committed with timestamp
         if let Some(ops) = self.pending_operations.remove(&tx_id) {
             for op in ops {
@@ -107,13 +107,13 @@ impl MvccStorage {
     }
 
     /// Abort a transaction by discarding all its operations
-    pub fn abort_transaction(&mut self, tx_id: HlcTimestamp) {
+    pub fn abort_transaction(&mut self, tx_id: TransactionId) {
         // Simply discard all pending operations
         self.pending_operations.remove(&tx_id);
     }
 
     /// Get a materialized view of the queue for a transaction
-    fn get_queue_view(&self, tx_id: HlcTimestamp) -> VecDeque<Arc<QueueEntry>> {
+    fn get_queue_view(&self, tx_id: TransactionId) -> VecDeque<Arc<QueueEntry>> {
         // Start with committed queue
         let mut view = self.committed_queue.clone();
 
@@ -139,7 +139,7 @@ impl MvccStorage {
     }
 
     /// Reconstruct queue state at a specific timestamp (for snapshot reads)
-    fn get_queue_at_timestamp(&self, read_timestamp: HlcTimestamp) -> VecDeque<Arc<QueueEntry>> {
+    fn get_queue_at_timestamp(&self, read_timestamp: TransactionId) -> VecDeque<Arc<QueueEntry>> {
         let mut queue = VecDeque::new();
 
         // Apply all committed operations up to the read timestamp
@@ -164,7 +164,7 @@ impl MvccStorage {
     }
 
     /// Check if there are pending operations from transactions that would affect a read
-    pub fn has_pending_operations(&self, before_timestamp: HlcTimestamp) -> Vec<HlcTimestamp> {
+    pub fn has_pending_operations(&self, before_timestamp: TransactionId) -> Vec<TransactionId> {
         let mut pending_txns = Vec::new();
 
         for (tx_id, ops) in &self.pending_operations {
@@ -186,7 +186,7 @@ impl MvccStorage {
     }
 
     /// Enqueue a value to the back of the queue
-    pub fn enqueue(&mut self, value: QueueValue, tx_id: HlcTimestamp, timestamp: HlcTimestamp) {
+    pub fn enqueue(&mut self, value: QueueValue, tx_id: TransactionId, timestamp: TransactionId) {
         let entry_id = self.get_next_entry_id();
 
         let entry = Arc::new(QueueEntry {
@@ -204,7 +204,7 @@ impl MvccStorage {
     }
 
     /// Dequeue a value from the front of the queue
-    pub fn dequeue(&mut self, tx_id: HlcTimestamp) -> Option<QueueValue> {
+    pub fn dequeue(&mut self, tx_id: TransactionId) -> Option<QueueValue> {
         // Get a view with all operations applied
         let view = self.get_queue_view(tx_id);
 
@@ -223,39 +223,39 @@ impl MvccStorage {
     }
 
     /// Peek at the front value without removing it
-    pub fn peek(&self, tx_id: HlcTimestamp) -> Option<Arc<QueueValue>> {
+    pub fn peek(&self, tx_id: TransactionId) -> Option<Arc<QueueValue>> {
         let view = self.get_queue_view(tx_id);
         view.front().map(|entry| entry.value.clone())
     }
 
     /// Get the size of the queue
-    pub fn size(&self, tx_id: HlcTimestamp) -> usize {
+    pub fn size(&self, tx_id: TransactionId) -> usize {
         self.get_queue_view(tx_id).len()
     }
 
     /// Check if the queue is empty
-    pub fn is_empty(&self, tx_id: HlcTimestamp) -> bool {
+    pub fn is_empty(&self, tx_id: TransactionId) -> bool {
         self.size(tx_id) == 0
     }
 
     /// Peek at the front value at a specific timestamp (snapshot read)
-    pub fn peek_at_timestamp(&self, read_timestamp: HlcTimestamp) -> Option<Arc<QueueValue>> {
+    pub fn peek_at_timestamp(&self, read_timestamp: TransactionId) -> Option<Arc<QueueValue>> {
         let queue = self.get_queue_at_timestamp(read_timestamp);
         queue.front().map(|entry| entry.value.clone())
     }
 
     /// Get the size of the queue at a specific timestamp (snapshot read)
-    pub fn size_at_timestamp(&self, read_timestamp: HlcTimestamp) -> usize {
+    pub fn size_at_timestamp(&self, read_timestamp: TransactionId) -> usize {
         self.get_queue_at_timestamp(read_timestamp).len()
     }
 
     /// Check if the queue is empty at a specific timestamp (snapshot read)
-    pub fn is_empty_at_timestamp(&self, read_timestamp: HlcTimestamp) -> bool {
+    pub fn is_empty_at_timestamp(&self, read_timestamp: TransactionId) -> bool {
         self.get_queue_at_timestamp(read_timestamp).is_empty()
     }
 
     /// Clear all values from the queue
-    pub fn clear(&mut self, tx_id: HlcTimestamp) {
+    pub fn clear(&mut self, tx_id: TransactionId) {
         // Just record the clear operation
         self.pending_operations
             .entry(tx_id)
@@ -326,15 +326,14 @@ pub struct StorageStats {
 mod tests {
     use super::*;
 
-    fn create_timestamp(seconds: u64) -> HlcTimestamp {
-        use proven_hlc::NodeId;
-        HlcTimestamp::new(seconds, 0, NodeId::new(1))
+    fn create_timestamp() -> TransactionId {
+        TransactionId::new()
     }
 
     #[test]
     fn test_basic_enqueue_dequeue() {
         let mut storage = MvccStorage::new();
-        let tx1 = create_timestamp(100);
+        let tx1 = create_timestamp();
 
         storage.begin_transaction(tx1);
 
@@ -343,7 +342,7 @@ mod tests {
         storage.enqueue(
             QueueValue::Str("second".to_string()),
             tx1,
-            create_timestamp(101),
+            create_timestamp(),
         );
 
         // Should be able to peek without removing
@@ -367,8 +366,8 @@ mod tests {
     #[test]
     fn test_transaction_isolation() {
         let mut storage = MvccStorage::new();
-        let tx1 = create_timestamp(100);
-        let tx2 = create_timestamp(200);
+        let tx1 = create_timestamp();
+        let tx2 = create_timestamp();
 
         storage.begin_transaction(tx1);
         storage.begin_transaction(tx2);
@@ -393,8 +392,8 @@ mod tests {
     #[test]
     fn test_abort_rollback() {
         let mut storage = MvccStorage::new();
-        let tx1 = create_timestamp(100);
-        let tx2 = create_timestamp(200);
+        let tx1 = create_timestamp();
+        let tx2 = create_timestamp();
 
         // tx1 creates a queue and commits
         storage.begin_transaction(tx1);
@@ -410,7 +409,7 @@ mod tests {
         storage.abort_transaction(tx2);
 
         // New transaction should only see committed value
-        let tx3 = create_timestamp(300);
+        let tx3 = create_timestamp();
         storage.begin_transaction(tx3);
         assert_eq!(storage.size(tx3), 1);
         assert_eq!(
@@ -422,13 +421,13 @@ mod tests {
     #[test]
     fn test_clear_operation() {
         let mut storage = MvccStorage::new();
-        let tx1 = create_timestamp(100);
+        let tx1 = create_timestamp();
 
         storage.begin_transaction(tx1);
 
         // Add some values
         for i in 0..5 {
-            storage.enqueue(QueueValue::I64(i), tx1, create_timestamp(100 + i as u64));
+            storage.enqueue(QueueValue::I64(i), tx1, create_timestamp());
         }
 
         assert_eq!(storage.size(tx1), 5);

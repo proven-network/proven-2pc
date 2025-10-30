@@ -5,13 +5,13 @@
 
 use crate::error::Result;
 use fjall::{Keyspace, PartitionCreateOptions, PartitionHandle};
-use proven_hlc::HlcTimestamp;
+use proven_common::Timestamp;
 use std::time::Duration;
 
 /// Calculate bucket ID from timestamp and bucket duration
-pub fn get_bucket_id(time: HlcTimestamp, bucket_duration: Duration) -> u64 {
+pub fn get_bucket_id(time: Timestamp, bucket_duration: Duration) -> u64 {
     let duration_micros = bucket_duration.as_micros() as u64;
-    time.physical / duration_micros
+    time.as_micros() / duration_micros
 }
 
 /// Manages partitions for time-bucketed storage
@@ -41,7 +41,7 @@ impl BucketManager {
     pub fn get_or_create_partition(
         &mut self,
         entity: &str,
-        time: HlcTimestamp,
+        time: Timestamp,
     ) -> Result<PartitionHandle> {
         let bucket_id = get_bucket_id(time, self.bucket_duration);
         let partition_name = format!("{}_{}_bucket_{:010}", self.prefix, entity, bucket_id);
@@ -53,11 +53,7 @@ impl BucketManager {
     }
 
     /// Get existing partition for reads - doesn't create (&self - read-only)
-    pub fn get_existing_partition(
-        &self,
-        entity: &str,
-        time: HlcTimestamp,
-    ) -> Option<PartitionHandle> {
+    pub fn get_existing_partition(&self, entity: &str, time: Timestamp) -> Option<PartitionHandle> {
         let bucket_id = get_bucket_id(time, self.bucket_duration);
 
         // Just try to open from keyspace - fjall handles caching internally
@@ -71,8 +67,8 @@ impl BucketManager {
     pub fn get_existing_partitions_for_range(
         &self,
         entity: &str,
-        start_time: HlcTimestamp,
-        end_time: HlcTimestamp,
+        start_time: Timestamp,
+        end_time: Timestamp,
     ) -> Vec<PartitionHandle> {
         let start_bucket = get_bucket_id(start_time, self.bucket_duration);
         let end_bucket = get_bucket_id(end_time, self.bucket_duration);
@@ -105,11 +101,11 @@ impl BucketManager {
     /// Cleanup old buckets - drops entire partitions (O(1) per bucket)
     pub fn cleanup_old_buckets(
         &mut self,
-        current_time: HlcTimestamp,
+        current_time: Timestamp,
         retention: Duration,
     ) -> Result<usize> {
         let retention_micros = retention.as_micros() as u64;
-        let cutoff_time = current_time.physical.saturating_sub(retention_micros);
+        let cutoff_time = current_time.as_micros().saturating_sub(retention_micros);
         let cutoff_bucket = cutoff_time / self.bucket_duration.as_micros() as u64;
 
         let mut removed = 0;

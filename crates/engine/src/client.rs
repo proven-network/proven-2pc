@@ -8,7 +8,7 @@ use crate::{
     engine::{ConsensusGroupId, GroupInfo, MockEngine, StreamInfo},
     stream::DeadlineStreamItem,
 };
-use proven_hlc::HlcTimestamp;
+use proven_common::Timestamp;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -124,7 +124,7 @@ impl MockClient {
         &self,
         stream_name: &str,
         start_sequence: Option<u64>,
-        deadline: HlcTimestamp,
+        deadline: Timestamp,
     ) -> Result<impl Stream<Item = DeadlineStreamItem>> {
         let start_offset = start_sequence.unwrap_or(1);
         self.engine
@@ -192,24 +192,24 @@ impl MockClient {
 
 /// Stream of messages from a subscription or stream consumer
 pub struct MessageStream {
-    receiver: mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)>,
+    receiver: mpsc::UnboundedReceiver<(Message, Timestamp, u64)>,
 }
 
 impl MessageStream {
     /// Receive the next message with timestamp and log index
-    pub async fn recv(&mut self) -> Option<(Message, HlcTimestamp, u64)> {
+    pub async fn recv(&mut self) -> Option<(Message, Timestamp, u64)> {
         self.receiver.recv().await
     }
 
     /// Try to receive without blocking
-    pub fn try_recv(&mut self) -> Option<(Message, HlcTimestamp, u64)> {
+    pub fn try_recv(&mut self) -> Option<(Message, Timestamp, u64)> {
         self.receiver.try_recv().ok()
     }
 }
 
 // Implement Stream trait for async iteration
 impl futures::Stream for MessageStream {
-    type Item = (Message, HlcTimestamp, u64);
+    type Item = (Message, Timestamp, u64);
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,

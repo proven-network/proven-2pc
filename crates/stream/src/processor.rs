@@ -6,9 +6,9 @@
 use crate::engine::TransactionEngine;
 use crate::error::{ProcessorError, Result};
 use crate::router::MessageRouter;
+use proven_common::{Timestamp, TransactionId};
 use proven_engine::client::MessageStream;
 use proven_engine::{Message, MockClient};
-use proven_hlc::HlcTimestamp;
 use proven_snapshot::SnapshotStore;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,7 +61,7 @@ pub struct StreamProcessor<E: TransactionEngine> {
     /// Snapshot tracking
     last_snapshot_offset: u64,
     last_message_time: Option<Instant>,
-    last_log_timestamp: HlcTimestamp,
+    last_log_timestamp: Timestamp,
 
     /// Snapshot configuration
     pub snapshot_config: SnapshotConfig,
@@ -84,8 +84,6 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
         stream_name: String,
         snapshot_store: Arc<dyn SnapshotStore>,
     ) -> Self {
-        use proven_hlc::NodeId;
-
         // Get the engine's current log index (if it persists state)
         let engine_offset = engine.get_log_index().unwrap_or(0);
 
@@ -138,7 +136,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             snapshot_store: Some(snapshot_store),
             last_snapshot_offset,
             last_message_time: None,
-            last_log_timestamp: HlcTimestamp::new(0, 0, NodeId::new(0)),
+            last_log_timestamp: Timestamp::from_micros(0),
             snapshot_config: SnapshotConfig::default(),
             is_ready: Arc::new(AtomicBool::new(false)),
             stream_name,
@@ -160,7 +158,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
     async fn process_message(
         &mut self,
         message: Message,
-        msg_timestamp: HlcTimestamp,
+        msg_timestamp: Timestamp,
         msg_offset: u64,
     ) -> Result<()> {
         self.current_offset = msg_offset;
@@ -171,7 +169,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
             ProcessorPhase::Replay => {
                 // During replay, just track state without side effects
                 self.router
-                    .track_transaction_state(&message, msg_timestamp)?;
+                    .track_transaction_state(&message, TransactionId::new())?;
                 Ok(())
             }
             ProcessorPhase::Recovery => {
@@ -315,7 +313,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
     /// Perform the replay phase
     async fn perform_replay(&mut self) -> Result<()> {
         use proven_engine::DeadlineStreamItem;
-        use proven_hlc::NodeId;
+
         use std::time::{SystemTime, UNIX_EPOCH};
         use tokio_stream::StreamExt;
 
@@ -327,7 +325,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_micros() as u64;
-            let current_time = HlcTimestamp::new(physical, 0, NodeId::new(1));
+            let current_time = Timestamp::from_micros(physical);
 
             let client = self.client.clone();
             let stream_name = self.stream_name.clone();

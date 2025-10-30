@@ -7,8 +7,8 @@
 
 use crate::engine::TransactionEngine;
 use crate::error::Result;
+use proven_common::Timestamp;
 use proven_engine::Message;
-use proven_hlc::HlcTimestamp;
 use std::sync::Arc;
 
 /// Execute a read-write transaction with full 2PC support
@@ -26,7 +26,7 @@ use std::sync::Arc;
 pub async fn execute_read_write<E: TransactionEngine>(
     _engine: &mut E,
     _message: Message,
-    _msg_timestamp: HlcTimestamp,
+    _msg_timestamp: Timestamp,
     _client: &Arc<proven_engine::MockClient>,
     _stream_name: &str,
 ) -> Result<()> {

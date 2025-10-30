@@ -8,8 +8,8 @@ use crate::error::{ProcessorError, Result};
 use crate::execution;
 use crate::transaction::TransactionContext;
 use crate::transaction::recovery::TransactionDecision;
+use proven_common::{Timestamp, TransactionId};
 use proven_engine::{Message, MockClient};
-use proven_hlc::HlcTimestamp;
 use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,7 +66,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     pub async fn route_message(
         &mut self,
         message: Message,
-        msg_timestamp: HlcTimestamp,
+        msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
         // Determine transaction mode
@@ -120,17 +120,17 @@ impl<E: TransactionEngine> MessageRouter<E> {
     pub fn track_transaction_state(
         &mut self,
         message: &Message,
-        _timestamp: HlcTimestamp,
+        _timestamp: TransactionId,
     ) -> Result<()> {
         // Extract transaction ID if present
         if let Some(txn_id_str) = message.get_header("txn_id") {
             let txn_id =
-                HlcTimestamp::parse(txn_id_str).map_err(ProcessorError::InvalidTransactionId)?;
+                TransactionId::parse(txn_id_str).map_err(ProcessorError::InvalidTransactionId)?;
 
             // Track deadline
             if let Some(deadline_str) = message.get_header("txn_deadline")
                 && self.context.get_deadline(&txn_id).is_none()
-                && let Ok(deadline) = HlcTimestamp::parse(deadline_str)
+                && let Ok(deadline) = Timestamp::parse(deadline_str)
             {
                 self.context.set_deadline(txn_id, deadline);
             }
@@ -173,7 +173,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     async fn process_readwrite_message(
         &mut self,
         message: Message,
-        msg_timestamp: HlcTimestamp,
+        msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
         // Extract transaction ID
@@ -182,7 +182,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
             .ok_or(ProcessorError::MissingHeader("txn_id"))?
             .to_string();
         let txn_id =
-            HlcTimestamp::parse(&txn_id_str).map_err(ProcessorError::InvalidTransactionId)?;
+            TransactionId::parse(&txn_id_str).map_err(ProcessorError::InvalidTransactionId)?;
 
         // Check if wounded first - wounded status takes precedence over deadline
         if let Some(wounded_by) = self.context.is_wounded(&txn_id) {
@@ -225,9 +225,9 @@ impl<E: TransactionEngine> MessageRouter<E> {
     async fn handle_control_message(
         &mut self,
         message: Message,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         txn_id_str: &str,
-        msg_timestamp: HlcTimestamp,
+        msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
         let phase = message
@@ -276,7 +276,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     async fn handle_operation_message(
         &mut self,
         message: Message,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         txn_id_str: &str,
         log_index: u64,
     ) -> Result<()> {
@@ -297,7 +297,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
             // Ensure we have a deadline
             if self.context.get_deadline(&txn_id).is_none() {
                 if let Some(deadline_str) = message.get_header("txn_deadline") {
-                    if let Ok(deadline) = HlcTimestamp::parse(deadline_str) {
+                    if let Ok(deadline) = Timestamp::parse(deadline_str) {
                         self.context.set_deadline(txn_id, deadline);
                     } else {
                         self.send_error_response(
@@ -344,7 +344,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     async fn execute_operation(
         &mut self,
         operation: E::Operation,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         txn_id_str: &str,
         coordinator_id: &str,
         request_id: Option<String>,
@@ -414,11 +414,11 @@ impl<E: TransactionEngine> MessageRouter<E> {
     /// Handle prepare phase
     async fn handle_prepare(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         txn_id_str: &str,
         coordinator_id: Option<&str>,
         request_id: Option<String>,
-        msg_timestamp: HlcTimestamp,
+        msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
         // Check deadline
@@ -487,11 +487,11 @@ impl<E: TransactionEngine> MessageRouter<E> {
     /// Handle prepare and commit
     async fn handle_prepare_and_commit(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         txn_id_str: &str,
         coordinator_id: Option<&str>,
         request_id: Option<String>,
-        msg_timestamp: HlcTimestamp,
+        msg_timestamp: Timestamp,
         log_index: u64,
     ) -> Result<()> {
         // Check deadline
@@ -549,7 +549,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     /// Handle commit phase
     async fn handle_commit(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         _txn_id_str: &str,
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
@@ -570,7 +570,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     /// Handle abort phase
     async fn handle_abort(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         _txn_id_str: &str,
         _coordinator_id: Option<&str>,
         _request_id: Option<String>,
@@ -589,7 +589,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Wound a transaction
-    async fn wound_transaction(&mut self, victim: HlcTimestamp, wounded_by: HlcTimestamp) {
+    async fn wound_transaction(&mut self, victim: TransactionId, wounded_by: TransactionId) {
         // Mark as wounded
         self.context.wound_transaction(victim, wounded_by);
 
@@ -607,7 +607,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Retry operations waiting on prepare
-    async fn retry_prepare_waiting_operations(&mut self, prepared_txn: HlcTimestamp) {
+    async fn retry_prepare_waiting_operations(&mut self, prepared_txn: TransactionId) {
         let waiting_ops = self
             .context
             .deferred_manager
@@ -635,7 +635,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Retry operations waiting on commit/abort
-    async fn retry_deferred_operations(&mut self, completed_txn: HlcTimestamp) {
+    async fn retry_deferred_operations(&mut self, completed_txn: TransactionId) {
         let waiting_ops = self
             .context
             .deferred_manager
@@ -666,7 +666,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Run recovery check for expired transactions
-    pub async fn run_recovery_check(&mut self, current_time: HlcTimestamp) -> Result<()> {
+    pub async fn run_recovery_check(&mut self, current_time: Timestamp) -> Result<()> {
         let expired = self.context.get_expired_transactions(current_time);
 
         for txn_id in expired {
@@ -775,7 +775,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
         &self,
         coordinator_id: &str,
         txn_id: &str,
-        wounded_by: HlcTimestamp,
+        wounded_by: TransactionId,
         request_id: Option<String>,
     ) {
         let mut headers = HashMap::with_capacity(6);

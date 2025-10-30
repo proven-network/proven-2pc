@@ -260,12 +260,13 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_sqrt_execute() {
         let func = SqrtFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Perfect square
         assert_eq!(
@@ -301,7 +302,7 @@ mod tests {
     #[test]
     fn test_power_execute() {
         let func = PowerFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Integer power
         assert_eq!(

@@ -7,7 +7,6 @@ members = [
     "crates/common",
     "crates/coordinator",
     "crates/engine",
-    "crates/hlc",
     "crates/kv",
     "crates/kv-client",
     "crates/mvcc",
@@ -29,7 +28,6 @@ default-members = [
     "crates/common",
     "crates/coordinator",
     "crates/engine",
-    "crates/hlc",
     "crates/kv",
     "crates/kv-client",
     "crates/mvcc",
@@ -63,6 +61,7 @@ hex = "0.4"
 indexmap = "2.12.0"
 lru = "0.16.2"
 parking_lot = "0.12.5"
+rand = "=0.8.5"
 regex = "1.12.2"
 rust_decimal = { version = "1.39.0", features = ["serde-str"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
@@ -74,14 +73,13 @@ tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros", "ti
 tokio-stream = "0.1"
 tokio-test = "0.4"
 tracing = "0.1"
-uuid = { version = "1.18.1", features = ["serde", "v4"] }
+uuid = { version = "1.18.1", features = ["serde", "v4", "v7"] }
 zstd = "0.13"
 
 # Internal crates
 proven-common = { path = "crates/common" }
 proven-coordinator = { path = "crates/coordinator" }
 proven-engine = { path = "crates/engine" }
-proven-hlc = { path = "crates/hlc" }
 proven-kv = { path = "crates/kv" }
 proven-kv-client = { path = "crates/kv-client" }
 proven-mvcc = { path = "crates/mvcc" }
@@ -108,7 +106,6 @@ publish = false
 proven-common.workspace = true
 proven-coordinator.workspace = true
 proven-engine.workspace = true
-proven-hlc.workspace = true
 proven-kv.workspace = true
 proven-kv-client.workspace = true
 proven-queue.workspace = true

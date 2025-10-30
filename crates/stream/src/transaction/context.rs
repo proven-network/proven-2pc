@@ -6,27 +6,27 @@
 use super::DeferredOperationsManager;
 use super::recovery::RecoveryManager;
 use crate::engine::TransactionEngine;
+use proven_common::{Timestamp, TransactionId};
 use proven_engine::MockClient;
-use proven_hlc::HlcTimestamp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Centralized transaction context holding all transaction-related state
 pub struct TransactionContext<E: TransactionEngine> {
     /// Map from transaction ID to coordinator ID (for responses)
-    pub transaction_coordinators: HashMap<HlcTimestamp, String>,
+    pub transaction_coordinators: HashMap<TransactionId, String>,
 
     /// Track wounded transactions (txn_id -> wounded_by)
-    pub wounded_transactions: HashMap<HlcTimestamp, HlcTimestamp>,
+    pub wounded_transactions: HashMap<TransactionId, TransactionId>,
 
     /// Track transaction deadlines (txn_id -> deadline)
-    pub transaction_deadlines: HashMap<HlcTimestamp, HlcTimestamp>,
+    pub transaction_deadlines: HashMap<TransactionId, Timestamp>,
 
     /// Track transaction participants (txn_id -> (participant -> offset))
-    pub transaction_participants: HashMap<HlcTimestamp, HashMap<String, u64>>,
+    pub transaction_participants: HashMap<TransactionId, HashMap<String, u64>>,
 
     /// Track which transactions have been begun in the engine
-    pub begun_transactions: HashSet<HlcTimestamp>,
+    pub begun_transactions: HashSet<TransactionId>,
 
     /// Manager for deferred operations (blocked on locks)
     pub deferred_manager: DeferredOperationsManager<E::Operation>,
@@ -54,47 +54,47 @@ impl<E: TransactionEngine> TransactionContext<E> {
     }
 
     /// Check if a transaction has been begun
-    pub fn is_begun(&self, txn_id: &HlcTimestamp) -> bool {
+    pub fn is_begun(&self, txn_id: &TransactionId) -> bool {
         self.begun_transactions.contains(txn_id)
     }
 
     /// Mark a transaction as begun
-    pub fn mark_begun(&mut self, txn_id: HlcTimestamp) {
+    pub fn mark_begun(&mut self, txn_id: TransactionId) {
         self.begun_transactions.insert(txn_id);
     }
 
     /// Check if a transaction is wounded
-    pub fn is_wounded(&self, txn_id: &HlcTimestamp) -> Option<HlcTimestamp> {
+    pub fn is_wounded(&self, txn_id: &TransactionId) -> Option<TransactionId> {
         self.wounded_transactions.get(txn_id).copied()
     }
 
     /// Mark a transaction as wounded
-    pub fn wound_transaction(&mut self, victim: HlcTimestamp, wounded_by: HlcTimestamp) {
+    pub fn wound_transaction(&mut self, victim: TransactionId, wounded_by: TransactionId) {
         self.wounded_transactions.insert(victim, wounded_by);
     }
 
     /// Get the deadline for a transaction
-    pub fn get_deadline(&self, txn_id: &HlcTimestamp) -> Option<HlcTimestamp> {
+    pub fn get_deadline(&self, txn_id: &TransactionId) -> Option<Timestamp> {
         self.transaction_deadlines.get(txn_id).copied()
     }
 
     /// Set the deadline for a transaction
-    pub fn set_deadline(&mut self, txn_id: HlcTimestamp, deadline: HlcTimestamp) {
+    pub fn set_deadline(&mut self, txn_id: TransactionId, deadline: Timestamp) {
         self.transaction_deadlines.insert(txn_id, deadline);
     }
 
     /// Get the coordinator for a transaction
-    pub fn get_coordinator(&self, txn_id: &HlcTimestamp) -> Option<String> {
+    pub fn get_coordinator(&self, txn_id: &TransactionId) -> Option<String> {
         self.transaction_coordinators.get(txn_id).cloned()
     }
 
     /// Set the coordinator for a transaction
-    pub fn set_coordinator(&mut self, txn_id: HlcTimestamp, coordinator: String) {
+    pub fn set_coordinator(&mut self, txn_id: TransactionId, coordinator: String) {
         self.transaction_coordinators.insert(txn_id, coordinator);
     }
 
     /// Clean up state for a committed transaction
-    pub fn cleanup_committed(&mut self, txn_id: &HlcTimestamp) {
+    pub fn cleanup_committed(&mut self, txn_id: &TransactionId) {
         self.transaction_coordinators.remove(txn_id);
         self.transaction_deadlines.remove(txn_id);
         self.transaction_participants.remove(txn_id);
@@ -103,7 +103,7 @@ impl<E: TransactionEngine> TransactionContext<E> {
     }
 
     /// Clean up state for an aborted transaction
-    pub fn cleanup_aborted(&mut self, txn_id: &HlcTimestamp) {
+    pub fn cleanup_aborted(&mut self, txn_id: &TransactionId) {
         // NOTE: We keep coordinator, deadline, and wounded state so that late-arriving
         // messages (like prepare) can still be properly handled and report wound status
         self.transaction_participants.remove(txn_id);
@@ -118,7 +118,7 @@ impl<E: TransactionEngine> TransactionContext<E> {
     }
 
     /// Get all transactions past their deadline
-    pub fn get_expired_transactions(&self, current_time: HlcTimestamp) -> Vec<HlcTimestamp> {
+    pub fn get_expired_transactions(&self, current_time: Timestamp) -> Vec<TransactionId> {
         self.transaction_deadlines
             .iter()
             .filter_map(|(txn_id, deadline)| {

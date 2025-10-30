@@ -1,7 +1,7 @@
 //! Resource storage engine
 //!
-//! This crate provides a resource/token ledger system using the same
-//! HLC timestamps and stream processing patterns as the KV, Queue, and SQL engines.
+//! This crate provides a resource/token ledger system using
+//! TransactionIds and stream processing patterns as the KV, Queue, and SQL engines.
 //!
 //! Each resource instance tracks a single token/resource type with:
 //! - Configurable decimals for divisibility
@@ -14,8 +14,8 @@ pub mod engine;
 pub mod storage;
 pub mod types;
 
-// Re-export HLC types for convenience
-pub use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
+// Re-export TransactionId for convenience
+pub use proven_common::TransactionId;
 
 // Re-export main types
 pub use engine::ResourceTransactionEngine;

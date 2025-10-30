@@ -82,13 +82,14 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
     use std::collections::HashMap;
+    use uuid::Uuid;
 
     #[test]
     fn test_length_strings() {
         let func = LengthFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // String length
         let result = func.execute(&[Value::string("hello")], &context).unwrap();
@@ -108,7 +109,7 @@ mod tests {
     #[test]
     fn test_length_collections() {
         let func = LengthFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // List length
         let list = Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)]);

@@ -6,7 +6,7 @@ use crate::storage::lock_persistence::{
 };
 use crate::storage::{ReservationManager, ReservationType, ResourceMetadata};
 use crate::types::{Amount, ResourceOperation, ResourceResponse};
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
 use proven_stream::engine::BlockingInfo;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
@@ -90,7 +90,7 @@ impl ResourceTransactionEngine {
     fn add_reservations_to_batch(
         &mut self,
         batch: &mut proven_mvcc::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<(), String> {
         let reservations_held = self.reservations.reservations_held_by(txn_id);
 
@@ -102,7 +102,7 @@ impl ResourceTransactionEngine {
 
             // Lock key: prefix + lexicographic timestamp bytes
             let mut lock_key = b"_locks_".to_vec();
-            lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+            lock_key.extend_from_slice(&txn_id.to_bytes());
             let lock_bytes = encode_transaction_reservations(&tx_reservations)?;
 
             // Add to batch (will be committed atomically with data)
@@ -114,7 +114,7 @@ impl ResourceTransactionEngine {
     }
 
     /// Get metadata for a transaction (reads from storage)
-    fn get_metadata(&self, txn_id: HlcTimestamp) -> ResourceMetadata {
+    fn get_metadata(&self, txn_id: TransactionId) -> ResourceMetadata {
         self.storage
             .read(&ResourceKey::Metadata, txn_id)
             .ok()
@@ -127,7 +127,7 @@ impl ResourceTransactionEngine {
     }
 
     /// Get supply for a transaction (reads from storage)
-    fn get_supply(&self, txn_id: HlcTimestamp) -> Amount {
+    fn get_supply(&self, txn_id: TransactionId) -> Amount {
         self.storage
             .read(&ResourceKey::Supply, txn_id)
             .ok()
@@ -140,7 +140,7 @@ impl ResourceTransactionEngine {
     }
 
     /// Get balance for an account at a transaction (reads from storage)
-    fn get_balance(&self, account: &str, txn_id: HlcTimestamp) -> Amount {
+    fn get_balance(&self, account: &str, txn_id: TransactionId) -> Amount {
         let key = ResourceKey::Account(account.to_string());
         self.storage
             .read(&key, txn_id)
@@ -157,7 +157,7 @@ impl ResourceTransactionEngine {
     fn execute_read_at_timestamp(
         &self,
         operation: &ResourceOperation,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<ResourceResponse> {
         match operation {
             ResourceOperation::GetBalance { account } => {
@@ -209,7 +209,7 @@ impl ResourceTransactionEngine {
     fn process_operation(
         &mut self,
         operation: &ResourceOperation,
-        transaction_id: HlcTimestamp,
+        transaction_id: TransactionId,
         log_index: u64,
     ) -> Result<ResourceResponse, String> {
         match operation {
@@ -559,19 +559,19 @@ impl TransactionEngine for ResourceTransactionEngine {
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
         self.execute_read_at_timestamp(&operation, read_timestamp)
     }
 
-    fn begin(&mut self, _txn_id: HlcTimestamp, _log_index: u64) {
+    fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {
         // Nothing to do - MVCC storage tracks transactions internally
     }
 
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<Self::Response> {
         match self.process_operation(&operation, txn_id, log_index) {
@@ -595,7 +595,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn prepare(&mut self, txn_id: TransactionId, log_index: u64) {
         // Update persisted reservations atomically with log_index
         let mut batch = self.storage.batch();
         if let Err(e) = self.add_reservations_to_batch(&mut batch, txn_id) {
@@ -609,7 +609,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         batch.commit().expect("Batch commit failed");
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
         // Commit to storage and clear persisted reservations atomically
         let mut batch = self.storage.batch();
 
@@ -620,7 +620,7 @@ impl TransactionEngine for ResourceTransactionEngine {
 
         // Clear persisted reservations in the same batch
         let mut lock_key = b"_locks_".to_vec();
-        lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         batch.remove(metadata.clone(), lock_key);
 
@@ -628,13 +628,14 @@ impl TransactionEngine for ResourceTransactionEngine {
         batch.commit().expect("Batch commit failed");
 
         // Cleanup old buckets if needed (throttled internally)
-        self.storage.maybe_cleanup(txn_id).ok();
+        use proven_common::Timestamp;
+        self.storage.maybe_cleanup(Timestamp::now()).ok();
 
         // Release all reservations held by this transaction
         self.reservations.release_transaction(txn_id);
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
         // Abort in storage and clear persisted reservations atomically
         let mut batch = self.storage.batch();
 
@@ -645,7 +646,7 @@ impl TransactionEngine for ResourceTransactionEngine {
 
         // Clear persisted reservations in the same batch
         let mut lock_key = b"_locks_".to_vec();
-        lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         batch.remove(metadata.clone(), lock_key);
 
@@ -653,7 +654,8 @@ impl TransactionEngine for ResourceTransactionEngine {
         batch.commit().expect("Batch commit failed");
 
         // Cleanup old buckets if needed (throttled internally)
-        self.storage.maybe_cleanup(txn_id).ok();
+        use proven_common::Timestamp;
+        self.storage.maybe_cleanup(Timestamp::now()).ok();
 
         // Release all reservations
         self.reservations.release_transaction(txn_id);
@@ -678,10 +680,10 @@ impl Default for ResourceTransactionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::NodeId;
+    use uuid::Uuid;
 
-    fn make_timestamp(n: u64) -> HlcTimestamp {
-        HlcTimestamp::new(n, 0, NodeId::new(0))
+    fn make_timestamp(n: u64) -> TransactionId {
+        TransactionId::from_uuid(Uuid::from_u128(n as u128))
     }
 
     #[test]

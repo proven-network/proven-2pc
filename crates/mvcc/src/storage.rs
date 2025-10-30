@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::history::HistoryStore;
 use crate::uncommitted::UncommittedStore;
 use fjall::{Batch, Keyspace, Partition, PartitionCreateOptions};
-use proven_hlc::HlcTimestamp;
+use proven_common::{Timestamp, TransactionId};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +39,7 @@ pub struct MvccStorage<E: MvccEntity> {
     // Shared state
     log_index: AtomicU64,
     config: StorageConfig,
-    last_cleanup: Option<HlcTimestamp>,
+    last_cleanup: Option<Timestamp>,
 
     _phantom: PhantomData<E>,
 }
@@ -210,7 +210,7 @@ impl<E: MvccEntity> MvccStorage<E> {
     ///
     /// 1. Check uncommitted writes first (read-your-own-writes)
     /// 2. Fall back to committed data with time-travel
-    pub fn read(&self, key: &E::Key, txn_id: HlcTimestamp) -> Result<Option<E::Value>> {
+    pub fn read(&self, key: &E::Key, txn_id: TransactionId) -> Result<Option<E::Value>> {
         // L1: Check uncommitted writes (read-your-own-writes)
         if let Some(value) = self.uncommitted.get(txn_id, key)? {
             return Ok(Some(value));
@@ -251,7 +251,7 @@ impl<E: MvccEntity> MvccStorage<E> {
         &mut self,
         batch: &mut Batch,
         delta: E::Delta,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Add to uncommitted store
@@ -273,7 +273,7 @@ impl<E: MvccEntity> MvccStorage<E> {
     pub fn commit_transaction_to_batch(
         &mut self,
         batch: &mut Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Get uncommitted deltas
@@ -302,7 +302,7 @@ impl<E: MvccEntity> MvccStorage<E> {
                 }
             }
 
-            // Add deltas to history
+            // Add deltas to history with commit transaction ID
             self.history
                 .add_committed_deltas_to_batch(batch, txn_id, deltas)?;
         }
@@ -326,7 +326,7 @@ impl<E: MvccEntity> MvccStorage<E> {
     pub fn abort_transaction_to_batch(
         &mut self,
         batch: &mut Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Remove from uncommitted
@@ -356,7 +356,7 @@ impl<E: MvccEntity> MvccStorage<E> {
     /// Iterate over all entities visible at snapshot time
     ///
     /// This captures all MVCC state at construction and provides consistent iteration
-    pub fn iter(&'_ self, txn_id: HlcTimestamp) -> Result<crate::iterator::MvccIterator<'_, E>> {
+    pub fn iter(&'_ self, txn_id: TransactionId) -> Result<crate::iterator::MvccIterator<'_, E>> {
         self.prefix(b"", txn_id)
     }
 
@@ -366,7 +366,7 @@ impl<E: MvccEntity> MvccStorage<E> {
     pub fn prefix(
         &'_ self,
         prefix: &[u8],
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<crate::iterator::MvccIterator<'_, E>> {
         // Pre-load uncommitted deltas for this transaction
         let uncommitted_deltas = self.uncommitted.get_transaction_deltas(txn_id)?;
@@ -424,7 +424,7 @@ impl<E: MvccEntity> MvccStorage<E> {
     pub fn range<'a, R>(
         &'a self,
         range: R,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<crate::iterator::MvccIterator<'a, E>>
     where
         R: std::ops::RangeBounds<Vec<u8>> + 'a + Clone,
@@ -480,12 +480,12 @@ impl<E: MvccEntity> MvccStorage<E> {
     }
 
     /// Cleanup old buckets if enough time has passed
-    pub fn maybe_cleanup(&mut self, current_time: HlcTimestamp) -> Result<()> {
+    pub fn maybe_cleanup(&mut self, current_time: Timestamp) -> Result<()> {
         let should_cleanup = match self.last_cleanup {
             None => true,
             Some(last) => {
                 let cleanup_interval_micros = self.config.cleanup_interval.as_micros() as u64;
-                current_time.physical.saturating_sub(last.physical) >= cleanup_interval_micros
+                current_time.as_micros().saturating_sub(last.as_micros()) >= cleanup_interval_micros
             }
         };
 

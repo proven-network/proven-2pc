@@ -112,7 +112,8 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_coalesce_signature() {
@@ -125,7 +126,7 @@ mod tests {
     #[test]
     fn test_coalesce_execute() {
         let func = CoalesceFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // First non-null value
         let result = func
@@ -147,7 +148,7 @@ mod tests {
     #[test]
     fn test_ifnull() {
         let func = IfNullFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // First is null, return second
         let result = func

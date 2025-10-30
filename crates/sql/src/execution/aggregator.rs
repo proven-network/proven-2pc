@@ -832,12 +832,11 @@ pub(crate) fn evaluate_expression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcClock, NodeId};
+    use proven_common::TransactionId;
     use rust_decimal::Decimal;
 
     fn setup_test() -> ExecutionContext {
-        let clock = HlcClock::new(NodeId::new(1));
-        let timestamp = clock.now();
+        let timestamp = TransactionId::new();
         ExecutionContext::new(timestamp, 0)
     }
 

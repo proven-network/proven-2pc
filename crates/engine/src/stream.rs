@@ -6,7 +6,7 @@
 use crate::{Message, MockEngineError, Result};
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::Timestamp;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -19,7 +19,7 @@ pub struct Stream {
     name: String,
 
     /// All messages in the stream with their timestamps and sequences
-    messages: Vec<(Message, HlcTimestamp, u64)>,
+    messages: Vec<(Message, Timestamp, u64)>,
 
     /// Next sequence number
     next_sequence: u64,
@@ -28,28 +28,19 @@ pub struct Stream {
     consumers: Vec<StreamConsumer>,
 
     /// Last assigned timestamp (for monotonicity)
-    last_timestamp: Option<HlcTimestamp>,
-
-    /// Node ID for this stream
-    node_id: NodeId,
+    last_timestamp: Option<Timestamp>,
 }
 
 impl Stream {
     /// Create a new stream
     pub fn new(name: String) -> Self {
         // Create a unique node ID based on stream name
-        let node_id = NodeId::new(
-            name.bytes()
-                .fold(1u64, |acc: u64, b| acc.wrapping_add(b as u64)),
-        );
-
         Self {
             name: name.clone(),
             messages: Vec::new(),
             next_sequence: 1,
             consumers: Vec::new(),
             last_timestamp: None,
-            node_id,
         }
     }
 
@@ -66,13 +57,13 @@ impl Stream {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_micros() as u64;
-            let now = HlcTimestamp::new(physical, 0, self.node_id);
+            let now = Timestamp::from_micros(physical);
 
             // Ensure monotonic increase
             let timestamp = match self.last_timestamp {
                 Some(last) if last >= now => {
                     // Need to increment to maintain monotonicity
-                    HlcTimestamp::new(last.physical, last.logical + 1, last.node_id)
+                    Timestamp::from_micros(last.as_micros() + 1)
                 }
                 _ => now,
             };
@@ -100,7 +91,7 @@ impl Stream {
     pub fn create_consumer(
         &mut self,
         start_sequence: Option<u64>,
-    ) -> mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)> {
+    ) -> mpsc::UnboundedReceiver<(Message, Timestamp, u64)> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Send historical messages
@@ -126,7 +117,7 @@ impl Stream {
     }
 
     /// Get messages from a specific offset (for deadline reads)
-    pub fn get_messages_from(&self, start_offset: u64) -> Vec<(Message, HlcTimestamp, u64)> {
+    pub fn get_messages_from(&self, start_offset: u64) -> Vec<(Message, Timestamp, u64)> {
         let start_idx = if start_offset > 0 {
             (start_offset - 1) as usize
         } else {
@@ -136,12 +127,12 @@ impl Stream {
     }
 
     /// Check if current time is past deadline
-    pub fn is_past_deadline(&self, deadline: HlcTimestamp) -> bool {
+    pub fn is_past_deadline(&self, deadline: Timestamp) -> bool {
         let physical = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64;
-        let current_time = HlcTimestamp::new(physical, 0, self.node_id);
+        let current_time = Timestamp::from_micros(physical);
         current_time > deadline
     }
 }
@@ -150,14 +141,14 @@ impl Stream {
 #[derive(Debug, Clone)]
 pub enum DeadlineStreamItem {
     /// A message from the stream with timestamp and log index
-    Message(Message, HlcTimestamp, u64),
+    Message(Message, Timestamp, u64),
     /// Deadline has been reached
     DeadlineReached,
 }
 
 /// An active stream consumer
 struct StreamConsumer {
-    sender: mpsc::UnboundedSender<(Message, HlcTimestamp, u64)>,
+    sender: mpsc::UnboundedSender<(Message, Timestamp, u64)>,
     #[allow(dead_code)]
     current_sequence: u64,
 }
@@ -212,7 +203,7 @@ impl StreamManager {
         &self,
         name: &str,
         start_sequence: Option<u64>,
-    ) -> Result<mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)>> {
+    ) -> Result<mpsc::UnboundedReceiver<(Message, Timestamp, u64)>> {
         let stream_lock = self
             .streams
             .get(name)
@@ -232,7 +223,7 @@ impl StreamManager {
         &self,
         stream_name: &str,
         start_offset: u64,
-        deadline: HlcTimestamp,
+        deadline: Timestamp,
     ) -> Result<impl TokioStream<Item = DeadlineStreamItem>> {
         // Extract necessary data while holding the lock
         let (messages, is_past_deadline) = {

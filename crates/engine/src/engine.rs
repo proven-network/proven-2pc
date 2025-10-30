@@ -9,7 +9,7 @@ use crate::{
 };
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use proven_hlc::HlcTimestamp;
+use proven_common::Timestamp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -117,7 +117,7 @@ impl MockEngine {
         &self,
         stream_name: &str,
         start_sequence: Option<u64>,
-    ) -> Result<mpsc::UnboundedReceiver<(Message, HlcTimestamp, u64)>> {
+    ) -> Result<mpsc::UnboundedReceiver<(Message, Timestamp, u64)>> {
         self.streams.create_consumer(stream_name, start_sequence)
     }
 
@@ -228,7 +228,7 @@ impl MockEngine {
         &self,
         stream_name: &str,
         start_offset: u64,
-        deadline: HlcTimestamp,
+        deadline: Timestamp,
     ) -> Result<impl TokioStream<Item = DeadlineStreamItem>> {
         self.streams
             .create_deadline_stream(stream_name, start_offset, deadline)

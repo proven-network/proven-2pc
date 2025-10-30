@@ -1,7 +1,7 @@
 //! Reservation-based conflict detection for resource operations
 
 use crate::types::Amount;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -19,10 +19,10 @@ pub enum ReservationType {
 /// A balance reservation for a specific account
 #[derive(Debug, Clone)]
 pub struct BalanceReservation {
-    pub transaction_id: HlcTimestamp,
+    pub transaction_id: TransactionId,
     pub account: String,
     pub reservation_type: ReservationType,
-    pub timestamp: HlcTimestamp,
+    pub timestamp: TransactionId,
 }
 
 /// Manages reservations for conflict detection
@@ -32,10 +32,10 @@ pub struct ReservationManager {
     account_reservations: HashMap<String, Vec<BalanceReservation>>,
 
     /// Metadata reservations (only one transaction can update metadata at a time)
-    metadata_reservation: Option<HlcTimestamp>,
+    metadata_reservation: Option<TransactionId>,
 
     /// Track which accounts each transaction has reservations on
-    transaction_accounts: HashMap<HlcTimestamp, HashSet<String>>,
+    transaction_accounts: HashMap<TransactionId, HashSet<String>>,
 }
 
 impl ReservationManager {
@@ -80,7 +80,7 @@ impl ReservationManager {
     /// Reserve balance for a debit operation
     pub fn reserve_debit(
         &mut self,
-        transaction_id: HlcTimestamp,
+        transaction_id: TransactionId,
         account: &str,
         amount: Amount,
         current_balance: Amount,
@@ -112,7 +112,7 @@ impl ReservationManager {
     /// Reserve balance for a credit operation
     pub fn reserve_credit(
         &mut self,
-        transaction_id: HlcTimestamp,
+        transaction_id: TransactionId,
         account: &str,
         amount: Amount,
     ) -> Result<(), String> {
@@ -137,7 +137,7 @@ impl ReservationManager {
     }
 
     /// Reserve metadata update
-    pub fn reserve_metadata(&mut self, transaction_id: HlcTimestamp) -> Result<(), String> {
+    pub fn reserve_metadata(&mut self, transaction_id: TransactionId) -> Result<(), String> {
         if let Some(existing_tx) = self.metadata_reservation {
             return Err(format!(
                 "Metadata already reserved by transaction {}",
@@ -155,7 +155,7 @@ impl ReservationManager {
         account: &str,
         operation: &ReservationType,
         current_balance: Amount,
-    ) -> Option<Vec<HlcTimestamp>> {
+    ) -> Option<Vec<TransactionId>> {
         match operation {
             ReservationType::Debit(amount) => {
                 // Check if debit would exceed available balance
@@ -184,7 +184,7 @@ impl ReservationManager {
     }
 
     /// Release all reservations for a transaction
-    pub fn release_transaction(&mut self, transaction_id: HlcTimestamp) {
+    pub fn release_transaction(&mut self, transaction_id: TransactionId) {
         // Release metadata reservation if held
         if self.metadata_reservation == Some(transaction_id) {
             self.metadata_reservation = None;
@@ -204,7 +204,7 @@ impl ReservationManager {
     }
 
     /// Get all transactions that have reservations on an account
-    pub fn get_blocking_transactions(&self, account: &str) -> Vec<HlcTimestamp> {
+    pub fn get_blocking_transactions(&self, account: &str) -> Vec<TransactionId> {
         self.account_reservations
             .get(account)
             .map(|reservations| {
@@ -222,7 +222,7 @@ impl ReservationManager {
     /// Returns list of (account, reservation_type) pairs
     pub fn reservations_held_by(
         &self,
-        transaction_id: HlcTimestamp,
+        transaction_id: TransactionId,
     ) -> Vec<(String, ReservationType)> {
         let mut result = Vec::new();
 
@@ -257,10 +257,10 @@ impl Default for ReservationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::NodeId;
+    use uuid::Uuid;
 
-    fn make_timestamp(n: u64) -> HlcTimestamp {
-        HlcTimestamp::new(n, 0, NodeId::new(0))
+    fn make_timestamp(n: u64) -> TransactionId {
+        TransactionId::from_uuid(Uuid::from_u128(n as u128))
     }
 
     #[test]

@@ -271,12 +271,13 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_trim_execute() {
         let func = TrimFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Trim both sides
         let result = func
@@ -300,7 +301,7 @@ mod tests {
     #[test]
     fn test_ltrim_execute() {
         let func = LtrimFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Trim left side only
         let result = func
@@ -320,7 +321,7 @@ mod tests {
     #[test]
     fn test_rtrim_execute() {
         let func = RtrimFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Trim right side only
         let result = func

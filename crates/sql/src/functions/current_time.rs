@@ -35,9 +35,13 @@ impl Function for CurrentTimeFunction {
             ));
         }
 
-        let micros = context.timestamp().physical as i64;
-        let secs = micros / 1_000_000;
-        let nanos = ((micros % 1_000_000) * 1_000) as u32;
+        // Extract timestamp from UUIDv7
+        let uuid = context.timestamp().as_uuid();
+        let timestamp_ms = uuid
+            .get_timestamp()
+            .ok_or_else(|| Error::InvalidValue("Transaction ID does not contain timestamp".into()))?
+            .to_unix();
+        let (secs, nanos) = timestamp_ms;
         let time = NaiveTime::from_num_seconds_from_midnight_opt((secs % 86400) as u32, nanos)
             .ok_or_else(|| Error::InvalidValue("Invalid time".into()))?;
         Ok(Value::Time(time))

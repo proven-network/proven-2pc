@@ -168,14 +168,15 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
     use rust_decimal::Decimal;
     use std::str::FromStr;
+    use uuid::Uuid;
 
     #[test]
     fn test_ceil_execute() {
         let func = CeilFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Integer stays the same
         assert_eq!(
@@ -209,7 +210,7 @@ mod tests {
     #[test]
     fn test_floor_execute() {
         let func = FloorFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Integer stays the same
         assert_eq!(

@@ -12,7 +12,7 @@ use crate::encoding::{Decode, Encode};
 use crate::entity::{MvccDelta, MvccEntity};
 use crate::error::Result;
 use fjall::Batch;
-use proven_hlc::HlcTimestamp;
+use proven_common::{Timestamp, TransactionId};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -38,11 +38,12 @@ impl<E: MvccEntity> HistoryStore<E> {
         !self.bucket_manager.has_partitions()
     }
 
-    /// Encode key: {commit_time(20)}{key_bytes}{seq(4)}
-    fn encode_key(commit_time: HlcTimestamp, key_bytes: &[u8], seq: u32) -> Vec<u8> {
+    /// Encode key: {commit_txn_id(16)}{key_bytes}{seq(4)}
+    fn encode_key(commit_txn_id: TransactionId, key_bytes: &[u8], seq: u32) -> Vec<u8> {
         let mut encoded = Vec::new();
-        // Commit time first for efficient range scans
-        encoded.extend_from_slice(&commit_time.to_lexicographic_bytes());
+        // Transaction ID first for efficient range scans (16 bytes for UUIDv7)
+        // This ensures consistency with wound-wait ordering
+        encoded.extend_from_slice(&commit_txn_id.to_bytes());
         // Key bytes
         encoded.extend_from_slice(key_bytes);
         // Sequence number
@@ -52,27 +53,28 @@ impl<E: MvccEntity> HistoryStore<E> {
 
     /// Add committed deltas to a batch
     ///
-    /// Deltas are stored with commit_time-first keys for efficient
-    /// time-range queries during snapshot reads.
+    /// Deltas are stored with commit_txn_id-first keys for efficient
+    /// transaction-ordered queries during snapshot reads.
     pub fn add_committed_deltas_to_batch(
         &mut self,
         batch: &mut Batch,
-        commit_time: HlcTimestamp,
+        commit_txn_id: TransactionId,
         deltas: Vec<E::Delta>,
     ) -> Result<()> {
         if deltas.is_empty() {
             return Ok(());
         }
 
-        // Get or create partition for this time bucket
-        let partition = self
-            .bucket_manager
-            .get_or_create_partition(E::entity_name(), commit_time)?;
+        // Get or create partition for this time bucket (using timestamp component for bucketing)
+        let partition = self.bucket_manager.get_or_create_partition(
+            E::entity_name(),
+            commit_txn_id.to_timestamp_for_bucketing(),
+        )?;
 
         // Add each delta with sequential numbering
         for (seq, delta) in deltas.into_iter().enumerate() {
             let key_bytes = delta.key().encode()?;
-            let encoded_key = Self::encode_key(commit_time, &key_bytes, seq as u32);
+            let encoded_key = Self::encode_key(commit_txn_id, &key_bytes, seq as u32);
             let encoded_delta = delta.encode()?;
 
             batch.insert(&partition, encoded_key, encoded_delta);
@@ -81,16 +83,17 @@ impl<E: MvccEntity> HistoryStore<E> {
         Ok(())
     }
 
-    /// Get deltas committed after a snapshot time
+    /// Get deltas committed after a snapshot transaction
     ///
     /// Returns a map of encoded_key -> deltas that were committed after the snapshot.
     /// These deltas need to be unapplied to reconstruct the snapshot state.
     pub fn get_deltas_after(
         &self,
-        snapshot_time: HlcTimestamp,
+        snapshot_txn_id: TransactionId,
     ) -> Result<BTreeMap<Vec<u8>, Vec<E::Delta>>> {
-        // Get partitions in the time range (snapshot_time .. now)
-        let far_future = HlcTimestamp::new(u64::MAX, 0, snapshot_time.node_id);
+        // Get partitions in the time range (using timestamp component for bucket selection)
+        let snapshot_time = snapshot_txn_id.to_timestamp_for_bucketing();
+        let far_future = Timestamp::from_micros(u64::MAX);
         let partitions = self.bucket_manager.get_existing_partitions_for_range(
             E::entity_name(),
             snapshot_time,
@@ -98,7 +101,7 @@ impl<E: MvccEntity> HistoryStore<E> {
         );
 
         let mut result: BTreeMap<Vec<u8>, Vec<E::Delta>> = BTreeMap::new();
-        let snapshot_bytes = snapshot_time.to_lexicographic_bytes();
+        let snapshot_bytes = snapshot_txn_id.to_bytes();
 
         // Scan all partitions for deltas after snapshot_time
         for partition in partitions {
@@ -114,7 +117,7 @@ impl<E: MvccEntity> HistoryStore<E> {
         Ok(result)
     }
 
-    /// Get deltas for a specific key committed after snapshot time
+    /// Get deltas for a specific key committed after snapshot transaction
     ///
     /// Note: Currently reuses get_deltas_after for simplicity. This scans all
     /// history deltas and extracts one key. For better performance with many
@@ -124,16 +127,16 @@ impl<E: MvccEntity> HistoryStore<E> {
     pub fn get_key_deltas_after(
         &self,
         key: &E::Key,
-        snapshot_time: HlcTimestamp,
+        snapshot_txn_id: TransactionId,
     ) -> Result<Vec<E::Delta>> {
         let key_bytes = key.encode()?;
-        let all_deltas = self.get_deltas_after(snapshot_time)?;
+        let all_deltas = self.get_deltas_after(snapshot_txn_id)?;
 
         Ok(all_deltas.get(&key_bytes).cloned().unwrap_or_default())
     }
 
     /// Cleanup old buckets - O(1) per bucket!
-    pub fn cleanup_old_buckets(&mut self, current_time: HlcTimestamp) -> Result<usize> {
+    pub fn cleanup_old_buckets(&mut self, current_time: Timestamp) -> Result<usize> {
         self.bucket_manager
             .cleanup_old_buckets(current_time, self.retention_window)
     }
@@ -144,7 +147,7 @@ mod tests {
     use super::*;
     use crate::config::StorageConfig;
     use fjall::PartitionCreateOptions;
-    use proven_hlc::NodeId;
+    use proven_common::TransactionId;
 
     // Reuse test types from uncommitted tests
     struct TestEntity;
@@ -247,8 +250,8 @@ mod tests {
         let mut store =
             HistoryStore::<TestEntity>::new(bucket_mgr, config.history_retention_window);
 
-        // Add some deltas at time 1000
-        let commit_time = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        // Add some deltas with a transaction ID
+        let commit_txn_id = TransactionId::new();
         let deltas = vec![TestDelta::Put {
             key: "key1".to_string(),
             value: "value1".to_string(),
@@ -256,12 +259,13 @@ mod tests {
         }];
 
         let mut batch = keyspace_clone.batch();
-        store.add_committed_deltas_to_batch(&mut batch, commit_time, deltas)?;
+        store.add_committed_deltas_to_batch(&mut batch, commit_txn_id, deltas)?;
         batch.commit()?;
 
-        // Query deltas after time 500 (should include our delta)
-        let snapshot_time = HlcTimestamp::new(500, 0, NodeId::new(1));
-        let deltas_after = store.get_deltas_after(snapshot_time)?;
+        // Use a very old transaction ID for snapshot query (all zeros - earlier than any real UUIDv7)
+        // This ensures we find the delta committed by commit_txn_id
+        let snapshot_txn_id = TransactionId::from_bytes([0u8; 16]);
+        let deltas_after = store.get_deltas_after(snapshot_txn_id)?;
 
         assert!(!deltas_after.is_empty());
 

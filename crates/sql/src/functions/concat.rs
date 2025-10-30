@@ -110,7 +110,8 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_concat_signature() {
@@ -123,7 +124,7 @@ mod tests {
     #[test]
     fn test_concat_execute() {
         let func = ConcatFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Simple concatenation
         let result = func

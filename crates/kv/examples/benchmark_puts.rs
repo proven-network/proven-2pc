@@ -3,7 +3,7 @@
 //! This benchmark measures the throughput of the KV engine by inserting
 //! 1 million key-value pairs directly using the engine.
 
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_kv::{KvOperation, KvTransactionEngine, Value};
 use proven_stream::TransactionEngine;
 use std::io::{self, Write};
@@ -35,8 +35,8 @@ fn main() {
 
     // Process puts
     for i in 0..NUM_PUTS {
-        // Generate unique transaction ID with incrementing timestamp
-        let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
+        // Generate unique transaction ID (UUIDv7 with monotonic timestamp)
+        let txn_id = TransactionId::new();
         kv_engine.begin(txn_id, next_log_index());
 
         // Create put operation with various value types to simulate real usage
@@ -103,7 +103,7 @@ fn main() {
 
     // Verify a sample of keys
     println!("\nVerifying sample keys...");
-    let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
+    let verify_txn = TransactionId::new();
     kv_engine.begin(verify_txn, next_log_index());
 
     // Check a few keys to verify they were stored

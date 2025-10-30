@@ -7,9 +7,7 @@ pub mod engine;
 pub mod storage;
 pub mod types;
 
-// Re-export HLC types for convenience
-pub use proven_hlc::{HlcClock, HlcTimestamp, NodeId};
-
 // Re-export types for convenience
 pub use engine::KvTransactionEngine;
+pub use proven_common::TransactionId;
 pub use types::{KvOperation, KvResponse, Value};

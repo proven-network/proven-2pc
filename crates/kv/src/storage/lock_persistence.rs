@@ -7,7 +7,7 @@
 //! During normal operation, all lock operations use the in-memory LockManager.
 
 use super::lock::LockMode;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -21,12 +21,12 @@ pub struct PersistedLock {
 /// Lock state for a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionLocks {
-    pub txn_id: HlcTimestamp,
+    pub txn_id: TransactionId,
     pub locks: Vec<PersistedLock>,
 }
 
 impl TransactionLocks {
-    pub fn new(txn_id: HlcTimestamp) -> Self {
+    pub fn new(txn_id: TransactionId) -> Self {
         Self {
             txn_id,
             locks: Vec::new(),
@@ -50,8 +50,8 @@ pub fn encode_transaction_locks(locks: &TransactionLocks) -> Result<Vec<u8>, Str
     use std::io::Write;
     let mut buf = Vec::new();
 
-    // Encode HlcTimestamp (20 bytes)
-    buf.write_all(&locks.txn_id.to_lexicographic_bytes())
+    // Encode TransactionId (16 bytes for UUIDv7)
+    buf.write_all(&locks.txn_id.to_bytes())
         .map_err(|e| e.to_string())?;
 
     // Encode number of locks
@@ -82,12 +82,12 @@ pub fn decode_transaction_locks(bytes: &[u8]) -> Result<TransactionLocks, String
 
     let mut cursor = Cursor::new(bytes);
 
-    // Decode HlcTimestamp (20 bytes)
-    let mut ts_bytes = [0u8; 20];
+    // Decode TransactionId (16 bytes for UUIDv7)
+    let mut ts_bytes = [0u8; 16];
     cursor
         .read_exact(&mut ts_bytes)
         .map_err(|e| e.to_string())?;
-    let txn_id = HlcTimestamp::from_lexicographic_bytes(&ts_bytes).map_err(|e| e.to_string())?;
+    let txn_id = TransactionId::from_bytes(ts_bytes);
 
     // Decode number of locks
     let mut len_bytes = [0u8; 4];

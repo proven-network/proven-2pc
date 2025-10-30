@@ -58,7 +58,8 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_nullif_signature() {
@@ -71,7 +72,7 @@ mod tests {
     #[test]
     fn test_nullif_execute_equal() {
         let func = NullifFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Equal integers return NULL
         let result = func
@@ -89,7 +90,7 @@ mod tests {
     #[test]
     fn test_nullif_execute_different() {
         let func = NullifFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Different integers return first argument
         let result = func
@@ -107,7 +108,7 @@ mod tests {
     #[test]
     fn test_nullif_wrong_arg_count() {
         let func = NullifFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Too few arguments
         let result = func.execute(&[Value::I32(42)], &context);

@@ -1,7 +1,7 @@
 //! Common test utilities for SQL integration tests
 #![allow(dead_code)]
 
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
 use proven_value::Value;
@@ -13,7 +13,7 @@ pub struct TestContext {
     current_timestamp: u64,
     current_log_index: u64,
     in_transaction: bool,
-    current_tx: Option<HlcTimestamp>,
+    current_tx: Option<TransactionId>,
 }
 
 impl TestContext {
@@ -35,8 +35,10 @@ impl TestContext {
     }
 
     /// Get the next timestamp
-    pub fn next_timestamp(&mut self) -> HlcTimestamp {
-        let ts = HlcTimestamp::new(self.current_timestamp, 0, NodeId::new(0));
+    pub fn next_timestamp(&mut self) -> TransactionId {
+        // Generate a real UUIDv7 which has embedded timestamp information
+        // This is needed for NOW(), CURRENT_DATE(), CURRENT_TIME() functions to work
+        let ts = TransactionId::new();
         self.current_timestamp += 1;
         ts
     }

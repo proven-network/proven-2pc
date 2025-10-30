@@ -3,7 +3,7 @@
 //! This module implements the TransactionEngine trait, providing KV-specific
 //! operation execution while delegating message handling to the generic processor.
 
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
 use proven_stream::engine::BlockingInfo;
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
@@ -70,7 +70,7 @@ impl KvTransactionEngine {
     fn add_locks_to_batch(
         &mut self,
         batch: &mut proven_mvcc::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<(), String> {
         let locks_held = self.lock_manager.locks_held_by(txn_id);
 
@@ -80,9 +80,9 @@ impl KvTransactionEngine {
                 tx_locks.add_lock(key, mode);
             }
 
-            // Lock key: prefix + lexicographic timestamp bytes
+            // Lock key: prefix + transaction ID bytes (16 bytes for UUIDv7)
             let mut lock_key = b"_locks_".to_vec();
-            lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+            lock_key.extend_from_slice(&txn_id.to_bytes());
             let lock_bytes = encode_transaction_locks(&tx_locks)?;
 
             // Add to batch (will be committed atomically with data)
@@ -97,7 +97,7 @@ impl KvTransactionEngine {
     fn check_read_conflicts(
         &self,
         key: &str,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> Option<Vec<BlockingInfo>> {
         // Check lock manager for earlier transactions holding exclusive locks on this key
         let lock_holders = self.lock_manager.get_holders(key);
@@ -124,7 +124,7 @@ impl KvTransactionEngine {
     fn execute_get_without_locking(
         &self,
         key: &str,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<KvResponse> {
         // Check for conflicts with earlier exclusive locks
         if let Some(blockers) = self.check_read_conflicts(key, read_timestamp) {
@@ -148,7 +148,7 @@ impl KvTransactionEngine {
     fn execute_get(
         &mut self,
         key: &str,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<KvResponse> {
         // Check if we can acquire the lock
@@ -199,7 +199,7 @@ impl KvTransactionEngine {
         &mut self,
         key: &str,
         value: Value,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<KvResponse> {
         // Check if we can acquire the lock
@@ -263,7 +263,7 @@ impl KvTransactionEngine {
     fn execute_delete(
         &mut self,
         key: &str,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<KvResponse> {
         // Check if we can acquire the lock
@@ -343,7 +343,7 @@ impl TransactionEngine for KvTransactionEngine {
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
         match operation {
             KvOperation::Get { ref key } => self.execute_get_without_locking(key, read_timestamp),
@@ -354,7 +354,7 @@ impl TransactionEngine for KvTransactionEngine {
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
@@ -366,11 +366,11 @@ impl TransactionEngine for KvTransactionEngine {
         }
     }
 
-    fn begin(&mut self, _txn_id: HlcTimestamp, _log_index: u64) {
+    fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {
         // Nothing to do - processor tracks active transactions
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn prepare(&mut self, txn_id: TransactionId, log_index: u64) {
         // Get locks held by this transaction from lock manager
         let locks = self.lock_manager.locks_held_by(txn_id);
 
@@ -394,7 +394,7 @@ impl TransactionEngine for KvTransactionEngine {
         batch.commit().expect("Batch commit failed");
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
         // Commit to storage and clear persisted locks atomically
         let mut batch = self.storage.batch();
 
@@ -405,7 +405,7 @@ impl TransactionEngine for KvTransactionEngine {
 
         // Clear persisted locks in the same batch
         let mut lock_key = b"_locks_".to_vec();
-        lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         batch.remove(metadata.clone(), lock_key);
 
@@ -413,13 +413,16 @@ impl TransactionEngine for KvTransactionEngine {
         batch.commit().expect("Batch commit failed");
 
         // Cleanup old buckets if needed (throttled internally)
-        self.storage.maybe_cleanup(txn_id).ok();
+        // Use timestamp component for cleanup
+        self.storage
+            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
+            .ok();
 
         // Release all locks held by this transaction
         self.lock_manager.release_all(txn_id);
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
         // Abort in storage and clear persisted locks atomically
         let mut batch = self.storage.batch();
 
@@ -430,7 +433,7 @@ impl TransactionEngine for KvTransactionEngine {
 
         // Clear persisted locks in the same batch
         let mut lock_key = b"_locks_".to_vec();
-        lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         batch.remove(metadata.clone(), lock_key);
 
@@ -438,7 +441,10 @@ impl TransactionEngine for KvTransactionEngine {
         batch.commit().expect("Batch commit failed");
 
         // Cleanup old buckets if needed (throttled internally)
-        self.storage.maybe_cleanup(txn_id).ok();
+        // Use timestamp component for cleanup
+        self.storage
+            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
+            .ok();
 
         // Release all locks
         self.lock_manager.release_all(txn_id);

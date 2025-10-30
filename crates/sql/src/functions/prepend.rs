@@ -73,10 +73,11 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     fn test_context() -> ExecutionContext {
-        ExecutionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)), 0)
+        ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0)
     }
 
     #[test]

@@ -4,29 +4,26 @@ use super::{Executor as ExecutorTrait, common::ExecutorInfra};
 use crate::error::Result;
 use async_trait::async_trait;
 use proven_common::Operation;
-use proven_hlc::HlcClock;
+use proven_common::TransactionId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Ad-hoc executor with auto-commit operations
 pub struct AdHocExecutor {
-    /// HLC clock for generating fresh timestamps
-    hlc: Arc<HlcClock>,
-
     /// Shared infrastructure
     infra: Arc<ExecutorInfra>,
 }
 
 impl AdHocExecutor {
     /// Create a new ad-hoc executor
-    pub fn new(hlc: Arc<HlcClock>, infra: Arc<ExecutorInfra>) -> Self {
-        Self { hlc, infra }
+    pub fn new(infra: Arc<ExecutorInfra>) -> Self {
+        Self { infra }
     }
 
     /// Execute a single auto-commit operation
     async fn execute_adhoc<O: Operation>(&self, stream: &str, operation: &O) -> Result<Vec<u8>> {
         // Generate a fresh timestamp for this operation
-        let timestamp = self.hlc.now();
+        let timestamp = TransactionId::new();
 
         // Use a reasonable timeout
         let timeout = std::time::Duration::from_secs(30);

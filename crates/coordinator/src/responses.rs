@@ -3,8 +3,8 @@
 use crate::error::{CoordinatorError, Result};
 use dashmap::DashMap;
 use parking_lot::Mutex;
+use proven_common::TransactionId;
 use proven_engine::{Message, MockClient};
-use proven_hlc::HlcTimestamp;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -65,7 +65,7 @@ pub enum ResponseMessage {
 
     /// Transaction was wounded by another transaction
     Wounded {
-        wounded_by: HlcTimestamp,
+        wounded_by: TransactionId,
         engine: String,
         participant: Option<String>,
     },
@@ -191,8 +191,8 @@ impl ResponseCollector {
                     let wounded_by = msg
                         .headers
                         .get("wounded_by")
-                        .and_then(|s| HlcTimestamp::parse(s).ok())
-                        .unwrap_or_else(|| HlcTimestamp::new(0, 0, proven_hlc::NodeId::new(0)));
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok().map(TransactionId::from_uuid))
+                        .unwrap_or_else(|| TransactionId::from_uuid(uuid::Uuid::nil()));
 
                     ResponseMessage::Wounded {
                         wounded_by,

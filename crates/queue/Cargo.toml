@@ -7,7 +7,6 @@ edition.workspace = true
 parking_lot.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true
-proven-hlc.workspace = true
 proven-mvcc.workspace = true
 proven-stream.workspace = true
 proven-value = { workspace = true, features = ["mvcc"] }

@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::types::context::PendingDdl;
 use fjall;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,9 +38,9 @@ impl DdlStore {
     }
 
     /// Encode key: {txn_id}{seq}
-    fn encode_key(txn_id: HlcTimestamp, seq: u64) -> Vec<u8> {
+    fn encode_key(txn_id: TransactionId, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
-        key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        key.extend_from_slice(&txn_id.to_bytes());
         key.extend_from_slice(&seq.to_be_bytes());
         key
     }
@@ -49,7 +49,7 @@ impl DdlStore {
     pub fn add_to_batch(
         &self,
         batch: &mut fjall::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         ddl: &PendingDdl,
     ) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
@@ -65,8 +65,8 @@ impl DdlStore {
     }
 
     /// Remove all pending DDLs for a transaction (on commit/abort)
-    pub fn remove_all(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
-        let prefix = txn_id.to_lexicographic_bytes().to_vec();
+    pub fn remove_all(&self, batch: &mut fjall::Batch, txn_id: TransactionId) -> Result<()> {
+        let prefix = txn_id.to_bytes().to_vec();
         for result in self.ddl_partition.prefix(prefix) {
             let (key, _) = result
                 .map_err(|e| Error::Other(format!("Failed to iterate pending DDLs: {}", e)))?;
@@ -76,7 +76,7 @@ impl DdlStore {
     }
 
     /// Get all active transactions with pending DDLs (for recovery)
-    pub fn get_all_active_ddls(&self) -> Result<HashMap<HlcTimestamp, Vec<PendingDdl>>> {
+    pub fn get_all_active_ddls(&self) -> Result<HashMap<TransactionId, Vec<PendingDdl>>> {
         let mut transactions = HashMap::new();
 
         // Scan all keys in DDL partition
@@ -95,17 +95,16 @@ impl DdlStore {
     }
 
     /// Parse a key-value pair into transaction ID and DDL
-    fn parse_key(&self, key: &[u8], value: &[u8]) -> Result<Option<(HlcTimestamp, PendingDdl)>> {
+    fn parse_key(&self, key: &[u8], value: &[u8]) -> Result<Option<(TransactionId, PendingDdl)>> {
         // Key format: {txn_id:20}{seq:8}
-        if key.len() < 20 {
+        if key.len() < 16 {
             return Ok(None);
         }
 
-        let txn_id_bytes: [u8; 20] = key[0..20]
+        let txn_id_bytes: [u8; 16] = key[0..16]
             .try_into()
             .map_err(|_| Error::Other("Invalid txn_id in DDL key".to_string()))?;
-        let txn_id = HlcTimestamp::from_lexicographic_bytes(&txn_id_bytes)
-            .map_err(|e| Error::Other(format!("Failed to parse txn_id: {}", e)))?;
+        let txn_id = TransactionId::from_bytes(txn_id_bytes);
 
         let stored: StoredDdl = ciborium::from_reader(value)
             .map_err(|e| Error::Serialization(format!("Failed to deserialize DDL: {}", e)))?;

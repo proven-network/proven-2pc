@@ -4,8 +4,8 @@ use super::{Executor as ExecutorTrait, common::ExecutorInfra};
 use crate::error::{CoordinatorError, Result};
 use crate::speculation::{CheckResult, PredictionContext};
 use async_trait::async_trait;
+use proven_common::TransactionId;
 use proven_common::{Operation, OperationType};
-use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
@@ -16,7 +16,7 @@ type SpeculationReceivers = Arc<AsyncMutex<HashMap<usize, oneshot::Receiver<Resu
 /// Read-only executor using consistent snapshot
 pub struct ReadOnlyExecutor {
     /// Consistent read timestamp for snapshot isolation
-    read_timestamp: HlcTimestamp,
+    read_timestamp: TransactionId,
 
     /// Shared infrastructure
     infra: Arc<ExecutorInfra>,
@@ -31,7 +31,7 @@ pub struct ReadOnlyExecutor {
 impl ReadOnlyExecutor {
     /// Create a new read-only executor
     pub async fn new(
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
         infra: Arc<ExecutorInfra>,
         prediction_context: PredictionContext,
     ) -> Self {
@@ -93,7 +93,7 @@ impl ReadOnlyExecutor {
     }
 
     /// Get the read timestamp
-    pub fn read_timestamp(&self) -> HlcTimestamp {
+    pub fn read_timestamp(&self) -> TransactionId {
         self.read_timestamp
     }
 

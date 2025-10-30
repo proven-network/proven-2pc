@@ -1,8 +1,7 @@
 //! Common test utilities for stream processor tests
 
 use crate::engine::{OperationResult, RetryOn, TransactionEngine};
-use proven_common::{Operation, Response};
-use proven_hlc::HlcTimestamp;
+use proven_common::{Operation, Response, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,11 +10,11 @@ pub struct TestEngine<Op, Resp> {
     /// Current log index
     log_index: u64,
     /// Resource locks (for wound-wait tests)
-    locks: HashMap<String, HlcTimestamp>,
+    locks: HashMap<String, TransactionId>,
     /// Key-value data (for basic tests)
     data: HashMap<String, String>,
     /// Active transactions
-    active_txns: Vec<HlcTimestamp>,
+    active_txns: Vec<TransactionId>,
     /// Phantom data for operation and response types
     _phantom: std::marker::PhantomData<(Op, Resp)>,
 }
@@ -103,7 +102,7 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
-        _read_timestamp: HlcTimestamp,
+        _read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
         match operation {
             LockOp::Lock { .. } => {
@@ -118,7 +117,7 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<Self::Response> {
         self.log_index = self.log_index.max(log_index);
@@ -147,21 +146,21 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
         }
     }
 
-    fn prepare(&mut self, _txn_id: HlcTimestamp, log_index: u64) {
+    fn prepare(&mut self, _txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-        self.locks.retain(|_, &mut holder| holder != txn_id);
-    }
-
-    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
         self.locks.retain(|_, &mut holder| holder != txn_id);
     }
 
-    fn begin(&mut self, _txn_id: HlcTimestamp, log_index: u64) {
+    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
+        self.log_index = self.log_index.max(log_index);
+        self.locks.retain(|_, &mut holder| holder != txn_id);
+    }
+
+    fn begin(&mut self, _txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
     }
 
@@ -182,7 +181,7 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
-        _read_timestamp: HlcTimestamp,
+        _read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
         match operation {
             BasicOp::Read { key } => {
@@ -198,7 +197,7 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
-        _txn_id: HlcTimestamp,
+        _txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<Self::Response> {
         self.log_index = self.log_index.max(log_index);
@@ -215,21 +214,21 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
         }
     }
 
-    fn prepare(&mut self, _txn_id: HlcTimestamp, log_index: u64) {
+    fn prepare(&mut self, _txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-        self.active_txns.retain(|&id| id != txn_id);
-    }
-
-    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
         self.active_txns.retain(|&id| id != txn_id);
     }
 
-    fn begin(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
+        self.log_index = self.log_index.max(log_index);
+        self.active_txns.retain(|&id| id != txn_id);
+    }
+
+    fn begin(&mut self, txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
         self.active_txns.push(txn_id);
     }

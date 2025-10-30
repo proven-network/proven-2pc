@@ -5,8 +5,8 @@
 //! and writes recovery decisions to the local stream.
 
 use crate::engine::TransactionEngine;
+use proven_common::{Timestamp, TransactionId};
 use proven_engine::{DeadlineStreamItem, Message, MockClient};
-use proven_hlc::HlcTimestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -16,12 +16,12 @@ use tokio_stream::StreamExt;
 pub enum RecoveryState {
     /// Transaction is prepared and waiting
     Prepared {
-        deadline: HlcTimestamp,
+        deadline: Timestamp,
         participants: HashMap<String, u64>, // participant stream -> offset
     },
     /// Recovery in progress for this transaction
     Recovering {
-        deadline: HlcTimestamp,
+        deadline: Timestamp,
         participants: HashMap<String, u64>,
         decisions: HashMap<String, TransactionDecision>, // decisions from each participant
     },
@@ -40,10 +40,10 @@ pub enum TransactionDecision {
 /// Manager for transaction recovery after coordinator failure
 pub struct RecoveryManager<E: TransactionEngine> {
     /// Transactions that need recovery (txn_id -> state)
-    recovery_states: HashMap<HlcTimestamp, RecoveryState>,
+    recovery_states: HashMap<TransactionId, RecoveryState>,
 
     /// Scheduled recovery tasks (txn_id -> deadline)
-    scheduled_recoveries: HashMap<HlcTimestamp, HlcTimestamp>,
+    scheduled_recoveries: HashMap<TransactionId, Timestamp>,
 
     /// Engine client for reading from other streams
     client: Arc<MockClient>,
@@ -70,8 +70,8 @@ impl<E: TransactionEngine> RecoveryManager<E> {
     /// Schedule recovery for a transaction after it enters prepared state
     pub fn schedule_recovery(
         &mut self,
-        txn_id: HlcTimestamp,
-        deadline: HlcTimestamp,
+        txn_id: TransactionId,
+        deadline: Timestamp,
         participants: HashMap<String, u64>,
     ) {
         self.recovery_states.insert(
@@ -85,7 +85,7 @@ impl<E: TransactionEngine> RecoveryManager<E> {
     }
 
     /// Check if a transaction needs recovery (called periodically or on conflict)
-    pub fn needs_recovery(&self, txn_id: &HlcTimestamp, current_time: HlcTimestamp) -> bool {
+    pub fn needs_recovery(&self, txn_id: &TransactionId, current_time: Timestamp) -> bool {
         if let Some(&deadline) = self.scheduled_recoveries.get(txn_id) {
             current_time > deadline
         } else {
@@ -96,9 +96,9 @@ impl<E: TransactionEngine> RecoveryManager<E> {
     /// Execute recovery for a transaction (called by processor)
     pub async fn execute_recovery(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         participants: HashMap<String, u64>,
-        current_time: HlcTimestamp,
+        current_time: Timestamp,
     ) -> TransactionDecision {
         let txn_id_str = txn_id.to_string();
 
@@ -144,7 +144,7 @@ impl<E: TransactionEngine> RecoveryManager<E> {
     }
 
     /// Start recovery for a transaction
-    pub async fn start_recovery(&mut self, txn_id: HlcTimestamp) -> TransactionDecision {
+    pub async fn start_recovery(&mut self, txn_id: TransactionId) -> TransactionDecision {
         // Get the recovery state
         let state = match self.recovery_states.get(&txn_id) {
             Some(RecoveryState::Prepared {
@@ -200,8 +200,8 @@ impl<E: TransactionEngine> RecoveryManager<E> {
     /// Read decisions from participant streams
     async fn read_participant_decisions(
         &mut self,
-        txn_id: HlcTimestamp,
-        deadline: HlcTimestamp,
+        txn_id: TransactionId,
+        deadline: Timestamp,
         participants: HashMap<String, u64>,
     ) -> TransactionDecision {
         let mut decisions = HashMap::new();

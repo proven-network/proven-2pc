@@ -3,11 +3,11 @@
 //! Provides queue-level locking with shared/exclusive modes for
 //! coordinating concurrent access to queues.
 
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use serde::{Deserialize, Serialize};
 
 /// Transaction ID type alias
-pub type TxId = HlcTimestamp;
+pub type TxId = TransactionId;
 
 /// Lock modes for queue operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,10 +143,9 @@ impl Default for LockManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::NodeId;
 
-    fn create_tx_id(seed: u64) -> TxId {
-        HlcTimestamp::new(seed, 0, NodeId::new(1))
+    fn create_tx_id() -> TxId {
+        TransactionId::new()
     }
 
     #[test]
@@ -160,8 +159,8 @@ mod tests {
     #[test]
     fn test_basic_lock_acquisition() {
         let mut manager = LockManager::new();
-        let tx1 = create_tx_id(100);
-        let tx2 = create_tx_id(200);
+        let tx1 = create_tx_id();
+        let tx2 = create_tx_id();
 
         // First exclusive lock should succeed
         assert_eq!(
@@ -183,9 +182,9 @@ mod tests {
     #[test]
     fn test_shared_locks() {
         let mut manager = LockManager::new();
-        let tx1 = create_tx_id(100);
-        let tx2 = create_tx_id(200);
-        let tx3 = create_tx_id(300);
+        let tx1 = create_tx_id();
+        let tx2 = create_tx_id();
+        let tx3 = create_tx_id();
 
         // Multiple shared locks should succeed
         assert_eq!(
@@ -210,8 +209,8 @@ mod tests {
     #[test]
     fn test_lock_release() {
         let mut manager = LockManager::new();
-        let tx1 = create_tx_id(100);
-        let tx2 = create_tx_id(200);
+        let tx1 = create_tx_id();
+        let tx2 = create_tx_id();
 
         // Acquire and release a lock
         manager.grant(tx1, LockMode::Exclusive);

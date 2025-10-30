@@ -7,7 +7,7 @@
 //! During normal operation, all reservation operations use the in-memory ReservationManager.
 
 use super::reservation::ReservationType;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use serde::{Deserialize, Serialize};
 
 /// Persisted reservation information
@@ -20,12 +20,12 @@ pub struct PersistedReservation {
 /// Reservation state for a transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionReservations {
-    pub txn_id: HlcTimestamp,
+    pub txn_id: TransactionId,
     pub reservations: Vec<PersistedReservation>,
 }
 
 impl TransactionReservations {
-    pub fn new(txn_id: HlcTimestamp) -> Self {
+    pub fn new(txn_id: TransactionId) -> Self {
         Self {
             txn_id,
             reservations: Vec::new(),
@@ -47,8 +47,8 @@ pub fn encode_transaction_reservations(
     use std::io::Write;
     let mut buf = Vec::new();
 
-    // Encode HlcTimestamp (20 bytes)
-    buf.write_all(&reservations.txn_id.to_lexicographic_bytes())
+    // Encode TransactionId (16 bytes)
+    buf.write_all(&reservations.txn_id.to_bytes())
         .map_err(|e| e.to_string())?;
 
     // Encode number of reservations
@@ -88,12 +88,12 @@ pub fn decode_transaction_reservations(bytes: &[u8]) -> Result<TransactionReserv
 
     let mut cursor = Cursor::new(bytes);
 
-    // Decode HlcTimestamp (20 bytes)
-    let mut ts_bytes = [0u8; 20];
+    // Decode TransactionId (16 bytes)
+    let mut ts_bytes = [0u8; 16];
     cursor
         .read_exact(&mut ts_bytes)
         .map_err(|e| e.to_string())?;
-    let txn_id = HlcTimestamp::from_lexicographic_bytes(&ts_bytes).map_err(|e| e.to_string())?;
+    let txn_id = TransactionId::from_bytes(ts_bytes);
 
     // Decode number of reservations
     let mut len_bytes = [0u8; 4];
@@ -191,10 +191,10 @@ fn decode_amount_from_cursor(cursor: &mut std::io::Cursor<&[u8]>) -> Result<Amou
 mod tests {
     use super::*;
     use crate::types::Amount;
-    use proven_hlc::NodeId;
+    use uuid::Uuid;
 
-    fn make_timestamp(n: u64) -> HlcTimestamp {
-        HlcTimestamp::new(n, 0, NodeId::new(0))
+    fn make_timestamp(n: u64) -> TransactionId {
+        TransactionId::from_uuid(Uuid::from_u128(n as u128))
     }
 
     #[test]

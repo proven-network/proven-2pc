@@ -8,7 +8,7 @@
 //! - Head/tail pointers stored in metadata for FIFO semantics
 
 use crate::types::QueueValue;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use proven_mvcc::{Decode, Encode, Error as MvccError, MvccDelta, MvccEntity};
 
 type Result<T> = std::result::Result<T, MvccError>;
@@ -42,7 +42,7 @@ pub enum QueueDelta {
     Enqueue {
         entry_id: u64,
         value: QueueValue,
-        enqueued_at: HlcTimestamp,
+        enqueued_at: TransactionId,
     },
     /// Dequeue a value from the front of the queue
     Dequeue {
@@ -129,8 +129,8 @@ impl Encode for QueueDelta {
                 buf.push(1); // Tag for Enqueue
                 buf.extend_from_slice(&entry_id.to_be_bytes());
                 buf.extend_from_slice(&encode_value(value));
-                // Encode HlcTimestamp using lexicographic encoding
-                buf.extend_from_slice(&enqueued_at.to_lexicographic_bytes());
+                // Encode TransactionId using lexicographic encoding
+                buf.extend_from_slice(&enqueued_at.to_bytes());
             }
             QueueDelta::Dequeue {
                 entry_id,
@@ -180,13 +180,12 @@ impl Decode for QueueDelta {
                 let value_encoded = proven_value::encode_value(&value);
                 cursor.set_position((pos + value_encoded.len()) as u64);
 
-                // Decode HlcTimestamp (20 bytes: 8 + 4 + 8)
-                let mut ts_bytes = [0u8; 20];
+                // Decode TransactionId (16 bytes for UUIDv7)
+                let mut ts_bytes = [0u8; 16];
                 cursor
                     .read_exact(&mut ts_bytes)
                     .map_err(|e| MvccError::Encoding(e.to_string()))?;
-                let enqueued_at = HlcTimestamp::from_lexicographic_bytes(&ts_bytes)
-                    .map_err(|e| MvccError::Encoding(e.to_string()))?;
+                let enqueued_at = TransactionId::from_bytes(ts_bytes);
 
                 Ok(QueueDelta::Enqueue {
                     entry_id,
@@ -254,10 +253,9 @@ impl Decode for QueueDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::NodeId;
 
-    fn create_timestamp(seconds: u64) -> HlcTimestamp {
-        HlcTimestamp::new(seconds, 0, NodeId::new(1))
+    fn create_timestamp() -> TransactionId {
+        TransactionId::new()
     }
 
     #[test]
@@ -265,7 +263,7 @@ mod tests {
         let delta = QueueDelta::Enqueue {
             entry_id: 1,
             value: QueueValue::Str("test".to_string()),
-            enqueued_at: create_timestamp(100),
+            enqueued_at: create_timestamp(),
         };
 
         assert_eq!(delta.key(), 1);
@@ -290,7 +288,7 @@ mod tests {
         let enqueue = QueueDelta::Enqueue {
             entry_id: 1,
             value: QueueValue::Bool(true),
-            enqueued_at: create_timestamp(100),
+            enqueued_at: create_timestamp(),
         };
 
         let dequeue = QueueDelta::Dequeue {
@@ -317,7 +315,7 @@ mod tests {
         let delta = QueueDelta::Enqueue {
             entry_id: 123,
             value: QueueValue::Str("hello".to_string()),
-            enqueued_at: create_timestamp(100),
+            enqueued_at: create_timestamp(),
         };
 
         let encoded = delta.encode().unwrap();

@@ -143,7 +143,8 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_greatest_signature() {
@@ -180,7 +181,7 @@ mod tests {
     #[test]
     fn test_greatest_execute() {
         let func = GreatestFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // Integers
         let result = func
@@ -211,7 +212,7 @@ mod tests {
     #[test]
     fn test_greatest_null_error() {
         let func = GreatestFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         let result = func.execute(&[Value::Null, Value::I64(1)], &context);
         assert!(result.is_err());

@@ -10,7 +10,7 @@ use crate::speculation::{CheckResult, PredictionContext};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use proven_common::Operation;
-use proven_hlc::HlcTimestamp;
+use proven_common::{Timestamp, TransactionId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
@@ -41,10 +41,10 @@ pub enum PrepareVote {
 /// Read-write executor with full 2PC coordination
 pub struct ReadWriteExecutor {
     /// Transaction ID (which is the timestamp)
-    txn_id: HlcTimestamp,
+    txn_id: TransactionId,
 
     /// Transaction deadline
-    deadline: HlcTimestamp,
+    deadline: Timestamp,
 
     /// Transaction state
     state: Arc<Mutex<TransactionState>>,
@@ -74,8 +74,8 @@ pub struct ReadWriteExecutor {
 impl ReadWriteExecutor {
     /// Create a new read-write executor
     pub async fn new(
-        txn_id: HlcTimestamp,
-        deadline: HlcTimestamp,
+        txn_id: TransactionId,
+        deadline: Timestamp,
         infra: Arc<ExecutorInfra>,
         prediction_context: PredictionContext,
     ) -> Self {
@@ -163,7 +163,7 @@ impl ReadWriteExecutor {
     }
 
     /// Get transaction timestamp
-    pub fn timestamp(&self) -> HlcTimestamp {
+    pub fn timestamp(&self) -> TransactionId {
         self.txn_id
     }
 

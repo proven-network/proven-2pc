@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::semantic::predicate::Predicate;
 use fjall;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -31,9 +31,9 @@ impl PredicateStore {
 
     /// Encode key: {txn_id}{r|w}{seq}
     /// No prefix needed - dedicated partition provides isolation
-    fn encode_key(txn_id: HlcTimestamp, is_write: bool, seq: u64) -> Vec<u8> {
+    fn encode_key(txn_id: TransactionId, is_write: bool, seq: u64) -> Vec<u8> {
         let mut key = Vec::new();
-        key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        key.extend_from_slice(&txn_id.to_bytes());
         key.push(if is_write { b'w' } else { b'r' });
         key.extend_from_slice(&seq.to_be_bytes());
         key
@@ -43,7 +43,7 @@ impl PredicateStore {
     pub fn add_to_batch(
         &self,
         batch: &mut fjall::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         predicate: &Predicate,
         is_write: bool,
     ) -> Result<()> {
@@ -63,8 +63,8 @@ impl PredicateStore {
     }
 
     /// Remove all predicates for a transaction (on commit/abort)
-    pub fn remove_all(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
-        let prefix = txn_id.to_lexicographic_bytes().to_vec();
+    pub fn remove_all(&self, batch: &mut fjall::Batch, txn_id: TransactionId) -> Result<()> {
+        let prefix = txn_id.to_bytes().to_vec();
         for result in self.predicate_partition.prefix(prefix) {
             let (key, _) =
                 result.map_err(|e| Error::Other(format!("Failed to iterate predicates: {}", e)))?;
@@ -74,8 +74,8 @@ impl PredicateStore {
     }
 
     /// Remove read predicates only (on prepare)
-    pub fn remove_reads(&self, batch: &mut fjall::Batch, txn_id: HlcTimestamp) -> Result<()> {
-        let mut prefix = txn_id.to_lexicographic_bytes().to_vec();
+    pub fn remove_reads(&self, batch: &mut fjall::Batch, txn_id: TransactionId) -> Result<()> {
+        let mut prefix = txn_id.to_bytes().to_vec();
         prefix.push(b'r');
         for result in self.predicate_partition.prefix(prefix) {
             let (key, _) =
@@ -86,7 +86,7 @@ impl PredicateStore {
     }
 
     /// Get all active transactions (for recovery)
-    pub fn get_all_active_transactions(&self) -> Result<HashMap<HlcTimestamp, Vec<Predicate>>> {
+    pub fn get_all_active_transactions(&self) -> Result<HashMap<TransactionId, Vec<Predicate>>> {
         let mut transactions = HashMap::new();
 
         // Scan all keys in predicate partition
@@ -105,15 +105,17 @@ impl PredicateStore {
     }
 
     /// Parse key and value to extract transaction ID and predicate
-    fn parse_key(&self, key: &[u8], value: &[u8]) -> Result<Option<(HlcTimestamp, Predicate)>> {
-        const TXN_ID_SIZE: usize = 20;
+    fn parse_key(&self, key: &[u8], value: &[u8]) -> Result<Option<(TransactionId, Predicate)>> {
+        const TXN_ID_SIZE: usize = 16;
 
         if key.len() < TXN_ID_SIZE + 1 {
             return Ok(None);
         }
 
-        let txn_id = HlcTimestamp::from_lexicographic_bytes(&key[..TXN_ID_SIZE])
-            .map_err(|e| Error::Other(format!("Invalid txn_id: {}", e)))?;
+        let txn_id_bytes: [u8; 16] = key[..TXN_ID_SIZE]
+            .try_into()
+            .map_err(|_| Error::Other("Invalid txn_id size".to_string()))?;
+        let txn_id = TransactionId::from_bytes(txn_id_bytes);
 
         let stored: StoredPredicate =
             ciborium::from_reader(value).map_err(|e| Error::Serialization(e.to_string()))?;

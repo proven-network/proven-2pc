@@ -11,7 +11,7 @@ use crate::storage::lock_persistence::{
 };
 use crate::storage::{LockAttemptResult, LockManager, LockMode};
 use crate::types::{QueueOperation, QueueResponse, QueueValue};
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
 use proven_stream::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
 use std::collections::{HashMap, HashSet};
@@ -30,7 +30,7 @@ pub struct QueueTransactionEngine {
 
     /// Track dequeued entries per transaction (for read-your-own-writes within transaction)
     /// Maps txn_id -> set of dequeued entry_ids
-    dequeued_entries: HashMap<HlcTimestamp, HashSet<u64>>,
+    dequeued_entries: HashMap<TransactionId, HashSet<u64>>,
 }
 
 impl QueueTransactionEngine {
@@ -101,7 +101,7 @@ impl QueueTransactionEngine {
     fn add_locks_to_batch(
         &mut self,
         batch: &mut proven_mvcc::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<(), String> {
         let locks_held = self.lock_manager.locks_held_by(txn_id);
 
@@ -113,7 +113,7 @@ impl QueueTransactionEngine {
 
                 // Lock key: prefix + lexicographic timestamp bytes
                 let mut lock_key = b"_locks_".to_vec();
-                lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+                lock_key.extend_from_slice(&txn_id.to_bytes());
                 let lock_bytes = encode_transaction_lock(&tx_lock)?;
 
                 // Add to batch (will be committed atomically with data)
@@ -134,7 +134,7 @@ impl QueueTransactionEngine {
 
     /// Get the head of the queue (oldest non-dequeued entry) for a transaction
     /// This scans from entry_id=1 forward until finding a valid entry
-    fn get_head(&self, txn_id: HlcTimestamp) -> Option<(u64, QueueValue)> {
+    fn get_head(&self, txn_id: TransactionId) -> Option<(u64, QueueValue)> {
         // Start from entry_id 1 and scan forward
         let max_entry_id = self.next_entry_id.load(Ordering::SeqCst);
         let dequeued = self.dequeued_entries.get(&txn_id);
@@ -156,7 +156,7 @@ impl QueueTransactionEngine {
     }
 
     /// Get the size of the queue for a transaction
-    fn get_size(&self, txn_id: HlcTimestamp) -> usize {
+    fn get_size(&self, txn_id: TransactionId) -> usize {
         let max_entry_id = self.next_entry_id.load(Ordering::SeqCst);
         let dequeued = self.dequeued_entries.get(&txn_id);
         let mut count = 0;
@@ -187,7 +187,7 @@ impl QueueTransactionEngine {
     /// Returns blockers if there are earlier transactions with exclusive locks
     fn check_snapshot_read_conflicts(
         &self,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> Option<Vec<BlockingInfo>> {
         // For queues, we need to check if ANY earlier transaction has an exclusive lock
         // (since exclusive locks affect the entire queue structure)
@@ -220,7 +220,7 @@ impl QueueTransactionEngine {
     /// Execute a peek operation without locking (snapshot reads)
     fn execute_peek_without_locking(
         &self,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<QueueResponse> {
         // Check for conflicts with earlier transactions holding exclusive/append locks
         if let Some(blockers) = self.check_snapshot_read_conflicts(read_timestamp) {
@@ -243,7 +243,7 @@ impl QueueTransactionEngine {
     /// Execute a size operation without locking (snapshot reads)
     fn execute_size_without_locking(
         &self,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<QueueResponse> {
         // Check for conflicts with earlier transactions holding exclusive/append locks
         if let Some(blockers) = self.check_snapshot_read_conflicts(read_timestamp) {
@@ -271,7 +271,7 @@ impl QueueTransactionEngine {
     /// Execute an is_empty operation without locking (snapshot reads)
     fn execute_is_empty_without_locking(
         &self,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<QueueResponse> {
         // Check for conflicts with earlier transactions holding exclusive/append locks
         if let Some(blockers) = self.check_snapshot_read_conflicts(read_timestamp) {
@@ -299,7 +299,7 @@ impl QueueTransactionEngine {
     fn execute_enqueue(
         &mut self,
         value: QueueValue,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<QueueResponse> {
         // Generate next entry ID
@@ -335,7 +335,7 @@ impl QueueTransactionEngine {
     /// Execute dequeue operation
     fn execute_dequeue(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<QueueResponse> {
         // Find the head of the queue
@@ -387,7 +387,7 @@ impl QueueTransactionEngine {
     /// Execute clear operation
     fn execute_clear(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<QueueResponse> {
         // Collect all entries to clear and create individual Dequeue deltas for each
@@ -433,7 +433,7 @@ impl TransactionEngine for QueueTransactionEngine {
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
-        read_timestamp: HlcTimestamp,
+        read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
         match operation {
             QueueOperation::Peek => self.execute_peek_without_locking(read_timestamp),
@@ -446,7 +446,7 @@ impl TransactionEngine for QueueTransactionEngine {
     fn apply_operation(
         &mut self,
         operation: Self::Operation,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> OperationResult<Self::Response> {
         // Determine required lock mode
@@ -509,11 +509,11 @@ impl TransactionEngine for QueueTransactionEngine {
         }
     }
 
-    fn begin(&mut self, _txn_id: HlcTimestamp, _log_index: u64) {
+    fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {
         // Nothing to do - MVCC storage tracks transactions internally
     }
 
-    fn prepare(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn prepare(&mut self, txn_id: TransactionId, log_index: u64) {
         // Get locks held by this transaction from lock manager
         let locks = self.lock_manager.locks_held_by(txn_id);
 
@@ -535,7 +535,7 @@ impl TransactionEngine for QueueTransactionEngine {
         batch.commit().expect("Batch commit failed");
     }
 
-    fn commit(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
         // Commit to storage and clear persisted locks atomically
         let mut batch = self.storage.batch();
 
@@ -546,7 +546,7 @@ impl TransactionEngine for QueueTransactionEngine {
 
         // Clear persisted locks in the same batch
         let mut lock_key = b"_locks_".to_vec();
-        lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         batch.remove(metadata.clone(), lock_key);
 
@@ -554,7 +554,9 @@ impl TransactionEngine for QueueTransactionEngine {
         batch.commit().expect("Batch commit failed");
 
         // Cleanup old buckets if needed (throttled internally)
-        self.storage.maybe_cleanup(txn_id).ok();
+        self.storage
+            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
+            .ok();
 
         // Release all locks held by this transaction
         self.lock_manager.release_all(txn_id);
@@ -563,7 +565,7 @@ impl TransactionEngine for QueueTransactionEngine {
         self.dequeued_entries.remove(&txn_id);
     }
 
-    fn abort(&mut self, txn_id: HlcTimestamp, log_index: u64) {
+    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
         // Abort in storage and clear persisted locks atomically
         let mut batch = self.storage.batch();
 
@@ -574,7 +576,7 @@ impl TransactionEngine for QueueTransactionEngine {
 
         // Clear persisted locks in the same batch
         let mut lock_key = b"_locks_".to_vec();
-        lock_key.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         batch.remove(metadata.clone(), lock_key);
 
@@ -582,7 +584,9 @@ impl TransactionEngine for QueueTransactionEngine {
         batch.commit().expect("Batch commit failed");
 
         // Cleanup old buckets if needed (throttled internally)
-        self.storage.maybe_cleanup(txn_id).ok();
+        self.storage
+            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
+            .ok();
 
         // Release all locks
         self.lock_manager.release_all(txn_id);
@@ -604,16 +608,15 @@ impl TransactionEngine for QueueTransactionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::NodeId;
 
-    fn create_timestamp(seconds: u64) -> HlcTimestamp {
-        HlcTimestamp::new(seconds, 0, NodeId::new(1))
+    fn create_timestamp() -> TransactionId {
+        TransactionId::new()
     }
 
     #[test]
     fn test_engine_basic_operations() {
         let mut engine = QueueTransactionEngine::new();
-        let tx1 = create_timestamp(100);
+        let tx1 = create_timestamp();
 
         engine.begin(tx1, 1);
 
@@ -644,8 +647,8 @@ mod tests {
     #[test]
     fn test_engine_blocking() {
         let mut engine = QueueTransactionEngine::new();
-        let tx1 = create_timestamp(100);
-        let tx2 = create_timestamp(200);
+        let tx1 = create_timestamp();
+        let tx2 = create_timestamp();
 
         engine.begin(tx1, 1);
         engine.begin(tx2, 2);
@@ -668,7 +671,7 @@ mod tests {
     #[test]
     fn test_engine_abort() {
         let mut engine = QueueTransactionEngine::new();
-        let tx1 = create_timestamp(100);
+        let tx1 = create_timestamp();
 
         engine.begin(tx1, 1);
 
@@ -683,7 +686,7 @@ mod tests {
         engine.abort(tx1, 3);
 
         // Queue should be empty after abort
-        let tx2 = create_timestamp(200);
+        let tx2 = create_timestamp();
         engine.begin(tx2, 4);
 
         let result = engine.apply_operation(QueueOperation::IsEmpty, tx2, 5);
@@ -696,7 +699,7 @@ mod tests {
     #[test]
     fn test_engine_dequeue() {
         let mut engine = QueueTransactionEngine::new();
-        let tx1 = create_timestamp(100);
+        let tx1 = create_timestamp();
 
         engine.begin(tx1, 1);
 
@@ -745,7 +748,7 @@ mod tests {
 
         // Enqueue 3 values in separate transactions
         for i in 0..3 {
-            let tx = create_timestamp((i + 1) * 100);
+            let tx = create_timestamp();
             engine.begin(tx, i * 2);
             engine.apply_operation(
                 QueueOperation::Enqueue {
@@ -758,7 +761,7 @@ mod tests {
         }
 
         // Dequeue 2 values at time 400
-        let tx = create_timestamp(400);
+        let tx = create_timestamp();
         engine.begin(tx, 10);
 
         let r1 = engine.apply_operation(QueueOperation::Dequeue, tx, 11);
@@ -770,7 +773,7 @@ mod tests {
         engine.commit(tx, 13);
 
         // Snapshot peek at 450 should see value 2
-        let result = engine.read_at_timestamp(QueueOperation::Peek, create_timestamp(450));
+        let result = engine.read_at_timestamp(QueueOperation::Peek, create_timestamp());
         println!("Snapshot peek result: {:?}", result);
 
         assert!(

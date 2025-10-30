@@ -3,7 +3,7 @@
 //! This benchmark measures the throughput of the Resource engine by executing
 //! 1 million transfers between accounts directly using the engine.
 
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceTransactionEngine};
 use proven_stream::TransactionEngine;
@@ -27,7 +27,7 @@ fn main() {
 
     // Initialize the resource
     println!("Initializing resource...");
-    let init_txn = HlcTimestamp::new(1000000000, 0, NodeId::new(1));
+    let init_txn = TransactionId::new();
     resource_engine.begin(init_txn, next_log_index());
 
     let init_op = ResourceOperation::Initialize {
@@ -46,7 +46,7 @@ fn main() {
 
     // Mint initial supply to the source account
     println!("Minting initial supply...");
-    let mint_txn = HlcTimestamp::new(1000000001, 0, NodeId::new(1));
+    let mint_txn = TransactionId::new();
     resource_engine.begin(mint_txn, next_log_index());
 
     // Mint 1 billion tokens (with 6 decimals)
@@ -72,7 +72,7 @@ fn main() {
     let initial_balance = Amount::from(Decimal::from(10_000i64));
 
     for i in 0..NUM_ACCOUNTS {
-        let setup_txn = HlcTimestamp::new(1500000000 + i as u64, 0, NodeId::new(1));
+        let setup_txn = TransactionId::new();
         resource_engine.begin(setup_txn, next_log_index());
 
         let transfer_op = ResourceOperation::Transfer {
@@ -106,8 +106,8 @@ fn main() {
 
     // Process transfers
     for i in 0..NUM_TRANSFERS {
-        // Generate unique transaction ID with incrementing timestamp
-        let txn_id = HlcTimestamp::new(2000000000 + i as u64, 0, NodeId::new(1));
+        // Generate unique transaction ID
+        let txn_id = TransactionId::new();
         resource_engine.begin(txn_id, next_log_index());
 
         // Create transfer operation
@@ -193,7 +193,7 @@ fn main() {
 
     // Verify balances
     println!("\nVerifying sample balances...");
-    let verify_txn = HlcTimestamp::new(9999999999, 0, NodeId::new(1));
+    let verify_txn = TransactionId::new();
     resource_engine.begin(verify_txn, next_log_index());
 
     // Check source account balance
@@ -236,7 +236,7 @@ fn main() {
     );
 
     // Check total supply
-    let supply_txn = HlcTimestamp::new(10000000000, 0, NodeId::new(1));
+    let supply_txn = TransactionId::new();
     resource_engine.begin(supply_txn, next_log_index());
 
     let supply_op = ResourceOperation::GetTotalSupply;

@@ -5,7 +5,7 @@
 
 use crate::semantic::predicate::{Predicate, PredicateCondition, QueryPredicates};
 use crate::types::Value;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use std::collections::{HashMap, HashSet};
 use std::ops::Bound;
 
@@ -18,32 +18,32 @@ pub struct PredicateIndex {
 /// Index for predicates within a single table
 struct TableIndex {
     /// Primary key -> transactions accessing that specific key
-    pk_index: HashMap<Value, HashSet<HlcTimestamp>>,
+    pk_index: HashMap<Value, HashSet<TransactionId>>,
 
     /// Column -> transactions with predicates on that column
     column_index: HashMap<String, ColumnIndex>,
 
     /// Transactions doing full table operations (SELECT * with no WHERE)
-    full_table_txns: HashSet<HlcTimestamp>,
+    full_table_txns: HashSet<TransactionId>,
 
     /// All transactions touching this table (for quick membership check)
-    all_txns: HashSet<HlcTimestamp>,
+    all_txns: HashSet<TransactionId>,
 }
 
 /// Index for predicates on a specific column
 struct ColumnIndex {
     /// Exact value matches (WHERE col = value)
-    exact_values: HashMap<Value, HashSet<HlcTimestamp>>,
+    exact_values: HashMap<Value, HashSet<TransactionId>>,
 
     /// Range predicates (WHERE col BETWEEN x AND y)
-    ranges: Vec<(Bound<Value>, Bound<Value>, HlcTimestamp)>,
+    ranges: Vec<(Bound<Value>, Bound<Value>, TransactionId)>,
 
     /// LIKE patterns (WHERE col LIKE pattern)
-    patterns: Vec<(String, HlcTimestamp)>,
+    patterns: Vec<(String, TransactionId)>,
 
     /// NULL checks (WHERE col IS NULL or IS NOT NULL)
-    null_checks: HashSet<HlcTimestamp>,
-    not_null_checks: HashSet<HlcTimestamp>,
+    null_checks: HashSet<TransactionId>,
+    not_null_checks: HashSet<TransactionId>,
 }
 
 impl PredicateIndex {
@@ -55,7 +55,7 @@ impl PredicateIndex {
     }
 
     /// Add a transaction's predicates to the index
-    pub fn add_transaction(&mut self, txn_id: HlcTimestamp, predicates: &QueryPredicates) {
+    pub fn add_transaction(&mut self, txn_id: TransactionId, predicates: &QueryPredicates) {
         // Index all reads
         for pred in &predicates.reads {
             self.index_predicate(txn_id, pred, PredicateType::Read);
@@ -73,14 +73,14 @@ impl PredicateIndex {
     }
 
     /// Update a transaction's predicates in the index (adds new predicates)
-    pub fn update_transaction(&mut self, txn_id: HlcTimestamp, new_predicates: &QueryPredicates) {
+    pub fn update_transaction(&mut self, txn_id: TransactionId, new_predicates: &QueryPredicates) {
         // Add new predicates to the index
         // Note: We don't remove old ones as predicates are additive within a transaction
         self.add_transaction(txn_id, new_predicates);
     }
 
     /// Remove a transaction from the index (on commit/abort)
-    pub fn remove_transaction(&mut self, txn_id: &HlcTimestamp) {
+    pub fn remove_transaction(&mut self, txn_id: &TransactionId) {
         // Clean up all index entries for this transaction
         let mut empty_tables = Vec::new();
 
@@ -103,9 +103,9 @@ impl PredicateIndex {
     /// Returns a set of transaction IDs that need detailed conflict checking
     pub fn find_potential_conflicts(
         &self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         predicates: &QueryPredicates,
-    ) -> HashSet<HlcTimestamp> {
+    ) -> HashSet<TransactionId> {
         let mut potential_conflicts = HashSet::new();
 
         // Check reads against writes/inserts
@@ -141,7 +141,7 @@ impl PredicateIndex {
     /// Index a single predicate
     fn index_predicate(
         &mut self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         pred: &Predicate,
         _pred_type: PredicateType,
     ) {
@@ -172,7 +172,7 @@ impl TableIndex {
         }
     }
 
-    fn add_predicate(&mut self, txn_id: HlcTimestamp, condition: &PredicateCondition) {
+    fn add_predicate(&mut self, txn_id: TransactionId, condition: &PredicateCondition) {
         // Track this transaction
         self.all_txns.insert(txn_id);
 
@@ -238,7 +238,7 @@ impl TableIndex {
         }
     }
 
-    fn remove_transaction(&mut self, txn_id: &HlcTimestamp) {
+    fn remove_transaction(&mut self, txn_id: &TransactionId) {
         // Remove from all indices
         self.all_txns.remove(txn_id);
         self.full_table_txns.remove(txn_id);
@@ -263,7 +263,7 @@ impl TableIndex {
     }
 
     /// Get candidates that might conflict with writes (reads + writes)
-    fn get_all_candidates(&self, condition: &PredicateCondition) -> HashSet<HlcTimestamp> {
+    fn get_all_candidates(&self, condition: &PredicateCondition) -> HashSet<TransactionId> {
         let mut candidates = HashSet::new();
 
         // Full table scans conflict with everything
@@ -313,14 +313,14 @@ impl TableIndex {
     }
 
     /// Get candidates for write operations
-    fn get_write_candidates(&self, condition: &PredicateCondition) -> HashSet<HlcTimestamp> {
+    fn get_write_candidates(&self, condition: &PredicateCondition) -> HashSet<TransactionId> {
         // For now, same as all candidates
         // Could optimize by tracking read vs write predicates separately
         self.get_all_candidates(condition)
     }
 
     /// Get candidates for read/insert conflicts
-    fn get_read_insert_candidates(&self, condition: &PredicateCondition) -> HashSet<HlcTimestamp> {
+    fn get_read_insert_candidates(&self, condition: &PredicateCondition) -> HashSet<TransactionId> {
         // For now, same as all candidates
         // Could optimize by tracking operation types
         self.get_all_candidates(condition)
@@ -338,7 +338,7 @@ impl ColumnIndex {
         }
     }
 
-    fn remove_transaction(&mut self, txn_id: &HlcTimestamp) {
+    fn remove_transaction(&mut self, txn_id: &TransactionId) {
         // Remove from exact values
         self.exact_values.retain(|_, txns| {
             txns.remove(txn_id);
@@ -365,7 +365,7 @@ impl ColumnIndex {
     }
 
     /// Get transactions with ranges that might include a value
-    fn get_range_candidates(&self, value: &Value) -> HashSet<HlcTimestamp> {
+    fn get_range_candidates(&self, value: &Value) -> HashSet<TransactionId> {
         let mut candidates = HashSet::new();
 
         for (start, end, txn_id) in &self.ranges {
@@ -382,7 +382,7 @@ impl ColumnIndex {
         &self,
         start: &Bound<Value>,
         end: &Bound<Value>,
-    ) -> HashSet<HlcTimestamp> {
+    ) -> HashSet<TransactionId> {
         let mut candidates = HashSet::new();
 
         // Check exact values that fall in range
@@ -403,7 +403,7 @@ impl ColumnIndex {
     }
 
     /// Get transactions with patterns that might match a value
-    fn get_pattern_candidates(&self, value: &Value) -> HashSet<HlcTimestamp> {
+    fn get_pattern_candidates(&self, value: &Value) -> HashSet<TransactionId> {
         let mut candidates = HashSet::new();
 
         // Only string values can match patterns

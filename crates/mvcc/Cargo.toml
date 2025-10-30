@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 fjall.workspace = true
-proven-hlc.workspace = true
+proven-common.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]

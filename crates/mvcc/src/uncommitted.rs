@@ -12,7 +12,7 @@ use crate::encoding::{Decode, Encode};
 use crate::entity::{MvccDelta, MvccEntity};
 use crate::error::Result;
 use fjall::Batch;
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -38,11 +38,11 @@ impl<E: MvccEntity> UncommittedStore<E> {
         }
     }
 
-    /// Encode key for uncommitted delta: {txn_id(20)}{key_bytes}{seq(8)}
-    fn encode_key(txn_id: HlcTimestamp, key_bytes: &[u8], seq: u64) -> Vec<u8> {
+    /// Encode key for uncommitted delta: {txn_id(16)}{key_bytes}{seq(8)}
+    fn encode_key(txn_id: TransactionId, key_bytes: &[u8], seq: u64) -> Vec<u8> {
         let mut encoded = Vec::new();
-        // Txn ID first for efficient prefix scans
-        encoded.extend_from_slice(&txn_id.to_lexicographic_bytes());
+        // Txn ID first for efficient prefix scans (16 bytes for UUIDv7)
+        encoded.extend_from_slice(&txn_id.to_bytes());
         // Key bytes (varies by entity)
         encoded.extend_from_slice(key_bytes);
         // Sequence number to maintain delta order
@@ -51,23 +51,24 @@ impl<E: MvccEntity> UncommittedStore<E> {
     }
 
     /// Encode prefix for scanning transaction deltas
-    fn encode_tx_prefix(txn_id: HlcTimestamp) -> Vec<u8> {
-        txn_id.to_lexicographic_bytes().to_vec()
+    fn encode_tx_prefix(txn_id: TransactionId) -> Vec<u8> {
+        txn_id.to_bytes().to_vec()
     }
 
     /// Add a delta to a batch (for atomic writes)
     pub fn add_delta_to_batch(
         &mut self,
         batch: &mut Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         delta: E::Delta,
     ) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
 
         // Get or create partition for this time bucket
+        // Extract timestamp from TransactionId for bucketing ONLY
         let partition = self
             .bucket_manager
-            .get_or_create_partition(E::entity_name(), txn_id)?;
+            .get_or_create_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())?;
 
         // Encode key and delta
         let key_bytes = delta.key().encode()?;
@@ -85,11 +86,12 @@ impl<E: MvccEntity> UncommittedStore<E> {
     /// Returns:
     /// - `Some(value)` if the key exists with uncommitted changes
     /// - `None` if the key was deleted or has no uncommitted changes
-    pub fn get(&self, txn_id: HlcTimestamp, key: &E::Key) -> Result<Option<E::Value>> {
+    pub fn get(&self, txn_id: TransactionId, key: &E::Key) -> Result<Option<E::Value>> {
         // Check if partition exists - if not, no uncommitted data
+        // Extract timestamp from TransactionId for bucketing ONLY
         let Some(partition) = self
             .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id)
+            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
         else {
             return Ok(None);
         };
@@ -123,10 +125,10 @@ impl<E: MvccEntity> UncommittedStore<E> {
     }
 
     /// Get all deltas for a transaction
-    pub fn get_transaction_deltas(&self, txn_id: HlcTimestamp) -> Result<Vec<E::Delta>> {
+    pub fn get_transaction_deltas(&self, txn_id: TransactionId) -> Result<Vec<E::Delta>> {
         let Some(partition) = self
             .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id)
+            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
         else {
             return Ok(Vec::new());
         };
@@ -148,11 +150,11 @@ impl<E: MvccEntity> UncommittedStore<E> {
     /// Returns a map of key -> current value after applying all deltas
     pub fn get_transaction_state(
         &self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<HashMap<Vec<u8>, Option<E::Value>>> {
         let Some(partition) = self
             .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id)
+            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
         else {
             return Ok(HashMap::new());
         };
@@ -184,10 +186,10 @@ impl<E: MvccEntity> UncommittedStore<E> {
     }
 
     /// Remove transaction's uncommitted deltas from a batch
-    pub fn remove_transaction(&mut self, batch: &mut Batch, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn remove_transaction(&mut self, batch: &mut Batch, txn_id: TransactionId) -> Result<()> {
         let Some(partition) = self
             .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id)
+            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
         else {
             return Ok(()); // No data to remove
         };
@@ -210,7 +212,7 @@ impl<E: MvccEntity> UncommittedStore<E> {
     }
 
     /// Cleanup old buckets (for orphaned transactions)
-    pub fn cleanup_old_buckets(&mut self, current_time: HlcTimestamp) -> Result<usize> {
+    pub fn cleanup_old_buckets(&mut self, current_time: proven_common::Timestamp) -> Result<usize> {
         self.bucket_manager
             .cleanup_old_buckets(current_time, self.retention_window)
     }
@@ -222,7 +224,7 @@ mod tests {
     use crate::config::StorageConfig;
     use crate::encoding::{Decode, Encode};
     use fjall::PartitionCreateOptions;
-    use proven_hlc::NodeId;
+    use proven_common::TransactionId;
 
     // Implement Encode/Decode for String (for tests)
     impl Encode for String {
@@ -353,7 +355,8 @@ mod tests {
         let mut store =
             UncommittedStore::<TestEntity>::new(bucket_mgr, config.uncommitted_retention_window);
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        // Create a TransactionId for testing
+        let txn_id = TransactionId::new();
         let mut batch = keyspace.batch();
 
         // Add a put delta

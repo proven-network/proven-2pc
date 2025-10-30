@@ -42,6 +42,8 @@ pub type Result<T> = std::result::Result<T, MockEngineError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use proven_common::Timestamp;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -160,7 +162,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_deadline_read() {
-        use proven_hlc::{HlcTimestamp, NodeId};
         use std::time::{SystemTime, UNIX_EPOCH};
         use tokio::pin;
         use tokio_stream::StreamExt;
@@ -185,14 +186,12 @@ mod tests {
             .unwrap();
 
         // Set a deadline in the future (so we don't pass it)
-        let future_deadline = HlcTimestamp::new(
+        let future_deadline = Timestamp::from_micros(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_micros() as u64
                 + 1_000_000, // 1 second in future
-            0,
-            NodeId::new(1),
         );
 
         // Read all messages until deadline
@@ -224,8 +223,8 @@ mod tests {
             "Should not reach deadline - it's in the future"
         );
 
-        // Now test with a past deadline
-        let past_deadline = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        // Now test with a past deadline (1000 microseconds = very old)
+        let past_deadline = Timestamp::from_micros(1000);
 
         let stream = client
             .stream_messages_until_deadline("deadline-stream", Some(1), past_deadline)

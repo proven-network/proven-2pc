@@ -1,12 +1,13 @@
 //! Integration tests for resource engine
 
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use uuid::Uuid;
 
-fn make_timestamp(n: u64) -> HlcTimestamp {
-    HlcTimestamp::new(n, 0, NodeId::new(0))
+fn make_timestamp(n: u64) -> TransactionId {
+    TransactionId::from_uuid(Uuid::from_u128(n as u128))
 }
 
 #[test]

@@ -4,10 +4,11 @@
 //! correctly returns WouldBlock when transactions conflict and allows
 //! non-conflicting transactions to proceed.
 
-use proven_hlc::{HlcTimestamp, NodeId};
+use proven_common::TransactionId;
 use proven_sql::{SqlOperation, SqlStorageConfig, SqlTransactionEngine};
 use proven_stream::{OperationResult, TransactionEngine};
 use std::sync::atomic::{AtomicU64, Ordering};
+use uuid::Uuid;
 
 /// Global log index counter for tests
 static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
@@ -22,8 +23,8 @@ fn create_engine() -> SqlTransactionEngine {
 }
 
 /// Helper to create a timestamp
-fn timestamp(n: u64) -> HlcTimestamp {
-    HlcTimestamp::new(n, 0, NodeId::new(0))
+fn timestamp(n: u64) -> TransactionId {
+    TransactionId::from_uuid(Uuid::from_u128(n as u128))
 }
 
 #[test]

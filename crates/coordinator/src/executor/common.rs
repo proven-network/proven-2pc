@@ -3,8 +3,8 @@
 use crate::error::{CoordinatorError, Result};
 use crate::responses::{ResponseCollector, ResponseMessage};
 use crate::speculation::predictor::PredictedOperation;
+use proven_common::Timestamp;
 use proven_engine::{Message, MockClient};
-use proven_hlc::HlcTimestamp;
 use proven_runner::Runner;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -280,16 +280,14 @@ impl ExecutorInfra {
 }
 
 /// Calculate timeout from deadline
-pub fn calculate_timeout(deadline: HlcTimestamp) -> Result<Duration> {
-    // Get current time as microseconds
-    let now_us = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as u64;
+pub fn calculate_timeout(deadline: Timestamp) -> Result<Duration> {
+    let now = Timestamp::now();
 
-    if deadline.physical <= now_us {
+    if deadline <= now {
         return Err(CoordinatorError::DeadlineExceeded);
     }
-    let remaining_us = deadline.physical.saturating_sub(now_us);
-    Ok(Duration::from_micros(remaining_us))
+
+    // Calculate remaining duration in microseconds
+    let remaining_micros = deadline.duration_since(&now);
+    Ok(Duration::from_micros(remaining_micros))
 }

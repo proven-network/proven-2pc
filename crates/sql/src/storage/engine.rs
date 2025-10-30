@@ -18,7 +18,7 @@ use crate::types::index::IndexMetadata;
 use crate::types::schema::Table as TableSchema;
 
 use fjall::{Keyspace, PartitionCreateOptions};
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig as MvccConfig};
 
 use std::collections::HashMap;
@@ -546,7 +546,7 @@ impl SqlStorage {
         table_name: &str,
         column: crate::types::schema::Column,
         default_value: Value,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Get current schema
@@ -608,7 +608,7 @@ impl SqlStorage {
         table_name: &str,
         column_name: &str,
         if_exists: bool,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Get current schema
@@ -762,7 +762,7 @@ impl SqlStorage {
         batch: &mut fjall::Batch,
         old_name: &str,
         new_name: &str,
-        _txn_id: HlcTimestamp,
+        _txn_id: TransactionId,
         _log_index: u64,
     ) -> Result<()> {
         // Get current schema
@@ -875,7 +875,7 @@ impl SqlStorage {
         &self,
         table_name: &str,
         row_id: u64,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<Option<Vec<Value>>> {
         // Get table storage
         let table_storage = self
@@ -910,7 +910,7 @@ impl SqlStorage {
         table_name: &str,
         row_id: u64,
         values: &[Value],
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Get table storage
@@ -958,7 +958,7 @@ impl SqlStorage {
     pub fn scan_table<'a>(
         &'a self,
         table_name: &str,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<TableScanIterator<'a>> {
         // Get table storage
         let table_storage = self
@@ -988,7 +988,7 @@ impl SqlStorage {
         batch: &mut fjall::Batch,
         table_name: &str,
         row_id: u64,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<bool> {
         // Get table storage
@@ -1018,7 +1018,7 @@ impl SqlStorage {
     }
 
     /// Commit a transaction (atomic across all tables and indexes)
-    pub fn commit_transaction(&mut self, txn_id: HlcTimestamp, log_index: u64) -> Result<()> {
+    pub fn commit_transaction(&mut self, txn_id: TransactionId, log_index: u64) -> Result<()> {
         // Create shared batch for atomic commit
         let mut batch = self.keyspace.batch();
 
@@ -1042,11 +1042,13 @@ impl SqlStorage {
         batch.commit()?;
 
         // Cleanup old buckets if needed (throttled internally by each storage)
+        use proven_common::Timestamp;
+        let current_time = Timestamp::now();
         for table_storage in self.table_storages.values_mut() {
-            table_storage.maybe_cleanup(txn_id).ok();
+            table_storage.maybe_cleanup(current_time).ok();
         }
         for index_storage in self.index_storages.values_mut() {
-            index_storage.maybe_cleanup(txn_id).ok();
+            index_storage.maybe_cleanup(current_time).ok();
         }
 
         Ok(())
@@ -1057,7 +1059,7 @@ impl SqlStorage {
     pub fn abort_transaction_to_batch(
         &mut self,
         batch: &mut fjall::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Abort all table storages
@@ -1077,11 +1079,13 @@ impl SqlStorage {
         self.cleanup_pending_ddls(batch, txn_id)?;
 
         // Cleanup old buckets if needed (throttled internally by each storage)
+        use proven_common::Timestamp;
+        let current_time = Timestamp::now();
         for table_storage in self.table_storages.values_mut() {
-            table_storage.maybe_cleanup(txn_id).ok();
+            table_storage.maybe_cleanup(current_time).ok();
         }
         for index_storage in self.index_storages.values_mut() {
-            index_storage.maybe_cleanup(txn_id).ok();
+            index_storage.maybe_cleanup(current_time).ok();
         }
 
         Ok(())
@@ -1105,7 +1109,7 @@ impl SqlStorage {
     /// Persist pending DDL immediately (for crash recovery)
     pub fn persist_pending_ddl(
         &self,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         ddl: &crate::types::context::PendingDdl,
     ) -> Result<()> {
         let mut batch = self.batch();
@@ -1119,7 +1123,7 @@ impl SqlStorage {
     /// Get all active DDL operations (for recovery)
     pub fn get_active_ddls(
         &self,
-    ) -> Result<HashMap<HlcTimestamp, Vec<crate::types::context::PendingDdl>>> {
+    ) -> Result<HashMap<TransactionId, Vec<crate::types::context::PendingDdl>>> {
         self.ddl_store.get_all_active_ddls()
     }
 
@@ -1127,7 +1131,7 @@ impl SqlStorage {
     pub fn cleanup_pending_ddls(
         &self,
         batch: &mut fjall::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<()> {
         self.ddl_store.remove_all(batch, txn_id)
     }
@@ -1140,7 +1144,7 @@ impl SqlStorage {
     pub fn add_predicates_to_batch(
         &self,
         batch: &mut fjall::Batch,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         predicates: &QueryPredicates,
     ) -> Result<()> {
         // Add read predicates
@@ -1165,7 +1169,7 @@ impl SqlStorage {
     }
 
     /// Prepare transaction (release read predicates)
-    pub fn prepare_transaction(&self, txn_id: HlcTimestamp) -> Result<()> {
+    pub fn prepare_transaction(&self, txn_id: TransactionId) -> Result<()> {
         let mut batch = self.keyspace.batch();
         self.predicate_store.remove_reads(&mut batch, txn_id)?;
         batch.commit()?;
@@ -1173,7 +1177,7 @@ impl SqlStorage {
     }
 
     /// Get active transactions from storage (for recovery)
-    pub fn get_active_transactions(&self) -> Result<HashMap<HlcTimestamp, Vec<Predicate>>> {
+    pub fn get_active_transactions(&self) -> Result<HashMap<TransactionId, Vec<Predicate>>> {
         self.predicate_store.get_all_active_transactions()
     }
 
@@ -1298,7 +1302,7 @@ impl SqlStorage {
         index_name: &str,
         index_values: Vec<Value>,
         row_id: u64,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Get index storage
@@ -1329,7 +1333,7 @@ impl SqlStorage {
         index_name: &str,
         index_values: Vec<Value>,
         row_id: u64,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Get index storage
@@ -1362,7 +1366,7 @@ impl SqlStorage {
         old_values: Vec<Value>,
         new_values: Vec<Value>,
         row_id: u64,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
         log_index: u64,
     ) -> Result<()> {
         // Delete old entry
@@ -1382,7 +1386,7 @@ impl SqlStorage {
         &'a self,
         index_name: &str,
         values: Vec<Value>,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<impl Iterator<Item = Result<(u64, Vec<Value>)>> + 'a> {
         // Get index metadata
         let index_meta = self
@@ -1432,7 +1436,7 @@ impl SqlStorage {
         start_inclusive: bool,
         end_values: Option<Vec<Value>>,
         end_inclusive: bool,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<impl Iterator<Item = Result<(u64, Vec<Value>)>> + 'a> {
         // Get index metadata
         let index_meta = self
@@ -1505,7 +1509,7 @@ impl SqlStorage {
         index_name: &str,
         values: Vec<Value>,
         exclude_row_id: Option<u64>,
-        txn_id: HlcTimestamp,
+        txn_id: TransactionId,
     ) -> Result<bool> {
         // Get index metadata
         let index_meta = self
@@ -1583,7 +1587,7 @@ struct IndexLookupIterator<'a> {
     index_iter: proven_mvcc::MvccIterator<'a, IndexEntity>,
     storage: &'a SqlStorage,
     table_name: String,
-    txn_id: HlcTimestamp,
+    txn_id: TransactionId,
     indexed_columns: Vec<crate::types::index::IndexColumn>, // Index columns (can be simple columns or expressions)
 }
 
@@ -1651,7 +1655,6 @@ mod tests {
     use super::*;
     use crate::types::data_type::DataType;
     use crate::types::schema::{Column, Table};
-    use proven_hlc::NodeId;
 
     fn test_config() -> SqlStorageConfig {
         SqlStorageConfig {
@@ -1798,7 +1801,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
         let values = vec![Value::integer(123), Value::string("Alice")];
 
         // Write row
@@ -1823,7 +1826,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
         let values = vec![Value::integer(123), Value::string("Alice")];
 
         // Write row
@@ -1891,7 +1894,7 @@ mod tests {
             )
             .unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Insert index entry
         let mut batch = storage.batch();
@@ -1932,7 +1935,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
         let values = vec![Value::integer(123), Value::string("Alice")];
 
         // Write row
@@ -1946,7 +1949,7 @@ mod tests {
         storage.commit_transaction(txn_id, 2).unwrap();
 
         // Verify readable by LATER transaction (committed data)
-        let later_txn = HlcTimestamp::new(2000, 0, NodeId::new(1));
+        let later_txn = TransactionId::new();
         let read_values = storage.read_row("users", 1, later_txn).unwrap();
         assert_eq!(read_values, Some(values));
     }
@@ -1961,7 +1964,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Insert multiple rows
         let mut batch = storage.batch();
@@ -2024,7 +2027,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Create non-unique index on city
         storage
@@ -2186,7 +2189,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Create index on age
         storage
@@ -2385,7 +2388,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Create unique index on name
         storage
@@ -2542,7 +2545,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Create some predicates
         let read_pred = Predicate::full_table("users".to_string());
@@ -2592,7 +2595,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Create predicate
         let read_pred = Predicate::full_table("users".to_string());
@@ -2647,7 +2650,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Create both read and write predicates
         let read_pred = Predicate::full_table("users".to_string());
@@ -2704,7 +2707,7 @@ mod tests {
             .unwrap();
         batch.commit().unwrap();
 
-        let txn_id = HlcTimestamp::new(1000, 0, NodeId::new(1));
+        let txn_id = TransactionId::new();
 
         // Create predicates
         let read_pred = Predicate::full_table("users".to_string());

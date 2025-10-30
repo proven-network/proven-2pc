@@ -35,8 +35,13 @@ impl Function for CurrentDateFunction {
             ));
         }
 
-        let micros = context.timestamp().physical as i64;
-        let secs = micros / 1_000_000;
+        // Extract timestamp from UUIDv7
+        let uuid = context.timestamp().as_uuid();
+        let timestamp_ms = uuid
+            .get_timestamp()
+            .ok_or_else(|| Error::InvalidValue("Transaction ID does not contain timestamp".into()))?
+            .to_unix();
+        let (secs, _nanos) = timestamp_ms;
         let days = secs / 86400;
         let date = NaiveDate::from_num_days_from_ce_opt(days as i32 + 719163)
             .ok_or_else(|| Error::InvalidValue("Invalid date".into()))?;

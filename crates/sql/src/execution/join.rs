@@ -403,8 +403,9 @@ pub fn execute_nested_loop_join<'a>(
     _storage: &SqlStorage,
 ) -> Result<Rows<'a>> {
     // For now, create a dummy context - this should come from the transaction context
-    use proven_hlc::{HlcTimestamp, NodeId};
-    let context = ExecutionContext::new(HlcTimestamp::new(0, 0, NodeId::new(1)), 0);
+    use proven_common::TransactionId;
+    use uuid::Uuid;
+    let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
     let joiner = NestedLoopJoiner::new(
         left,
         right,
@@ -447,10 +448,11 @@ mod tests {
     use crate::types::Value;
     use crate::types::context::ExecutionContext;
     use crate::types::expression::Expression;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     fn create_test_context() -> ExecutionContext {
-        ExecutionContext::new(HlcTimestamp::new(100, 0, NodeId::new(1)), 0)
+        ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(100)), 0)
     }
 
     #[test]

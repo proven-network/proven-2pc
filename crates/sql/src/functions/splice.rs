@@ -251,12 +251,13 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
+    use uuid::Uuid;
 
     #[test]
     fn test_splice_remove_only() {
         let func = SpliceFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // SPLICE([1, 2, 3, 4, 5], 1, 3) should remove 3 elements starting at index 1
         let result = func
@@ -289,7 +290,7 @@ mod tests {
     #[test]
     fn test_splice_remove_and_insert() {
         let func = SpliceFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // SPLICE([1, 2, 3, 4, 5], 1, 3, [100, 99])
         let result = func
@@ -325,7 +326,7 @@ mod tests {
     #[test]
     fn test_splice_zero_count() {
         let func = SpliceFunction;
-        let context = ExecutionContext::new(HlcTimestamp::new(1000, 0, NodeId::new(1)), 0);
+        let context = ExecutionContext::new(TransactionId::from_uuid(Uuid::from_u128(0)), 0);
 
         // SPLICE([1, 2, 3], 1, 0, [10]) - insert without removing
         let result = func

@@ -1,6 +1,6 @@
 //! Error types for the SQL engine
 
-use proven_hlc::HlcTimestamp;
+use proven_common::TransactionId;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -69,7 +69,7 @@ pub enum Error {
 
     #[error("Predicate conflict with transaction {holder}: {reason}")]
     PredicateConflict {
-        holder: HlcTimestamp,
+        holder: TransactionId,
         reason: String,
     },
 
@@ -81,13 +81,13 @@ pub enum Error {
 
     // Transaction errors
     #[error("Transaction not found: {0}")]
-    TransactionNotFound(HlcTimestamp),
+    TransactionNotFound(TransactionId),
 
     #[error("Transaction not active: {0}")]
-    TransactionNotActive(HlcTimestamp),
+    TransactionNotActive(TransactionId),
 
     #[error("Transaction wounded by {wounded_by} to prevent deadlock")]
-    TransactionWounded { wounded_by: HlcTimestamp },
+    TransactionWounded { wounded_by: TransactionId },
 
     // SQL errors
     #[error("SQL parse error: {0}")]

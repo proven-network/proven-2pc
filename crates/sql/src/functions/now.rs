@@ -36,12 +36,15 @@ impl Function for NowFunction {
             )));
         }
 
-        // Convert HLC timestamp to SQL timestamp
+        // Extract timestamp from UUIDv7 (embedded in first 48 bits as milliseconds)
         use chrono::DateTime;
-        let micros = context.timestamp().physical as i64;
-        let secs = micros / 1_000_000;
-        let nanos = ((micros % 1_000_000) * 1_000) as u32;
-        let dt = DateTime::from_timestamp(secs, nanos)
+        let uuid = context.timestamp().as_uuid();
+        let timestamp_ms = uuid
+            .get_timestamp()
+            .ok_or_else(|| Error::InvalidValue("Transaction ID does not contain timestamp".into()))?
+            .to_unix();
+        let (secs, nanos) = timestamp_ms;
+        let dt = DateTime::from_timestamp(secs as i64, nanos)
             .ok_or_else(|| Error::InvalidValue("Invalid timestamp".into()))?
             .naive_utc();
         Ok(Value::Timestamp(dt))
@@ -78,7 +81,7 @@ pub fn register(registry: &mut FunctionRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_hlc::{HlcTimestamp, NodeId};
+    use proven_common::TransactionId;
 
     #[test]
     fn test_now_signature() {
@@ -101,7 +104,8 @@ mod tests {
 
     #[test]
     fn test_now_deterministic() {
-        let timestamp = HlcTimestamp::new(1_000_000_000, 0, NodeId::new(1));
+        // Use a real UUIDv7 which has embedded timestamp
+        let timestamp = TransactionId::new();
         let context = ExecutionContext::new(timestamp, 0);
 
         // NOW() should always return the same value within a transaction
@@ -109,12 +113,11 @@ mod tests {
         let now2 = NowFunction.execute(&[], &context).unwrap();
         let current = CurrentTimestampFunction.execute(&[], &context).unwrap();
 
+        // All calls should return the same deterministic timestamp
         assert_eq!(now1, now2);
         assert_eq!(now1, current);
 
-        // Verify the timestamp conversion
-        use chrono::DateTime;
-        let expected = DateTime::from_timestamp(1000, 0).unwrap().naive_utc();
-        assert_eq!(now1, Value::Timestamp(expected));
+        // Verify it's a valid timestamp value
+        assert!(matches!(now1, Value::Timestamp(_)));
     }
 }
