@@ -1,10 +1,6 @@
-//! Consolidated response sending for participant-to-coordinator communication
-//!
-//! This module centralizes all response building and sending logic that was
-//! previously duplicated across router, read_only, and adhoc execution modules.
+//! Response sending for participant-to-coordinator communication
 
-use proven_common::Response;
-use proven_common::TransactionId;
+use proven_common::{Response, TransactionId};
 use proven_engine::{Message, MockClient};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,6 +13,8 @@ pub struct ResponseSender {
     stream_name: String,
     /// Name of the engine
     engine_name: String,
+    /// Whether to suppress responses (used during replay)
+    suppress: bool,
 }
 
 impl ResponseSender {
@@ -26,7 +24,13 @@ impl ResponseSender {
             client,
             stream_name,
             engine_name,
+            suppress: false,
         }
+    }
+
+    /// Set whether to suppress responses (for replay phase)
+    pub fn set_suppress(&mut self, suppress: bool) {
+        self.suppress = suppress;
     }
 
     /// Send a successful operation response
@@ -34,9 +38,14 @@ impl ResponseSender {
         &self,
         coordinator_id: &str,
         txn_id: Option<&str>,
-        request_id: Option<String>,
+        request_id: String,
         response: R,
     ) {
+        // Suppress responses during replay
+        if self.suppress {
+            return;
+        }
+
         let body = match serde_json::to_vec(&response) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -60,9 +69,7 @@ impl ResponseSender {
             headers.insert("txn_id".to_string(), txn_id.to_string());
         }
 
-        if let Some(req_id) = request_id {
-            headers.insert("request_id".to_string(), req_id);
-        }
+        headers.insert("request_id".to_string(), request_id);
 
         let message = Message::new(body, headers);
         let subject = format!("coordinator.{}.response", coordinator_id);
@@ -78,6 +85,11 @@ impl ResponseSender {
 
     /// Send a prepared response (2PC phase 1)
     pub fn send_prepared(&self, coordinator_id: &str, txn_id: &str, request_id: Option<String>) {
+        // Suppress responses during replay
+        if self.suppress {
+            return;
+        }
+
         let mut headers = HashMap::with_capacity(5);
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("participant".to_string(), self.stream_name.clone());
@@ -105,6 +117,11 @@ impl ResponseSender {
         wounded_by: TransactionId,
         request_id: Option<String>,
     ) {
+        // Suppress responses during replay
+        if self.suppress {
+            return;
+        }
+
         let mut headers = HashMap::with_capacity(6);
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("participant".to_string(), self.stream_name.clone());
@@ -131,8 +148,13 @@ impl ResponseSender {
         coordinator_id: &str,
         txn_id: Option<&str>,
         error: String,
-        request_id: Option<String>,
+        request_id: String,
     ) {
+        // Suppress responses during replay
+        if self.suppress {
+            return;
+        }
+
         let mut headers = HashMap::with_capacity(6);
         headers.insert("participant".to_string(), self.stream_name.clone());
         headers.insert("engine".to_string(), self.engine_name.clone());
@@ -143,9 +165,7 @@ impl ResponseSender {
             headers.insert("txn_id".to_string(), txn_id.to_string());
         }
 
-        if let Some(req_id) = request_id {
-            headers.insert("request_id".to_string(), req_id);
-        }
+        headers.insert("request_id".to_string(), request_id);
 
         let message = Message::new(Vec::new(), headers);
         let subject = format!("coordinator.{}.response", coordinator_id);

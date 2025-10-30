@@ -8,6 +8,7 @@ pub mod messages;
 pub mod responses;
 
 pub use messages::{
-    CoordinatorMessage, OperationMessage, TransactionControlMessage, TransactionPhase,
+    CoordinatorMessage, OperationMessage, TransactionControlMessage, TransactionMode,
+    TransactionPhase,
 };
 pub use responses::{ParticipantResponse, ResponseBuilder, ResponseStatus};

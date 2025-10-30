@@ -1,15 +1,15 @@
 //! Typed message wrappers for coordinator-to-participant communication
 
-use proven_common::{Timestamp, TransactionId};
+use proven_common::{Operation, Timestamp, TransactionId};
 use proven_engine::Message;
 use serde_json;
 use std::collections::HashMap;
 
 /// Transaction phases in 2PC protocol
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionPhase {
-    /// Prepare phase (vote request)
-    Prepare,
+    /// Prepare phase (vote request) - includes participant list for recovery
+    Prepare(HashMap<String, u64>),
     /// Combined prepare and commit (single-participant optimization)
     PrepareAndCommit,
     /// Commit phase (decision)
@@ -19,24 +19,21 @@ pub enum TransactionPhase {
 }
 
 impl TransactionPhase {
-    /// Parse from string header value
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "prepare" => Some(Self::Prepare),
-            "prepare_and_commit" => Some(Self::PrepareAndCommit),
-            "commit" => Some(Self::Commit),
-            "abort" => Some(Self::Abort),
-            _ => None,
-        }
-    }
-
-    /// Convert to string header value
-    pub fn as_str(&self) -> &'static str {
+    /// Get the phase name (without participants data)
+    pub fn phase_name(&self) -> &'static str {
         match self {
-            Self::Prepare => "prepare",
+            Self::Prepare(_) => "prepare",
             Self::PrepareAndCommit => "prepare_and_commit",
             Self::Commit => "commit",
             Self::Abort => "abort",
+        }
+    }
+
+    /// Get participants if this is a prepare phase (only regular Prepare has participants)
+    pub fn participants(&self) -> Option<&HashMap<String, u64>> {
+        match self {
+            Self::Prepare(p) => Some(p),
+            _ => None,
         }
     }
 }
@@ -74,9 +71,9 @@ impl TransactionMode {
 
 /// Typed wrapper around Message for coordinator-to-participant communication
 #[derive(Debug, Clone)]
-pub enum CoordinatorMessage {
+pub enum CoordinatorMessage<O: Operation> {
     /// Regular operation message
-    Operation(OperationMessage),
+    Operation(OperationMessage<O>),
     /// Transaction control message (prepare/commit/abort)
     Control(TransactionControlMessage),
     /// Read-only operation (via pubsub)
@@ -87,14 +84,14 @@ pub enum CoordinatorMessage {
         coordinator_id: String,
         /// Request ID for matching responses
         request_id: String,
-        /// Serialized operation
-        operation: Vec<u8>,
+        /// Parsed operation
+        operation: O,
     },
 }
 
 /// Operation message in a transaction
 #[derive(Debug, Clone)]
-pub struct OperationMessage {
+pub struct OperationMessage<O: Operation> {
     /// Transaction ID
     pub txn_id: TransactionId,
     /// Coordinator ID for responses
@@ -103,12 +100,10 @@ pub struct OperationMessage {
     pub request_id: String,
     /// Transaction deadline (sent on first contact with stream)
     pub txn_deadline: Option<Timestamp>,
-    /// Participant list with offsets (for recovery)
-    pub participants: Option<HashMap<String, u64>>,
     /// Transaction mode (read_only, adhoc, or read-write as default)
     pub mode: TransactionMode,
-    /// Serialized operation
-    pub operation: Vec<u8>,
+    /// Parsed operation
+    pub operation: O,
 }
 
 /// Transaction control message (prepare/commit/abort)
@@ -116,17 +111,15 @@ pub struct OperationMessage {
 pub struct TransactionControlMessage {
     /// Transaction ID
     pub txn_id: TransactionId,
-    /// Transaction phase
+    /// Transaction phase (includes participants for prepare phases)
     pub phase: TransactionPhase,
     /// Coordinator ID for responses (optional for commit/abort)
     pub coordinator_id: Option<String>,
     /// Request ID for matching responses (optional for commit/abort)
     pub request_id: Option<String>,
-    /// Participant list with offsets (sent with prepare)
-    pub participants: Option<HashMap<String, u64>>,
 }
 
-impl CoordinatorMessage {
+impl<O: Operation> CoordinatorMessage<O> {
     /// Parse a Message into a typed CoordinatorMessage
     pub fn from_message(msg: Message) -> Result<Self, ParseError> {
         // Check if this is a control message (empty body)
@@ -135,8 +128,6 @@ impl CoordinatorMessage {
             let phase_str = msg
                 .get_header("txn_phase")
                 .ok_or(ParseError::MissingHeader("txn_phase"))?;
-            let phase = TransactionPhase::parse(phase_str)
-                .ok_or_else(|| ParseError::InvalidPhase(phase_str.to_string()))?;
 
             let txn_id_str = msg
                 .get_header("txn_id")
@@ -147,17 +138,27 @@ impl CoordinatorMessage {
             let coordinator_id = msg.get_header("coordinator_id").map(String::from);
             let request_id = msg.get_header("request_id").map(String::from);
 
-            // Parse participants if present
-            let participants = msg
-                .get_header("participants")
-                .and_then(|s| serde_json::from_str(s).ok());
+            // Parse phase and participants together
+            let phase = match phase_str {
+                "prepare" => {
+                    // Prepare must have participants
+                    let participants = msg
+                        .get_header("participants")
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .ok_or(ParseError::MissingParticipants)?;
+                    TransactionPhase::Prepare(participants)
+                }
+                "prepare_and_commit" => TransactionPhase::PrepareAndCommit,
+                "commit" => TransactionPhase::Commit,
+                "abort" => TransactionPhase::Abort,
+                _ => return Err(ParseError::InvalidPhase(phase_str.to_string())),
+            };
 
             return Ok(CoordinatorMessage::Control(TransactionControlMessage {
                 txn_id,
                 phase,
                 coordinator_id,
                 request_id,
-                participants,
             }));
         }
 
@@ -176,11 +177,15 @@ impl CoordinatorMessage {
                 .ok_or(ParseError::MissingHeader("request_id"))?
                 .to_string();
 
+            // Deserialize the operation
+            let operation: O = serde_json::from_slice(&msg.body)
+                .map_err(|e| ParseError::InvalidOperation(e.to_string()))?;
+
             return Ok(CoordinatorMessage::ReadOnly {
                 read_timestamp,
                 coordinator_id,
                 request_id,
-                operation: msg.body,
+                operation,
             });
         }
 
@@ -206,25 +211,23 @@ impl CoordinatorMessage {
             .get_header("txn_deadline")
             .and_then(|s| Timestamp::parse(s).ok());
 
-        // Parse optional participants
-        let participants = msg
-            .get_header("participants")
-            .and_then(|s| serde_json::from_str(s).ok());
-
         // Parse transaction mode
         let mode = msg
             .get_header("txn_mode")
             .and_then(TransactionMode::parse)
             .unwrap_or(TransactionMode::ReadWrite);
 
+        // Deserialize the operation
+        let operation: O = serde_json::from_slice(&msg.body)
+            .map_err(|e| ParseError::InvalidOperation(e.to_string()))?;
+
         Ok(CoordinatorMessage::Operation(OperationMessage {
             txn_id,
             coordinator_id,
             request_id,
             txn_deadline,
-            participants,
             mode,
-            operation: msg.body,
+            operation,
         }))
     }
 
@@ -241,23 +244,18 @@ impl CoordinatorMessage {
                     headers.insert("txn_deadline".to_string(), deadline.to_string());
                 }
 
-                if let Some(participants) = op.participants {
-                    headers.insert(
-                        "participants".to_string(),
-                        serde_json::to_string(&participants).unwrap(),
-                    );
-                }
-
                 if let Some(mode_str) = op.mode.as_str() {
                     headers.insert("txn_mode".to_string(), mode_str.to_string());
                 }
 
-                Message::new(op.operation, headers)
+                // Serialize the operation
+                let body = serde_json::to_vec(&op.operation).unwrap();
+                Message::new(body, headers)
             }
             CoordinatorMessage::Control(ctrl) => {
                 let mut headers = HashMap::new();
                 headers.insert("txn_id".to_string(), ctrl.txn_id.to_string());
-                headers.insert("txn_phase".to_string(), ctrl.phase.as_str().to_string());
+                headers.insert("txn_phase".to_string(), ctrl.phase.phase_name().to_string());
 
                 if let Some(coordinator_id) = ctrl.coordinator_id {
                     headers.insert("coordinator_id".to_string(), coordinator_id);
@@ -267,7 +265,8 @@ impl CoordinatorMessage {
                     headers.insert("request_id".to_string(), request_id);
                 }
 
-                if let Some(participants) = ctrl.participants {
+                // Add participants if this is a prepare phase
+                if let Some(participants) = ctrl.phase.participants() {
                     headers.insert(
                         "participants".to_string(),
                         serde_json::to_string(&participants).unwrap(),
@@ -287,7 +286,9 @@ impl CoordinatorMessage {
                 headers.insert("coordinator_id".to_string(), coordinator_id);
                 headers.insert("request_id".to_string(), request_id);
 
-                Message::new(operation, headers)
+                // Serialize the operation
+                let body = serde_json::to_vec(&operation).unwrap();
+                Message::new(body, headers)
             }
         }
     }
@@ -331,4 +332,10 @@ pub enum ParseError {
 
     #[error("Invalid transaction phase: {0}")]
     InvalidPhase(String),
+
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
+    #[error("Missing participants for prepare phase")]
+    MissingParticipants,
 }

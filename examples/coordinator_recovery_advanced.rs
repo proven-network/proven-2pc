@@ -52,13 +52,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let txn_id_str = txn_id.to_string();
     let coordinator_id = "crashed-coordinator";
 
-    // Short deadline - 3 seconds from now
-    let deadline = Timestamp::now().add_micros(3_000_000);
-    let deadline_str = deadline.to_string();
-
-    println!("  Transaction ID: {}", txn_id_str);
-    println!("  Deadline: {} (3 seconds)\n", deadline_str);
-
     // Create a client to send messages manually
     let manual_client = Arc::new(MockClient::new("manual-sender".to_string(), engine.clone()));
 
@@ -75,6 +68,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ensure_processor("stream_c", processor_duration)
         .await?;
     println!("    ✓ All processors pre-started with 600s lease\n");
+
+    // Short deadline - 3 seconds from now
+    let deadline = Timestamp::now().add_micros(3_000_000);
+    let deadline_str = deadline.to_string();
+
+    println!("  Transaction ID: {}", txn_id_str);
+    println!("  Deadline: {} (3 seconds)\n", deadline_str);
 
     // Step 1: Send operations to all 3 streams to acquire locks
     println!("  Step 1: Acquiring locks on all 3 streams");
@@ -158,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     prep_headers_a.insert("txn_id".to_string(), txn_id_str.clone());
     prep_headers_a.insert("coordinator_id".to_string(), coordinator_id.to_string());
     prep_headers_a.insert("txn_phase".to_string(), "prepare".to_string());
-    prep_headers_a.insert("new_participants".to_string(), participants_json.clone());
+    prep_headers_a.insert("participants".to_string(), participants_json.clone());
 
     let prep_msg_a = Message::new(Vec::new(), prep_headers_a);
     manual_client
@@ -171,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     prep_headers_b.insert("txn_id".to_string(), txn_id_str.clone());
     prep_headers_b.insert("coordinator_id".to_string(), coordinator_id.to_string());
     prep_headers_b.insert("txn_phase".to_string(), "prepare".to_string());
-    prep_headers_b.insert("new_participants".to_string(), participants_json.clone());
+    prep_headers_b.insert("participants".to_string(), participants_json.clone());
 
     let prep_msg_b = Message::new(Vec::new(), prep_headers_b);
     manual_client
@@ -184,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     prep_headers_c.insert("txn_id".to_string(), txn_id_str.clone());
     prep_headers_c.insert("coordinator_id".to_string(), coordinator_id.to_string());
     prep_headers_c.insert("txn_phase".to_string(), "prepare".to_string());
-    prep_headers_c.insert("new_participants".to_string(), participants_json.clone());
+    prep_headers_c.insert("participants".to_string(), participants_json.clone());
 
     let prep_msg_c = Message::new(Vec::new(), prep_headers_c);
     manual_client

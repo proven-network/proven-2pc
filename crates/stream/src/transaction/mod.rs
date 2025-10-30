@@ -1,9 +1,11 @@
 //! Transaction management utilities
 
-pub mod context;
-pub mod deferred;
+pub mod deferral;
+pub mod manager;
 pub mod recovery;
+pub mod state;
 
-pub use context::TransactionContext;
-pub use deferred::DeferredOperationsManager;
-pub use recovery::{RecoveryManager, RecoveryState, TransactionDecision};
+pub use deferral::{DeferralManager, DeferredOp, WaitingFor};
+pub use manager::TransactionManager;
+pub use recovery::{RecoveryManager, TransactionDecision};
+pub use state::{AbortReason, CompletedInfo, TransactionPhase, TransactionState};

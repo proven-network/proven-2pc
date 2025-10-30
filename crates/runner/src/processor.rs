@@ -53,54 +53,52 @@ pub async fn start_processor(
     // Create shutdown channel
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    // Create processor and start it (waits for replay to complete)
+    // Create processor and spawn it in background
     match processor_type {
         ProcessorType::Kv => {
             let processor =
                 create_kv_processor(stream.clone(), client.clone(), snapshot_store.clone()).await?;
-            processor
-                .start_with_replay(shutdown_rx)
-                .await
-                .map_err(|e| {
-                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
-                })?;
+            tokio::spawn(async move {
+                if let Err(e) = processor.start_with_replay(shutdown_rx).await {
+                    tracing::error!("KV processor error: {:?}", e);
+                }
+            });
         }
         ProcessorType::Sql => {
             let processor =
                 create_sql_processor(stream.clone(), client.clone(), snapshot_store.clone())
                     .await?;
-            processor
-                .start_with_replay(shutdown_rx)
-                .await
-                .map_err(|e| {
-                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
-                })?;
+            tokio::spawn(async move {
+                if let Err(e) = processor.start_with_replay(shutdown_rx).await {
+                    tracing::error!("SQL processor error: {:?}", e);
+                }
+            });
         }
         ProcessorType::Queue => {
             let processor =
                 create_queue_processor(stream.clone(), client.clone(), snapshot_store.clone())
                     .await?;
-            processor
-                .start_with_replay(shutdown_rx)
-                .await
-                .map_err(|e| {
-                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
-                })?;
+            tokio::spawn(async move {
+                if let Err(e) = processor.start_with_replay(shutdown_rx).await {
+                    tracing::error!("Queue processor error: {:?}", e);
+                }
+            });
         }
         ProcessorType::Resource => {
             let processor =
                 create_resource_processor(stream.clone(), client.clone(), snapshot_store.clone())
                     .await?;
-            processor
-                .start_with_replay(shutdown_rx)
-                .await
-                .map_err(|e| {
-                    crate::RunnerError::Other(format!("Failed to start processor: {}", e))
-                })?;
+            tokio::spawn(async move {
+                if let Err(e) = processor.start_with_replay(shutdown_rx).await {
+                    tracing::error!("Resource processor error: {:?}", e);
+                }
+            });
         }
     }
 
-    // Processor has completed replay and is ready
+    // Wait for replay to complete (1 second timeout in perform_replay)
+    // Add a bit extra to ensure processor is fully ready
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     Ok(ProcessorHandle {
         guaranteed_until: Instant::now() + duration,
@@ -137,64 +135,44 @@ fn determine_processor_type(stream: &str) -> ProcessorType {
 async fn create_kv_processor(
     stream: String,
     client: Arc<MockClient>,
-    snapshot_store: Arc<dyn SnapshotStore>,
+    _snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<proven_stream::StreamProcessor<proven_kv::KvTransactionEngine>, crate::RunnerError> {
     let engine = proven_kv::KvTransactionEngine::new();
-    Ok(proven_stream::StreamProcessor::new(
-        engine,
-        client,
-        stream,
-        snapshot_store,
-    ))
+    Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 
 /// Create a SQL processor
 async fn create_sql_processor(
     stream: String,
     client: Arc<MockClient>,
-    snapshot_store: Arc<dyn SnapshotStore>,
+    _snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<proven_stream::StreamProcessor<proven_sql::SqlTransactionEngine>, crate::RunnerError> {
     let engine = proven_sql::SqlTransactionEngine::default();
-    Ok(proven_stream::StreamProcessor::new(
-        engine,
-        client,
-        stream,
-        snapshot_store,
-    ))
+    Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 
 /// Create a Queue processor
 async fn create_queue_processor(
     stream: String,
     client: Arc<MockClient>,
-    snapshot_store: Arc<dyn SnapshotStore>,
+    _snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<proven_stream::StreamProcessor<proven_queue::QueueTransactionEngine>, crate::RunnerError>
 {
     let engine = proven_queue::QueueTransactionEngine::new();
-    Ok(proven_stream::StreamProcessor::new(
-        engine,
-        client,
-        stream,
-        snapshot_store,
-    ))
+    Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 
 /// Create a Resource processor
 async fn create_resource_processor(
     stream: String,
     client: Arc<MockClient>,
-    snapshot_store: Arc<dyn SnapshotStore>,
+    _snapshot_store: Arc<dyn SnapshotStore>,
 ) -> Result<
     proven_stream::StreamProcessor<proven_resource::ResourceTransactionEngine>,
     crate::RunnerError,
 > {
     let engine = proven_resource::ResourceTransactionEngine::new();
-    Ok(proven_stream::StreamProcessor::new(
-        engine,
-        client,
-        stream,
-        snapshot_store,
-    ))
+    Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 
 #[cfg(test)]

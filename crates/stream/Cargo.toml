@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-parking_lot.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true
 proven-protocol.workspace = true
@@ -19,3 +18,4 @@ tracing.workspace = true
 [dev-dependencies]
 proven-snapshot-memory.workspace = true
 tokio-test.workspace = true
+uuid.workspace = true

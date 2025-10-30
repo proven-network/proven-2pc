@@ -1,20 +1,18 @@
-//! Common test utilities for stream processor tests
+//! Common test utilities for integration tests
 
-use crate::engine::{OperationResult, RetryOn, TransactionEngine};
-use proven_common::{Operation, Response, TransactionId};
+use proven_common::{Operation, OperationType, Response, TransactionId};
+use proven_stream::engine::{OperationResult, RetryOn, TransactionEngine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Generic test engine that can be used across different test scenarios
+/// Test engine with lock tracking for wound-wait tests
 pub struct TestEngine<Op, Resp> {
     /// Current log index
     log_index: u64,
-    /// Resource locks (for wound-wait tests)
+    /// Resource locks (resource_name -> holder_txn_id)
     locks: HashMap<String, TransactionId>,
-    /// Key-value data (for basic tests)
+    /// Key-value data
     data: HashMap<String, String>,
-    /// Active transactions
-    active_txns: Vec<TransactionId>,
     /// Phantom data for operation and response types
     _phantom: std::marker::PhantomData<(Op, Resp)>,
 }
@@ -25,28 +23,30 @@ impl<Op, Resp> TestEngine<Op, Resp> {
             log_index: 0,
             locks: HashMap::new(),
             data: HashMap::new(),
-            active_txns: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
     }
 
-    pub fn with_log_index(log_index: u64) -> Self {
-        Self {
-            log_index,
-            locks: HashMap::new(),
-            data: HashMap::new(),
-            active_txns: Vec::new(),
-            _phantom: std::marker::PhantomData,
-        }
+    /// Get the current locks (for testing)
+    #[allow(dead_code)]
+    pub fn locks(&self) -> &HashMap<String, TransactionId> {
+        &self.locks
     }
 
     /// Get the key-value data (for testing)
+    #[allow(dead_code)]
     pub fn data(&self) -> &HashMap<String, String> {
         &self.data
     }
+
+    /// Get the current log index
+    #[allow(dead_code)]
+    pub fn log_index(&self) -> u64 {
+        self.log_index
+    }
 }
 
-// Wound-wait test operation
+/// Lock operation for wound-wait tests
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LockOp {
     Lock { resource: String },
@@ -54,15 +54,16 @@ pub enum LockOp {
 }
 
 impl Operation for LockOp {
-    fn operation_type(&self) -> proven_common::OperationType {
+    fn operation_type(&self) -> OperationType {
         match self {
-            LockOp::Lock { .. } => proven_common::OperationType::Write,
-            LockOp::Read { .. } => proven_common::OperationType::Read,
+            LockOp::Lock { .. } => OperationType::Write,
+            LockOp::Read { .. } => OperationType::Read,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Lock response for wound-wait tests
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LockResponse {
     Success { message: String },
     Value { data: String },
@@ -70,7 +71,7 @@ pub enum LockResponse {
 
 impl Response for LockResponse {}
 
-// Basic test operation
+/// Basic CRUD operation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BasicOp {
     Read { key: String },
@@ -78,15 +79,16 @@ pub enum BasicOp {
 }
 
 impl Operation for BasicOp {
-    fn operation_type(&self) -> proven_common::OperationType {
+    fn operation_type(&self) -> OperationType {
         match self {
-            BasicOp::Read { .. } => proven_common::OperationType::Read,
-            BasicOp::Write { .. } => proven_common::OperationType::Write,
+            BasicOp::Read { .. } => OperationType::Read,
+            BasicOp::Write { .. } => OperationType::Write,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Basic CRUD response
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BasicResponse {
     Value(Option<String>),
     Success,
@@ -94,7 +96,7 @@ pub enum BasicResponse {
 
 impl Response for BasicResponse {}
 
-// Implementation for LockOp tests
+// TransactionEngine implementation for LockOp tests
 impl TransactionEngine for TestEngine<LockOp, LockResponse> {
     type Operation = LockOp;
     type Response = LockResponse;
@@ -106,7 +108,7 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
     ) -> OperationResult<Self::Response> {
         match operation {
             LockOp::Lock { .. } => {
-                panic!("Lock operations not supported for read-only operations");
+                panic!("Lock operations not supported for read-only")
             }
             LockOp::Read { resource } => OperationResult::Complete(LockResponse::Value {
                 data: format!("Data from {}", resource),
@@ -124,20 +126,23 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
 
         match operation {
             LockOp::Lock { resource } => {
+                // Check if resource is locked by another transaction
                 if let Some(&holder) = self.locks.get(&resource)
                     && holder != txn_id
                 {
-                    // Just report the conflict - stream processor handles wound-wait
+                    // Resource is locked - report conflict
                     return OperationResult::WouldBlock {
-                        blockers: vec![crate::engine::BlockingInfo {
+                        blockers: vec![proven_stream::BlockingInfo {
                             txn: holder,
                             retry_on: RetryOn::CommitOrAbort,
                         }],
                     };
                 }
-                self.locks.insert(resource, txn_id);
+
+                // Acquire lock
+                self.locks.insert(resource.clone(), txn_id);
                 OperationResult::Complete(LockResponse::Success {
-                    message: "Lock acquired".to_string(),
+                    message: format!("Locked {}", resource),
                 })
             }
             LockOp::Read { resource } => OperationResult::Complete(LockResponse::Value {
@@ -146,34 +151,32 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
         }
     }
 
+    fn begin(&mut self, _txn_id: TransactionId, log_index: u64) {
+        self.log_index = self.log_index.max(log_index);
+    }
+
     fn prepare(&mut self, _txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
     }
 
     fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
+        // Release all locks held by this transaction
         self.locks.retain(|_, &mut holder| holder != txn_id);
     }
 
     fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
+        // Release all locks held by this transaction
         self.locks.retain(|_, &mut holder| holder != txn_id);
     }
 
-    fn begin(&mut self, _txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-    }
-
     fn engine_name(&self) -> &'static str {
-        "test"
-    }
-
-    fn get_log_index(&self) -> Option<u64> {
-        Some(self.log_index)
+        "lock-test-engine"
     }
 }
 
-// Implementation for BasicOp tests
+// TransactionEngine implementation for BasicOp tests
 impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
     type Operation = BasicOp;
     type Response = BasicResponse;
@@ -189,7 +192,7 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
                 OperationResult::Complete(BasicResponse::Value(value))
             }
             BasicOp::Write { .. } => {
-                panic!("Write operations not supported for read-only operations");
+                panic!("Write operations not supported for read-only")
             }
         }
     }
@@ -214,30 +217,34 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
         }
     }
 
+    fn begin(&mut self, _txn_id: TransactionId, log_index: u64) {
+        self.log_index = self.log_index.max(log_index);
+    }
+
     fn prepare(&mut self, _txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
     }
 
-    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
+    fn commit(&mut self, _txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
-        self.active_txns.retain(|&id| id != txn_id);
     }
 
-    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
+    fn abort(&mut self, _txn_id: TransactionId, log_index: u64) {
         self.log_index = self.log_index.max(log_index);
-        self.active_txns.retain(|&id| id != txn_id);
-    }
-
-    fn begin(&mut self, txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-        self.active_txns.push(txn_id);
     }
 
     fn engine_name(&self) -> &'static str {
-        "test-engine"
+        "basic-test-engine"
     }
+}
 
-    fn get_log_index(&self) -> Option<u64> {
-        Some(self.log_index)
-    }
+/// Helper to generate deterministic transaction IDs for tests
+/// Smaller timestamp_ms = older transaction (lexicographically smaller UUID)
+pub fn txn_id(timestamp_ms: u64) -> proven_common::TransactionId {
+    // UUIDv7 format: timestamp (48 bits) split into high (32 bits) and mid (16 bits)
+    let high = ((timestamp_ms >> 16) & 0xFFFFFFFF) as u32;
+    let mid = (timestamp_ms & 0xFFFF) as u16;
+
+    let uuid_str = format!("{:08x}-{:04x}-7000-8000-000000000000", high, mid);
+    proven_common::TransactionId::from_uuid(uuid::Uuid::parse_str(&uuid_str).unwrap())
 }

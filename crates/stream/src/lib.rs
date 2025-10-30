@@ -1,61 +1,27 @@
-//! Generic stream processing for distributed transactions
+//! Clean stream processing for distributed transactions
 //!
-//! This crate provides a generic stream processor that handles message
-//! consumption, transaction coordination, and retry logic. Storage systems
-//! (SQL, KV, etc.) implement the TransactionEngine trait to plug into
-//! this framework.
-//!
-//! ## Architecture
-//!
-//! The stream processor handles:
-//! - Message parsing and dispatch
-//! - Transaction control (prepare, commit, abort)
-//! - Wound-wait deadlock prevention
-//! - Deferred operation management
-//! - Coordinator communication
-//!
-//! Storage engines provide:
-//! - Operation execution
-//! - Lock management
-//! - Transaction isolation
-//! - Persistence
-//!
-//! ## Execution Modes
-//!
-//! The processor supports three execution modes:
-//! - **Read-Only**: Snapshot isolation reads without locking
-//! - **Ad-Hoc**: Auto-commit operations without explicit transactions
-//! - **Read-Write**: Full ACID transactions with 2PC support
+//! This crate provides a reimagined stream processor with clear separation of concerns:
+//! - **Message Dispatch**: Route messages by transaction mode
+//! - **Executors**: Self-contained execution for each mode (read-only, ad-hoc, read-write)
+//! - **Transaction Management**: Unified state management with clear lifecycle
+//! - **Deferral**: Simple, understandable blocking and retry logic
 
+pub mod dispatcher;
 pub mod engine;
 pub mod error;
-pub mod execution;
+pub mod executor;
 pub mod processor;
-pub mod response;
-pub mod router;
+pub mod support;
 pub mod transaction;
 
-#[cfg(test)]
-mod test;
-#[cfg(test)]
-mod test_utils;
-#[cfg(test)]
-mod wound_wait_tests;
-
-// Re-export from engine module
+// Re-export key types
+pub use dispatcher::MessageDispatcher;
 pub use engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine, TransactionMode};
-
-// Re-export from error module
 pub use error::{ProcessorError, Result};
-
-// Re-export from processor module
-pub use processor::{ProcessorPhase, SnapshotConfig, StreamProcessor};
-
-// Re-export from response module
-pub use response::ResponseSender;
-
-// Re-export from transaction module (including recovery)
+pub use executor::{AdHocExecutor, ReadOnlyExecutor, ReadWriteExecutor};
+pub use processor::{ProcessorPhase, StreamProcessor};
+pub use support::ResponseSender;
 pub use transaction::{
-    DeferredOperationsManager, RecoveryManager, RecoveryState, TransactionContext,
-    TransactionDecision,
+    AbortReason, DeferralManager, DeferredOp, RecoveryManager, TransactionDecision,
+    TransactionManager, TransactionPhase, TransactionState, WaitingFor,
 };

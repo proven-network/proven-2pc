@@ -1,233 +1,331 @@
-//! Simplified stream processor using MessageRouter
+//! Stream processor - main processing loop
 //!
-//! This processor focuses on phase management and stream consumption,
-//! delegating all transaction logic to the MessageRouter.
+//! Manages stream consumption, phase transitions, and delegates message
+//! processing to the dispatcher.
 
+use crate::dispatcher::MessageDispatcher;
 use crate::engine::TransactionEngine;
 use crate::error::{ProcessorError, Result};
-use crate::router::MessageRouter;
-use proven_common::{Timestamp, TransactionId};
-use proven_engine::client::MessageStream;
+use crate::support::ResponseSender;
+use crate::transaction::TransactionManager;
+use proven_common::Timestamp;
 use proven_engine::{Message, MockClient};
-use proven_snapshot::SnapshotStore;
+use proven_protocol::CoordinatorMessage;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::oneshot;
 
-/// Processing phase for the stream processor
-#[derive(Debug, Clone)]
+/// Processing phases
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessorPhase {
-    /// Replaying historical messages to rebuild state
+    /// Replaying from snapshot - execute operations but suppress responses
     Replay,
-    /// Checking for and executing recovery
-    Recovery,
-    /// Normal live processing
+    /// Live processing - normal operation with responses
     Live,
 }
 
-/// Configuration for snapshot behavior
-#[derive(Debug, Clone)]
-pub struct SnapshotConfig {
-    /// No messages for this duration triggers snapshot consideration
-    pub idle_duration: Duration,
-    /// Minimum commits before allowing snapshot
-    pub min_commits_between_snapshots: u64,
-}
-
-impl Default for SnapshotConfig {
-    fn default() -> Self {
-        Self {
-            idle_duration: Duration::from_secs(30),
-            min_commits_between_snapshots: 100,
-        }
-    }
-}
-
-/// Simplified stream processor that delegates to MessageRouter
+/// Stream processor for distributed transactions
 pub struct StreamProcessor<E: TransactionEngine> {
-    /// Message router that handles all transaction logic
-    router: MessageRouter<E>,
+    /// Transaction engine
+    engine: E,
+
+    /// Client for stream/pubsub
+    client: Arc<MockClient>,
+
+    /// Transaction manager
+    tx_manager: TransactionManager<E>,
+
+    /// Recovery manager for handling coordinator failures
+    recovery_manager: crate::transaction::RecoveryManager,
+
+    /// Response sender
+    response: ResponseSender,
 
     /// Current processing phase
     phase: ProcessorPhase,
 
-    /// Current stream offset
-    pub current_offset: u64,
-
-    /// Snapshot store (if configured)
-    snapshot_store: Option<Arc<dyn SnapshotStore>>,
-
-    /// Snapshot tracking
-    last_snapshot_offset: u64,
-    last_message_time: Option<Instant>,
-    last_log_timestamp: Timestamp,
-
-    /// Snapshot configuration
-    pub snapshot_config: SnapshotConfig,
-
-    /// Flag indicating if replay is complete
-    is_ready: Arc<AtomicBool>,
-
-    /// Stream name for identification
+    /// Stream name
     stream_name: String,
 
-    /// Client for stream operations
-    client: Arc<MockClient>,
+    /// Current offset in the stream
+    current_offset: u64,
 }
 
-impl<E: TransactionEngine + Send> StreamProcessor<E> {
+impl<E: TransactionEngine> StreamProcessor<E> {
     /// Create a new stream processor
-    pub fn new(
-        engine: E,
-        client: Arc<MockClient>,
-        stream_name: String,
-        snapshot_store: Arc<dyn SnapshotStore>,
-    ) -> Self {
-        // Get the engine's current log index (if it persists state)
+    pub fn new(engine: E, client: Arc<MockClient>, stream_name: String) -> Self {
+        // Create response sender internally
+        let response = ResponseSender::new(
+            client.clone(),
+            stream_name.clone(),
+            engine.engine_name().to_string(),
+        );
+
+        // Get starting offset from engine's persisted log index
         let engine_offset = engine.get_log_index().unwrap_or(0);
 
-        // Try to get the last snapshot offset
-        let start_offset;
-        let last_snapshot_offset;
-
-        if let Some(snapshot_offset) = snapshot_store.get(&stream_name) {
-            // Verify the engine is at the right position
-            if engine_offset == snapshot_offset {
-                start_offset = snapshot_offset + 1;
-                last_snapshot_offset = snapshot_offset;
-                tracing::info!(
-                    "Engine at offset {}, will replay from {} for stream {}",
-                    snapshot_offset,
-                    start_offset,
-                    stream_name
-                );
-            } else {
-                tracing::warn!(
-                    "Engine offset ({}) doesn't match snapshot offset ({}), replaying from engine position for stream {}",
-                    engine_offset,
-                    snapshot_offset,
-                    stream_name
-                );
-                start_offset = engine_offset + 1;
-                last_snapshot_offset = engine_offset;
-            }
-        } else {
-            // No snapshot, use engine's position
-            start_offset = engine_offset + 1;
-            last_snapshot_offset = engine_offset;
-            if engine_offset > 0 {
-                tracing::info!(
-                    "No snapshot found, using engine offset {}, will replay from {} for stream {}",
-                    engine_offset,
-                    start_offset,
-                    stream_name
-                );
-            }
-        }
-
-        // Create the router with the engine
-        let router = MessageRouter::new(engine, client.clone(), stream_name.clone());
+        tracing::info!(
+            "[{}] Engine is at log index {}, will replay from offset {}",
+            stream_name,
+            engine_offset,
+            engine_offset + 1
+        );
 
         Self {
-            router,
-            phase: ProcessorPhase::Replay,
-            current_offset: start_offset,
-            snapshot_store: Some(snapshot_store),
-            last_snapshot_offset,
-            last_message_time: None,
-            last_log_timestamp: Timestamp::from_micros(0),
-            snapshot_config: SnapshotConfig::default(),
-            is_ready: Arc::new(AtomicBool::new(false)),
-            stream_name,
+            engine,
+            recovery_manager: crate::transaction::RecoveryManager::new(
+                client.clone(),
+                stream_name.clone(),
+            ),
             client,
+            tx_manager: TransactionManager::new(),
+            response,
+            phase: ProcessorPhase::Replay, // Always start in replay
+            stream_name,
+            current_offset: engine_offset,
         }
     }
 
-    /// Get the current processing phase
-    pub fn phase(&self) -> &ProcessorPhase {
-        &self.phase
+    /// Get current processing phase
+    pub fn phase(&self) -> ProcessorPhase {
+        self.phase
     }
 
-    /// Check if the processor is ready
-    pub fn is_ready(&self) -> bool {
-        self.is_ready.load(Ordering::Relaxed)
+    /// Transition to a new phase
+    pub fn transition_to(&mut self, phase: ProcessorPhase) {
+        tracing::info!(
+            "[{}] Phase transition: {:?} -> {:?}",
+            self.stream_name,
+            self.phase,
+            phase
+        );
+        self.phase = phase;
     }
 
-    /// Process a message based on the current phase
-    async fn process_message(
+    /// Get current offset
+    pub fn current_offset(&self) -> u64 {
+        self.current_offset
+    }
+
+    /// Process a message from the ordered stream
+    fn process_ordered(
         &mut self,
         message: Message,
-        msg_timestamp: Timestamp,
-        msg_offset: u64,
+        timestamp: Timestamp,
+        offset: u64,
     ) -> Result<()> {
-        self.current_offset = msg_offset;
-        self.last_log_timestamp = msg_timestamp;
-        self.last_message_time = Some(Instant::now());
+        // Update offset
+        self.current_offset = offset;
 
         match self.phase {
             ProcessorPhase::Replay => {
-                // During replay, just track state without side effects
-                self.router
-                    .track_transaction_state(&message, TransactionId::new())?;
-                Ok(())
-            }
-            ProcessorPhase::Recovery => {
-                unreachable!("Should not process messages during recovery phase")
+                // During replay, execute operations to rebuild engine state
+                // Responses are suppressed (coordinators are long gone)
+                self.process_live_ordered(message, timestamp, offset)
             }
             ProcessorPhase::Live => {
-                // In live mode, route the message with log index
-                self.router
-                    .route_message(message, msg_timestamp, msg_offset)
+                // Normal live processing with responses
+                self.process_live_ordered(message, timestamp, offset)
             }
         }
     }
 
-    /// Check if we should take a snapshot
-    fn should_snapshot(&self) -> bool {
-        // No active transactions
-        if self.router.context().has_active_transactions() {
-            return false;
-        }
+    /// Process a read-only message from pubsub
+    fn process_readonly(&mut self, message: Message) -> Result<()> {
+        // Parse message
+        let coord_msg: CoordinatorMessage<E::Operation> = CoordinatorMessage::from_message(message)
+            .map_err(|e| ProcessorError::InvalidOperation(e.to_string()))?;
 
-        // Check idle time
-        if let Some(last_msg_time) = self.last_message_time
-            && last_msg_time.elapsed() < self.snapshot_config.idle_duration
-        {
-            return false;
-        }
-
-        // Check minimum commit count
-        if self.router.context().commits_since_snapshot
-            < self.snapshot_config.min_commits_between_snapshots
-        {
-            return false;
-        }
-
-        true
+        // Dispatch to read-only executor
+        MessageDispatcher::dispatch_readonly(
+            &mut self.engine,
+            &mut self.tx_manager,
+            &self.response,
+            coord_msg,
+        )
     }
 
-    /// Try to take a snapshot if conditions are met
-    async fn try_snapshot(&mut self) -> Result<()> {
-        if !self.should_snapshot() {
-            return Ok(());
-        }
+    /// Process a live ordered message
+    fn process_live_ordered(
+        &mut self,
+        message: Message,
+        timestamp: Timestamp,
+        offset: u64,
+    ) -> Result<()> {
+        // Parse message
+        let coord_msg: CoordinatorMessage<E::Operation> = CoordinatorMessage::from_message(message)
+            .map_err(|e| ProcessorError::InvalidOperation(e.to_string()))?;
 
-        if let Some(store) = &self.snapshot_store {
-            // Just save the current offset - engine has already persisted its state
-            store.update(&self.stream_name, self.current_offset);
+        // Dispatch to appropriate executor
+        MessageDispatcher::dispatch_ordered(
+            &mut self.engine,
+            &mut self.tx_manager,
+            &self.response,
+            coord_msg,
+            timestamp,
+            offset,
+        )
+    }
 
-            self.last_snapshot_offset = self.current_offset;
-            self.router.context_mut().commits_since_snapshot = 0;
+    /// Run recovery for expired transactions (both active and prepared)
+    pub async fn run_recovery(&mut self, current_time: Timestamp) -> Result<()> {
+        // Check both active and prepared transactions for expiry
+        let mut expired_active = self.tx_manager.get_expired_active(current_time);
+        let expired_prepared = self.tx_manager.get_expired_prepared(current_time);
 
+        expired_active.extend(expired_prepared);
+        let expired = expired_active;
+
+        if !expired.is_empty() {
             tracing::info!(
-                "Updated snapshot to offset {} for stream {}",
-                self.current_offset,
-                self.stream_name
+                "[{}] Running recovery for {} expired transactions",
+                self.stream_name,
+                expired.len()
             );
         }
 
+        for txn_id in expired {
+            // Get participants to determine recovery decision
+            let participants = self.tx_manager.get_participants(txn_id);
+
+            if participants.is_empty() {
+                // No participants - just abort locally
+                tracing::debug!(
+                    "[{}] Aborting expired transaction {} (no participants)",
+                    self.stream_name,
+                    txn_id
+                );
+
+                // Publish ABORT message to stream (so it gets logged and processed normally)
+                let mut headers = std::collections::HashMap::new();
+                headers.insert("txn_id".to_string(), txn_id.to_string());
+                headers.insert("txn_phase".to_string(), "abort".to_string());
+                headers.insert("recovery".to_string(), "true".to_string());
+
+                let message = Message::new(Vec::new(), headers);
+                if let Err(e) = self
+                    .client
+                    .publish_to_stream(self.stream_name.clone(), vec![message])
+                    .await
+                {
+                    tracing::error!(
+                        "[{}] Failed to publish recovery ABORT: {:?}",
+                        self.stream_name,
+                        e
+                    );
+                } else {
+                    // Mark as resolved to prevent duplicate recovery attempts
+                    let _ = self.tx_manager.transition_to_aborted(
+                        txn_id,
+                        crate::transaction::AbortReason::DeadlineExceeded,
+                    );
+                }
+            } else {
+                // Query participants to determine decision
+                tracing::debug!(
+                    "[{}] Recovering transaction {} with {} participants",
+                    self.stream_name,
+                    txn_id,
+                    participants.len()
+                );
+
+                let decision = self
+                    .recovery_manager
+                    .recover(txn_id, &participants, current_time)
+                    .await;
+
+                match decision {
+                    crate::transaction::TransactionDecision::Commit => {
+                        tracing::info!(
+                            "[{}] Recovery decision: COMMIT for transaction {}",
+                            self.stream_name,
+                            txn_id
+                        );
+
+                        // Publish COMMIT message to stream (so it gets logged and processed normally)
+                        let mut headers = std::collections::HashMap::new();
+                        headers.insert("txn_id".to_string(), txn_id.to_string());
+                        headers.insert("txn_phase".to_string(), "commit".to_string());
+                        headers.insert("recovery".to_string(), "true".to_string());
+
+                        let message = Message::new(Vec::new(), headers);
+                        if let Err(e) = self
+                            .client
+                            .publish_to_stream(self.stream_name.clone(), vec![message])
+                            .await
+                        {
+                            tracing::error!(
+                                "[{}] Failed to publish recovery COMMIT: {:?}",
+                                self.stream_name,
+                                e
+                            );
+                        } else {
+                            tracing::debug!(
+                                "[{}] Published recovery COMMIT message for transaction {}",
+                                self.stream_name,
+                                txn_id
+                            );
+                            // Mark as resolved to prevent duplicate recovery attempts
+                            // The actual commit will be processed when the message comes through
+                            let _ = self.tx_manager.transition_to_committed(txn_id);
+                        }
+                    }
+                    crate::transaction::TransactionDecision::Abort
+                    | crate::transaction::TransactionDecision::Unknown => {
+                        tracing::info!(
+                            "[{}] Recovery decision: ABORT for transaction {} (decision: {:?})",
+                            self.stream_name,
+                            txn_id,
+                            decision
+                        );
+
+                        // Publish ABORT message to stream (so it gets logged and processed normally)
+                        let mut headers = std::collections::HashMap::new();
+                        headers.insert("txn_id".to_string(), txn_id.to_string());
+                        headers.insert("txn_phase".to_string(), "abort".to_string());
+                        headers.insert("recovery".to_string(), "true".to_string());
+
+                        let message = Message::new(Vec::new(), headers);
+                        if let Err(e) = self
+                            .client
+                            .publish_to_stream(self.stream_name.clone(), vec![message])
+                            .await
+                        {
+                            tracing::error!(
+                                "[{}] Failed to publish recovery ABORT: {:?}",
+                                self.stream_name,
+                                e
+                            );
+                        } else {
+                            tracing::debug!(
+                                "[{}] Published recovery ABORT message for transaction {}",
+                                self.stream_name,
+                                txn_id
+                            );
+                            // Mark as resolved to prevent duplicate recovery attempts
+                            let _ = self.tx_manager.transition_to_aborted(
+                                txn_id,
+                                crate::transaction::AbortReason::Recovery,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Get reference to transaction manager
+    #[cfg(test)]
+    fn transaction_manager(&self) -> &TransactionManager<E> {
+        &self.tx_manager
+    }
+
+    /// Get reference to engine
+    #[cfg(test)]
+    fn engine(&self) -> &E {
+        &self.engine
     }
 
     /// Start the processor with replay
@@ -235,207 +333,377 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
     where
         E: Send + 'static,
     {
-        let stream_name = self.stream_name.clone();
-
-        // Perform replay phase
+        // Perform replay phase to catch up with stream
+        // This will also run recovery once at the end
         self.perform_replay().await?;
 
-        // Mark as ready
-        self.is_ready.store(true, Ordering::Relaxed);
+        // Transition to live
+        self.transition_to(ProcessorPhase::Live);
+        self.run_live_processing(shutdown_rx).await
+    }
 
-        // Create live stream subscription
+    /// Perform replay from engine's current position to stream head
+    async fn perform_replay(&mut self) -> Result<()> {
+        let start_offset = self.current_offset + 1;
+
+        tracing::info!(
+            "[{}] Starting replay from offset {}",
+            self.stream_name,
+            start_offset
+        );
+
+        // Suppress responses during replay (coordinators are long gone)
+        self.response.set_suppress(true);
+
+        // Subscribe to stream from where engine left off
+        let mut replay_stream = self
+            .client
+            .stream_messages(self.stream_name.clone(), Some(start_offset))
+            .await
+            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
+
+        let mut count = 0;
+        let start_time = std::time::Instant::now();
+
+        // Process messages until we catch up
+        loop {
+            tokio::select! {
+                result = replay_stream.recv() => {
+                    match result {
+                        Some((message, timestamp, offset)) => {
+                            // Process in replay mode (tracks state without full execution)
+                            if let Err(e) = self.process_ordered(message, timestamp, offset) {
+                                tracing::error!(
+                                    "[{}] Error during replay at offset {}: {:?}",
+                                    self.stream_name, offset, e
+                                );
+                            }
+                            count += 1;
+
+                            // Log progress every 10k messages
+                            if count % 10_000 == 0 {
+                                tracing::info!(
+                                    "[{}] Replay progress: {} messages, at offset {}",
+                                    self.stream_name, count, offset
+                                );
+                            }
+                        }
+                        None => {
+                            // Stream ended (caught up)
+                            break;
+                        }
+                    }
+                }
+
+                // Add a timeout check - if we haven't received a message in 1 second,
+                // assume we're caught up
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    tracing::debug!(
+                        "[{}] No messages for 1s during replay, assuming caught up",
+                        self.stream_name
+                    );
+                    break;
+                }
+            }
+        }
+
+        let elapsed = start_time.elapsed();
+        tracing::info!(
+            "[{}] Replay complete. Processed {} messages in {:.2}s, now at offset {}",
+            self.stream_name,
+            count,
+            elapsed.as_secs_f64(),
+            self.current_offset
+        );
+
+        // Re-enable responses for live processing
+        self.response.set_suppress(false);
+
+        // Run recovery once for any prepared transactions left at replay end
+        self.run_recovery(Timestamp::now()).await?;
+
+        Ok(())
+    }
+
+    /// Run live processing with event loop
+    async fn run_live_processing(mut self, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+        tracing::info!(
+            "[{}] Starting live processing from offset {}",
+            self.stream_name,
+            self.current_offset
+        );
+
+        // Subscribe to ordered stream (start from next offset after engine's position)
         let start_offset = if self.current_offset > 0 {
             Some(self.current_offset + 1)
         } else {
             Some(0)
         };
 
-        let live_stream = self
+        let mut ordered_stream = self
             .client
-            .stream_messages(stream_name.clone(), start_offset)
+            .stream_messages(self.stream_name.clone(), start_offset)
             .await
             .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
 
-        tracing::info!(
-            "Stream processor for {} is ready, starting live processing",
-            stream_name
-        );
-
-        // Spawn live processing task
-        let stream_name_task = stream_name.clone();
-        let handle = tokio::spawn(async move {
-            tracing::debug!("Live processing started for stream: {}", stream_name_task);
-            match self.run_live_processing(shutdown_rx, live_stream).await {
-                Ok(()) => {
-                    tracing::debug!("Live processing for {} ended normally", stream_name_task);
-                }
-                Err(e) => {
-                    tracing::error!("Live processing for {} failed: {:?}", stream_name_task, e);
-                }
-            }
-        });
-
-        // Monitor for panics
-        let stream_name_monitor = stream_name.clone();
-        tokio::spawn(async move {
-            match handle.await {
-                Ok(()) => {}
-                Err(e) if e.is_panic() => {
-                    tracing::error!("Panic in processor for {}: {:?}", stream_name_monitor, e);
-                }
-                Err(e) => {
-                    tracing::warn!("Task join error for {}: {:?}", stream_name_monitor, e);
-                }
-            }
-        });
-
-        Ok(())
-    }
-
-    /// Process a readonly message from pubsub (no timestamp/offset)
-    async fn process_readonly_message(&mut self, message: Message) -> Result<()> {
-        // Only valid in Live phase
-        if !matches!(self.phase, ProcessorPhase::Live) {
-            tracing::warn!(
-                "Received readonly message during {:?} phase for stream {}, ignoring",
-                self.phase,
-                self.stream_name
-            );
-            return Ok(());
-        }
-
-        // Route through readonly execution path
-        // The message contains the read_timestamp header set by the coordinator
-        self.router.route_readonly_message(message)
-    }
-
-    /// Perform the replay phase
-    async fn perform_replay(&mut self) -> Result<()> {
-        use proven_engine::DeadlineStreamItem;
-
-        use std::time::{SystemTime, UNIX_EPOCH};
-        use tokio_stream::StreamExt;
-
-        let mut last_offset = 0u64;
-
-        if matches!(self.phase, ProcessorPhase::Replay) {
-            // Get current time
-            let physical = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_micros() as u64;
-            let current_time = Timestamp::from_micros(physical);
-
-            let client = self.client.clone();
-            let stream_name = self.stream_name.clone();
-
-            // Stream messages until current time
-            let replay_stream = client
-                .stream_messages_until_deadline(&stream_name, Some(0), current_time)
-                .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
-
-            tokio::pin!(replay_stream);
-
-            while let Some(item) = replay_stream.next().await {
-                match item {
-                    DeadlineStreamItem::Message(message, timestamp, offset) => {
-                        last_offset = offset;
-                        if let Err(e) = self.process_message(message, timestamp, offset).await {
-                            tracing::error!("Error during replay at offset {}: {:?}", offset, e);
-                        }
-                    }
-                    DeadlineStreamItem::DeadlineReached => {
-                        // Transition to recovery then live
-                        self.phase = ProcessorPhase::Recovery;
-                        self.router.run_recovery_check(current_time).await?;
-                        self.phase = ProcessorPhase::Live;
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.current_offset = last_offset;
-        Ok(())
-    }
-
-    /// Run live processing
-    async fn run_live_processing(
-        mut self,
-        mut shutdown_rx: oneshot::Receiver<()>,
-        mut live_stream: MessageStream,
-    ) -> Result<()> {
-        // Subscribe to readonly messages via pubsub
-        let mut readonly_stream = match self
+        // Subscribe to readonly pubsub (ReadOnly + AdHoc reads)
+        let mut readonly_stream = self
             .client
             .subscribe(&format!("stream.{}.readonly", self.stream_name), None)
             .await
-        {
-            Ok(stream) => stream,
-            Err(e) => {
-                tracing::error!("Failed to subscribe to readonly messages: {}", e);
-                return Err(ProcessorError::EngineError(e.to_string()));
-            }
-        };
+            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
 
-        // Timeout interval for periodic maintenance
+        // Periodic maintenance interval (100ms)
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
-                // Prioritize ordered stream (biased select)
+                // Prioritize shutdown and ordered stream
                 biased;
 
-                // Check for shutdown
+                // Shutdown signal
                 _ = &mut shutdown_rx => {
-                    tracing::info!("Stream processor for {} shutting down", self.stream_name);
+                    tracing::info!("[{}] Shutdown signal received", self.stream_name);
                     break;
                 }
 
-                // Ordered stream messages (ReadWrite/AdHoc)
-                result = live_stream.recv() => {
+                // Ordered stream messages (ReadWrite + AdHoc writes)
+                result = ordered_stream.recv() => {
                     match result {
                         Some((message, timestamp, offset)) => {
-                            if let Err(e) = self.process_message(message, timestamp, offset).await {
-                                tracing::error!("Error processing message at offset {}: {:?}", offset, e);
+                            if let Err(e) = self.process_ordered(message, timestamp, offset) {
+                                tracing::error!(
+                                    "[{}] Error processing ordered message at offset {}: {:?}",
+                                    self.stream_name, offset, e
+                                );
                             }
                         }
                         None => {
-                            // Stream ended
+                            tracing::warn!("[{}] Ordered stream ended", self.stream_name);
                             break;
                         }
                     }
                 }
 
-                // Unordered readonly messages via pubsub
+                // Unordered pubsub messages (ReadOnly + AdHoc reads)
                 Some(message) = readonly_stream.recv() => {
-                    if let Err(e) = self.process_readonly_message(message).await {
-                        tracing::error!("Error processing readonly message: {:?}", e);
+                    if let Err(e) = self.process_readonly(message) {
+                        tracing::error!(
+                            "[{}] Error processing readonly message: {:?}",
+                            self.stream_name, e
+                        );
                     }
                 }
 
-                // Periodic maintenance (recovery, snapshots)
+                // Periodic maintenance
                 _ = interval.tick() => {
-                    // Run recovery check for expired transactions
-                    // Use wall-clock time instead of last_log_timestamp so recovery
-                    // can detect expired transactions even when processor is blocked
-                    if let Err(e) = self
-                        .router
-                        .run_recovery_check(Timestamp::now())
-                        .await
-                    {
-                        tracing::warn!("Failed to run recovery check: {:?}", e);
+                    // Run recovery for expired prepared transactions
+                    if let Err(e) = self.run_recovery(Timestamp::now()).await {
+                        tracing::warn!(
+                            "[{}] Recovery check failed: {:?}",
+                            self.stream_name, e
+                        );
                     }
 
-                    // Check for snapshot
-                    if let Err(e) = self.try_snapshot().await {
-                        tracing::warn!("Failed to create snapshot: {:?}", e);
-                    }
+                    // Garbage collect completed transactions (older than 5 minutes)
+                    let cutoff = Timestamp::now().sub_micros(5 * 60 * 1_000_000);
+                    self.tx_manager.gc_completed(cutoff);
                 }
             }
         }
 
+        tracing::info!("[{}] Live processing stopped", self.stream_name);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{OperationResult, TransactionEngine};
+    use proven_common::{Operation, OperationType, Response, TransactionId};
+    use proven_engine::MockClient;
+    use proven_protocol::{OperationMessage, TransactionControlMessage, TransactionMode};
+    use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestOp(String);
+    impl Operation for TestOp {
+        fn operation_type(&self) -> OperationType {
+            OperationType::Write
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct TestResponse(String);
+    impl Response for TestResponse {}
+
+    struct TestEngine {
+        operations: Vec<String>,
+        begun: Vec<TransactionId>,
+        committed: Vec<TransactionId>,
+    }
+
+    impl TransactionEngine for TestEngine {
+        type Operation = TestOp;
+        type Response = TestResponse;
+
+        fn read_at_timestamp(
+            &mut self,
+            _operation: Self::Operation,
+            _read_txn_id: TransactionId,
+        ) -> OperationResult<Self::Response> {
+            OperationResult::Complete(TestResponse("read".to_string()))
+        }
+
+        fn apply_operation(
+            &mut self,
+            operation: Self::Operation,
+            _txn_id: TransactionId,
+            _log_index: u64,
+        ) -> OperationResult<Self::Response> {
+            self.operations.push(operation.0.clone());
+            OperationResult::Complete(TestResponse(format!("executed: {}", operation.0)))
+        }
+
+        fn begin(&mut self, txn_id: TransactionId, _log_index: u64) {
+            self.begun.push(txn_id);
+        }
+
+        fn prepare(&mut self, _txn_id: TransactionId, _log_index: u64) {}
+        fn commit(&mut self, txn_id: TransactionId, _log_index: u64) {
+            self.committed.push(txn_id);
+        }
+        fn abort(&mut self, _txn_id: TransactionId, _log_index: u64) {}
+        fn engine_name(&self) -> &str {
+            "test"
+        }
+    }
+
+    fn create_processor() -> StreamProcessor<TestEngine> {
+        let mock_engine_for_client = Arc::new(proven_engine::MockEngine::new());
+        let client = Arc::new(MockClient::new(
+            "test-node".to_string(),
+            mock_engine_for_client,
+        ));
+        let engine = TestEngine {
+            operations: Vec::new(),
+            begun: Vec::new(),
+            committed: Vec::new(),
+        };
+
+        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+
+        // For tests, start in Live phase directly (skip replay)
+        processor.phase = ProcessorPhase::Live;
+        processor
+    }
+
+    #[tokio::test]
+    async fn test_process_adhoc_operation() {
+        let mut processor = create_processor();
+
+        let op_msg = CoordinatorMessage::Operation(OperationMessage {
+            txn_id: TransactionId::new(),
+            coordinator_id: "coord-1".to_string(),
+            request_id: "req-1".to_string(),
+            txn_deadline: None,
+            mode: TransactionMode::AdHoc,
+            operation: TestOp("write1".to_string()),
+        });
+
+        let message = op_msg.into_message();
+        let result = processor.process_ordered(message, Timestamp::now(), 1);
+
+        assert!(result.is_ok());
+        assert_eq!(processor.engine().operations.len(), 1);
+        assert_eq!(processor.engine().operations[0], "write1");
+        assert_eq!(processor.current_offset(), 1);
+
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn test_replay_executes_operations() {
+        let mut processor = create_processor();
+        processor.transition_to(ProcessorPhase::Replay);
+
+        let txn_id = TransactionId::new();
+        let op_msg = CoordinatorMessage::Operation(OperationMessage {
+            txn_id,
+            coordinator_id: "coord-1".to_string(),
+            request_id: "req-1".to_string(),
+            txn_deadline: Some(Timestamp::from_micros(10000)),
+            mode: TransactionMode::ReadWrite,
+            operation: TestOp("write1".to_string()),
+        });
+
+        let message = op_msg.into_message();
+        let result = processor.process_ordered(message, Timestamp::now(), 1);
+
+        assert!(result.is_ok());
+
+        // During replay, operations ARE executed to rebuild engine state
+        assert_eq!(processor.engine().operations.len(), 1);
+        assert_eq!(processor.engine().operations[0], "write1");
+
+        // Transaction should be tracked
+        assert!(processor.transaction_manager().exists(txn_id));
+
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn test_phase_transitions() {
+        let mut processor = create_processor();
+
+        assert_eq!(processor.phase(), ProcessorPhase::Live);
+
+        processor.transition_to(ProcessorPhase::Replay);
+        assert_eq!(processor.phase(), ProcessorPhase::Replay);
+
+        processor.transition_to(ProcessorPhase::Live);
+        assert_eq!(processor.phase(), ProcessorPhase::Live);
+    }
+
+    #[tokio::test]
+    async fn test_replay_tracks_prepare() {
+        let mut processor = create_processor();
+        processor.transition_to(ProcessorPhase::Replay);
+
+        let txn_id = TransactionId::new();
+
+        // First, track begin
+        let op_msg = CoordinatorMessage::Operation(OperationMessage {
+            txn_id,
+            coordinator_id: "coord-1".to_string(),
+            request_id: "req-1".to_string(),
+            txn_deadline: Some(Timestamp::from_micros(10000)),
+            mode: TransactionMode::ReadWrite,
+            operation: TestOp("write1".to_string()),
+        });
+
+        processor
+            .process_ordered(op_msg.into_message(), Timestamp::now(), 1)
+            .unwrap();
+
+        // Then track prepare
+        let ctrl_msg: CoordinatorMessage<TestOp> =
+            CoordinatorMessage::Control(TransactionControlMessage {
+                txn_id,
+                phase: proven_protocol::TransactionPhase::Prepare(std::collections::HashMap::new()),
+                coordinator_id: Some("coord-1".to_string()),
+                request_id: Some("req-1".to_string()),
+            });
+
+        processor
+            .process_ordered(ctrl_msg.into_message(), Timestamp::now(), 2)
+            .unwrap();
+
+        // Transaction should exist and be in prepared state
+        let state = processor.transaction_manager().get(txn_id).unwrap();
+        assert_eq!(state.phase, crate::transaction::TransactionPhase::Prepared);
     }
 }
