@@ -15,7 +15,7 @@ use proven_protocol::CoordinatorMessage;
 /// - Auto-begins and auto-commits
 /// - Handles blocking with immediate abort
 /// - Does not participate in 2PC
-pub async fn execute_adhoc<E: TransactionEngine>(
+pub fn execute_adhoc<E: TransactionEngine>(
     engine: &mut E,
     message: Message,
     _msg_timestamp: Timestamp,
@@ -57,7 +57,7 @@ pub async fn execute_adhoc<E: TransactionEngine>(
             response_sender.send_success(&coordinator_id, None, request_id, response);
 
             // Retry any deferred operations that were waiting on this transaction
-            retry_deferred_for_transaction(engine, deferred_manager, txn_id, response_sender).await;
+            retry_deferred_for_transaction(engine, deferred_manager, txn_id, response_sender);
 
             Ok(())
         }
@@ -84,7 +84,7 @@ pub async fn execute_adhoc<E: TransactionEngine>(
 }
 
 /// Retry deferred operations after a transaction commits
-async fn retry_deferred_for_transaction<E: TransactionEngine>(
+fn retry_deferred_for_transaction<E: TransactionEngine>(
     engine: &mut E,
     deferred_manager: &mut DeferredOperationsManager<E::Operation>,
     completed_txn: TransactionId,

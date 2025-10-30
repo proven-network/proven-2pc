@@ -67,7 +67,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Route a message based on transaction mode
-    pub async fn route_message(
+    pub fn route_message(
         &mut self,
         message: Message,
         msg_timestamp: Timestamp,
@@ -101,25 +101,22 @@ impl<E: TransactionEngine> MessageRouter<E> {
                     &self.response_sender,
                     &mut self.context.deferred_manager,
                 )
-                .await
             }
             TransactionMode::ReadWrite => {
                 // Read-write needs full routing through this router
                 self.process_read_write_message(message, msg_timestamp, log_index)
-                    .await
             }
         }
     }
 
     /// Route a readonly message from pubsub (no log index)
-    pub async fn route_readonly_message(&mut self, message: Message) -> Result<()> {
+    pub fn route_readonly_message(&mut self, message: Message) -> Result<()> {
         execution::read_only::execute_read_only(
             &mut self.engine,
             message,
             &self.response_sender,
             &mut self.context.deferred_manager,
         )
-        .await
     }
 
     /// Track transaction state during replay phase
@@ -176,7 +173,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Process a read-write transaction message
-    async fn process_read_write_message(
+    fn process_read_write_message(
         &mut self,
         message: Message,
         msg_timestamp: Timestamp,
@@ -233,18 +230,16 @@ impl<E: TransactionEngine> MessageRouter<E> {
         match coord_msg {
             CoordinatorMessage::Control(ctrl) => {
                 self.handle_control_message(ctrl, txn_id, &txn_id_str, msg_timestamp, log_index)
-                    .await
             }
             CoordinatorMessage::Operation(op) => {
                 self.handle_operation_message(op, txn_id, &txn_id_str, log_index)
-                    .await
             }
             CoordinatorMessage::ReadOnly { .. } => unreachable!("Already checked above"),
         }
     }
 
     /// Handle transaction control messages using typed message
-    async fn handle_control_message(
+    fn handle_control_message(
         &mut self,
         ctrl: TransactionControlMessage,
         txn_id: TransactionId,
@@ -258,41 +253,33 @@ impl<E: TransactionEngine> MessageRouter<E> {
         let request_id = ctrl.request_id;
 
         match ctrl.phase {
-            TransactionPhase::Prepare => {
-                self.handle_prepare(
-                    txn_id,
-                    txn_id_str,
-                    coordinator_id,
-                    request_id,
-                    msg_timestamp,
-                    log_index,
-                )
-                .await
-            }
-            TransactionPhase::PrepareAndCommit => {
-                self.handle_prepare_and_commit(
-                    txn_id,
-                    txn_id_str,
-                    coordinator_id,
-                    request_id,
-                    msg_timestamp,
-                    log_index,
-                )
-                .await
-            }
+            TransactionPhase::Prepare => self.handle_prepare(
+                txn_id,
+                txn_id_str,
+                coordinator_id,
+                request_id,
+                msg_timestamp,
+                log_index,
+            ),
+            TransactionPhase::PrepareAndCommit => self.handle_prepare_and_commit(
+                txn_id,
+                txn_id_str,
+                coordinator_id,
+                request_id,
+                msg_timestamp,
+                log_index,
+            ),
             TransactionPhase::Commit => {
                 self.handle_commit(txn_id, txn_id_str, coordinator_id, request_id, log_index)
-                    .await
             }
             TransactionPhase::Abort => {
                 self.handle_abort(txn_id, txn_id_str, coordinator_id, request_id, log_index)
-                    .await
             }
         }
     }
 
     /// Handle a regular operation message using typed message
-    async fn handle_operation_message(
+    fn handle_operation_message(
         &mut self,
         op: OperationMessage,
         txn_id: TransactionId,
@@ -342,11 +329,10 @@ impl<E: TransactionEngine> MessageRouter<E> {
             request_id,
             log_index,
         )
-        .await
     }
 
     /// Execute an operation and handle the result
-    async fn execute_operation(
+    fn execute_operation(
         &mut self,
         operation: E::Operation,
         txn_id: TransactionId,
@@ -375,7 +361,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
                 if !younger_blockers.is_empty() {
                     // Wound younger transactions
                     for victim in younger_blockers {
-                        self.wound_transaction(victim, txn_id).await;
+                        self.wound_transaction(victim, txn_id);
                     }
 
                     // Retry after wounding
@@ -417,7 +403,7 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Handle prepare phase
-    async fn handle_prepare(
+    fn handle_prepare(
         &mut self,
         txn_id: TransactionId,
         txn_id_str: &str,
@@ -484,13 +470,13 @@ impl<E: TransactionEngine> MessageRouter<E> {
         }
 
         // Retry prepare-waiting operations
-        self.retry_prepare_waiting_operations(txn_id).await;
+        self.retry_prepare_waiting_operations(txn_id);
 
         Ok(())
     }
 
     /// Handle prepare and commit
-    async fn handle_prepare_and_commit(
+    fn handle_prepare_and_commit(
         &mut self,
         txn_id: TransactionId,
         txn_id_str: &str,
@@ -545,14 +531,14 @@ impl<E: TransactionEngine> MessageRouter<E> {
         }
 
         // Retry waiting operations
-        self.retry_prepare_waiting_operations(txn_id).await;
-        self.retry_deferred_operations(txn_id).await;
+        self.retry_prepare_waiting_operations(txn_id);
+        self.retry_deferred_operations(txn_id);
 
         Ok(())
     }
 
     /// Handle commit phase
-    async fn handle_commit(
+    fn handle_commit(
         &mut self,
         txn_id: TransactionId,
         _txn_id_str: &str,
@@ -567,13 +553,13 @@ impl<E: TransactionEngine> MessageRouter<E> {
         self.context.cleanup_committed(&txn_id);
 
         // Retry deferred operations
-        self.retry_deferred_operations(txn_id).await;
+        self.retry_deferred_operations(txn_id);
 
         Ok(())
     }
 
     /// Handle abort phase
-    async fn handle_abort(
+    fn handle_abort(
         &mut self,
         txn_id: TransactionId,
         _txn_id_str: &str,
@@ -588,13 +574,13 @@ impl<E: TransactionEngine> MessageRouter<E> {
         self.context.cleanup_aborted(&txn_id);
 
         // Retry deferred operations
-        self.retry_deferred_operations(txn_id).await;
+        self.retry_deferred_operations(txn_id);
 
         Ok(())
     }
 
     /// Wound a transaction
-    async fn wound_transaction(&mut self, victim: TransactionId, wounded_by: TransactionId) {
+    fn wound_transaction(&mut self, victim: TransactionId, wounded_by: TransactionId) {
         // Mark as wounded
         self.context.wound_transaction(victim, wounded_by);
 
@@ -612,60 +598,65 @@ impl<E: TransactionEngine> MessageRouter<E> {
     }
 
     /// Retry operations waiting on prepare
-    async fn retry_prepare_waiting_operations(&mut self, prepared_txn: TransactionId) {
+    fn retry_prepare_waiting_operations(&mut self, prepared_txn: TransactionId) {
         let waiting_ops = self
             .context
             .deferred_manager
             .take_prepare_waiting_operations(&prepared_txn);
 
         for deferred in waiting_ops {
-            if let Err(e) = self
-                .execute_operation(
-                    deferred.operation,
-                    deferred.txn_id,
-                    &deferred.txn_id.to_string(),
-                    &deferred.coordinator_id,
-                    deferred.request_id,
-                    0, // Deferred operations use dummy log index
-                )
-                .await
-            {
-                tracing::error!(
-                    "Failed to retry deferred operation for txn {}: {:?}",
-                    deferred.txn_id,
-                    e
-                );
+            let txn_id = deferred.txn_id;
+            let operation = deferred.operation;
+            let coordinator_id = deferred.coordinator_id;
+            let request_id = deferred.request_id;
+
+            match self.engine.apply_operation(operation.clone(), txn_id, 0) {
+                OperationResult::Complete(response) => {
+                    // Send successful response
+                    self.send_response(&coordinator_id, &txn_id.to_string(), response, request_id);
+                }
+                OperationResult::WouldBlock { blockers } => {
+                    // Re-defer with all blockers
+                    self.context.deferred_manager.defer_operation(
+                        operation,
+                        txn_id,
+                        blockers,
+                        coordinator_id,
+                        request_id,
+                    );
+                }
             }
         }
     }
 
     /// Retry operations waiting on commit/abort
-    async fn retry_deferred_operations(&mut self, completed_txn: TransactionId) {
+    fn retry_deferred_operations(&mut self, completed_txn: TransactionId) {
         let waiting_ops = self
             .context
             .deferred_manager
             .take_commit_waiting_operations(&completed_txn);
 
         for deferred in waiting_ops {
-            // Check if this is a read-only operation (would have used read timestamp as txn_id)
-            // For now, treat all deferred operations the same way
-            // In the future, we might want to re-route read-only ops differently
-            if let Err(e) = self
-                .execute_operation(
-                    deferred.operation,
-                    deferred.txn_id,
-                    &deferred.txn_id.to_string(),
-                    &deferred.coordinator_id,
-                    deferred.request_id,
-                    0, // Deferred operations use dummy log index
-                )
-                .await
-            {
-                tracing::error!(
-                    "Failed to retry deferred operation for txn {}: {:?}",
-                    deferred.txn_id,
-                    e
-                );
+            let txn_id = deferred.txn_id;
+            let operation = deferred.operation;
+            let coordinator_id = deferred.coordinator_id;
+            let request_id = deferred.request_id;
+
+            match self.engine.apply_operation(operation.clone(), txn_id, 0) {
+                OperationResult::Complete(response) => {
+                    // Send successful response
+                    self.send_response(&coordinator_id, &txn_id.to_string(), response, request_id);
+                }
+                OperationResult::WouldBlock { blockers } => {
+                    // Re-defer with all blockers
+                    self.context.deferred_manager.defer_operation(
+                        operation,
+                        txn_id,
+                        blockers,
+                        coordinator_id,
+                        request_id,
+                    );
+                }
             }
         }
     }

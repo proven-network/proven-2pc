@@ -179,7 +179,6 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
                 // In live mode, route the message with log index
                 self.router
                     .route_message(message, msg_timestamp, msg_offset)
-                    .await
             }
         }
     }
@@ -307,7 +306,7 @@ impl<E: TransactionEngine + Send> StreamProcessor<E> {
 
         // Route through readonly execution path
         // The message contains the read_timestamp header set by the coordinator
-        self.router.route_readonly_message(message).await
+        self.router.route_readonly_message(message)
     }
 
     /// Perform the replay phase

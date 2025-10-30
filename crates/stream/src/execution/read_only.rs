@@ -17,7 +17,7 @@ use proven_protocol::CoordinatorMessage;
 ///
 /// Read-only operations come via pubsub and must have a read_timestamp header
 /// set by the coordinator (ReadOnlyExecutor).
-pub async fn execute_read_only<E: TransactionEngine>(
+pub fn execute_read_only<E: TransactionEngine>(
     engine: &mut E,
     message: Message,
     response_sender: &ResponseSender,
