@@ -7,10 +7,9 @@
 mod tests {
     use crate::processor::StreamProcessor;
     use crate::test_utils::{LockOp, LockResponse, TestEngine};
-    use proven_common::Timestamp;
+    use proven_common::{Timestamp, TransactionId};
     use proven_engine::{Message, MockClient, MockEngine};
     use proven_snapshot_memory::MemorySnapshotStore;
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -35,27 +34,47 @@ mod tests {
         coordinator_id: &str,
         txn_phase: Option<&str>,
     ) -> Message {
-        let mut headers = HashMap::new();
-        headers.insert("txn_id".to_string(), txn_id.to_string());
-        headers.insert("coordinator_id".to_string(), coordinator_id.to_string());
-        headers.insert("request_id".to_string(), format!("req-{}", txn_id));
+        use proven_protocol::messages::TransactionMode;
+        use proven_protocol::{
+            CoordinatorMessage, OperationMessage, TransactionControlMessage, TransactionPhase,
+        };
+
+        let txn_id = TransactionId::parse(txn_id).unwrap();
 
         // Add deadline (far in the future to avoid timeout issues in tests)
         let now = Timestamp::now();
         let deadline = now.add_micros(60_000_000); // 60 seconds in the future
-        headers.insert("txn_deadline".to_string(), deadline.to_string());
 
-        if let Some(phase) = txn_phase {
-            headers.insert("txn_phase".to_string(), phase.to_string());
-        }
-
-        let body = if let Some(op) = operation {
-            serde_json::to_vec(&op).unwrap()
+        if let Some(phase_str) = txn_phase {
+            // Control message (prepare/commit/abort)
+            let phase = TransactionPhase::parse(phase_str).unwrap();
+            CoordinatorMessage::Control(TransactionControlMessage {
+                txn_id,
+                phase,
+                coordinator_id: Some(coordinator_id.to_string()),
+                request_id: Some(format!("req-{}", txn_id)),
+                participants: None,
+            })
+            .into_message()
         } else {
-            Vec::new()
-        };
+            // Operation message
+            let body = if let Some(op) = operation {
+                serde_json::to_vec(&op).unwrap()
+            } else {
+                Vec::new()
+            };
 
-        Message::new(body, headers)
+            CoordinatorMessage::Operation(OperationMessage {
+                txn_id,
+                coordinator_id: coordinator_id.to_string(),
+                request_id: format!("req-{}", txn_id),
+                txn_deadline: Some(deadline),
+                participants: None,
+                mode: TransactionMode::ReadWrite,
+                operation: body,
+            })
+            .into_message()
+        }
     }
 
     #[tokio::test]
