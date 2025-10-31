@@ -688,6 +688,7 @@ impl TransactionEngine for QueueTransactionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proven_stream::AutoBatchEngine;
 
     fn create_timestamp() -> TransactionId {
         TransactionId::new()
@@ -695,220 +696,162 @@ mod tests {
 
     #[test]
     fn test_engine_basic_operations() {
-        let mut engine = QueueTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(QueueTransactionEngine::new());
         let tx1 = create_timestamp();
 
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx1);
-        engine.commit_batch(batch, 1);
+        engine.begin(tx1);
 
         // Test enqueue
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::I64(42),
         };
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, enqueue_op, tx1);
+        let result = engine.apply_operation(enqueue_op, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Enqueued)
         ));
-        engine.commit_batch(batch, 2);
 
         // Test peek
         let peek_op = QueueOperation::Peek;
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, peek_op, tx1);
+        let result = engine.apply_operation(peek_op, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(42))))
         ));
-        engine.commit_batch(batch, 3);
 
         // Test commit
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx1);
-        engine.commit_batch(batch, 4);
+        engine.commit(tx1);
     }
 
     #[test]
     fn test_engine_blocking() {
-        let mut engine = QueueTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(QueueTransactionEngine::new());
         let tx1 = create_timestamp();
         let tx2 = create_timestamp();
 
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx1);
-        engine.commit_batch(batch, 1);
-
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx2);
-        engine.commit_batch(batch, 2);
+        engine.begin(tx1);
+        engine.begin(tx2);
 
         // tx1 gets append lock
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Str("tx1".to_string()),
         };
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, enqueue_op, tx1);
+        let result = engine.apply_operation(enqueue_op, tx1);
         assert!(matches!(result, OperationResult::Complete(_)));
-        engine.commit_batch(batch, 3);
 
         // tx2 should be blocked trying to get exclusive lock
         let dequeue_op = QueueOperation::Dequeue;
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, dequeue_op, tx2);
+        let result = engine.apply_operation(dequeue_op, tx2);
         assert!(matches!(result, OperationResult::WouldBlock { .. }));
-        engine.commit_batch(batch, 4);
     }
 
     #[test]
     fn test_engine_abort() {
-        let mut engine = QueueTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(QueueTransactionEngine::new());
         let tx1 = create_timestamp();
 
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx1);
-        engine.commit_batch(batch, 1);
+        engine.begin(tx1);
 
         // Execute operation
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Bool(true),
         };
 
-        let mut batch = engine.start_batch();
-        engine.apply_operation(&mut batch, enqueue_op, tx1);
-        engine.commit_batch(batch, 2);
+        engine.apply_operation(enqueue_op, tx1);
 
         // Abort
-        let mut batch = engine.start_batch();
-        engine.abort(&mut batch, tx1);
-        engine.commit_batch(batch, 3);
+        engine.abort(tx1);
 
         // Queue should be empty after abort
         let tx2 = create_timestamp();
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx2);
-        engine.commit_batch(batch, 4);
+        engine.begin(tx2);
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, QueueOperation::IsEmpty, tx2);
+        let result = engine.apply_operation(QueueOperation::IsEmpty, tx2);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::IsEmpty(true))
         ));
-        engine.commit_batch(batch, 5);
     }
 
     #[test]
     fn test_engine_dequeue() {
-        let mut engine = QueueTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(QueueTransactionEngine::new());
         let tx1 = create_timestamp();
 
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx1);
-        engine.commit_batch(batch, 1);
+        engine.begin(tx1);
 
         // Enqueue two values
-        let mut batch = engine.start_batch();
         engine.apply_operation(
-            &mut batch,
             QueueOperation::Enqueue {
                 value: QueueValue::Str("first".to_string()),
             },
             tx1,
         );
-        engine.commit_batch(batch, 2);
 
-        let mut batch = engine.start_batch();
         engine.apply_operation(
-            &mut batch,
             QueueOperation::Enqueue {
                 value: QueueValue::Str("second".to_string()),
             },
             tx1,
         );
-        engine.commit_batch(batch, 3);
 
         // Dequeue should return FIFO order
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx1);
+        let result = engine.apply_operation(QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "first"
         ));
-        engine.commit_batch(batch, 4);
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx1);
+        let result = engine.apply_operation(QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "second"
         ));
-        engine.commit_batch(batch, 5);
 
         // Should be empty now
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx1);
+        let result = engine.apply_operation(QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Dequeued(None))
         ));
-        engine.commit_batch(batch, 6);
 
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx1);
-        engine.commit_batch(batch, 7);
+        engine.commit(tx1);
     }
 
     #[test]
     fn test_snapshot_after_dequeue() {
-        let mut engine = QueueTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(QueueTransactionEngine::new());
 
         // Enqueue 3 values in separate transactions
         for i in 0..3 {
             let tx = create_timestamp();
-            let mut batch = engine.start_batch();
-            engine.begin(&mut batch, tx);
-            engine.commit_batch(batch, i * 4);
+            engine.begin(tx);
 
-            let mut batch = engine.start_batch();
             engine.apply_operation(
-                &mut batch,
                 QueueOperation::Enqueue {
                     value: QueueValue::I64(i as i64),
                 },
                 tx,
             );
-            engine.commit_batch(batch, i * 4 + 1);
 
-            let mut batch = engine.start_batch();
-            engine.commit(&mut batch, tx);
-            engine.commit_batch(batch, i * 4 + 2);
+            engine.commit(tx);
         }
 
         // Dequeue 2 values
         let tx = create_timestamp();
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx);
-        engine.commit_batch(batch, 10);
+        engine.begin(tx);
 
-        let mut batch = engine.start_batch();
-        let r1 = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx);
+        let r1 = engine.apply_operation(QueueOperation::Dequeue, tx);
         println!("First dequeue: {:?}", r1);
-        engine.commit_batch(batch, 11);
 
-        let mut batch = engine.start_batch();
-        let r2 = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx);
+        let r2 = engine.apply_operation(QueueOperation::Dequeue, tx);
         println!("Second dequeue: {:?}", r2);
-        engine.commit_batch(batch, 12);
 
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx);
-        engine.commit_batch(batch, 13);
+        engine.commit(tx);
 
         // Snapshot peek should see value 2
         let result = engine.read_at_timestamp(QueueOperation::Peek, create_timestamp());

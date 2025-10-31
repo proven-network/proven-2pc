@@ -5,23 +5,15 @@
 
 use proven_common::TransactionId;
 use proven_queue::{QueueOperation, QueueTransactionEngine, QueueValue};
-use proven_stream::TransactionEngine;
+use proven_stream::AutoBatchEngine;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-/// Global log index counter for benchmarks
-static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
-
-fn next_log_index() -> u64 {
-    LOG_INDEX.fetch_add(1, Ordering::Relaxed)
-}
 
 fn main() {
     println!("=== 1 Million Enqueue Benchmark ===\n");
 
-    // Create Queue engine directly
-    let mut queue_engine = QueueTransactionEngine::new();
+    // Create Queue engine with auto-batch wrapper
+    let mut queue_engine = AutoBatchEngine::new(QueueTransactionEngine::new());
 
     // Benchmark configuration
     const NUM_ENQUEUES: usize = 1_000_000;
@@ -38,9 +30,7 @@ fn main() {
     for i in 0..NUM_ENQUEUES {
         // Generate unique transaction ID with incrementing timestamp
         let txn_id = TransactionId::new();
-        let mut batch = queue_engine.start_batch();
-        queue_engine.begin(&mut batch, txn_id);
-        queue_engine.commit_batch(batch, next_log_index());
+        queue_engine.begin(txn_id);
 
         // Create enqueue operation with various value types to simulate real usage
         let value = match i % 6 {
@@ -59,15 +49,9 @@ fn main() {
         let enqueue = QueueOperation::Enqueue { value };
 
         // Execute enqueue directly on engine
-        let mut batch = queue_engine.start_batch();
-        match queue_engine.apply_operation(&mut batch, enqueue, txn_id) {
+        match queue_engine.apply_operation(enqueue, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
-                queue_engine.commit_batch(batch, next_log_index());
-
-                // Commit the transaction
-                let mut batch = queue_engine.start_batch();
-                queue_engine.commit(&mut batch, txn_id);
-                queue_engine.commit_batch(batch, next_log_index());
+                queue_engine.commit(txn_id);
             }
             _ => {
                 eprintln!("\nError at enqueue {}", i);
@@ -111,22 +95,14 @@ fn main() {
     // Verify queue size
     println!("\nVerifying queue size...");
     let verify_txn = TransactionId::new();
-    let mut batch = queue_engine.start_batch();
-    queue_engine.begin(&mut batch, verify_txn);
-    queue_engine.commit_batch(batch, next_log_index());
+    queue_engine.begin(verify_txn);
 
     let size_op = QueueOperation::Size;
 
-    let mut batch = queue_engine.start_batch();
-    match queue_engine.apply_operation(&mut batch, size_op, verify_txn) {
+    match queue_engine.apply_operation(size_op, verify_txn) {
         proven_stream::OperationResult::Complete(_response) => {
             println!("✓ Queue size query executed successfully");
-            queue_engine.commit_batch(batch, next_log_index());
-
-            // The response would contain the actual size
-            let mut batch = queue_engine.start_batch();
-            queue_engine.commit(&mut batch, verify_txn);
-            queue_engine.commit_batch(batch, next_log_index());
+            queue_engine.commit(verify_txn);
         }
         _ => println!("⚠ Size query failed"),
     }
@@ -138,20 +114,13 @@ fn main() {
 
     for sample_idx in 0..SAMPLE_SIZE {
         let dequeue_txn = TransactionId::new();
-        let mut batch = queue_engine.start_batch();
-        queue_engine.begin(&mut batch, dequeue_txn);
-        queue_engine.commit_batch(batch, next_log_index());
+        queue_engine.begin(dequeue_txn);
 
         let dequeue = QueueOperation::Dequeue;
 
-        let mut batch = queue_engine.start_batch();
-        match queue_engine.apply_operation(&mut batch, dequeue, dequeue_txn) {
+        match queue_engine.apply_operation(dequeue, dequeue_txn) {
             proven_stream::OperationResult::Complete(_) => {
-                queue_engine.commit_batch(batch, next_log_index());
-
-                let mut batch = queue_engine.start_batch();
-                queue_engine.commit(&mut batch, dequeue_txn);
-                queue_engine.commit_batch(batch, next_log_index());
+                queue_engine.commit(dequeue_txn);
                 verified += 1;
             }
             _ => {

@@ -3,15 +3,14 @@
 
 use proven_common::TransactionId;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
-use proven_stream::{OperationResult, TransactionEngine};
+use proven_stream::{AutoBatchEngine, OperationResult};
 use proven_value::Value;
 use std::collections::HashMap;
 
 /// Test context that manages engine, transactions, and provides helper methods
 pub struct TestContext {
-    pub engine: SqlTransactionEngine,
+    pub engine: AutoBatchEngine<SqlTransactionEngine>,
     current_timestamp: u64,
-    current_log_index: u64,
     in_transaction: bool,
     current_tx: Option<TransactionId>,
 }
@@ -26,9 +25,8 @@ impl TestContext {
             .as_micros() as u64;
 
         Self {
-            engine: SqlTransactionEngine::new(SqlStorageConfig::default()),
+            engine: AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default())),
             current_timestamp: now_micros,
-            current_log_index: 0,
             in_transaction: false,
             current_tx: None,
         }
@@ -43,20 +41,10 @@ impl TestContext {
         ts
     }
 
-    /// Get and increment log index
-    fn next_log_index(&mut self) -> u64 {
-        let index = self.current_log_index;
-        self.current_log_index += 1;
-        index
-    }
-
     /// Begin a new transaction
     pub fn begin(&mut self) {
         let tx = self.next_timestamp();
-        let log_index = self.next_log_index();
-        let mut batch = self.engine.start_batch();
-        self.engine.begin(&mut batch, tx);
-        self.engine.commit_batch(batch, log_index);
+        self.engine.begin(tx);
         self.in_transaction = true;
         self.current_tx = Some(tx);
     }
@@ -64,10 +52,7 @@ impl TestContext {
     /// Commit the current transaction
     pub fn commit(&mut self) {
         if let Some(tx) = self.current_tx {
-            let log_index = self.next_log_index();
-            let mut batch = self.engine.start_batch();
-            self.engine.commit(&mut batch, tx);
-            self.engine.commit_batch(batch, log_index);
+            self.engine.commit(tx);
             self.in_transaction = false;
             self.current_tx = None;
         }
@@ -76,10 +61,7 @@ impl TestContext {
     /// Abort the current transaction
     pub fn abort(&mut self) {
         if let Some(tx) = self.current_tx {
-            let log_index = self.next_log_index();
-            let mut batch = self.engine.start_batch();
-            self.engine.abort(&mut batch, tx);
-            self.engine.commit_batch(batch, log_index);
+            self.engine.abort(tx);
             self.in_transaction = false;
             self.current_tx = None;
         }
@@ -93,18 +75,14 @@ impl TestContext {
     /// Execute SQL with parameters without expecting a result
     pub fn exec_with_params(&mut self, sql: &str, params: Vec<Value>) {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
-        let log_index = self.next_log_index();
 
-        let mut batch = self.engine.start_batch();
         let result = self.engine.apply_operation(
-            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: Some(params),
             },
             tx,
         );
-        self.engine.commit_batch(batch, log_index);
 
         match result {
             OperationResult::Complete(SqlResponse::Error(err)) => {
@@ -120,26 +98,19 @@ impl TestContext {
         let tx = self.current_tx.unwrap_or_else(|| {
             // No active transaction - create and begin a new one
             let tx = self.next_timestamp();
-            let log_idx = self.next_log_index();
-            let mut batch = self.engine.start_batch();
-            self.engine.begin(&mut batch, tx);
-            self.engine.commit_batch(batch, log_idx);
+            self.engine.begin(tx);
             self.current_tx = Some(tx);
             self.in_transaction = true;
             tx
         });
-        let log_index = self.next_log_index();
 
-        let mut batch = self.engine.start_batch();
         let result = self.engine.apply_operation(
-            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: None,
             },
             tx,
         );
-        self.engine.commit_batch(batch, log_index);
 
         match result {
             OperationResult::Complete(response) => response,
@@ -159,18 +130,14 @@ impl TestContext {
         params: Vec<Value>,
     ) -> Vec<HashMap<String, Value>> {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
-        let log_index = self.next_log_index();
 
-        let mut batch = self.engine.start_batch();
         let result = self.engine.apply_operation(
-            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: Some(params),
             },
             tx,
         );
-        self.engine.commit_batch(batch, log_index);
 
         match result {
             OperationResult::Complete(SqlResponse::QueryResult { columns, rows }) => {
@@ -200,18 +167,14 @@ impl TestContext {
     /// Execute SQL expecting an error
     pub fn exec_error(&mut self, sql: &str) -> String {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
-        let log_index = self.next_log_index();
 
-        let mut batch = self.engine.start_batch();
         let result = self.engine.apply_operation(
-            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: None,
             },
             tx,
         );
-        self.engine.commit_batch(batch, log_index);
 
         match result {
             OperationResult::Complete(SqlResponse::Error(err)) => err,

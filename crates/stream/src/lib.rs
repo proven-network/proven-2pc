@@ -16,7 +16,9 @@ pub mod transaction;
 
 // Re-export key types
 pub use dispatcher::MessageDispatcher;
-pub use engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine, TransactionMode};
+pub use engine::{
+    AutoBatchEngine, BlockingInfo, OperationResult, RetryOn, TransactionEngine, TransactionMode,
+};
 pub use error::{ProcessorError, Result};
 pub use executor::{AdHocExecutor, ReadOnlyExecutor, ReadWriteExecutor};
 pub use processor::{ProcessorPhase, StreamProcessor};

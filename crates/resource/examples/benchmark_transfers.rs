@@ -6,31 +6,21 @@
 use proven_common::TransactionId;
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceTransactionEngine};
-use proven_stream::TransactionEngine;
+use proven_stream::AutoBatchEngine;
 use rust_decimal::Decimal;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-/// Global log index counter for benchmarks
-static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
-
-fn next_log_index() -> u64 {
-    LOG_INDEX.fetch_add(1, Ordering::Relaxed)
-}
 
 fn main() {
     println!("=== 1 Million Transfer Benchmark ===\n");
 
-    // Create Resource engine directly
-    let mut resource_engine = ResourceTransactionEngine::new();
+    // Create Resource engine with auto-batch wrapper
+    let mut resource_engine = AutoBatchEngine::new(ResourceTransactionEngine::new());
 
     // Initialize the resource
     println!("Initializing resource...");
     let init_txn = TransactionId::new();
-    let mut batch = resource_engine.start_batch();
-    resource_engine.begin(&mut batch, init_txn);
-    resource_engine.commit_batch(batch, next_log_index());
+    resource_engine.begin(init_txn);
 
     let init_op = ResourceOperation::Initialize {
         name: "BenchToken".to_string(),
@@ -38,14 +28,9 @@ fn main() {
         decimals: 6, // 6 decimal places like USDC
     };
 
-    let mut batch = resource_engine.start_batch();
-    match resource_engine.apply_operation(&mut batch, init_op, init_txn) {
+    match resource_engine.apply_operation(init_op, init_txn) {
         proven_stream::OperationResult::Complete(_) => {
-            resource_engine.commit_batch(batch, next_log_index());
-
-            let mut batch = resource_engine.start_batch();
-            resource_engine.commit(&mut batch, init_txn);
-            resource_engine.commit_batch(batch, next_log_index());
+            resource_engine.commit(init_txn);
             println!("✓ Resource initialized");
         }
         _ => panic!("Failed to initialize resource"),
@@ -54,9 +39,7 @@ fn main() {
     // Mint initial supply to the source account
     println!("Minting initial supply...");
     let mint_txn = TransactionId::new();
-    let mut batch = resource_engine.start_batch();
-    resource_engine.begin(&mut batch, mint_txn);
-    resource_engine.commit_batch(batch, next_log_index());
+    resource_engine.begin(mint_txn);
 
     // Mint 1 billion tokens (with 6 decimals)
     let mint_amount = Amount::from(Decimal::from(1_000_000_000i64));
@@ -66,14 +49,9 @@ fn main() {
         memo: Some("Initial supply".to_string()),
     };
 
-    let mut batch = resource_engine.start_batch();
-    match resource_engine.apply_operation(&mut batch, mint_op, mint_txn) {
+    match resource_engine.apply_operation(mint_op, mint_txn) {
         proven_stream::OperationResult::Complete(_) => {
-            resource_engine.commit_batch(batch, next_log_index());
-
-            let mut batch = resource_engine.start_batch();
-            resource_engine.commit(&mut batch, mint_txn);
-            resource_engine.commit_batch(batch, next_log_index());
+            resource_engine.commit(mint_txn);
             println!("✓ Initial supply minted");
         }
         _ => panic!("Failed to mint initial supply"),
@@ -87,9 +65,7 @@ fn main() {
 
     for i in 0..NUM_ACCOUNTS {
         let setup_txn = TransactionId::new();
-        let mut batch = resource_engine.start_batch();
-        resource_engine.begin(&mut batch, setup_txn);
-        resource_engine.commit_batch(batch, next_log_index());
+        resource_engine.begin(setup_txn);
 
         let transfer_op = ResourceOperation::Transfer {
             from: "source_account".to_string(),
@@ -98,13 +74,9 @@ fn main() {
             memo: None,
         };
 
-        let mut batch = resource_engine.start_batch();
-        match resource_engine.apply_operation(&mut batch, transfer_op, setup_txn) {
+        match resource_engine.apply_operation(transfer_op, setup_txn) {
             proven_stream::OperationResult::Complete(_) => {
-                resource_engine.commit_batch(batch, next_log_index());
-                let mut batch = resource_engine.start_batch();
-                resource_engine.commit(&mut batch, setup_txn);
-                resource_engine.commit_batch(batch, next_log_index());
+                resource_engine.commit(setup_txn);
             }
             _ => panic!("Failed to setup account {}", i),
         }
@@ -128,9 +100,7 @@ fn main() {
     for i in 0..NUM_TRANSFERS {
         // Generate unique transaction ID
         let txn_id = TransactionId::new();
-        let mut batch = resource_engine.start_batch();
-        resource_engine.begin(&mut batch, txn_id);
-        resource_engine.commit_batch(batch, next_log_index());
+        resource_engine.begin(txn_id);
 
         // Create transfer operation
         // Transfer between different account pairs to avoid conflicts
@@ -167,21 +137,14 @@ fn main() {
         };
 
         // Execute transfer directly on engine
-        let mut batch = resource_engine.start_batch();
-        match resource_engine.apply_operation(&mut batch, transfer, txn_id) {
+        match resource_engine.apply_operation(transfer, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
-                resource_engine.commit_batch(batch, next_log_index());
-                // Commit the transaction
-                let mut batch = resource_engine.start_batch();
-                resource_engine.commit(&mut batch, txn_id);
-                resource_engine.commit_batch(batch, next_log_index());
+                resource_engine.commit(txn_id);
             }
             proven_stream::OperationResult::WouldBlock { .. } => {
                 // In a real system, we'd retry after the blocking transaction
                 // For benchmark, just skip and continue
-                let mut batch = resource_engine.start_batch();
-                resource_engine.abort(&mut batch, txn_id);
-                resource_engine.commit_batch(batch, next_log_index());
+                resource_engine.abort(txn_id);
                 continue;
             }
         }
@@ -222,19 +185,15 @@ fn main() {
     // Verify balances
     println!("\nVerifying sample balances...");
     let verify_txn = TransactionId::new();
-    let mut batch = resource_engine.start_batch();
-    resource_engine.begin(&mut batch, verify_txn);
-    resource_engine.commit_batch(batch, next_log_index());
+    resource_engine.begin(verify_txn);
 
     // Check source account balance
     let balance_op = ResourceOperation::GetBalance {
         account: "source_account".to_string(),
     };
 
-    let mut batch = resource_engine.start_batch();
-    match resource_engine.apply_operation(&mut batch, balance_op, verify_txn) {
+    match resource_engine.apply_operation(balance_op, verify_txn) {
         proven_stream::OperationResult::Complete(_response) => {
-            resource_engine.commit_batch(batch, next_log_index());
             println!("✓ Source account balance query successful");
         }
         _ => println!("⚠ Balance query failed"),
@@ -249,10 +208,8 @@ fn main() {
             account: format!("account_{}", account_idx),
         };
 
-        let mut batch = resource_engine.start_batch();
-        match resource_engine.apply_operation(&mut batch, balance_op, verify_txn) {
+        match resource_engine.apply_operation(balance_op, verify_txn) {
             proven_stream::OperationResult::Complete(_) => {
-                resource_engine.commit_batch(batch, next_log_index());
                 verified += 1;
             }
             _ => {
@@ -261,9 +218,7 @@ fn main() {
         }
     }
 
-    let mut batch = resource_engine.start_batch();
-    resource_engine.commit(&mut batch, verify_txn);
-    resource_engine.commit_batch(batch, next_log_index());
+    resource_engine.commit(verify_txn);
 
     println!(
         "✓ Verified {}/{} sample account balances",
@@ -273,19 +228,13 @@ fn main() {
 
     // Check total supply
     let supply_txn = TransactionId::new();
-    let mut batch = resource_engine.start_batch();
-    resource_engine.begin(&mut batch, supply_txn);
-    resource_engine.commit_batch(batch, next_log_index());
+    resource_engine.begin(supply_txn);
 
     let supply_op = ResourceOperation::GetTotalSupply;
-    let mut batch = resource_engine.start_batch();
-    match resource_engine.apply_operation(&mut batch, supply_op, supply_txn) {
+    match resource_engine.apply_operation(supply_op, supply_txn) {
         proven_stream::OperationResult::Complete(_) => {
-            resource_engine.commit_batch(batch, next_log_index());
             println!("✓ Total supply query successful");
-            let mut batch = resource_engine.start_batch();
-            resource_engine.commit(&mut batch, supply_txn);
-            resource_engine.commit_batch(batch, next_log_index());
+            resource_engine.commit(supply_txn);
         }
         _ => println!("⚠ Total supply query failed"),
     }

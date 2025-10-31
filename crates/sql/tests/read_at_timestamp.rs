@@ -2,16 +2,8 @@
 
 use proven_common::TransactionId;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
-use proven_stream::{OperationResult, TransactionEngine};
-use std::sync::atomic::{AtomicU64, Ordering};
+use proven_stream::{AutoBatchEngine, OperationResult};
 use uuid::Uuid;
-
-/// Global log index counter for tests
-static LOG_INDEX: AtomicU64 = AtomicU64::new(0);
-
-fn next_log_index() -> u64 {
-    LOG_INDEX.fetch_add(1, Ordering::Relaxed)
-}
 
 fn make_timestamp(n: u64) -> TransactionId {
     TransactionId::from_uuid(Uuid::from_u128(n as u128))
@@ -19,47 +11,35 @@ fn make_timestamp(n: u64) -> TransactionId {
 
 #[test]
 fn test_snapshot_read_doesnt_block_later_write() {
-    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
+    let mut engine = AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default()));
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx1);
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, create_table, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(create_table, tx1);
 
     let insert = SqlOperation::Execute {
         sql: "INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, insert, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(insert, tx1);
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx1);
 
     // Start a write transaction at timestamp 300
     let tx_write = make_timestamp(300);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx_write);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx_write);
 
     let update = SqlOperation::Execute {
         sql: "UPDATE users SET age = 31 WHERE id = 1".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    let result = engine.apply_operation(&mut batch, update, tx_write);
-    engine.commit_batch(batch, next_log_index());
+    let result = engine.apply_operation(update, tx_write);
     assert!(matches!(result, OperationResult::Complete(_)));
 
     // Snapshot read at timestamp 250 should NOT block
@@ -83,54 +63,40 @@ fn test_snapshot_read_doesnt_block_later_write() {
         panic!("Expected query result");
     }
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx_write);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx_write);
 }
 
 #[test]
 fn test_snapshot_read_blocks_on_earlier_write() {
-    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
+    let mut engine = AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default()));
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx1);
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, create_table, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(create_table, tx1);
 
     let insert = SqlOperation::Execute {
         sql: "INSERT INTO users (id, name, age) VALUES (1, 'Bob', 25)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, insert, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(insert, tx1);
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx1);
 
     // Start a write transaction at timestamp 200 (but don't commit)
     let tx_write = make_timestamp(200);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx_write);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx_write);
 
     let update = SqlOperation::Execute {
         sql: "UPDATE users SET age = 26 WHERE id = 1".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, update, tx_write);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(update, tx_write);
 
     // Snapshot read at timestamp 250 SHOULD block
     // (there's a pending write from timestamp 200)
@@ -151,9 +117,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
     }
 
     // Commit the write
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx_write);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx_write);
 
     // Now the same read should succeed
     let result = engine.read_at_timestamp(select, read_ts);
@@ -168,68 +132,50 @@ fn test_snapshot_read_blocks_on_earlier_write() {
 
 #[test]
 fn test_snapshot_read_ignores_uncommitted_changes() {
-    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
+    let mut engine = AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default()));
 
     // Create table and insert data
     let tx1 = make_timestamp(100);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx1);
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price INTEGER)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, create_table, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(create_table, tx1);
 
     let insert1 = SqlOperation::Execute {
         sql: "INSERT INTO products (id, name, price) VALUES (1, 'Widget', 100)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, insert1, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(insert1, tx1);
 
     let insert2 = SqlOperation::Execute {
         sql: "INSERT INTO products (id, name, price) VALUES (2, 'Gadget', 200)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, insert2, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(insert2, tx1);
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx1);
 
     // Start a write transaction that will be aborted
     let tx_abort = make_timestamp(200);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx_abort);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx_abort);
 
     let update = SqlOperation::Execute {
         sql: "UPDATE products SET price = 999 WHERE id = 1".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, update, tx_abort);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(update, tx_abort);
 
     let insert3 = SqlOperation::Execute {
         sql: "INSERT INTO products (id, name, price) VALUES (3, 'Doohickey', 300)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, insert3, tx_abort);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(insert3, tx_abort);
 
     // Abort the transaction
-    let mut batch = engine.start_batch();
-    engine.abort(&mut batch, tx_abort);
-    engine.commit_batch(batch, next_log_index());
+    engine.abort(tx_abort);
 
     // Snapshot read at timestamp 250 should see original data only
     let read_ts = make_timestamp(250);
@@ -257,82 +203,59 @@ fn test_snapshot_read_ignores_uncommitted_changes() {
 
 #[test]
 fn test_snapshot_read_consistency_across_tables() {
-    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
+    let mut engine = AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default()));
 
     // Create tables and initial data
     let tx1 = make_timestamp(100);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx1);
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance INTEGER)".to_string(),
             params: None,
         },
         tx1,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "CREATE TABLE transactions (id INTEGER PRIMARY KEY, from_id INTEGER, to_id INTEGER, amount INTEGER)".to_string(),
             params: None,
         },
         tx1,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "INSERT INTO accounts (id, balance) VALUES (1, 1000), (2, 500)".to_string(),
             params: None,
         },
         tx1,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx1);
 
     // Perform a transfer at timestamp 200
     let tx2 = make_timestamp(200);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx2);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx2);
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "UPDATE accounts SET balance = 900 WHERE id = 1".to_string(),
             params: None,
         },
         tx2,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "UPDATE accounts SET balance = 600 WHERE id = 2".to_string(),
             params: None,
         },
         tx2,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "INSERT INTO transactions (id, from_id, to_id, amount) VALUES (1, 1, 2, 100)"
                 .to_string(),
@@ -340,11 +263,8 @@ fn test_snapshot_read_consistency_across_tables() {
         },
         tx2,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx2);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx2);
 
     // Snapshot read at timestamp 150 should see state before transfer
     let read_ts1 = make_timestamp(150);
@@ -401,17 +321,13 @@ fn test_snapshot_read_consistency_across_tables() {
 
 #[test]
 fn test_snapshot_read_with_index_scan() {
-    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
+    let mut engine = AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default()));
 
     // Create indexed table
     let tx1 = make_timestamp(100);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx1);
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, category TEXT, price INTEGER)"
                 .to_string(),
@@ -419,54 +335,38 @@ fn test_snapshot_read_with_index_scan() {
         },
         tx1,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "CREATE INDEX idx_category ON items(category)".to_string(),
             params: None,
         },
         tx1,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "INSERT INTO items VALUES (1, 'electronics', 500), (2, 'books', 20), (3, 'electronics', 300)".to_string(),
             params: None,
         },
         tx1,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx1);
 
     // Update at timestamp 200
     let tx2 = make_timestamp(200);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx2);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx2);
 
-    let mut batch = engine.start_batch();
     engine.apply_operation(
-        &mut batch,
         SqlOperation::Execute {
             sql: "INSERT INTO items VALUES (4, 'electronics', 800)".to_string(),
             params: None,
         },
         tx2,
     );
-    engine.commit_batch(batch, next_log_index());
 
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx2);
-    engine.commit_batch(batch, next_log_index());
+    engine.commit(tx2);
 
     // Snapshot read at timestamp 150 using index
     let read_ts = make_timestamp(150);
@@ -490,24 +390,18 @@ fn test_snapshot_read_with_index_scan() {
 #[test]
 #[should_panic(expected = "Must be read-only operation")]
 fn test_snapshot_read_only_operations_allowed() {
-    let mut engine = SqlTransactionEngine::new(SqlStorageConfig::default());
+    let mut engine = AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default()));
 
     // Create table
     let tx1 = make_timestamp(100);
-    let mut batch = engine.start_batch();
-    engine.begin(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.begin(tx1);
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE test (id INTEGER PRIMARY KEY)".to_string(),
         params: None,
     };
-    let mut batch = engine.start_batch();
-    engine.apply_operation(&mut batch, create_table, tx1);
-    engine.commit_batch(batch, next_log_index());
-    let mut batch = engine.start_batch();
-    engine.commit(&mut batch, tx1);
-    engine.commit_batch(batch, next_log_index());
+    engine.apply_operation(create_table, tx1);
+    engine.commit(tx1);
 
     // Try to perform a write operation via snapshot read
     let read_ts = make_timestamp(200);

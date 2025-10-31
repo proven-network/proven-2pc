@@ -748,6 +748,7 @@ impl Default for ResourceTransactionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proven_stream::AutoBatchEngine;
     use uuid::Uuid;
 
     fn make_timestamp(n: u64) -> TransactionId {
@@ -756,13 +757,11 @@ mod tests {
 
     #[test]
     fn test_basic_operations() {
-        let mut engine = ResourceTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(ResourceTransactionEngine::new());
         let tx1 = make_timestamp(100);
 
         // Begin transaction
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx1);
-        engine.commit_batch(batch, 1);
+        engine.begin(tx1);
 
         // Initialize resource
         let op = ResourceOperation::Initialize {
@@ -771,9 +770,7 @@ mod tests {
             decimals: 8,
         };
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, op, tx1);
-        engine.commit_batch(batch, 2);
+        let result = engine.apply_operation(op, tx1);
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Mint tokens
@@ -783,33 +780,22 @@ mod tests {
             memo: None,
         };
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, op, tx1);
-        engine.commit_batch(batch, 3);
+        let result = engine.apply_operation(op, tx1);
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Commit transaction
-        let mut batch = engine.start_batch();
-        engine.prepare(&mut batch, tx1);
-        engine.commit_batch(batch, 4);
-
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx1);
-        engine.commit_batch(batch, 5);
+        engine.prepare(tx1);
+        engine.commit(tx1);
 
         // Check balance in new transaction
         let tx2 = make_timestamp(200);
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx2);
-        engine.commit_batch(batch, 6);
+        engine.begin(tx2);
 
         let op = ResourceOperation::GetBalance {
             account: "alice".to_string(),
         };
 
-        let mut batch = engine.start_batch();
-        let result = engine.apply_operation(&mut batch, op, tx2);
-        engine.commit_batch(batch, 7);
+        let result = engine.apply_operation(op, tx2);
         if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
             assert_eq!(amount, Amount::from_integer(1000, 0));
         } else {
@@ -819,17 +805,13 @@ mod tests {
 
     #[test]
     fn test_transfer() {
-        let mut engine = ResourceTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(ResourceTransactionEngine::new());
         let tx1 = make_timestamp(100);
 
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx1);
-        engine.commit_batch(batch, 1);
+        engine.begin(tx1);
 
         // Initialize
-        let mut batch = engine.start_batch();
         engine.apply_operation(
-            &mut batch,
             ResourceOperation::Initialize {
                 name: "Test".to_string(),
                 symbol: "TST".to_string(),
@@ -837,12 +819,9 @@ mod tests {
             },
             tx1,
         );
-        engine.commit_batch(batch, 2);
 
         // Mint to alice
-        let mut batch = engine.start_batch();
         engine.apply_operation(
-            &mut batch,
             ResourceOperation::Mint {
                 to: "alice".to_string(),
                 amount: Amount::from_integer(1000, 0),
@@ -850,21 +829,14 @@ mod tests {
             },
             tx1,
         );
-        engine.commit_batch(batch, 3);
 
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx1);
-        engine.commit_batch(batch, 4);
+        engine.commit(tx1);
 
         // Transfer
         let tx2 = make_timestamp(200);
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx2);
-        engine.commit_batch(batch, 5);
+        engine.begin(tx2);
 
-        let mut batch = engine.start_batch();
         let result = engine.apply_operation(
-            &mut batch,
             ResourceOperation::Transfer {
                 from: "alice".to_string(),
                 to: "bob".to_string(),
@@ -873,22 +845,17 @@ mod tests {
             },
             tx2,
         );
-        engine.commit_batch(batch, 6);
 
         assert!(matches!(result, OperationResult::Complete(_)));
 
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx2);
-        engine.commit_batch(batch, 7);
+        engine.commit(tx2);
 
         // Verify balances
         let tx3 = make_timestamp(300);
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx3);
-        engine.commit_batch(batch, 8);
+        engine.begin(tx3);
 
-        let alice_balance = engine.get_balance("alice", tx3);
-        let bob_balance = engine.get_balance("bob", tx3);
+        let alice_balance = engine.engine().get_balance("alice", tx3);
+        let bob_balance = engine.engine().get_balance("bob", tx3);
 
         assert_eq!(alice_balance, Amount::from_integer(700, 0));
         assert_eq!(bob_balance, Amount::from_integer(300, 0));
@@ -896,17 +863,13 @@ mod tests {
 
     #[test]
     fn test_burn() {
-        let mut engine = ResourceTransactionEngine::new();
+        let mut engine = AutoBatchEngine::new(ResourceTransactionEngine::new());
         let tx1 = make_timestamp(100);
 
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx1);
-        engine.commit_batch(batch, 1);
+        engine.begin(tx1);
 
         // Initialize and mint
-        let mut batch = engine.start_batch();
         engine.apply_operation(
-            &mut batch,
             ResourceOperation::Initialize {
                 name: "Test".to_string(),
                 symbol: "TST".to_string(),
@@ -914,11 +877,8 @@ mod tests {
             },
             tx1,
         );
-        engine.commit_batch(batch, 2);
 
-        let mut batch = engine.start_batch();
         engine.apply_operation(
-            &mut batch,
             ResourceOperation::Mint {
                 to: "alice".to_string(),
                 amount: Amount::from_integer(1000, 0),
@@ -926,21 +886,14 @@ mod tests {
             },
             tx1,
         );
-        engine.commit_batch(batch, 3);
 
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx1);
-        engine.commit_batch(batch, 4);
+        engine.commit(tx1);
 
         // Burn
         let tx2 = make_timestamp(200);
-        let mut batch = engine.start_batch();
-        engine.begin(&mut batch, tx2);
-        engine.commit_batch(batch, 5);
+        engine.begin(tx2);
 
-        let mut batch = engine.start_batch();
         let result = engine.apply_operation(
-            &mut batch,
             ResourceOperation::Burn {
                 from: "alice".to_string(),
                 amount: Amount::from_integer(400, 0),
@@ -948,18 +901,15 @@ mod tests {
             },
             tx2,
         );
-        engine.commit_batch(batch, 6);
 
         assert!(matches!(result, OperationResult::Complete(_)));
 
-        let mut batch = engine.start_batch();
-        engine.commit(&mut batch, tx2);
-        engine.commit_batch(batch, 7);
+        engine.commit(tx2);
 
         // Verify balance and supply
         let tx3 = make_timestamp(300);
-        let balance = engine.get_balance("alice", tx3);
-        let supply = engine.get_supply(tx3);
+        let balance = engine.engine().get_balance("alice", tx3);
+        let supply = engine.engine().get_supply(tx3);
 
         assert_eq!(balance, Amount::from_integer(600, 0));
         assert_eq!(supply, Amount::from_integer(600, 0));

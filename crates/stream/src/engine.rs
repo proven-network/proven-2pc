@@ -4,6 +4,7 @@
 //! systems must implement to work with the generic stream processor.
 
 use proven_common::{Operation, Response, TransactionId};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Operations that can be performed on a storage batch
 ///
@@ -197,4 +198,116 @@ pub trait TransactionEngine: Send + Sync {
 
     /// Get the name/type of this engine for logging and debugging
     fn engine_name(&self) -> &str;
+}
+
+/// Wrapper around a TransactionEngine that automatically handles batch lifecycle
+/// and log index management.
+///
+/// This is primarily useful for tests and examples where you want to focus on
+/// the operations rather than the batch management boilerplate.
+pub struct AutoBatchEngine<E: TransactionEngine> {
+    engine: E,
+    log_index: AtomicU64,
+}
+
+impl<E: TransactionEngine> AutoBatchEngine<E> {
+    /// Create a new auto-batch wrapper around an engine
+    pub fn new(engine: E) -> Self {
+        // Start from the engine's current log index, or 0 if none
+        let log_index = AtomicU64::new(engine.get_log_index().unwrap_or(0));
+        Self { engine, log_index }
+    }
+
+    /// Create a new auto-batch wrapper starting from a specific log index
+    pub fn new_with_log_index(engine: E, starting_log_index: u64) -> Self {
+        Self {
+            engine,
+            log_index: AtomicU64::new(starting_log_index),
+        }
+    }
+
+    /// Get the next log index (increments automatically)
+    fn next_log_index(&self) -> u64 {
+        self.log_index.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Get the current log index without incrementing
+    pub fn current_log_index(&self) -> u64 {
+        self.log_index.load(Ordering::Relaxed)
+    }
+
+    /// Get a reference to the underlying engine
+    pub fn engine(&self) -> &E {
+        &self.engine
+    }
+
+    /// Get a mutable reference to the underlying engine
+    pub fn engine_mut(&mut self) -> &mut E {
+        &mut self.engine
+    }
+
+    /// Unwrap and return the underlying engine
+    pub fn into_inner(self) -> E {
+        self.engine
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // AUTO-BATCHED OPERATIONS
+    // ═══════════════════════════════════════════════════════════
+
+    /// Begin a new transaction (automatically wrapped in batch)
+    pub fn begin(&mut self, txn_id: TransactionId) {
+        let mut batch = self.engine.start_batch();
+        self.engine.begin(&mut batch, txn_id);
+        self.engine.commit_batch(batch, self.next_log_index());
+    }
+
+    /// Apply an operation within a transaction (automatically wrapped in batch)
+    pub fn apply_operation(
+        &mut self,
+        operation: E::Operation,
+        txn_id: TransactionId,
+    ) -> OperationResult<E::Response> {
+        let mut batch = self.engine.start_batch();
+        let result = self.engine.apply_operation(&mut batch, operation, txn_id);
+
+        self.engine.commit_batch(batch, self.next_log_index());
+
+        result
+    }
+
+    /// Prepare a transaction for commit (automatically wrapped in batch)
+    pub fn prepare(&mut self, txn_id: TransactionId) {
+        let mut batch = self.engine.start_batch();
+        self.engine.prepare(&mut batch, txn_id);
+        self.engine.commit_batch(batch, self.next_log_index());
+    }
+
+    /// Commit a prepared transaction (automatically wrapped in batch)
+    pub fn commit(&mut self, txn_id: TransactionId) {
+        let mut batch = self.engine.start_batch();
+        self.engine.commit(&mut batch, txn_id);
+        self.engine.commit_batch(batch, self.next_log_index());
+    }
+
+    /// Abort a transaction (automatically wrapped in batch)
+    pub fn abort(&mut self, txn_id: TransactionId) {
+        let mut batch = self.engine.start_batch();
+        self.engine.abort(&mut batch, txn_id);
+        self.engine.commit_batch(batch, self.next_log_index());
+    }
+
+    /// Read at timestamp (pass-through, doesn't need batching)
+    pub fn read_at_timestamp(
+        &mut self,
+        operation: E::Operation,
+        read_txn_id: TransactionId,
+    ) -> OperationResult<E::Response> {
+        self.engine.read_at_timestamp(operation, read_txn_id)
+    }
+
+    /// Get the current log index (pass-through)
+    pub fn get_log_index(&self) -> Option<u64> {
+        self.engine.get_log_index()
+    }
 }
