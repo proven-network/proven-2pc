@@ -3,8 +3,8 @@
 use super::{Executor as ExecutorTrait, common::ExecutorInfra};
 use crate::error::Result;
 use async_trait::async_trait;
-use proven_common::{Operation, OperationType};
 use proven_common::TransactionId;
+use proven_common::{Operation, OperationType};
 use std::collections::HashMap;
 use std::sync::Arc;
 

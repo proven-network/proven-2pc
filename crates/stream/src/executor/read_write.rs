@@ -6,7 +6,7 @@
 //! - Must be prepared before commit
 //! - Require coordinator approval to commit
 
-use crate::engine::{OperationResult, TransactionEngine};
+use crate::engine::{BatchOperations, OperationResult, TransactionEngine};
 use crate::error::Result;
 use crate::support::ResponseSender;
 use crate::transaction::TransactionManager;
@@ -51,16 +51,16 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
     /// Begin a new transaction
     ///
     /// # Arguments
+    /// * `batch` - Batch to accumulate operations into
     /// * `txn_id` - Transaction ID
     /// * `coordinator_id` - Coordinator to send response to
     /// * `request_id` - Request ID for matching responses
-    /// * `log_index` - Log index for persistence
     pub fn begin(
         &mut self,
+        batch: &mut E::Batch,
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        log_index: u64,
         deadline: proven_common::Timestamp,
         participants: std::collections::HashMap<String, u64>,
     ) -> Result<()> {
@@ -68,8 +68,14 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
         self.tx_manager
             .begin(txn_id, coordinator_id.clone(), deadline, participants);
 
-        // Begin in engine
-        self.engine.begin(txn_id, log_index);
+        // Begin in engine (adds to batch)
+        self.engine.begin(batch, txn_id);
+
+        // Add transaction metadata to batch
+        let state = self.tx_manager.get(txn_id)?;
+        let metadata_key = crate::transaction::state::TransactionState::metadata_key(txn_id);
+        let metadata_value = state.to_bytes()?;
+        batch.insert_metadata(metadata_key, metadata_value);
 
         // Send success response
         self.response.send_success(
@@ -85,18 +91,18 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
     /// Execute an operation within a transaction
     ///
     /// # Arguments
+    /// * `batch` - Batch to accumulate operations into
     /// * `operation` - The operation to execute
     /// * `txn_id` - Transaction ID
     /// * `coordinator_id` - Coordinator to send response to
     /// * `request_id` - Request ID for matching responses
-    /// * `log_index` - Log index for persistence
     pub fn execute(
         &mut self,
+        batch: &mut E::Batch,
         operation: E::Operation,
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        log_index: u64,
     ) -> Result<()> {
         // Ensure transaction is registered (needed for wound-wait to find coordinator)
         if !self.tx_manager.exists(txn_id) {
@@ -109,23 +115,30 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
         }
 
         // Try to execute with wound-wait protocol
-        self.execute_with_wound_wait(operation, txn_id, coordinator_id, request_id, log_index)
+        self.execute_with_wound_wait(batch, operation, txn_id, coordinator_id, request_id)
     }
 
     /// Execute with wound-wait deadlock prevention
     fn execute_with_wound_wait(
         &mut self,
+        batch: &mut E::Batch,
         operation: E::Operation,
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        log_index: u64,
     ) -> Result<()> {
         match self
             .engine
-            .apply_operation(operation.clone(), txn_id, log_index)
+            .apply_operation(batch, operation.clone(), txn_id)
         {
             OperationResult::Complete(response) => {
+                // Add transaction metadata to batch
+                let state = self.tx_manager.get(txn_id)?;
+                let metadata_key =
+                    crate::transaction::state::TransactionState::metadata_key(txn_id);
+                let metadata_value = state.to_bytes()?;
+                batch.insert_metadata(metadata_key, metadata_value);
+
                 // Send successful response
                 self.response.send_success(
                     &coordinator_id,
@@ -157,17 +170,24 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
                             .collect::<Vec<_>>()
                     );
 
-                    // Wound each younger transaction
+                    // Wound each younger transaction (all go in same batch)
                     for victim in &younger_victims {
-                        self.wound_transaction(*victim, txn_id, log_index)?;
+                        self.wound_transaction(batch, *victim, txn_id)?;
                     }
 
-                    // Retry operation after wounding
+                    // Retry operation after wounding (use same batch)
                     match self
                         .engine
-                        .apply_operation(operation.clone(), txn_id, log_index)
+                        .apply_operation(batch, operation.clone(), txn_id)
                     {
                         OperationResult::Complete(response) => {
+                            // Add transaction metadata to batch
+                            let state = self.tx_manager.get(txn_id)?;
+                            let metadata_key =
+                                crate::transaction::state::TransactionState::metadata_key(txn_id);
+                            let metadata_value = state.to_bytes()?;
+                            batch.insert_metadata(metadata_key, metadata_value);
+
                             self.response.send_success(
                                 &coordinator_id,
                                 Some(&txn_id.to_string()),
@@ -187,11 +207,20 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
 
                             self.tx_manager.defer_operation(
                                 txn_id,
-                                operation,
+                                operation.clone(),
                                 new_blockers,
                                 coordinator_id,
                                 request_id,
+                                false, // ReadWrite operations are not atomic
                             );
+
+                            // Persist transaction metadata (for crash recovery)
+                            let state = self.tx_manager.get(txn_id)?;
+                            let metadata_key =
+                                crate::transaction::state::TransactionState::metadata_key(txn_id);
+                            let metadata_value = state.to_bytes()?;
+                            batch.insert_metadata(metadata_key, metadata_value);
+
                             return Ok(());
                         }
                     }
@@ -213,7 +242,15 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
                     blockers,
                     coordinator_id,
                     request_id,
+                    false, // ReadWrite operations are not atomic
                 );
+
+                // Persist transaction metadata (for crash recovery)
+                let state = self.tx_manager.get(txn_id)?;
+                let metadata_key =
+                    crate::transaction::state::TransactionState::metadata_key(txn_id);
+                let metadata_value = state.to_bytes()?;
+                batch.insert_metadata(metadata_key, metadata_value);
 
                 Ok(())
             }
@@ -223,9 +260,9 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
     /// Wound a victim transaction (abort it)
     fn wound_transaction(
         &mut self,
+        batch: &mut E::Batch,
         victim: TransactionId,
         wounded_by: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Check if victim transaction exists
         if !self.tx_manager.exists(victim) {
@@ -247,8 +284,8 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
                 .send_wounded(&victim_coord, &victim.to_string(), wounded_by, None);
         }
 
-        // Abort the victim transaction
-        self.engine.abort(victim, log_index);
+        // Abort the victim transaction (adds to batch)
+        self.engine.abort(batch, victim);
 
         // Transition to aborted state and release any deferred operations
         let ready_ops = self.tx_manager.transition_to_aborted(
@@ -256,13 +293,19 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
             crate::transaction::AbortReason::Wounded { by: wounded_by },
         )?;
 
+        // Remove victim's transaction metadata
+        let metadata_key = crate::transaction::state::TransactionState::metadata_key(victim);
+        batch.remove_metadata(metadata_key);
+
+        // Retry deferred operations that were blocked by this victim
+        // They all go in the SAME batch (critical for atomicity!)
         if !ready_ops.is_empty() {
             tracing::debug!(
                 "Released {} deferred operations after wounding victim {}",
                 ready_ops.len(),
                 victim
             );
-            self.retry_deferred(ready_ops)?;
+            self.retry_deferred_to_batch(batch, ready_ops)?;
         }
 
         Ok(())
@@ -271,37 +314,46 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
     /// Prepare a transaction for commit (Phase 1 of 2PC)
     ///
     /// # Arguments
+    /// * `batch` - Batch to accumulate operations into
     /// * `txn_id` - Transaction ID to prepare
     /// * `coordinator_id` - Coordinator to send response to
     /// * `request_id` - Request ID for matching responses
     /// * `participants` - Map of participant streams for recovery
-    /// * `log_index` - Log index for persistence
     pub fn prepare(
         &mut self,
+        batch: &mut E::Batch,
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
         participants: std::collections::HashMap<String, u64>,
-        log_index: u64,
     ) -> Result<()> {
-        self.engine.prepare(txn_id, log_index);
+        // Prepare in engine (adds to batch)
+        self.engine.prepare(batch, txn_id);
 
         // Transition to prepared state - this releases operations waiting on prepare
-        let ready_ops = self.tx_manager.transition_to_prepared_with_participants(txn_id, participants)?;
+        let ready_ops = self
+            .tx_manager
+            .transition_to_prepared_with_participants(txn_id, participants)?;
+
+        // Add updated transaction metadata (with participants)
+        let state = self.tx_manager.get(txn_id)?;
+        let metadata_key = crate::transaction::state::TransactionState::metadata_key(txn_id);
+        let metadata_value = state.to_bytes()?;
+        batch.insert_metadata(metadata_key, metadata_value);
+
+        // Retry deferred operations that were waiting on prepare
+        // They all go in the SAME batch!
         if !ready_ops.is_empty() {
             tracing::debug!(
                 "Released {} deferred operations on prepare",
                 ready_ops.len()
             );
-            self.retry_deferred(ready_ops)?;
+            self.retry_deferred_to_batch(batch, ready_ops)?;
         }
 
         // Send prepared response
-        self.response.send_prepared(
-            &coordinator_id,
-            &txn_id.to_string(),
-            Some(request_id),
-        );
+        self.response
+            .send_prepared(&coordinator_id, &txn_id.to_string(), Some(request_id));
 
         Ok(())
     }
@@ -309,24 +361,32 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
     /// Commit a prepared transaction (Phase 2 of 2PC)
     ///
     /// # Arguments
+    /// * `batch` - Batch to accumulate operations into
     /// * `txn_id` - Transaction ID to commit
     /// * `coordinator_id` - Coordinator to send response to
     /// * `request_id` - Request ID for matching responses
-    /// * `log_index` - Log index for persistence
     pub fn commit(
         &mut self,
+        batch: &mut E::Batch,
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        log_index: u64,
     ) -> Result<()> {
-        self.engine.commit(txn_id, log_index);
+        // Commit in engine (adds to batch)
+        self.engine.commit(batch, txn_id);
 
         // Transition to committed state - this releases operations waiting on completion
         let ready_ops = self.tx_manager.transition_to_committed(txn_id)?;
+
+        // Remove transaction metadata (transaction is complete)
+        let metadata_key = crate::transaction::state::TransactionState::metadata_key(txn_id);
+        batch.remove_metadata(metadata_key);
+
+        // Retry deferred operations that were waiting on commit
+        // They all go in the SAME batch!
         if !ready_ops.is_empty() {
             tracing::debug!("Released {} deferred operations on commit", ready_ops.len());
-            self.retry_deferred(ready_ops)?;
+            self.retry_deferred_to_batch(batch, ready_ops)?;
         }
 
         // Send committed response
@@ -343,29 +403,37 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
     /// Abort a transaction
     ///
     /// # Arguments
+    /// * `batch` - Batch to accumulate operations into
     /// * `txn_id` - Transaction ID to abort
     /// * `coordinator_id` - Coordinator to send response to
     /// * `request_id` - Request ID for matching responses
-    /// * `log_index` - Log index for persistence
     pub fn abort(
         &mut self,
+        batch: &mut E::Batch,
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        log_index: u64,
     ) -> Result<()> {
-        self.engine.abort(txn_id, log_index);
+        // Abort in engine (adds to batch)
+        self.engine.abort(batch, txn_id);
 
         // Transition to aborted state - this releases operations waiting on completion
         let ready_ops = self
             .tx_manager
             .transition_to_aborted(txn_id, crate::transaction::AbortReason::Explicit)?;
+
+        // Remove transaction metadata (transaction is complete)
+        let metadata_key = crate::transaction::state::TransactionState::metadata_key(txn_id);
+        batch.remove_metadata(metadata_key);
+
+        // Retry deferred operations that were waiting on abort
+        // They all go in the SAME batch!
         if !ready_ops.is_empty() {
             tracing::debug!(
                 "Released {} deferred operations after abort",
                 ready_ops.len()
             );
-            self.retry_deferred(ready_ops)?;
+            self.retry_deferred_to_batch(batch, ready_ops)?;
         }
 
         // Send aborted response
@@ -379,35 +447,112 @@ impl<'a, E: TransactionEngine> ReadWriteExecutor<'a, E> {
         Ok(())
     }
 
-    /// Retry deferred operations after a transaction commits or aborts
-    fn retry_deferred(
+    /// Retry deferred operations in the SAME batch
+    ///
+    /// CRITICAL: All deferred operations that become ready are retried
+    /// in the SAME batch as the operation that unblocked them.
+    /// This ensures atomic persistence of cascading operations.
+    fn retry_deferred_to_batch(
         &mut self,
+        batch: &mut E::Batch,
         ready_ops: Vec<crate::transaction::DeferredOp<E::Operation>>,
     ) -> Result<()> {
         for deferred in ready_ops {
-            // Try to execute the deferred operation
-            match self.engine.apply_operation(
-                deferred.operation.clone(),
-                deferred.owner_txn_id,
-                0, // TODO: Need proper log_index handling
-            ) {
-                OperationResult::Complete(response) => {
-                    self.response.send_success(
-                        &deferred.coordinator_id,
-                        Some(&deferred.owner_txn_id.to_string()),
-                        deferred.request_id,
-                        response,
-                    );
+            // Check if this is an atomic operation (AdHoc)
+            if deferred.is_atomic {
+                // AdHoc operations need begin → apply → commit sequence
+                self.engine.begin(batch, deferred.owner_txn_id);
+
+                match self.engine.apply_operation(
+                    batch,
+                    deferred.operation.clone(),
+                    deferred.owner_txn_id,
+                ) {
+                    OperationResult::Complete(response) => {
+                        // Commit in same batch
+                        self.engine.commit(batch, deferred.owner_txn_id);
+
+                        // Update transaction metadata
+                        self.tx_manager
+                            .transition_to_committed(deferred.owner_txn_id)?;
+                        let metadata_key =
+                            crate::transaction::state::TransactionState::metadata_key(
+                                deferred.owner_txn_id,
+                            );
+                        batch.remove_metadata(metadata_key);
+
+                        self.response.send_success(
+                            &deferred.coordinator_id,
+                            None,
+                            deferred.request_id,
+                            response,
+                        );
+                    }
+                    OperationResult::WouldBlock { blockers } => {
+                        // Still blocked - re-defer
+                        self.tx_manager.defer_operation(
+                            deferred.owner_txn_id,
+                            deferred.operation,
+                            blockers,
+                            deferred.coordinator_id,
+                            deferred.request_id,
+                            true, // Still atomic
+                        );
+
+                        // Update transaction metadata
+                        let state = self.tx_manager.get(deferred.owner_txn_id)?;
+                        let metadata_key =
+                            crate::transaction::state::TransactionState::metadata_key(
+                                deferred.owner_txn_id,
+                            );
+                        let metadata_value = state.to_bytes()?;
+                        batch.insert_metadata(metadata_key, metadata_value);
+                    }
                 }
-                OperationResult::WouldBlock { blockers } => {
-                    // Re-defer with new blockers
-                    self.tx_manager.defer_operation(
-                        deferred.owner_txn_id,
-                        deferred.operation,
-                        blockers,
-                        deferred.coordinator_id,
-                        deferred.request_id,
-                    );
+            } else {
+                // ReadWrite operations - just apply (already begun)
+                match self.engine.apply_operation(
+                    batch,
+                    deferred.operation.clone(),
+                    deferred.owner_txn_id,
+                ) {
+                    OperationResult::Complete(response) => {
+                        // Update transaction metadata
+                        let state = self.tx_manager.get(deferred.owner_txn_id)?;
+                        let metadata_key =
+                            crate::transaction::state::TransactionState::metadata_key(
+                                deferred.owner_txn_id,
+                            );
+                        let metadata_value = state.to_bytes()?;
+                        batch.insert_metadata(metadata_key, metadata_value);
+
+                        self.response.send_success(
+                            &deferred.coordinator_id,
+                            Some(&deferred.owner_txn_id.to_string()),
+                            deferred.request_id,
+                            response,
+                        );
+                    }
+                    OperationResult::WouldBlock { blockers } => {
+                        // Re-defer with new blockers
+                        self.tx_manager.defer_operation(
+                            deferred.owner_txn_id,
+                            deferred.operation,
+                            blockers,
+                            deferred.coordinator_id,
+                            deferred.request_id,
+                            false, // Still not atomic
+                        );
+
+                        // Update transaction metadata
+                        let state = self.tx_manager.get(deferred.owner_txn_id)?;
+                        let metadata_key =
+                            crate::transaction::state::TransactionState::metadata_key(
+                                deferred.owner_txn_id,
+                            );
+                        let metadata_value = state.to_bytes()?;
+                        batch.insert_metadata(metadata_key, metadata_value);
+                    }
                 }
             }
         }
@@ -437,6 +582,12 @@ mod tests {
     struct TestResponse(String);
     impl Response for TestResponse {}
 
+    struct TestBatch;
+    impl crate::engine::BatchOperations for TestBatch {
+        fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
+        fn remove_metadata(&mut self, _key: Vec<u8>) {}
+    }
+
     struct TestEngine {
         should_block: bool,
         operations_executed: Vec<String>,
@@ -449,6 +600,13 @@ mod tests {
     impl TransactionEngine for TestEngine {
         type Operation = TestOp;
         type Response = TestResponse;
+        type Batch = TestBatch;
+
+        fn start_batch(&mut self) -> Self::Batch {
+            TestBatch
+        }
+
+        fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
 
         fn read_at_timestamp(
             &mut self,
@@ -460,9 +618,9 @@ mod tests {
 
         fn apply_operation(
             &mut self,
+            _batch: &mut Self::Batch,
             operation: Self::Operation,
             _txn_id: TransactionId,
-            _log_index: u64,
         ) -> OperationResult<Self::Response> {
             self.operations_executed.push(operation.0.clone());
 
@@ -478,20 +636,27 @@ mod tests {
             }
         }
 
-        fn begin(&mut self, txn_id: TransactionId, _log_index: u64) {
+        fn begin(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
             self.begun.push(txn_id);
         }
 
-        fn prepare(&mut self, txn_id: TransactionId, _log_index: u64) {
+        fn prepare(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
             self.prepared.push(txn_id);
         }
 
-        fn commit(&mut self, txn_id: TransactionId, _log_index: u64) {
+        fn commit(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
             self.committed.push(txn_id);
         }
 
-        fn abort(&mut self, txn_id: TransactionId, _log_index: u64) {
+        fn abort(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
             self.aborted.push(txn_id);
+        }
+
+        fn get_log_index(&self) -> Option<u64> {
+            None
+        }
+        fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+            vec![]
         }
 
         fn engine_name(&self) -> &str {
@@ -522,17 +687,22 @@ mod tests {
     #[tokio::test]
     async fn test_begin_transaction() {
         let (mut engine, mut tx_manager, response) = setup();
-        let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
 
         let txn_id = TransactionId::new();
-        let result = executor.begin(
-            txn_id,
-            "coord-1".to_string(),
-            "req-1".to_string(),
-            1,
-            proven_common::Timestamp::from_micros(10000),
-            std::collections::HashMap::new(),
-        );
+        let result = {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            let res = executor.begin(
+                &mut batch,
+                txn_id,
+                "coord-1".to_string(),
+                "req-1".to_string(),
+                proven_common::Timestamp::from_micros(10000),
+                std::collections::HashMap::new(),
+            );
+            engine.commit_batch(batch, 1);
+            res
+        };
 
         assert!(result.is_ok());
         assert_eq!(engine.begun.len(), 1);
@@ -544,32 +714,40 @@ mod tests {
     #[tokio::test]
     async fn test_execute_operation() {
         let (mut engine, mut tx_manager, response) = setup();
-        let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
-
         let txn_id = TransactionId::new();
 
         // Begin transaction first
-        executor
-            .begin(
-                txn_id,
-                "coord-1".to_string(),
-                "req-1".to_string(),
-                1,
-                proven_common::Timestamp::from_micros(10000),
-                std::collections::HashMap::new(),
-            )
-            .unwrap();
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .begin(
+                    &mut batch,
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-1".to_string(),
+                    proven_common::Timestamp::from_micros(10000),
+                    std::collections::HashMap::new(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 1);
+        }
 
         // Execute operation
-        let result = executor.execute(
-            TestOp("write1".to_string()),
-            txn_id,
-            "coord-1".to_string(),
-            "req-2".to_string(),
-            2,
-        );
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            let result = executor.execute(
+                &mut batch,
+                TestOp("write1".to_string()),
+                txn_id,
+                "coord-1".to_string(),
+                "req-2".to_string(),
+            );
+            engine.commit_batch(batch, 2);
+            assert!(result.is_ok());
+        }
 
-        assert!(result.is_ok());
         assert_eq!(engine.operations_executed.len(), 1);
         assert_eq!(engine.operations_executed[0], "write1");
 
@@ -579,42 +757,65 @@ mod tests {
     #[tokio::test]
     async fn test_prepare_commit_flow() {
         let (mut engine, mut tx_manager, response) = setup();
-        let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
-
         let txn_id = TransactionId::new();
 
         // Begin -> Execute -> Prepare -> Commit
-        executor
-            .begin(
-                txn_id,
-                "coord-1".to_string(),
-                "req-1".to_string(),
-                1,
-                proven_common::Timestamp::from_micros(10000),
-                std::collections::HashMap::new(),
-            )
-            .unwrap();
-        executor
-            .execute(
-                TestOp("write1".to_string()),
-                txn_id,
-                "coord-1".to_string(),
-                "req-2".to_string(),
-                2,
-            )
-            .unwrap();
-        executor
-            .prepare(
-                txn_id,
-                "coord-1".to_string(),
-                "req-3".to_string(),
-                std::collections::HashMap::new(),
-                3,
-            )
-            .unwrap();
-        executor
-            .commit(txn_id, "coord-1".to_string(), "req-4".to_string(), 4)
-            .unwrap();
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .begin(
+                    &mut batch,
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-1".to_string(),
+                    proven_common::Timestamp::from_micros(10000),
+                    std::collections::HashMap::new(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 1);
+        }
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .execute(
+                    &mut batch,
+                    TestOp("write1".to_string()),
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-2".to_string(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 2);
+        }
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .prepare(
+                    &mut batch,
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-3".to_string(),
+                    std::collections::HashMap::new(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 3);
+        }
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .commit(
+                    &mut batch,
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-4".to_string(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 4);
+        }
 
         assert_eq!(engine.begun.len(), 1);
         assert_eq!(engine.operations_executed.len(), 1);
@@ -628,33 +829,51 @@ mod tests {
     #[tokio::test]
     async fn test_abort_transaction() {
         let (mut engine, mut tx_manager, response) = setup();
-        let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
-
         let txn_id = TransactionId::new();
 
         // Begin -> Execute -> Abort
-        executor
-            .begin(
-                txn_id,
-                "coord-1".to_string(),
-                "req-1".to_string(),
-                1,
-                proven_common::Timestamp::from_micros(10000),
-                std::collections::HashMap::new(),
-            )
-            .unwrap();
-        executor
-            .execute(
-                TestOp("write1".to_string()),
-                txn_id,
-                "coord-1".to_string(),
-                "req-2".to_string(),
-                2,
-            )
-            .unwrap();
-        executor
-            .abort(txn_id, "coord-1".to_string(), "req-3".to_string(), 3)
-            .unwrap();
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .begin(
+                    &mut batch,
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-1".to_string(),
+                    proven_common::Timestamp::from_micros(10000),
+                    std::collections::HashMap::new(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 1);
+        }
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .execute(
+                    &mut batch,
+                    TestOp("write1".to_string()),
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-2".to_string(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 2);
+        }
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .abort(
+                    &mut batch,
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-3".to_string(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 3);
+        }
 
         assert_eq!(engine.begun.len(), 1);
         assert_eq!(engine.operations_executed.len(), 1);
@@ -671,27 +890,36 @@ mod tests {
         // Make engine block
         engine.should_block = true;
 
-        let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
-
         let txn_id = TransactionId::new();
-        executor
-            .begin(
+        {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            executor
+                .begin(
+                    &mut batch,
+                    txn_id,
+                    "coord-1".to_string(),
+                    "req-1".to_string(),
+                    proven_common::Timestamp::from_micros(10000),
+                    std::collections::HashMap::new(),
+                )
+                .unwrap();
+            engine.commit_batch(batch, 1);
+        }
+
+        let result = {
+            let mut batch = engine.start_batch();
+            let mut executor = ReadWriteExecutor::new(&mut engine, &mut tx_manager, &response);
+            let res = executor.execute(
+                &mut batch,
+                TestOp("write1".to_string()),
                 txn_id,
                 "coord-1".to_string(),
-                "req-1".to_string(),
-                1,
-                proven_common::Timestamp::from_micros(10000),
-                std::collections::HashMap::new(),
-            )
-            .unwrap();
-
-        let result = executor.execute(
-            TestOp("write1".to_string()),
-            txn_id,
-            "coord-1".to_string(),
-            "req-2".to_string(),
-            2,
-        );
+                "req-2".to_string(),
+            );
+            engine.commit_batch(batch, 2);
+            res
+        };
 
         assert!(result.is_ok());
         // With wound-wait, operation is tried twice: once initially, once after wounding

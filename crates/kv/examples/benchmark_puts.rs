@@ -37,7 +37,9 @@ fn main() {
     for i in 0..NUM_PUTS {
         // Generate unique transaction ID (UUIDv7 with monotonic timestamp)
         let txn_id = TransactionId::new();
-        kv_engine.begin(txn_id, next_log_index());
+        let mut batch = kv_engine.start_batch();
+        kv_engine.begin(&mut batch, txn_id);
+        kv_engine.commit_batch(batch, next_log_index());
 
         // Create put operation with various value types to simulate real usage
         let value = match i % 5 {
@@ -57,10 +59,15 @@ fn main() {
         };
 
         // Execute put directly on engine
-        match kv_engine.apply_operation(put, txn_id, next_log_index()) {
+        let mut batch = kv_engine.start_batch();
+        match kv_engine.apply_operation(&mut batch, put, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
+                kv_engine.commit_batch(batch, next_log_index());
+
                 // Commit the transaction
-                kv_engine.commit(txn_id, next_log_index());
+                let mut batch = kv_engine.start_batch();
+                kv_engine.commit(&mut batch, txn_id);
+                kv_engine.commit_batch(batch, next_log_index());
             }
             _ => {
                 eprintln!("\nError at put {}", i);
@@ -104,7 +111,8 @@ fn main() {
     // Verify a sample of keys
     println!("\nVerifying sample keys...");
     let verify_txn = TransactionId::new();
-    kv_engine.begin(verify_txn, next_log_index());
+    let mut batch = kv_engine.start_batch();
+    kv_engine.begin(&mut batch, verify_txn);
 
     // Check a few keys to verify they were stored
     let sample_keys = [0, NUM_PUTS / 2, NUM_PUTS - 1];
@@ -115,7 +123,7 @@ fn main() {
             key: format!("key_{:08}", key_index),
         };
 
-        match kv_engine.apply_operation(get, verify_txn, next_log_index()) {
+        match kv_engine.apply_operation(&mut batch, get, verify_txn) {
             proven_stream::OperationResult::Complete(_) => {
                 verified += 1;
             }
@@ -125,7 +133,7 @@ fn main() {
         }
     }
 
-    kv_engine.commit(verify_txn, next_log_index());
+    kv_engine.commit_batch(batch, next_log_index());
 
     println!("✓ Verified {}/{} sample keys", verified, sample_keys.len());
 

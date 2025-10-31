@@ -7,7 +7,7 @@ pub mod predicate_index;
 // pub mod stats_cache;
 
 use proven_common::TransactionId;
-use proven_stream::engine::BlockingInfo;
+use proven_stream::engine::{BatchOperations, BlockingInfo};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution;
@@ -22,6 +22,47 @@ use crate::types::response::{SqlResponse, convert_execution_result};
 use predicate_index::PredicateIndex;
 
 use std::collections::HashMap;
+
+/// Wrapper around SqlStorage batch that implements BatchOperations
+pub struct SqlBatch {
+    inner: fjall::Batch,
+    metadata_partition: fjall::PartitionHandle,
+}
+
+impl SqlBatch {
+    pub(crate) fn new(storage: &mut SqlStorage) -> Self {
+        Self {
+            inner: storage.batch(),
+            metadata_partition: storage.metadata_partition(),
+        }
+    }
+
+    pub(crate) fn inner(&mut self) -> &mut fjall::Batch {
+        &mut self.inner
+    }
+
+    pub(crate) fn commit(mut self, log_index: u64) -> Result<(), String> {
+        // Add log_index to batch
+        self.inner.insert(
+            &self.metadata_partition,
+            b"_log_index",
+            log_index.to_le_bytes(),
+        );
+
+        // Commit atomically
+        self.inner.commit().map_err(|e| e.to_string())
+    }
+}
+
+impl BatchOperations for SqlBatch {
+    fn insert_metadata(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.inner.insert(&self.metadata_partition, key, value);
+    }
+
+    fn remove_metadata(&mut self, key: Vec<u8>) {
+        self.inner.remove(self.metadata_partition.clone(), key);
+    }
+}
 
 /// SQL transaction engine with predicate-based conflict detection
 pub struct SqlTransactionEngine {
@@ -280,10 +321,10 @@ impl SqlTransactionEngine {
     /// Execute SQL with predicate-based conflict detection
     fn execute_sql(
         &mut self,
+        batch: &mut SqlBatch,
         sql: &str,
         params: Option<Vec<crate::types::Value>>,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<SqlResponse> {
         // Verify transaction exists
         if !self.active_transactions.contains_key(&txn_id) {
@@ -408,8 +449,12 @@ impl SqlTransactionEngine {
         }
 
         // Create execution context for this operation
+        // Use the current log_index from storage for deterministic UUID generation
+        // This ensures each operation within a transaction gets unique UUIDs
+        let current_log_index = self.storage.get_log_index();
         let tx_ctx = self.active_transactions.get(&txn_id).unwrap();
-        let mut exec_ctx = tx_ctx.create_execution_context(log_index, query_predicates.clone());
+        let mut exec_ctx =
+            tx_ctx.create_execution_context(current_log_index, query_predicates.clone());
 
         // Step 7: Record pending DDL BEFORE execution (to capture old schema)
         // Also persist to storage for crash recovery
@@ -481,14 +526,11 @@ impl SqlTransactionEngine {
             }
         }
 
-        // Step 8: Create batch for atomic commit (data + predicates + log_index)
-        let mut batch = self.storage.batch();
-
-        // Step 9: Execute with batch
+        // Step 8: Execute with batch (passed in from caller)
         match execution::execute_with_params(
             (*plan).clone(),
             &mut self.storage,
-            &mut batch,
+            batch.inner(),
             &mut exec_ctx,
             params.as_ref(),
         ) {
@@ -496,7 +538,7 @@ impl SqlTransactionEngine {
                 // Step 9: Add predicates to batch (atomic with data for writes, standalone for reads)
                 if let Err(e) =
                     self.storage
-                        .add_predicates_to_batch(&mut batch, txn_id, &query_predicates)
+                        .add_predicates_to_batch(batch.inner(), txn_id, &query_predicates)
                 {
                     return OperationResult::Complete(SqlResponse::Error(format!(
                         "Failed to add predicates to batch: {:?}",
@@ -504,13 +546,7 @@ impl SqlTransactionEngine {
                     )));
                 }
 
-                // Step 10: Commit batch atomically (data + predicates + log_index)
-                if let Err(e) = batch.commit() {
-                    return OperationResult::Complete(SqlResponse::Error(format!(
-                        "Failed to commit batch: {:?}",
-                        e
-                    )));
-                }
+                // Note: batch will be committed by the stream processor
 
                 // Update schema cache if DDL operation
                 if plan.is_ddl() {
@@ -548,6 +584,23 @@ impl SqlTransactionEngine {
 impl TransactionEngine for SqlTransactionEngine {
     type Operation = SqlOperation;
     type Response = SqlResponse;
+    type Batch = SqlBatch;
+
+    // ═══════════════════════════════════════════════════════════
+    // BATCH LIFECYCLE
+    // ═══════════════════════════════════════════════════════════
+
+    fn start_batch(&mut self) -> Self::Batch {
+        SqlBatch::new(&mut self.storage)
+    }
+
+    fn commit_batch(&mut self, batch: Self::Batch, log_index: u64) {
+        batch.commit(log_index).expect("Batch commit failed");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // READ OPERATIONS
+    // ═══════════════════════════════════════════════════════════
 
     fn read_at_timestamp(
         &mut self,
@@ -563,19 +616,19 @@ impl TransactionEngine for SqlTransactionEngine {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // WRITE OPERATIONS
+    // ═══════════════════════════════════════════════════════════
+
     fn apply_operation(
         &mut self,
+        batch: &mut Self::Batch,
         operation: Self::Operation,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
-            SqlOperation::Query { sql, params } => {
-                self.execute_sql(&sql, params, txn_id, log_index)
-            }
-            SqlOperation::Execute { sql, params } => {
-                self.execute_sql(&sql, params, txn_id, log_index)
-            }
+            SqlOperation::Query { sql, params } => self.execute_sql(batch, &sql, params, txn_id),
+            SqlOperation::Execute { sql, params } => self.execute_sql(batch, &sql, params, txn_id),
             SqlOperation::Migrate { version, sql } => {
                 // Check if migration is needed
                 if version <= self.migration_version {
@@ -587,7 +640,7 @@ impl TransactionEngine for SqlTransactionEngine {
                 }
 
                 // Execute migration (no parameters for migrations)
-                match self.execute_sql(&sql, None, txn_id, log_index) {
+                match self.execute_sql(batch, &sql, None, txn_id) {
                     OperationResult::Complete(response) => {
                         self.migration_version = version;
                         OperationResult::Complete(response)
@@ -598,15 +651,26 @@ impl TransactionEngine for SqlTransactionEngine {
         }
     }
 
-    fn begin(&mut self, txn_id: TransactionId, _log_index: u64) {
-        // Create transaction context
+    fn begin(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
+        // Create transaction context (in-memory only)
+        //
+        // Note: Transaction state itself is not persisted at begin time.
+        // Recovery rebuilds active transactions from:
+        // 1. Predicates stored in predicate_store (see recover_from_storage)
+        // 2. Pending DDLs stored in ddl_store (see recover_from_storage)
+        //
+        // This works because:
+        // - Any transaction that executes operations will have predicates stored
+        // - Any transaction that executes DDL will have pending DDLs stored
+        // - Transactions that only called begin() but never executed anything
+        //   don't need recovery (they have no effects to rollback)
         self.active_transactions
             .insert(txn_id, TransactionContext::new(txn_id));
         self.transaction_states
             .insert(txn_id, TransactionState::Active);
     }
 
-    fn prepare(&mut self, txn_id: TransactionId, _log_index: u64) {
+    fn prepare(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
         // Get transaction and release read predicates
         if let Some(tx_ctx) = self.active_transactions.get_mut(&txn_id) {
             // Prepare the transaction (releases read predicates in-memory)
@@ -616,12 +680,14 @@ impl TransactionEngine for SqlTransactionEngine {
             self.transaction_states
                 .insert(txn_id, TransactionState::Preparing);
 
-            // Also remove read predicates from storage
-            let _ = self.storage.prepare_transaction(txn_id);
+            // Also remove read predicates from storage (atomic with batch)
+            let _ = self
+                .storage
+                .prepare_transaction_to_batch(batch.inner(), txn_id);
         }
     }
 
-    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
             self.transaction_states.remove(&txn_id);
@@ -629,13 +695,15 @@ impl TransactionEngine for SqlTransactionEngine {
             // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
 
-            // Commit in storage with log_index (this also cleans up predicates internally)
-            let _ = self.storage.commit_transaction(txn_id, log_index);
+            // Commit in storage (this adds all commits to the batch)
+            self.storage
+                .commit_transaction_to_batch(batch.inner(), txn_id)
+                .expect("Failed to commit transaction");
         }
         // If transaction doesn't exist, that's fine - may have been committed already
     }
 
-    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
+    fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
         // Remove transaction if it exists
         if let Some(tx_ctx) = self.active_transactions.remove(&txn_id) {
             self.transaction_states.remove(&txn_id);
@@ -643,13 +711,10 @@ impl TransactionEngine for SqlTransactionEngine {
             // Remove from predicate index (in-memory cache)
             self.predicate_index.remove_transaction(&txn_id);
 
-            // Create single atomic batch for abort + DDL rollback
-            let mut batch = self.storage.batch();
-
-            // Abort in storage (MVCC + predicates + pending DDLs cleanup)
+            // Abort in storage (MVCC + predicates + pending DDLs cleanup) - adds to batch
             if let Err(e) = self
                 .storage
-                .abort_transaction_to_batch(&mut batch, txn_id, log_index)
+                .abort_transaction_to_batch(batch.inner(), txn_id)
             {
                 eprintln!("Warning: Failed to abort transaction: {:?}", e);
                 return;
@@ -664,17 +729,17 @@ impl TransactionEngine for SqlTransactionEngine {
                     if let Err(e) = match ddl {
                         PendingDdl::Create { name } => {
                             // Undo CREATE TABLE: remove schema from metadata
-                            self.storage.rollback_create_table(&mut batch, name)
+                            self.storage.rollback_create_table(batch.inner(), name)
                         }
                         PendingDdl::Drop { name, old_schema } => {
                             // Undo DROP TABLE: restore schema to metadata
                             self.storage
-                                .rollback_drop_table(&mut batch, name, old_schema)
+                                .rollback_drop_table(batch.inner(), name, old_schema)
                         }
                         PendingDdl::Alter { name, old_schema } => {
                             // Undo ALTER TABLE: restore old schema to metadata
                             self.storage
-                                .rollback_alter_table(&mut batch, name, old_schema)
+                                .rollback_alter_table(batch.inner(), name, old_schema)
                         }
                         PendingDdl::Rename {
                             old_name,
@@ -682,36 +747,28 @@ impl TransactionEngine for SqlTransactionEngine {
                             old_schema,
                         } => {
                             // Undo RENAME TABLE: restore old schema AND remove new schema
-                            self.storage
-                                .rollback_rename_table(&mut batch, old_name, new_name, old_schema)
+                            self.storage.rollback_rename_table(
+                                batch.inner(),
+                                old_name,
+                                new_name,
+                                old_schema,
+                            )
                         }
                         PendingDdl::CreateIndex { name } => {
                             // Undo CREATE INDEX: remove index from metadata
-                            self.storage.rollback_create_index(&mut batch, name)
+                            self.storage.rollback_create_index(batch.inner(), name)
                         }
                         PendingDdl::DropIndex { name, metadata } => {
                             // Undo DROP INDEX: restore index metadata
-                            self.storage.rollback_drop_index(&mut batch, name, metadata)
+                            self.storage
+                                .rollback_drop_index(batch.inner(), name, metadata)
                         }
                     } {
                         eprintln!("Warning: Failed to add DDL rollback to batch: {:?}", e);
                     }
                 }
-            }
 
-            // Commit the entire abort atomically (MVCC + predicates + metadata)
-            if let Err(e) = batch.commit() {
-                eprintln!("Warning: Failed to commit abort batch: {:?}", e);
-                return;
-            }
-
-            // Reload all metadata to sync in-memory state (only if we had DDL)
-            if !tx_ctx.pending_ddls.is_empty() {
-                if let Err(e) = self.storage.reload_metadata() {
-                    eprintln!("Warning: Failed to reload metadata after rollback: {:?}", e);
-                }
-
-                // Update caches with reloaded schemas
+                // Update caches with current schemas (rollback functions updated storage cache)
                 let schemas_arc = self.storage.get_schemas();
                 let indexes = self.storage.get_index_metadata();
 
@@ -730,9 +787,9 @@ impl TransactionEngine for SqlTransactionEngine {
         // If transaction doesn't exist, that's fine - may have been aborted already
     }
 
-    fn engine_name(&self) -> &'static str {
-        "sql"
-    }
+    // ═══════════════════════════════════════════════════════════
+    // RECOVERY
+    // ═══════════════════════════════════════════════════════════
 
     fn get_log_index(&self) -> Option<u64> {
         if self.storage.get_log_index() > 0 {
@@ -740,6 +797,30 @@ impl TransactionEngine for SqlTransactionEngine {
         } else {
             None
         }
+    }
+
+    fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+        let metadata = self.storage.metadata_partition();
+        let mut results = Vec::new();
+
+        // Scan for all keys matching _txn_meta_* pattern
+        for (key_bytes, value_bytes) in metadata.prefix("_txn_meta_").flatten() {
+            // Extract transaction ID from key: _txn_meta_{16-byte-txn-id}
+            if key_bytes.len() == 10 + 16 {
+                // "_txn_meta_" = 10 bytes
+                let txn_id_bytes: [u8; 16] = key_bytes[10..26]
+                    .try_into()
+                    .expect("Invalid txn_id in metadata key");
+                let txn_id = TransactionId::from_bytes(txn_id_bytes);
+                results.push((txn_id, value_bytes.to_vec()));
+            }
+        }
+
+        results
+    }
+
+    fn engine_name(&self) -> &str {
+        "sql"
     }
 }
 

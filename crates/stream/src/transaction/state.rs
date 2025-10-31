@@ -66,6 +66,27 @@ impl TransactionState {
             _ => None,
         }
     }
+
+    /// Serialize to bytes for persistence
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(self, &mut bytes)
+            .map_err(|e| format!("Failed to serialize transaction state: {}", e))?;
+        Ok(bytes)
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        ciborium::de::from_reader(bytes)
+            .map_err(|e| format!("Failed to deserialize transaction state: {}", e))
+    }
+
+    /// Get metadata key for this transaction
+    pub fn metadata_key(txn_id: TransactionId) -> Vec<u8> {
+        let mut key = b"_txn_meta_".to_vec();
+        key.extend_from_slice(&txn_id.to_bytes());
+        key
+    }
 }
 
 /// Clear lifecycle phases for a transaction

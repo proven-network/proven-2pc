@@ -13,9 +13,68 @@ use crate::storage::{LockAttemptResult, LockManager, LockMode};
 use crate::types::{QueueOperation, QueueResponse, QueueValue};
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
+use proven_stream::engine::{
+    BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Wrapper around Fjall Batch that implements BatchOperations
+///
+/// This is a thin wrapper that adds transaction metadata capabilities
+/// to Fjall's native batch type. The underlying Fjall batch already
+/// accumulates operations, so we just need to provide metadata methods.
+pub struct QueueBatch {
+    /// The underlying Fjall batch (accumulates all operations)
+    inner: proven_mvcc::Batch,
+
+    /// Reference to metadata partition (for transaction state)
+    metadata_partition: fjall::PartitionHandle,
+}
+
+impl QueueBatch {
+    /// Create a new batch (crate-local only)
+    pub(crate) fn new(storage: &MvccStorage<QueueEntity>) -> Self {
+        Self {
+            inner: storage.batch(),
+            metadata_partition: storage.metadata_partition().clone(),
+        }
+    }
+
+    /// Get mutable access to the inner Fjall batch (crate-local only)
+    ///
+    /// This allows engine implementations to add engine-specific
+    /// operations to the batch.
+    pub(crate) fn inner(&mut self) -> &mut proven_mvcc::Batch {
+        &mut self.inner
+    }
+
+    /// Consume and commit the batch with log_index (crate-local only)
+    ///
+    /// This is called by TransactionEngine::commit_batch().
+    /// Stream processor cannot call this directly.
+    pub(crate) fn commit(mut self, log_index: u64) -> Result<(), String> {
+        // Add log_index to batch
+        self.inner.insert(
+            &self.metadata_partition,
+            b"_log_index",
+            log_index.to_le_bytes(),
+        );
+
+        // Commit atomically
+        self.inner.commit().map_err(|e| e.to_string())
+    }
+}
+
+impl BatchOperations for QueueBatch {
+    fn insert_metadata(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.inner.insert(&self.metadata_partition, key, value);
+    }
+
+    fn remove_metadata(&mut self, key: Vec<u8>) {
+        self.inner.remove(self.metadata_partition.clone(), key);
+    }
+}
 
 /// Queue engine that implements the TransactionEngine trait with persistent storage
 pub struct QueueTransactionEngine {
@@ -298,9 +357,9 @@ impl QueueTransactionEngine {
     /// Execute enqueue operation
     fn execute_enqueue(
         &mut self,
+        batch: &mut proven_mvcc::Batch,
         value: QueueValue,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<QueueResponse> {
         // Generate next entry ID
         let entry_id = self.get_next_entry_id();
@@ -313,21 +372,17 @@ impl QueueTransactionEngine {
         };
 
         // Write to storage with batch
-        let mut batch = self.storage.batch();
         self.storage
-            .write_to_batch(&mut batch, delta, txn_id, log_index)
+            .write_to_batch(batch, delta, txn_id)
             .expect("Write failed");
 
-        // Add locks to the same batch (atomic with data + log_index)
-        if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
+        // Add locks to the same batch (atomic with data)
+        if let Err(e) = self.add_locks_to_batch(batch, txn_id) {
             eprintln!("Failed to add locks to batch: {}", e);
         }
 
         // Persist next_entry_id
-        self.persist_next_entry_id(&mut batch);
-
-        // Commit entire batch atomically (data + log_index + locks + next_entry_id)
-        batch.commit().expect("Batch commit failed");
+        self.persist_next_entry_id(batch);
 
         OperationResult::Complete(QueueResponse::Enqueued)
     }
@@ -335,8 +390,8 @@ impl QueueTransactionEngine {
     /// Execute dequeue operation
     fn execute_dequeue(
         &mut self,
+        batch: &mut proven_mvcc::Batch,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<QueueResponse> {
         // Find the head of the queue
         if let Some((entry_id, value)) = self.get_head(txn_id) {
@@ -353,32 +408,21 @@ impl QueueTransactionEngine {
             };
 
             // Write to storage with batch
-            let mut batch = self.storage.batch();
             self.storage
-                .write_to_batch(&mut batch, delta, txn_id, log_index)
+                .write_to_batch(batch, delta, txn_id)
                 .expect("Write failed");
 
             // Add locks to the same batch
-            if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
+            if let Err(e) = self.add_locks_to_batch(batch, txn_id) {
                 eprintln!("Failed to add locks to batch: {}", e);
             }
-
-            // Commit batch
-            batch.commit().expect("Batch commit failed");
 
             OperationResult::Complete(QueueResponse::Dequeued(Some(value)))
         } else {
             // Queue is empty - still need to persist locks
-            let mut batch = self.storage.batch();
-            if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
+            if let Err(e) = self.add_locks_to_batch(batch, txn_id) {
                 eprintln!("Failed to add locks to batch: {}", e);
             }
-
-            // Update log_index even if no dequeue
-            let metadata = self.storage.metadata_partition();
-            batch.insert(metadata, "_log_index", log_index.to_le_bytes());
-
-            batch.commit().expect("Batch commit failed");
 
             OperationResult::Complete(QueueResponse::Dequeued(None))
         }
@@ -387,12 +431,11 @@ impl QueueTransactionEngine {
     /// Execute clear operation
     fn execute_clear(
         &mut self,
+        batch: &mut proven_mvcc::Batch,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<QueueResponse> {
         // Collect all entries to clear and create individual Dequeue deltas for each
         let max_entry_id = self.next_entry_id.load(Ordering::SeqCst);
-        let mut batch = self.storage.batch();
 
         for entry_id in 1..max_entry_id {
             if let Ok(Some(value)) = self.storage.read(&entry_id, txn_id) {
@@ -403,18 +446,15 @@ impl QueueTransactionEngine {
                 };
 
                 self.storage
-                    .write_to_batch(&mut batch, delta, txn_id, log_index)
+                    .write_to_batch(batch, delta, txn_id)
                     .expect("Write failed");
             }
         }
 
         // Add locks to the same batch
-        if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
+        if let Err(e) = self.add_locks_to_batch(batch, txn_id) {
             eprintln!("Failed to add locks to batch: {}", e);
         }
-
-        // Commit batch
-        batch.commit().expect("Batch commit failed");
 
         OperationResult::Complete(QueueResponse::Cleared)
     }
@@ -429,6 +469,15 @@ impl Default for QueueTransactionEngine {
 impl TransactionEngine for QueueTransactionEngine {
     type Operation = QueueOperation;
     type Response = QueueResponse;
+    type Batch = QueueBatch;
+
+    fn start_batch(&mut self) -> Self::Batch {
+        QueueBatch::new(&self.storage)
+    }
+
+    fn commit_batch(&mut self, batch: Self::Batch, log_index: u64) {
+        batch.commit(log_index).expect("Batch commit failed");
+    }
 
     fn read_at_timestamp(
         &mut self,
@@ -445,9 +494,9 @@ impl TransactionEngine for QueueTransactionEngine {
 
     fn apply_operation(
         &mut self,
+        batch: &mut Self::Batch,
         operation: Self::Operation,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<Self::Response> {
         // Determine required lock mode
         let lock_mode = match &operation {
@@ -486,11 +535,17 @@ impl TransactionEngine for QueueTransactionEngine {
             }
         }
 
-        // Execute the operation
+        // Execute the operation (pass inner batch to avoid moving ownership)
+        let inner_batch = batch.inner();
         match operation {
-            QueueOperation::Enqueue { value } => self.execute_enqueue(value, txn_id, log_index),
-            QueueOperation::Dequeue => self.execute_dequeue(txn_id, log_index),
+            QueueOperation::Enqueue { value } => self.execute_enqueue(inner_batch, value, txn_id),
+            QueueOperation::Dequeue => self.execute_dequeue(inner_batch, txn_id),
             QueueOperation::Peek => {
+                // Read-only operations still need to persist locks
+                if let Err(e) = self.add_locks_to_batch(inner_batch, txn_id) {
+                    eprintln!("Failed to add locks to batch: {}", e);
+                }
+
                 if let Some((_, value)) = self.get_head(txn_id) {
                     OperationResult::Complete(QueueResponse::Peeked(Some(value)))
                 } else {
@@ -498,22 +553,32 @@ impl TransactionEngine for QueueTransactionEngine {
                 }
             }
             QueueOperation::Size => {
+                // Read-only operations still need to persist locks
+                if let Err(e) = self.add_locks_to_batch(inner_batch, txn_id) {
+                    eprintln!("Failed to add locks to batch: {}", e);
+                }
+
                 let size = self.get_size(txn_id);
                 OperationResult::Complete(QueueResponse::Size(size))
             }
             QueueOperation::IsEmpty => {
+                // Read-only operations still need to persist locks
+                if let Err(e) = self.add_locks_to_batch(inner_batch, txn_id) {
+                    eprintln!("Failed to add locks to batch: {}", e);
+                }
+
                 let is_empty = self.get_head(txn_id).is_none();
                 OperationResult::Complete(QueueResponse::IsEmpty(is_empty))
             }
-            QueueOperation::Clear => self.execute_clear(txn_id, log_index),
+            QueueOperation::Clear => self.execute_clear(inner_batch, txn_id),
         }
     }
 
-    fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {
+    fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {
         // Nothing to do - MVCC storage tracks transactions internally
     }
 
-    fn prepare(&mut self, txn_id: TransactionId, log_index: u64) {
+    fn prepare(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
         // Get locks held by this transaction from lock manager
         let locks = self.lock_manager.locks_held_by(txn_id);
 
@@ -522,36 +587,25 @@ impl TransactionEngine for QueueTransactionEngine {
             self.lock_manager.release(txn_id);
         }
 
-        // Update persisted locks atomically with log_index (only write locks remain)
-        let mut batch = self.storage.batch();
-        if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
+        // Update persisted locks atomically (only write locks remain)
+        let inner_batch = batch.inner();
+        if let Err(e) = self.add_locks_to_batch(inner_batch, txn_id) {
             eprintln!("Failed to add locks to batch: {}", e);
         }
-
-        // Update log_index in metadata atomically with locks
-        let metadata = self.storage.metadata_partition();
-        batch.insert(metadata, "_log_index", log_index.to_le_bytes());
-
-        batch.commit().expect("Batch commit failed");
     }
 
-    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Commit to storage and clear persisted locks atomically
-        let mut batch = self.storage.batch();
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        let inner_batch = batch.inner();
 
         // Commit the transaction via storage
         self.storage
-            .commit_transaction_to_batch(&mut batch, txn_id, log_index)
+            .commit_transaction_to_batch(inner_batch, txn_id)
             .expect("Commit failed");
 
         // Clear persisted locks in the same batch
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        let metadata = self.storage.metadata_partition();
-        batch.remove(metadata.clone(), lock_key);
-
-        // Commit atomically: transaction commit + locks cleanup + log_index
-        batch.commit().expect("Batch commit failed");
+        batch.remove_metadata(lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
         self.storage
@@ -565,23 +619,18 @@ impl TransactionEngine for QueueTransactionEngine {
         self.dequeued_entries.remove(&txn_id);
     }
 
-    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Abort in storage and clear persisted locks atomically
-        let mut batch = self.storage.batch();
+    fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        let inner_batch = batch.inner();
 
         // Abort the transaction via storage
         self.storage
-            .abort_transaction_to_batch(&mut batch, txn_id, log_index)
+            .abort_transaction_to_batch(inner_batch, txn_id)
             .expect("Abort failed");
 
         // Clear persisted locks in the same batch
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        let metadata = self.storage.metadata_partition();
-        batch.remove(metadata.clone(), lock_key);
-
-        // Commit atomically: transaction abort + locks cleanup + log_index
-        batch.commit().expect("Batch commit failed");
+        batch.remove_metadata(lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
         self.storage
@@ -595,13 +644,44 @@ impl TransactionEngine for QueueTransactionEngine {
         self.dequeued_entries.remove(&txn_id);
     }
 
-    fn engine_name(&self) -> &'static str {
-        "queue"
+    fn get_log_index(&self) -> Option<u64> {
+        // Read log_index from metadata partition where batch.commit() writes it
+        let metadata = self.storage.metadata_partition();
+        let log_index = metadata
+            .get(b"_log_index")
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                let array: [u8; 8] = bytes.as_ref().try_into().unwrap_or([0; 8]);
+                u64::from_le_bytes(array)
+            })
+            .unwrap_or(0);
+
+        if log_index > 0 { Some(log_index) } else { None }
     }
 
-    fn get_log_index(&self) -> Option<u64> {
-        let log_index = self.storage.get_log_index();
-        if log_index > 0 { Some(log_index) } else { None }
+    fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+        let metadata = self.storage.metadata_partition();
+        let mut results = Vec::new();
+
+        // Scan for all keys matching _txn_meta_* pattern
+        for (key_bytes, value_bytes) in metadata.prefix("_txn_meta_").flatten() {
+            // Extract transaction ID from key: _txn_meta_{16-byte-txn-id}
+            if key_bytes.len() == 10 + 16 {
+                // "_txn_meta_" = 10 bytes
+                let txn_id_bytes: [u8; 16] = key_bytes[10..26]
+                    .try_into()
+                    .expect("Invalid txn_id in metadata key");
+                let txn_id = TransactionId::from_bytes(txn_id_bytes);
+                results.push((txn_id, value_bytes.to_vec()));
+            }
+        }
+
+        results
+    }
+
+    fn engine_name(&self) -> &str {
+        "queue"
     }
 }
 
@@ -618,30 +698,38 @@ mod tests {
         let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp();
 
-        engine.begin(tx1, 1);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx1);
+        engine.commit_batch(batch, 1);
 
         // Test enqueue
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::I64(42),
         };
 
-        let result = engine.apply_operation(enqueue_op, tx1, 2);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, enqueue_op, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Enqueued)
         ));
+        engine.commit_batch(batch, 2);
 
         // Test peek
         let peek_op = QueueOperation::Peek;
 
-        let result = engine.apply_operation(peek_op, tx1, 3);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, peek_op, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(42))))
         ));
+        engine.commit_batch(batch, 3);
 
         // Test commit
-        engine.commit(tx1, 4);
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx1);
+        engine.commit_batch(batch, 4);
     }
 
     #[test]
@@ -650,22 +738,31 @@ mod tests {
         let tx1 = create_timestamp();
         let tx2 = create_timestamp();
 
-        engine.begin(tx1, 1);
-        engine.begin(tx2, 2);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx1);
+        engine.commit_batch(batch, 1);
+
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx2);
+        engine.commit_batch(batch, 2);
 
         // tx1 gets append lock
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Str("tx1".to_string()),
         };
 
-        let result = engine.apply_operation(enqueue_op, tx1, 3);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, enqueue_op, tx1);
         assert!(matches!(result, OperationResult::Complete(_)));
+        engine.commit_batch(batch, 3);
 
         // tx2 should be blocked trying to get exclusive lock
         let dequeue_op = QueueOperation::Dequeue;
 
-        let result = engine.apply_operation(dequeue_op, tx2, 4);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, dequeue_op, tx2);
         assert!(matches!(result, OperationResult::WouldBlock { .. }));
+        engine.commit_batch(batch, 4);
     }
 
     #[test]
@@ -673,27 +770,37 @@ mod tests {
         let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp();
 
-        engine.begin(tx1, 1);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx1);
+        engine.commit_batch(batch, 1);
 
         // Execute operation
         let enqueue_op = QueueOperation::Enqueue {
             value: QueueValue::Bool(true),
         };
 
-        engine.apply_operation(enqueue_op, tx1, 2);
+        let mut batch = engine.start_batch();
+        engine.apply_operation(&mut batch, enqueue_op, tx1);
+        engine.commit_batch(batch, 2);
 
         // Abort
-        engine.abort(tx1, 3);
+        let mut batch = engine.start_batch();
+        engine.abort(&mut batch, tx1);
+        engine.commit_batch(batch, 3);
 
         // Queue should be empty after abort
         let tx2 = create_timestamp();
-        engine.begin(tx2, 4);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx2);
+        engine.commit_batch(batch, 4);
 
-        let result = engine.apply_operation(QueueOperation::IsEmpty, tx2, 5);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, QueueOperation::IsEmpty, tx2);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::IsEmpty(true))
         ));
+        engine.commit_batch(batch, 5);
     }
 
     #[test]
@@ -701,45 +808,60 @@ mod tests {
         let mut engine = QueueTransactionEngine::new();
         let tx1 = create_timestamp();
 
-        engine.begin(tx1, 1);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx1);
+        engine.commit_batch(batch, 1);
 
         // Enqueue two values
+        let mut batch = engine.start_batch();
         engine.apply_operation(
+            &mut batch,
             QueueOperation::Enqueue {
                 value: QueueValue::Str("first".to_string()),
             },
             tx1,
-            2,
         );
+        engine.commit_batch(batch, 2);
+
+        let mut batch = engine.start_batch();
         engine.apply_operation(
+            &mut batch,
             QueueOperation::Enqueue {
                 value: QueueValue::Str("second".to_string()),
             },
             tx1,
-            3,
         );
+        engine.commit_batch(batch, 3);
 
         // Dequeue should return FIFO order
-        let result = engine.apply_operation(QueueOperation::Dequeue, tx1, 4);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "first"
         ));
+        engine.commit_batch(batch, 4);
 
-        let result = engine.apply_operation(QueueOperation::Dequeue, tx1, 5);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "second"
         ));
+        engine.commit_batch(batch, 5);
 
         // Should be empty now
-        let result = engine.apply_operation(QueueOperation::Dequeue, tx1, 6);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
             OperationResult::Complete(QueueResponse::Dequeued(None))
         ));
+        engine.commit_batch(batch, 6);
 
-        engine.commit(tx1, 7);
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx1);
+        engine.commit_batch(batch, 7);
     }
 
     #[test]
@@ -749,30 +871,46 @@ mod tests {
         // Enqueue 3 values in separate transactions
         for i in 0..3 {
             let tx = create_timestamp();
-            engine.begin(tx, i * 2);
+            let mut batch = engine.start_batch();
+            engine.begin(&mut batch, tx);
+            engine.commit_batch(batch, i * 4);
+
+            let mut batch = engine.start_batch();
             engine.apply_operation(
+                &mut batch,
                 QueueOperation::Enqueue {
                     value: QueueValue::I64(i as i64),
                 },
                 tx,
-                i * 2 + 1,
             );
-            engine.commit(tx, i * 2 + 2);
+            engine.commit_batch(batch, i * 4 + 1);
+
+            let mut batch = engine.start_batch();
+            engine.commit(&mut batch, tx);
+            engine.commit_batch(batch, i * 4 + 2);
         }
 
-        // Dequeue 2 values at time 400
+        // Dequeue 2 values
         let tx = create_timestamp();
-        engine.begin(tx, 10);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx);
+        engine.commit_batch(batch, 10);
 
-        let r1 = engine.apply_operation(QueueOperation::Dequeue, tx, 11);
+        let mut batch = engine.start_batch();
+        let r1 = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx);
         println!("First dequeue: {:?}", r1);
+        engine.commit_batch(batch, 11);
 
-        let r2 = engine.apply_operation(QueueOperation::Dequeue, tx, 12);
+        let mut batch = engine.start_batch();
+        let r2 = engine.apply_operation(&mut batch, QueueOperation::Dequeue, tx);
         println!("Second dequeue: {:?}", r2);
+        engine.commit_batch(batch, 12);
 
-        engine.commit(tx, 13);
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx);
+        engine.commit_batch(batch, 13);
 
-        // Snapshot peek at 450 should see value 2
+        // Snapshot peek should see value 2
         let result = engine.read_at_timestamp(QueueOperation::Peek, create_timestamp());
         println!("Snapshot peek result: {:?}", result);
 

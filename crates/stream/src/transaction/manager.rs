@@ -215,8 +215,12 @@ impl<E: TransactionEngine> TransactionManager<E> {
             .filter(|(id, state)| {
                 let expired = now > state.deadline;
                 if expired {
-                    println!("  Active transaction {} expired: now={} > deadline={}",
-                        id, now.as_micros(), state.deadline.as_micros());
+                    println!(
+                        "  Active transaction {} expired: now={} > deadline={}",
+                        id,
+                        now.as_micros(),
+                        state.deadline.as_micros()
+                    );
                 }
                 expired
             })
@@ -258,9 +262,16 @@ impl<E: TransactionEngine> TransactionManager<E> {
         blockers: Vec<BlockingInfo>,
         coordinator_id: String,
         request_id: String,
+        is_atomic: bool,
     ) {
-        self.deferral
-            .defer(txn_id, operation, blockers, coordinator_id, request_id);
+        self.deferral.defer(
+            txn_id,
+            operation,
+            blockers,
+            coordinator_id,
+            request_id,
+            is_atomic,
+        );
     }
 
     /// Get count of deferred operations for a transaction
@@ -307,10 +318,23 @@ mod tests {
     struct TestResponse(String);
     impl Response for TestResponse {}
 
+    struct TestBatch;
+    impl crate::engine::BatchOperations for TestBatch {
+        fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
+        fn remove_metadata(&mut self, _key: Vec<u8>) {}
+    }
+
     struct TestEngine;
     impl TransactionEngine for TestEngine {
         type Operation = TestOperation;
         type Response = TestResponse;
+        type Batch = TestBatch;
+
+        fn start_batch(&mut self) -> Self::Batch {
+            TestBatch
+        }
+
+        fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
 
         fn read_at_timestamp(
             &mut self,
@@ -322,17 +346,23 @@ mod tests {
 
         fn apply_operation(
             &mut self,
+            _batch: &mut Self::Batch,
             _operation: Self::Operation,
             _txn_id: TransactionId,
-            _log_index: u64,
         ) -> crate::engine::OperationResult<Self::Response> {
             unimplemented!()
         }
 
-        fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {}
-        fn prepare(&mut self, _txn_id: TransactionId, _log_index: u64) {}
-        fn commit(&mut self, _txn_id: TransactionId, _log_index: u64) {}
-        fn abort(&mut self, _txn_id: TransactionId, _log_index: u64) {}
+        fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn get_log_index(&self) -> Option<u64> {
+            None
+        }
+        fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+            vec![]
+        }
         fn engine_name(&self) -> &str {
             "test"
         }
@@ -483,6 +513,7 @@ mod tests {
             vec![blocker(blocker_txn, RetryOn::Prepare)],
             "coord-1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         assert_eq!(mgr.deferred_count(waiter), 1);
@@ -519,6 +550,7 @@ mod tests {
             vec![blocker(blocker_txn, RetryOn::CommitOrAbort)],
             "coord-1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         // Commit blocker
@@ -621,6 +653,7 @@ mod tests {
             vec![blocker(blocker_txn, RetryOn::CommitOrAbort)],
             "coord-1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         assert_eq!(mgr.deferred_count(waiter), 1);

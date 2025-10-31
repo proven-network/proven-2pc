@@ -8,8 +8,65 @@ use crate::storage::{ReservationManager, ReservationType, ResourceMetadata};
 use crate::types::{Amount, ResourceOperation, ResourceResponse};
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::engine::BlockingInfo;
+use proven_stream::engine::{BatchOperations, BlockingInfo};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+
+/// Wrapper around Fjall Batch that implements BatchOperations
+///
+/// This is a thin wrapper that adds transaction metadata capabilities
+/// to Fjall's native batch type. The underlying Fjall batch already
+/// accumulates operations, so we just need to provide metadata methods.
+pub struct ResourceBatch {
+    /// The underlying Fjall batch (accumulates all operations)
+    inner: proven_mvcc::Batch,
+
+    /// Reference to metadata partition (for transaction state)
+    metadata_partition: fjall::PartitionHandle,
+}
+
+impl ResourceBatch {
+    /// Create a new batch (crate-local only)
+    pub(crate) fn new(storage: &MvccStorage<ResourceEntity>) -> Self {
+        Self {
+            inner: storage.batch(),
+            metadata_partition: storage.metadata_partition().clone(),
+        }
+    }
+
+    /// Get mutable access to the inner Fjall batch (crate-local only)
+    ///
+    /// This allows engine implementations to add engine-specific
+    /// operations to the batch.
+    pub(crate) fn inner(&mut self) -> &mut proven_mvcc::Batch {
+        &mut self.inner
+    }
+
+    /// Consume and commit the batch with log_index (crate-local only)
+    ///
+    /// This is called by TransactionEngine::commit_batch().
+    /// Stream processor cannot call this directly.
+    pub(crate) fn commit(mut self, log_index: u64) -> Result<(), String> {
+        // Add log_index to batch
+        self.inner.insert(
+            &self.metadata_partition,
+            b"_log_index",
+            log_index.to_le_bytes(),
+        );
+
+        // Commit atomically
+        self.inner.commit().map_err(|e| e.to_string())
+    }
+}
+
+impl BatchOperations for ResourceBatch {
+    fn insert_metadata(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.inner.insert(&self.metadata_partition, key, value);
+    }
+
+    fn remove_metadata(&mut self, key: Vec<u8>) {
+        self.inner.remove(self.metadata_partition.clone(), key);
+    }
+}
 
 /// Resource engine for processing resource operations with persistent storage
 pub struct ResourceTransactionEngine {
@@ -208,9 +265,9 @@ impl ResourceTransactionEngine {
     /// Process a resource operation
     fn process_operation(
         &mut self,
+        batch: &mut ResourceBatch,
         operation: &ResourceOperation,
         transaction_id: TransactionId,
-        log_index: u64,
     ) -> Result<ResourceResponse, String> {
         match operation {
             ResourceOperation::Initialize {
@@ -259,19 +316,16 @@ impl ResourceTransactionEngine {
                     new: new_metadata.clone(),
                 };
 
-                // Write to storage
-                let mut batch = self.storage.batch();
+                // Write to storage using passed-in batch
+                let inner_batch = batch.inner();
                 self.storage
-                    .write_to_batch(&mut batch, delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, delta, transaction_id)
                     .expect("Write failed");
 
                 // Add reservations to the batch
-                if let Err(e) = self.add_reservations_to_batch(&mut batch, transaction_id) {
+                if let Err(e) = self.add_reservations_to_batch(inner_batch, transaction_id) {
                     eprintln!("Failed to add reservations to batch: {}", e);
                 }
-
-                // Commit batch
-                batch.commit().expect("Batch commit failed");
 
                 Ok(ResourceResponse::Initialized {
                     name: name.clone(),
@@ -318,19 +372,16 @@ impl ResourceTransactionEngine {
                     new: new_metadata.clone(),
                 };
 
-                // Write to storage
-                let mut batch = self.storage.batch();
+                // Write to storage using passed-in batch
+                let inner_batch = batch.inner();
                 self.storage
-                    .write_to_batch(&mut batch, delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, delta, transaction_id)
                     .expect("Write failed");
 
                 // Add reservations to the batch
-                if let Err(e) = self.add_reservations_to_batch(&mut batch, transaction_id) {
+                if let Err(e) = self.add_reservations_to_batch(inner_batch, transaction_id) {
                     eprintln!("Failed to add reservations to batch: {}", e);
                 }
-
-                // Commit batch
-                batch.commit().expect("Batch commit failed");
 
                 Ok(ResourceResponse::MetadataUpdated {
                     name: name.clone(),
@@ -362,22 +413,19 @@ impl ResourceTransactionEngine {
                     new: new_supply,
                 };
 
-                // Write both deltas to storage in the same batch
-                let mut batch = self.storage.batch();
+                // Write both deltas to storage using passed-in batch
+                let inner_batch = batch.inner();
                 self.storage
-                    .write_to_batch(&mut batch, balance_delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, balance_delta, transaction_id)
                     .expect("Write balance failed");
                 self.storage
-                    .write_to_batch(&mut batch, supply_delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, supply_delta, transaction_id)
                     .expect("Write supply failed");
 
                 // Add reservations to the batch
-                if let Err(e) = self.add_reservations_to_batch(&mut batch, transaction_id) {
+                if let Err(e) = self.add_reservations_to_batch(inner_batch, transaction_id) {
                     eprintln!("Failed to add reservations to batch: {}", e);
                 }
-
-                // Commit batch
-                batch.commit().expect("Batch commit failed");
 
                 Ok(ResourceResponse::Minted {
                     to: to.clone(),
@@ -427,22 +475,19 @@ impl ResourceTransactionEngine {
                     new: new_supply,
                 };
 
-                // Write both deltas to storage in the same batch
-                let mut batch = self.storage.batch();
+                // Write both deltas to storage using passed-in batch
+                let inner_batch = batch.inner();
                 self.storage
-                    .write_to_batch(&mut batch, balance_delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, balance_delta, transaction_id)
                     .expect("Write balance failed");
                 self.storage
-                    .write_to_batch(&mut batch, supply_delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, supply_delta, transaction_id)
                     .expect("Write supply failed");
 
                 // Add reservations to the batch
-                if let Err(e) = self.add_reservations_to_batch(&mut batch, transaction_id) {
+                if let Err(e) = self.add_reservations_to_batch(inner_batch, transaction_id) {
                     eprintln!("Failed to add reservations to batch: {}", e);
                 }
-
-                // Commit batch
-                batch.commit().expect("Batch commit failed");
 
                 Ok(ResourceResponse::Burned {
                     from: from.clone(),
@@ -500,22 +545,19 @@ impl ResourceTransactionEngine {
                     new: new_to_balance,
                 };
 
-                // Write both deltas to storage in the same batch
-                let mut batch = self.storage.batch();
+                // Write both deltas to storage using passed-in batch
+                let inner_batch = batch.inner();
                 self.storage
-                    .write_to_batch(&mut batch, from_delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, from_delta, transaction_id)
                     .expect("Write from balance failed");
                 self.storage
-                    .write_to_batch(&mut batch, to_delta, transaction_id, log_index)
+                    .write_to_batch(inner_batch, to_delta, transaction_id)
                     .expect("Write to balance failed");
 
                 // Add reservations to the batch
-                if let Err(e) = self.add_reservations_to_batch(&mut batch, transaction_id) {
+                if let Err(e) = self.add_reservations_to_batch(inner_batch, transaction_id) {
                     eprintln!("Failed to add reservations to batch: {}", e);
                 }
-
-                // Commit batch
-                batch.commit().expect("Batch commit failed");
 
                 Ok(ResourceResponse::Transferred {
                     from: from.clone(),
@@ -555,6 +597,15 @@ impl ResourceTransactionEngine {
 impl TransactionEngine for ResourceTransactionEngine {
     type Operation = ResourceOperation;
     type Response = ResourceResponse;
+    type Batch = ResourceBatch;
+
+    fn start_batch(&mut self) -> Self::Batch {
+        ResourceBatch::new(&self.storage)
+    }
+
+    fn commit_batch(&mut self, batch: Self::Batch, log_index: u64) {
+        batch.commit(log_index).expect("Batch commit failed");
+    }
 
     fn read_at_timestamp(
         &mut self,
@@ -564,17 +615,13 @@ impl TransactionEngine for ResourceTransactionEngine {
         self.execute_read_at_timestamp(&operation, read_timestamp)
     }
 
-    fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {
-        // Nothing to do - MVCC storage tracks transactions internally
-    }
-
     fn apply_operation(
         &mut self,
+        batch: &mut Self::Batch,
         operation: Self::Operation,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<Self::Response> {
-        match self.process_operation(&operation, txn_id, log_index) {
+        match self.process_operation(batch, &operation, txn_id) {
             Ok(response) => OperationResult::Complete(response),
             Err(err) if err.contains("blocked by transactions") => {
                 // Parse blocking transactions from error message
@@ -595,79 +642,100 @@ impl TransactionEngine for ResourceTransactionEngine {
         }
     }
 
-    fn prepare(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Update persisted reservations atomically with log_index
-        let mut batch = self.storage.batch();
-        if let Err(e) = self.add_reservations_to_batch(&mut batch, txn_id) {
-            eprintln!("Failed to add reservations to batch: {}", e);
-        }
-
-        // Update log_index in metadata atomically with reservations
-        let metadata = self.storage.metadata_partition();
-        batch.insert(metadata, "_log_index", log_index.to_le_bytes());
-
-        batch.commit().expect("Batch commit failed");
+    fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {
+        // Nothing to do - MVCC storage tracks transactions internally
     }
 
-    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Commit to storage and clear persisted reservations atomically
-        let mut batch = self.storage.batch();
+    fn prepare(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        // Update persisted reservations atomically
+        let inner_batch = batch.inner();
+        if let Err(e) = self.add_reservations_to_batch(inner_batch, txn_id) {
+            eprintln!("Failed to add reservations to batch: {}", e);
+        }
+    }
+
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        let inner_batch = batch.inner();
 
         // Commit the transaction via storage
         self.storage
-            .commit_transaction_to_batch(&mut batch, txn_id, log_index)
+            .commit_transaction_to_batch(inner_batch, txn_id)
             .expect("Commit failed");
 
         // Clear persisted reservations in the same batch
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        let metadata = self.storage.metadata_partition();
-        batch.remove(metadata.clone(), lock_key);
-
-        // Commit atomically: transaction commit + reservations cleanup + log_index
-        batch.commit().expect("Batch commit failed");
+        batch.remove_metadata(lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
-        use proven_common::Timestamp;
-        self.storage.maybe_cleanup(Timestamp::now()).ok();
+        self.storage
+            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
+            .ok();
 
         // Release all reservations held by this transaction
         self.reservations.release_transaction(txn_id);
     }
 
-    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Abort in storage and clear persisted reservations atomically
-        let mut batch = self.storage.batch();
+    fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        let inner_batch = batch.inner();
 
         // Abort the transaction via storage
         self.storage
-            .abort_transaction_to_batch(&mut batch, txn_id, log_index)
+            .abort_transaction_to_batch(inner_batch, txn_id)
             .expect("Abort failed");
 
         // Clear persisted reservations in the same batch
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        let metadata = self.storage.metadata_partition();
-        batch.remove(metadata.clone(), lock_key);
-
-        // Commit atomically: transaction abort + reservations cleanup + log_index
-        batch.commit().expect("Batch commit failed");
+        batch.remove_metadata(lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
-        use proven_common::Timestamp;
-        self.storage.maybe_cleanup(Timestamp::now()).ok();
+        self.storage
+            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
+            .ok();
 
         // Release all reservations
         self.reservations.release_transaction(txn_id);
     }
 
-    fn engine_name(&self) -> &'static str {
-        "resource"
+    fn get_log_index(&self) -> Option<u64> {
+        // Read log_index from metadata partition where batch.commit() writes it
+        let metadata = self.storage.metadata_partition();
+        let log_index = metadata
+            .get(b"_log_index")
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                let array: [u8; 8] = bytes.as_ref().try_into().unwrap_or([0; 8]);
+                u64::from_le_bytes(array)
+            })
+            .unwrap_or(0);
+
+        if log_index > 0 { Some(log_index) } else { None }
     }
 
-    fn get_log_index(&self) -> Option<u64> {
-        let log_index = self.storage.get_log_index();
-        if log_index > 0 { Some(log_index) } else { None }
+    fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+        let metadata = self.storage.metadata_partition();
+        let mut results = Vec::new();
+
+        // Scan for all keys matching _txn_meta_* pattern
+        for (key_bytes, value_bytes) in metadata.prefix("_txn_meta_").flatten() {
+            // Extract transaction ID from key: _txn_meta_{16-byte-txn-id}
+            if key_bytes.len() == 10 + 16 {
+                // "_txn_meta_" = 10 bytes
+                let txn_id_bytes: [u8; 16] = key_bytes[10..26]
+                    .try_into()
+                    .expect("Invalid txn_id in metadata key");
+                let txn_id = TransactionId::from_bytes(txn_id_bytes);
+                results.push((txn_id, value_bytes.to_vec()));
+            }
+        }
+
+        results
+    }
+
+    fn engine_name(&self) -> &str {
+        "resource"
     }
 }
 
@@ -692,7 +760,9 @@ mod tests {
         let tx1 = make_timestamp(100);
 
         // Begin transaction
-        engine.begin(tx1, 1);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx1);
+        engine.commit_batch(batch, 1);
 
         // Initialize resource
         let op = ResourceOperation::Initialize {
@@ -701,7 +771,9 @@ mod tests {
             decimals: 8,
         };
 
-        let result = engine.apply_operation(op, tx1, 2);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, op, tx1);
+        engine.commit_batch(batch, 2);
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Mint tokens
@@ -711,22 +783,33 @@ mod tests {
             memo: None,
         };
 
-        let result = engine.apply_operation(op, tx1, 3);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, op, tx1);
+        engine.commit_batch(batch, 3);
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Commit transaction
-        engine.prepare(tx1, 4);
-        engine.commit(tx1, 5);
+        let mut batch = engine.start_batch();
+        engine.prepare(&mut batch, tx1);
+        engine.commit_batch(batch, 4);
+
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx1);
+        engine.commit_batch(batch, 5);
 
         // Check balance in new transaction
         let tx2 = make_timestamp(200);
-        engine.begin(tx2, 6);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx2);
+        engine.commit_batch(batch, 6);
 
         let op = ResourceOperation::GetBalance {
             account: "alice".to_string(),
         };
 
-        let result = engine.apply_operation(op, tx2, 7);
+        let mut batch = engine.start_batch();
+        let result = engine.apply_operation(&mut batch, op, tx2);
+        engine.commit_batch(batch, 7);
         if let OperationResult::Complete(ResourceResponse::Balance { amount, .. }) = result {
             assert_eq!(amount, Amount::from_integer(1000, 0));
         } else {
@@ -739,37 +822,49 @@ mod tests {
         let mut engine = ResourceTransactionEngine::new();
         let tx1 = make_timestamp(100);
 
-        engine.begin(tx1, 1);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx1);
+        engine.commit_batch(batch, 1);
 
         // Initialize
+        let mut batch = engine.start_batch();
         engine.apply_operation(
+            &mut batch,
             ResourceOperation::Initialize {
                 name: "Test".to_string(),
                 symbol: "TST".to_string(),
                 decimals: 2,
             },
             tx1,
-            2,
         );
+        engine.commit_batch(batch, 2);
 
         // Mint to alice
+        let mut batch = engine.start_batch();
         engine.apply_operation(
+            &mut batch,
             ResourceOperation::Mint {
                 to: "alice".to_string(),
                 amount: Amount::from_integer(1000, 0),
                 memo: None,
             },
             tx1,
-            3,
         );
+        engine.commit_batch(batch, 3);
 
-        engine.commit(tx1, 4);
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx1);
+        engine.commit_batch(batch, 4);
 
         // Transfer
         let tx2 = make_timestamp(200);
-        engine.begin(tx2, 5);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx2);
+        engine.commit_batch(batch, 5);
 
+        let mut batch = engine.start_batch();
         let result = engine.apply_operation(
+            &mut batch,
             ResourceOperation::Transfer {
                 from: "alice".to_string(),
                 to: "bob".to_string(),
@@ -777,16 +872,20 @@ mod tests {
                 memo: None,
             },
             tx2,
-            6,
         );
+        engine.commit_batch(batch, 6);
 
         assert!(matches!(result, OperationResult::Complete(_)));
 
-        engine.commit(tx2, 7);
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx2);
+        engine.commit_batch(batch, 7);
 
         // Verify balances
         let tx3 = make_timestamp(300);
-        engine.begin(tx3, 8);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx3);
+        engine.commit_batch(batch, 8);
 
         let alice_balance = engine.get_balance("alice", tx3);
         let bob_balance = engine.get_balance("bob", tx3);
@@ -800,48 +899,62 @@ mod tests {
         let mut engine = ResourceTransactionEngine::new();
         let tx1 = make_timestamp(100);
 
-        engine.begin(tx1, 1);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx1);
+        engine.commit_batch(batch, 1);
 
         // Initialize and mint
+        let mut batch = engine.start_batch();
         engine.apply_operation(
+            &mut batch,
             ResourceOperation::Initialize {
                 name: "Test".to_string(),
                 symbol: "TST".to_string(),
                 decimals: 2,
             },
             tx1,
-            2,
         );
+        engine.commit_batch(batch, 2);
 
+        let mut batch = engine.start_batch();
         engine.apply_operation(
+            &mut batch,
             ResourceOperation::Mint {
                 to: "alice".to_string(),
                 amount: Amount::from_integer(1000, 0),
                 memo: None,
             },
             tx1,
-            3,
         );
+        engine.commit_batch(batch, 3);
 
-        engine.commit(tx1, 4);
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx1);
+        engine.commit_batch(batch, 4);
 
         // Burn
         let tx2 = make_timestamp(200);
-        engine.begin(tx2, 5);
+        let mut batch = engine.start_batch();
+        engine.begin(&mut batch, tx2);
+        engine.commit_batch(batch, 5);
 
+        let mut batch = engine.start_batch();
         let result = engine.apply_operation(
+            &mut batch,
             ResourceOperation::Burn {
                 from: "alice".to_string(),
                 amount: Amount::from_integer(400, 0),
                 memo: None,
             },
             tx2,
-            6,
         );
+        engine.commit_batch(batch, 6);
 
         assert!(matches!(result, OperationResult::Complete(_)));
 
-        engine.commit(tx2, 7);
+        let mut batch = engine.start_batch();
+        engine.commit(&mut batch, tx2);
+        engine.commit_batch(batch, 7);
 
         // Verify balance and supply
         let tx3 = make_timestamp(300);

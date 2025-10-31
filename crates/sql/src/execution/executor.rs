@@ -176,7 +176,6 @@ pub fn execute_with_params(
                     index_values,
                     row_id,
                     tx_ctx.txn_id,
-                    tx_ctx.log_index,
                 )?;
             }
             batch.commit()?;

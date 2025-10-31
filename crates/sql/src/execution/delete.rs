@@ -66,19 +66,12 @@ pub fn execute_delete(
 
     for (row_id, values) in &matching_rows {
         // Delete row
-        storage.delete_row(batch, &table, *row_id, tx_ctx.txn_id, tx_ctx.log_index)?;
+        storage.delete_row(batch, &table, *row_id, tx_ctx.txn_id)?;
 
         // Delete from all indexes
         for index in &all_indexes {
             let index_values = helpers::extract_index_values(values, index, &schema, tx_ctx)?;
-            storage.delete_index_entry(
-                batch,
-                &index.name,
-                index_values,
-                *row_id,
-                tx_ctx.txn_id,
-                tx_ctx.log_index,
-            )?;
+            storage.delete_index_entry(batch, &index.name, index_values, *row_id, tx_ctx.txn_id)?;
         }
     }
 
@@ -179,13 +172,7 @@ fn handle_foreign_key_on_delete(
 
                     for (ref_row_id, ref_row_values) in &referencing_rows {
                         // Delete the referencing row
-                        storage.delete_row(
-                            batch,
-                            ref_table_name,
-                            *ref_row_id,
-                            tx_ctx.txn_id,
-                            tx_ctx.log_index,
-                        )?;
+                        storage.delete_row(batch, ref_table_name, *ref_row_id, tx_ctx.txn_id)?;
 
                         // Delete from indexes
                         for index in &ref_indexes {
@@ -201,7 +188,6 @@ fn handle_foreign_key_on_delete(
                                 index_values,
                                 *ref_row_id,
                                 tx_ctx.txn_id,
-                                tx_ctx.log_index,
                             )?;
                         }
                     }
@@ -236,7 +222,6 @@ fn handle_foreign_key_on_delete(
                             *ref_row_id,
                             &new_values,
                             tx_ctx.txn_id,
-                            tx_ctx.log_index,
                         )?;
 
                         // Update indexes
@@ -262,7 +247,6 @@ fn handle_foreign_key_on_delete(
                                     new_index_values,
                                     *ref_row_id,
                                     tx_ctx.txn_id,
-                                    tx_ctx.log_index,
                                 )?;
                             }
                         }
@@ -317,7 +301,6 @@ fn handle_foreign_key_on_delete(
                             *ref_row_id,
                             &new_values,
                             tx_ctx.txn_id,
-                            tx_ctx.log_index,
                         )?;
 
                         // Update indexes
@@ -343,7 +326,6 @@ fn handle_foreign_key_on_delete(
                                     new_index_values,
                                     *ref_row_id,
                                     tx_ctx.txn_id,
-                                    tx_ctx.log_index,
                                 )?;
                             }
                         }

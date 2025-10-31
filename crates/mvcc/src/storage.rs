@@ -18,7 +18,6 @@ use fjall::{Batch, Keyspace, Partition, PartitionCreateOptions};
 use proven_common::{Timestamp, TransactionId};
 use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Type-erased iterator to avoid complex trait bounds
 pub type MvccIterator<E> = Box<dyn Iterator<Item = Result<<E as MvccEntity>::Value>>>;
@@ -37,7 +36,6 @@ pub struct MvccStorage<E: MvccEntity> {
     history: HistoryStore<E>,
 
     // Shared state
-    log_index: AtomicU64,
     config: StorageConfig,
     last_cleanup: Option<Timestamp>,
 
@@ -103,27 +101,12 @@ impl<E: MvccEntity> MvccStorage<E> {
         );
         let history = HistoryStore::new(history_mgr, config.history_retention_window);
 
-        // Load log index from metadata
-        let log_index_key = format!("{}_log_index", E::entity_name());
-        let log_index = if let Some(bytes) = metadata_partition.get(&log_index_key)? {
-            if bytes.len() == 8 {
-                let mut buf = [0u8; 8];
-                buf.copy_from_slice(&bytes);
-                u64::from_be_bytes(buf)
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
         Ok(Self {
             keyspace,
             metadata_partition,
             data_partition,
             uncommitted,
             history,
-            log_index: AtomicU64::new(log_index),
             config,
             last_cleanup: None,
             _phantom: PhantomData,
@@ -179,27 +162,12 @@ impl<E: MvccEntity> MvccStorage<E> {
         );
         let history = HistoryStore::new(history_mgr, config.history_retention_window);
 
-        // Load log index from metadata
-        let log_index_key = format!("{}_log_index", E::entity_name());
-        let log_index = if let Some(bytes) = metadata_partition.get(&log_index_key)? {
-            if bytes.len() == 8 {
-                let mut buf = [0u8; 8];
-                buf.copy_from_slice(&bytes);
-                u64::from_be_bytes(buf)
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
         Ok(Self {
             keyspace,
             metadata_partition,
             data_partition,
             uncommitted,
             history,
-            log_index: AtomicU64::new(log_index),
             config,
             last_cleanup: None,
             _phantom: PhantomData,
@@ -252,19 +220,9 @@ impl<E: MvccEntity> MvccStorage<E> {
         batch: &mut Batch,
         delta: E::Delta,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Add to uncommitted store
         self.uncommitted.add_delta_to_batch(batch, txn_id, delta)?;
-
-        // Update log index atomically
-        let log_index_key = format!("{}_log_index", E::entity_name());
-        batch.insert(
-            &self.metadata_partition,
-            log_index_key,
-            log_index.to_be_bytes(),
-        );
-        self.log_index.store(log_index, Ordering::SeqCst);
 
         Ok(())
     }
@@ -274,7 +232,6 @@ impl<E: MvccEntity> MvccStorage<E> {
         &mut self,
         batch: &mut Batch,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Get uncommitted deltas
         let deltas = self.uncommitted.get_transaction_deltas(txn_id)?;
@@ -310,15 +267,6 @@ impl<E: MvccEntity> MvccStorage<E> {
         // Remove from uncommitted
         self.uncommitted.remove_transaction(batch, txn_id)?;
 
-        // Update log index
-        let log_index_key = format!("{}_log_index", E::entity_name());
-        batch.insert(
-            &self.metadata_partition,
-            log_index_key,
-            log_index.to_be_bytes(),
-        );
-        self.log_index.store(log_index, Ordering::SeqCst);
-
         Ok(())
     }
 
@@ -327,26 +275,11 @@ impl<E: MvccEntity> MvccStorage<E> {
         &mut self,
         batch: &mut Batch,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Remove from uncommitted
         self.uncommitted.remove_transaction(batch, txn_id)?;
 
-        // Update log index
-        let log_index_key = format!("{}_log_index", E::entity_name());
-        batch.insert(
-            &self.metadata_partition,
-            log_index_key,
-            log_index.to_be_bytes(),
-        );
-        self.log_index.store(log_index, Ordering::SeqCst);
-
         Ok(())
-    }
-
-    /// Get last processed log index
-    pub fn get_log_index(&self) -> u64 {
-        self.log_index.load(Ordering::SeqCst)
     }
 
     // ========================================================================

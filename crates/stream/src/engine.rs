@@ -5,6 +5,24 @@
 
 use proven_common::{Operation, Response, TransactionId};
 
+/// Operations that can be performed on a storage batch
+///
+/// This trait allows the stream processor to add transaction metadata
+/// to the same batch that the engine uses for data changes, ensuring
+/// atomic persistence.
+pub trait BatchOperations: Send + Sync {
+    /// Insert metadata into the batch
+    ///
+    /// Key format convention: "_txn_meta_{txn_id}" for transaction state
+    /// The engine will commit this atomically with data changes.
+    fn insert_metadata(&mut self, key: Vec<u8>, value: Vec<u8>);
+
+    /// Remove metadata from the batch
+    ///
+    /// Used when cleaning up transaction state on commit/abort.
+    fn remove_metadata(&mut self, key: Vec<u8>);
+}
+
 /// When a blocked operation can be retried
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryOn {
@@ -60,75 +78,123 @@ pub trait TransactionEngine: Send + Sync {
     /// The type of responses this engine produces
     type Response: Response;
 
+    /// The batch type for atomic writes
+    type Batch: BatchOperations;
+
+    // ═══════════════════════════════════════════════════════════
+    // BATCH LIFECYCLE
+    // ═══════════════════════════════════════════════════════════
+
+    /// Create a new batch for accumulating operations
+    ///
+    /// All operations within a single message should use the same batch.
+    /// The batch accumulates all changes and is committed once at the end.
+    fn start_batch(&mut self) -> Self::Batch;
+
+    /// Commit a batch atomically with log_index
+    ///
+    /// This is the ONLY place where log_index advances.
+    /// All operations added to the batch are committed atomically.
+    ///
+    /// The engine MUST:
+    /// 1. Add log_index to the batch as metadata
+    /// 2. Commit the batch atomically (all-or-nothing)
+    /// 3. Ensure durability (sync to disk if configured)
+    fn commit_batch(&mut self, batch: Self::Batch, log_index: u64);
+
+    // ═══════════════════════════════════════════════════════════
+    // READ OPERATIONS (no batch needed - no state changes)
+    // ═══════════════════════════════════════════════════════════
+
     /// Read an operation at a specific transaction ID (snapshot read)
     ///
-    /// This is for read-only operations that don't need locks or transaction state.
-    ///
-    /// Though state mutations are possible for updating caches, etc. - actual data
-    /// changes must not be allowed.
-    ///
-    /// Returns the value as it existed at the given transaction ID's snapshot.
-    ///
-    /// Note: Read-only operations bypass the ordered stream and don't have a log_index.
+    /// Read-only operations bypass the ordered stream and don't modify state.
+    /// Therefore, no batch is needed.
     fn read_at_timestamp(
         &mut self,
         operation: Self::Operation,
         read_txn_id: TransactionId,
     ) -> OperationResult<Self::Response>;
 
-    /// Apply an operation within a transaction context
-    ///
-    /// Returns a result indicating success, blocking, or error.
-    /// The stream processor will handle control flow based on the result.
-    ///
-    /// The engine should atomically persist the log_index as metadata when applying the operation.
-    fn apply_operation(
-        &mut self,
-        operation: Self::Operation,
-        txn_id: TransactionId,
-        log_index: u64,
-    ) -> OperationResult<Self::Response>;
+    // ═══════════════════════════════════════════════════════════
+    // WRITE OPERATIONS (batch is passed in, operations add to it)
+    // ═══════════════════════════════════════════════════════════
 
     /// Begin a new transaction
     ///
-    /// Initialize any necessary transaction state.
+    /// Adds any engine-specific initialization to the batch.
+    /// For many engines, this is a no-op.
+    fn begin(&mut self, batch: &mut Self::Batch, txn_id: TransactionId);
+
+    /// Apply an operation within a transaction
     ///
-    /// The engine should atomically persist the log_index as metadata.
-    fn begin(&mut self, txn_id: TransactionId, log_index: u64);
+    /// Returns:
+    /// - Complete(response): Operation succeeded, changes added to batch
+    /// - WouldBlock { blockers }: Operation blocked, no changes to batch
+    ///
+    /// The engine should:
+    /// 1. Attempt to acquire locks
+    /// 2. If blocked: return WouldBlock (batch unchanged)
+    /// 3. If successful:
+    ///    a. Execute operation
+    ///    b. Add data changes to batch
+    ///    c. Add lock persistence to batch (if needed)
+    ///    d. Return response
+    ///
+    /// The stream processor will add transaction metadata and commit the batch.
+    fn apply_operation(
+        &mut self,
+        batch: &mut Self::Batch,
+        operation: Self::Operation,
+        txn_id: TransactionId,
+    ) -> OperationResult<Self::Response>;
 
     /// Prepare a transaction for commit (2PC phase 1)
     ///
-    /// Marks the transaction as prepared. The transaction must exist.
-    /// This is an infallible operation - validation should happen in apply_operation.
+    /// Adds to the batch:
+    /// - Updated lock state (read locks released, write locks persisted)
+    /// - Any engine-specific prepare logic
     ///
-    /// The engine should atomically persist the log_index as metadata.
-    fn prepare(&mut self, txn_id: TransactionId, log_index: u64);
+    /// The stream processor will add updated transaction state (with participants)
+    /// before committing the batch.
+    fn prepare(&mut self, batch: &mut Self::Batch, txn_id: TransactionId);
 
     /// Commit a prepared transaction (2PC phase 2)
     ///
-    /// Makes all changes from the transaction visible.
-    /// This is an infallible operation - the transaction must exist.
+    /// Adds to the batch:
+    /// - Data being committed (moved from uncommitted to committed storage)
+    /// - Lock cleanup (all locks released)
+    /// - Any engine-specific commit logic
     ///
-    /// The engine should atomically persist the log_index as metadata.
-    fn commit(&mut self, txn_id: TransactionId, log_index: u64);
+    /// The stream processor will remove transaction metadata before committing the batch.
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId);
 
-    /// Abort a transaction, rolling back any changes
+    /// Abort a transaction
     ///
-    /// Cleans up all transaction state and releases locks.
-    /// This is an infallible operation - safe to call even if transaction doesn't exist.
+    /// Adds to the batch:
+    /// - Uncommitted data cleanup
+    /// - Lock cleanup (all locks released)
+    /// - Any engine-specific abort logic
     ///
-    /// The engine should atomically persist the log_index as metadata.
-    fn abort(&mut self, txn_id: TransactionId, log_index: u64);
+    /// The stream processor will remove transaction metadata before committing the batch.
+    fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId);
 
-    /// Get the name/type of this engine for logging and debugging
-    fn engine_name(&self) -> &str;
+    // ═══════════════════════════════════════════════════════════
+    // RECOVERY
+    // ═══════════════════════════════════════════════════════════
 
     /// Get the current log index that the engine has processed
     ///
-    /// This is used to verify the engine's position before starting replay.
-    /// Engines that persist state should return the last log_index they processed.
-    /// Engines that don't persist state can return None.
-    fn get_log_index(&self) -> Option<u64> {
-        None
-    }
+    /// Used during startup to determine where to resume replay.
+    fn get_log_index(&self) -> Option<u64>;
+
+    /// Scan all persisted transaction metadata (for crash recovery)
+    ///
+    /// Returns: Vec<(TransactionId, metadata_bytes)>
+    ///
+    /// Called once during processor startup to rebuild TransactionManager state.
+    fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)>;
+
+    /// Get the name/type of this engine for logging and debugging
+    fn engine_name(&self) -> &str;
 }

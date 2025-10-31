@@ -328,16 +328,141 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         &self.engine
     }
 
+    /// Recover transaction state from persisted metadata (called on startup)
+    ///
+    /// This method scans all persisted transaction metadata and rebuilds
+    /// the TransactionManager's in-memory state. This is critical for:
+    /// - Restoring active transactions with their coordinator information
+    /// - Restoring prepared transactions with their participant lists
+    /// - Cleaning up stale metadata from completed transactions
+    fn recover_transaction_state(&mut self) -> Result<()> {
+        use crate::engine::BatchOperations;
+        let metadata_entries = self.engine.scan_transaction_metadata();
+
+        if metadata_entries.is_empty() {
+            tracing::info!(
+                "[{}] No persisted transactions to recover",
+                self.stream_name
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            "[{}] Recovering {} persisted transactions...",
+            self.stream_name,
+            metadata_entries.len()
+        );
+
+        let mut recovered_active = 0;
+        let mut recovered_prepared = 0;
+        let mut cleaned_stale = 0;
+
+        for (txn_id, metadata_bytes) in metadata_entries {
+            match crate::transaction::TransactionState::from_bytes(&metadata_bytes) {
+                Ok(state) => {
+                    match state.phase {
+                        crate::transaction::TransactionPhase::Active => {
+                            // Restore active transaction
+                            self.tx_manager.begin(
+                                txn_id,
+                                state.coordinator_id.clone(),
+                                state.deadline,
+                                state.participants.clone(),
+                            );
+
+                            recovered_active += 1;
+                            tracing::debug!(
+                                "[{}] Recovered Active transaction {} (coord: {})",
+                                self.stream_name,
+                                txn_id,
+                                state.coordinator_id
+                            );
+                        }
+
+                        crate::transaction::TransactionPhase::Prepared => {
+                            // Restore prepared transaction
+                            // First begin, then transition to prepared
+                            self.tx_manager.begin(
+                                txn_id,
+                                state.coordinator_id.clone(),
+                                state.deadline,
+                                std::collections::HashMap::new(),
+                            );
+
+                            self.tx_manager.transition_to_prepared_with_participants(
+                                txn_id,
+                                state.participants.clone(),
+                            )?;
+
+                            recovered_prepared += 1;
+                            tracing::debug!(
+                                "[{}] Recovered Prepared transaction {} (coord: {}, {} participants)",
+                                self.stream_name,
+                                txn_id,
+                                state.coordinator_id,
+                                state.participants.len()
+                            );
+                        }
+
+                        crate::transaction::TransactionPhase::Committed
+                        | crate::transaction::TransactionPhase::Aborted { .. } => {
+                            // Stale metadata - should have been cleaned up but wasn't
+                            // Clean it up now
+                            cleaned_stale += 1;
+                            tracing::debug!(
+                                "[{}] Cleaning up stale transaction {} ({:?})",
+                                self.stream_name,
+                                txn_id,
+                                state.phase
+                            );
+
+                            let mut batch = self.engine.start_batch();
+                            let metadata_key =
+                                crate::transaction::TransactionState::metadata_key(txn_id);
+                            batch.remove_metadata(metadata_key);
+
+                            let log_index = self.engine.get_log_index().unwrap_or(0);
+                            self.engine.commit_batch(batch, log_index);
+                        }
+                    }
+                }
+
+                Err(e) => {
+                    tracing::warn!(
+                        "[{}] Failed to deserialize transaction {}: {}",
+                        self.stream_name,
+                        txn_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            "[{}] Recovery complete: {} Active, {} Prepared, {} stale cleaned",
+            self.stream_name,
+            recovered_active,
+            recovered_prepared,
+            cleaned_stale
+        );
+
+        Ok(())
+    }
+
     /// Start the processor with replay
     pub async fn start_with_replay(mut self, shutdown_rx: oneshot::Receiver<()>) -> Result<()>
     where
         E: Send + 'static,
     {
-        // Perform replay phase to catch up with stream
-        // This will also run recovery once at the end
+        // Step 1: Recover persisted transaction state from metadata
+        // This rebuilds TransactionManager state from crash
+        self.recover_transaction_state()?;
+
+        // Step 2: Perform replay phase to catch up with stream
+        // This rebuilds deferred operation queue by replaying messages
         self.perform_replay().await?;
 
-        // Transition to live
+        // Step 3: Transition to live processing
         self.transition_to(ProcessorPhase::Live);
         self.run_live_processing(shutdown_rx).await
     }
@@ -546,9 +671,22 @@ mod tests {
         committed: Vec<TransactionId>,
     }
 
+    struct TestBatch;
+    impl crate::engine::BatchOperations for TestBatch {
+        fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
+        fn remove_metadata(&mut self, _key: Vec<u8>) {}
+    }
+
     impl TransactionEngine for TestEngine {
         type Operation = TestOp;
         type Response = TestResponse;
+        type Batch = TestBatch;
+
+        fn start_batch(&mut self) -> Self::Batch {
+            TestBatch
+        }
+
+        fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
 
         fn read_at_timestamp(
             &mut self,
@@ -560,23 +698,29 @@ mod tests {
 
         fn apply_operation(
             &mut self,
+            _batch: &mut Self::Batch,
             operation: Self::Operation,
             _txn_id: TransactionId,
-            _log_index: u64,
         ) -> OperationResult<Self::Response> {
             self.operations.push(operation.0.clone());
             OperationResult::Complete(TestResponse(format!("executed: {}", operation.0)))
         }
 
-        fn begin(&mut self, txn_id: TransactionId, _log_index: u64) {
+        fn begin(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
             self.begun.push(txn_id);
         }
 
-        fn prepare(&mut self, _txn_id: TransactionId, _log_index: u64) {}
-        fn commit(&mut self, txn_id: TransactionId, _log_index: u64) {
+        fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn commit(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
             self.committed.push(txn_id);
         }
-        fn abort(&mut self, _txn_id: TransactionId, _log_index: u64) {}
+        fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn get_log_index(&self) -> Option<u64> {
+            None
+        }
+        fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+            vec![]
+        }
         fn engine_name(&self) -> &str {
             "test"
         }
@@ -705,5 +849,304 @@ mod tests {
         // Transaction should exist and be in prepared state
         let state = processor.transaction_manager().get(txn_id).unwrap();
         assert_eq!(state.phase, crate::transaction::TransactionPhase::Prepared);
+    }
+
+    #[tokio::test]
+    async fn test_crash_recovery_active_transaction() {
+        // Test that active transactions are recovered from persisted metadata
+
+        // Create a test engine that simulates persisted metadata
+        struct RecoveryTestEngine {
+            operations: Vec<String>,
+            metadata: Vec<(TransactionId, Vec<u8>)>,
+        }
+
+        impl TransactionEngine for RecoveryTestEngine {
+            type Operation = TestOp;
+            type Response = TestResponse;
+            type Batch = TestBatch;
+
+            fn start_batch(&mut self) -> Self::Batch {
+                TestBatch
+            }
+
+            fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
+
+            fn read_at_timestamp(
+                &mut self,
+                _operation: Self::Operation,
+                _read_txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                OperationResult::Complete(TestResponse("read".to_string()))
+            }
+
+            fn apply_operation(
+                &mut self,
+                _batch: &mut Self::Batch,
+                operation: Self::Operation,
+                _txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                self.operations.push(operation.0.clone());
+                OperationResult::Complete(TestResponse(format!("executed: {}", operation.0)))
+            }
+
+            fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn get_log_index(&self) -> Option<u64> {
+                Some(42)
+            }
+
+            fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+                // Return the persisted metadata
+                self.metadata.clone()
+            }
+
+            fn engine_name(&self) -> &str {
+                "recovery-test"
+            }
+        }
+
+        // Create persisted transaction state
+        let txn_id = TransactionId::new();
+        let state = crate::transaction::TransactionState {
+            coordinator_id: "coord-1".to_string(),
+            deadline: Timestamp::from_micros(10000),
+            participants: std::collections::HashMap::new(),
+            phase: crate::transaction::TransactionPhase::Active,
+        };
+
+        let metadata_bytes = state.to_bytes().unwrap();
+
+        let engine = RecoveryTestEngine {
+            operations: Vec::new(),
+            metadata: vec![(txn_id, metadata_bytes)],
+        };
+
+        let mock_engine_for_client = Arc::new(proven_engine::MockEngine::new());
+        let client = Arc::new(MockClient::new(
+            "test-node".to_string(),
+            mock_engine_for_client,
+        ));
+
+        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+
+        // Recover transaction state
+        processor.recover_transaction_state().unwrap();
+
+        // Verify transaction was recovered
+        assert!(processor.transaction_manager().exists(txn_id));
+        let recovered_state = processor.transaction_manager().get(txn_id).unwrap();
+        assert_eq!(recovered_state.coordinator_id, "coord-1");
+        assert_eq!(
+            recovered_state.phase,
+            crate::transaction::TransactionPhase::Active
+        );
+
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn test_crash_recovery_prepared_transaction() {
+        // Test that prepared transactions with participants are recovered
+
+        struct RecoveryTestEngine {
+            metadata: Vec<(TransactionId, Vec<u8>)>,
+        }
+
+        impl TransactionEngine for RecoveryTestEngine {
+            type Operation = TestOp;
+            type Response = TestResponse;
+            type Batch = TestBatch;
+
+            fn start_batch(&mut self) -> Self::Batch {
+                TestBatch
+            }
+
+            fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
+
+            fn read_at_timestamp(
+                &mut self,
+                _operation: Self::Operation,
+                _read_txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                OperationResult::Complete(TestResponse("read".to_string()))
+            }
+
+            fn apply_operation(
+                &mut self,
+                _batch: &mut Self::Batch,
+                operation: Self::Operation,
+                _txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                OperationResult::Complete(TestResponse(format!("executed: {}", operation.0)))
+            }
+
+            fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn get_log_index(&self) -> Option<u64> {
+                Some(42)
+            }
+
+            fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+                self.metadata.clone()
+            }
+
+            fn engine_name(&self) -> &str {
+                "recovery-test"
+            }
+        }
+
+        // Create prepared transaction with participants
+        let txn_id = TransactionId::new();
+        let mut participants = std::collections::HashMap::new();
+        participants.insert("participant1".to_string(), 10);
+        participants.insert("participant2".to_string(), 11);
+
+        let state = crate::transaction::TransactionState {
+            coordinator_id: "coord-1".to_string(),
+            deadline: Timestamp::from_micros(10000),
+            participants: participants.clone(),
+            phase: crate::transaction::TransactionPhase::Prepared,
+        };
+
+        let metadata_bytes = state.to_bytes().unwrap();
+
+        let engine = RecoveryTestEngine {
+            metadata: vec![(txn_id, metadata_bytes)],
+        };
+
+        let mock_engine_for_client = Arc::new(proven_engine::MockEngine::new());
+        let client = Arc::new(MockClient::new(
+            "test-node".to_string(),
+            mock_engine_for_client,
+        ));
+
+        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+
+        // Recover transaction state
+        processor.recover_transaction_state().unwrap();
+
+        // Verify prepared transaction was recovered with participants
+        assert!(processor.transaction_manager().exists(txn_id));
+        let recovered_state = processor.transaction_manager().get(txn_id).unwrap();
+        assert_eq!(recovered_state.coordinator_id, "coord-1");
+        assert_eq!(
+            recovered_state.phase,
+            crate::transaction::TransactionPhase::Prepared
+        );
+
+        let recovered_participants = processor.transaction_manager().get_participants(txn_id);
+        assert_eq!(recovered_participants.len(), 2);
+        assert_eq!(recovered_participants.get("participant1"), Some(&10));
+        assert_eq!(recovered_participants.get("participant2"), Some(&11));
+
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn test_crash_recovery_cleans_stale_metadata() {
+        // Test that committed/aborted transactions are cleaned up
+        // (not added back to manager, and cleanup batch is created)
+
+        struct RecoveryTestEngine {
+            metadata: Vec<(TransactionId, Vec<u8>)>,
+        }
+
+        impl TransactionEngine for RecoveryTestEngine {
+            type Operation = TestOp;
+            type Response = TestResponse;
+            type Batch = TestBatch;
+
+            fn start_batch(&mut self) -> Self::Batch {
+                TestBatch
+            }
+
+            fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {
+                // In a real implementation, this would actually clean up the metadata
+            }
+
+            fn read_at_timestamp(
+                &mut self,
+                _operation: Self::Operation,
+                _read_txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                OperationResult::Complete(TestResponse("read".to_string()))
+            }
+
+            fn apply_operation(
+                &mut self,
+                _batch: &mut Self::Batch,
+                operation: Self::Operation,
+                _txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                OperationResult::Complete(TestResponse(format!("executed: {}", operation.0)))
+            }
+
+            fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn get_log_index(&self) -> Option<u64> {
+                Some(42)
+            }
+
+            fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+                self.metadata.clone()
+            }
+
+            fn engine_name(&self) -> &str {
+                "recovery-test"
+            }
+        }
+
+        // Create committed and aborted transactions
+        let committed_txn = TransactionId::new();
+        let aborted_txn = TransactionId::new();
+
+        let committed_state = crate::transaction::TransactionState {
+            coordinator_id: "coord-1".to_string(),
+            deadline: Timestamp::from_micros(10000),
+            participants: std::collections::HashMap::new(),
+            phase: crate::transaction::TransactionPhase::Committed,
+        };
+
+        let aborted_state = crate::transaction::TransactionState {
+            coordinator_id: "coord-2".to_string(),
+            deadline: Timestamp::from_micros(10000),
+            participants: std::collections::HashMap::new(),
+            phase: crate::transaction::TransactionPhase::Aborted {
+                aborted_at: Timestamp::now(),
+                reason: crate::transaction::AbortReason::Explicit,
+            },
+        };
+
+        let engine = RecoveryTestEngine {
+            metadata: vec![
+                (committed_txn, committed_state.to_bytes().unwrap()),
+                (aborted_txn, aborted_state.to_bytes().unwrap()),
+            ],
+        };
+
+        let mock_engine_for_client = Arc::new(proven_engine::MockEngine::new());
+        let client = Arc::new(MockClient::new(
+            "test-node".to_string(),
+            mock_engine_for_client,
+        ));
+
+        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+
+        // Recover transaction state
+        processor.recover_transaction_state().unwrap();
+
+        // Verify stale transactions were NOT added to transaction manager
+        // (the important invariant - they should be cleaned up, not restored)
+        assert!(!processor.transaction_manager().exists(committed_txn));
+        assert!(!processor.transaction_manager().exists(aborted_txn));
+
+        tokio::task::yield_now().await;
     }
 }

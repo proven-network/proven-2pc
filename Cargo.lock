@@ -920,6 +920,7 @@ dependencies = [
 name = "proven-kv"
 version = "0.1.0"
 dependencies = [
+ "fjall",
  "parking_lot",
  "proven-common",
  "proven-engine",
@@ -970,6 +971,7 @@ dependencies = [
 name = "proven-queue"
 version = "0.1.0"
 dependencies = [
+ "fjall",
  "parking_lot",
  "proven-common",
  "proven-engine",
@@ -998,6 +1000,7 @@ dependencies = [
 name = "proven-resource"
 version = "0.1.0"
 dependencies = [
+ "fjall",
  "parking_lot",
  "proven-common",
  "proven-engine",
@@ -1119,6 +1122,7 @@ dependencies = [
 name = "proven-stream"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "proven-common",
  "proven-engine",
  "proven-protocol",

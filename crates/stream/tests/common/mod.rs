@@ -1,9 +1,17 @@
 //! Common test utilities for integration tests
 
 use proven_common::{Operation, OperationType, Response, TransactionId};
-use proven_stream::engine::{OperationResult, RetryOn, TransactionEngine};
+use proven_stream::engine::{BatchOperations, OperationResult, RetryOn, TransactionEngine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+// Common test batch for all test engines
+pub struct TestBatch;
+
+impl BatchOperations for TestBatch {
+    fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
+    fn remove_metadata(&mut self, _key: Vec<u8>) {}
+}
 
 /// Test engine with lock tracking for wound-wait tests
 pub struct TestEngine<Op, Resp> {
@@ -100,6 +108,15 @@ impl Response for BasicResponse {}
 impl TransactionEngine for TestEngine<LockOp, LockResponse> {
     type Operation = LockOp;
     type Response = LockResponse;
+    type Batch = TestBatch;
+
+    fn start_batch(&mut self) -> Self::Batch {
+        TestBatch
+    }
+
+    fn commit_batch(&mut self, _batch: Self::Batch, log_index: u64) {
+        self.log_index = self.log_index.max(log_index);
+    }
 
     fn read_at_timestamp(
         &mut self,
@@ -118,12 +135,10 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
 
     fn apply_operation(
         &mut self,
+        _batch: &mut Self::Batch,
         operation: Self::Operation,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<Self::Response> {
-        self.log_index = self.log_index.max(log_index);
-
         match operation {
             LockOp::Lock { resource } => {
                 // Check if resource is locked by another transaction
@@ -151,27 +166,29 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
         }
     }
 
-    fn begin(&mut self, _txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-    }
+    fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
 
-    fn prepare(&mut self, _txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-    }
+    fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
 
-    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
+    fn commit(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
         // Release all locks held by this transaction
         self.locks.retain(|_, &mut holder| holder != txn_id);
     }
 
-    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
+    fn abort(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
         // Release all locks held by this transaction
         self.locks.retain(|_, &mut holder| holder != txn_id);
     }
 
-    fn engine_name(&self) -> &'static str {
+    fn get_log_index(&self) -> Option<u64> {
+        Some(self.log_index)
+    }
+
+    fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+        vec![]
+    }
+
+    fn engine_name(&self) -> &str {
         "lock-test-engine"
     }
 }
@@ -180,6 +197,15 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
 impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
     type Operation = BasicOp;
     type Response = BasicResponse;
+    type Batch = TestBatch;
+
+    fn start_batch(&mut self) -> Self::Batch {
+        TestBatch
+    }
+
+    fn commit_batch(&mut self, _batch: Self::Batch, log_index: u64) {
+        self.log_index = self.log_index.max(log_index);
+    }
 
     fn read_at_timestamp(
         &mut self,
@@ -199,12 +225,10 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
 
     fn apply_operation(
         &mut self,
+        _batch: &mut Self::Batch,
         operation: Self::Operation,
         _txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<Self::Response> {
-        self.log_index = self.log_index.max(log_index);
-
         match operation {
             BasicOp::Read { key } => {
                 let value = self.data.get(&key).cloned();
@@ -217,23 +241,23 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
         }
     }
 
-    fn begin(&mut self, _txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
+    fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+
+    fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+
+    fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+
+    fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+
+    fn get_log_index(&self) -> Option<u64> {
+        Some(self.log_index)
     }
 
-    fn prepare(&mut self, _txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
+    fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+        vec![]
     }
 
-    fn commit(&mut self, _txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-    }
-
-    fn abort(&mut self, _txn_id: TransactionId, log_index: u64) {
-        self.log_index = self.log_index.max(log_index);
-    }
-
-    fn engine_name(&self) -> &'static str {
+    fn engine_name(&self) -> &str {
         "basic-test-engine"
     }
 }

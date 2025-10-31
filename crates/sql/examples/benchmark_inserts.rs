@@ -40,12 +40,14 @@ fn main() {
     // Create table
     println!("Creating table...");
     let txn_id = TransactionId::new();
-    sql_engine.begin(txn_id, next_log_index());
+    let mut batch = sql_engine.start_batch();
+    sql_engine.begin(&mut batch, txn_id);
+    sql_engine.commit_batch(batch, next_log_index());
 
     let create_table = SqlOperation::Execute {
         sql: "CREATE TABLE bench (
-            id INT PRIMARY KEY, 
-            value INT, 
+            id INT PRIMARY KEY,
+            value INT,
             data VARCHAR,
             timestamp INT
         )"
@@ -53,9 +55,15 @@ fn main() {
         params: None,
     };
 
-    match sql_engine.apply_operation(create_table, txn_id, next_log_index()) {
+    let mut batch = sql_engine.start_batch();
+    match sql_engine.apply_operation(&mut batch, create_table, txn_id) {
         proven_stream::OperationResult::Complete(_) => {
-            sql_engine.commit(txn_id, next_log_index());
+            sql_engine.commit_batch(batch, next_log_index());
+
+            // Commit the transaction
+            let mut batch = sql_engine.start_batch();
+            sql_engine.commit(&mut batch, txn_id);
+            sql_engine.commit_batch(batch, next_log_index());
             println!("✓ Table created");
         }
         _ => panic!("Failed to create table"),
@@ -76,7 +84,9 @@ fn main() {
     for i in 0..NUM_INSERTS {
         // Generate unique transaction ID
         let txn_id = TransactionId::new();
-        sql_engine.begin(txn_id, next_log_index());
+        let mut batch = sql_engine.start_batch();
+        sql_engine.begin(&mut batch, txn_id);
+        sql_engine.commit_batch(batch, next_log_index());
 
         // Create insert operation
         let insert = SqlOperation::Execute {
@@ -90,10 +100,15 @@ fn main() {
         };
 
         // Execute insert directly on engine
-        match sql_engine.apply_operation(insert, txn_id, next_log_index()) {
+        let mut batch = sql_engine.start_batch();
+        match sql_engine.apply_operation(&mut batch, insert, txn_id) {
             proven_stream::OperationResult::Complete(_) => {
+                sql_engine.commit_batch(batch, next_log_index());
+
                 // Commit the transaction
-                sql_engine.commit(txn_id, next_log_index());
+                let mut batch = sql_engine.start_batch();
+                sql_engine.commit(&mut batch, txn_id);
+                sql_engine.commit_batch(batch, next_log_index());
             }
             _ => {
                 eprintln!("\nError at insert {}", i);
@@ -137,7 +152,8 @@ fn main() {
     // Verify count
     println!("\nVerifying insert count...");
     let verify_txn = TransactionId::new();
-    sql_engine.begin(verify_txn, next_log_index());
+    let mut batch = sql_engine.start_batch();
+    sql_engine.begin(&mut batch, verify_txn);
 
     let count_query = SqlOperation::Query {
         sql: "SELECT COUNT(*) FROM bench".to_string(),
@@ -145,7 +161,7 @@ fn main() {
     };
 
     let elapsed = Instant::now();
-    match sql_engine.apply_operation(count_query, verify_txn, next_log_index()) {
+    match sql_engine.apply_operation(&mut batch, count_query, verify_txn) {
         proven_stream::OperationResult::Complete(response) => {
             match response {
                 SqlResponse::QueryResult { columns: _, rows } => {
@@ -167,7 +183,12 @@ fn main() {
             }
             let count_query_time = elapsed.elapsed();
             println!("Count query time: {}ms", count_query_time.as_millis());
-            sql_engine.abort(verify_txn, next_log_index());
+
+            sql_engine.commit_batch(batch, next_log_index());
+
+            let mut batch = sql_engine.start_batch();
+            sql_engine.abort(&mut batch, verify_txn);
+            sql_engine.commit_batch(batch, next_log_index());
         }
         _ => println!("⚠ Count query failed"),
     }
@@ -196,32 +217,39 @@ fn main() {
     // Verify count
     println!("\nVerifying persisted count...");
     let verify_txn = TransactionId::new();
-    sql_engine.begin(verify_txn, next_log_index());
+    let mut batch = sql_engine.start_batch();
+    sql_engine.begin(&mut batch, verify_txn);
 
     let count_query = SqlOperation::Query {
         sql: "SELECT COUNT(*) FROM bench".to_string(),
         params: None,
     };
 
-    match sql_engine.apply_operation(count_query, verify_txn, next_log_index()) {
-        proven_stream::OperationResult::Complete(response) => match response {
-            SqlResponse::QueryResult { columns: _, rows } => {
-                match rows.first().unwrap().first().unwrap() {
-                    Value::I64(count) => {
-                        if *count != NUM_INSERTS as i64 {
-                            println!(
-                                "⚠ Persisted count query response: {:?} does not match expected count: {:?}",
-                                count, NUM_INSERTS as i64
-                            );
-                        } else {
-                            println!("✓ Persisted count query matched expected count: {}", count);
+    match sql_engine.apply_operation(&mut batch, count_query, verify_txn) {
+        proven_stream::OperationResult::Complete(response) => {
+            match response {
+                SqlResponse::QueryResult { columns: _, rows } => {
+                    match rows.first().unwrap().first().unwrap() {
+                        Value::I64(count) => {
+                            if *count != NUM_INSERTS as i64 {
+                                println!(
+                                    "⚠ Persisted count query response: {:?} does not match expected count: {:?}",
+                                    count, NUM_INSERTS as i64
+                                );
+                            } else {
+                                println!(
+                                    "✓ Persisted count query matched expected count: {}",
+                                    count
+                                );
+                            }
                         }
+                        _ => panic!("Unexpected response type for count query"),
                     }
-                    _ => panic!("Unexpected response type for count query"),
                 }
+                _ => panic!("Unexpected response: {:?}", response),
             }
-            _ => panic!("Unexpected response: {:?}", response),
-        },
+            sql_engine.commit_batch(batch, next_log_index());
+        }
         _ => println!("⚠ Persisted count query failed"),
     }
 

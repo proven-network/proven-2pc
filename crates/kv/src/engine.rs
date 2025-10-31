@@ -5,13 +5,70 @@
 
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::engine::BlockingInfo;
+use proven_stream::engine::{BatchOperations, BlockingInfo};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::storage::entity::{KvDelta, KvEntity, KvKey};
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};
 use crate::storage::lock_persistence::{TransactionLocks, encode_transaction_locks};
-use crate::types::{KvOperation, KvResponse, Value};
+use crate::types::{KvOperation, KvResponse};
+
+/// Wrapper around MVCC Batch that implements BatchOperations
+///
+/// This is a thin wrapper that adds transaction metadata capabilities
+/// to the MVCC batch type. The underlying batch already
+/// accumulates operations, so we just need to provide metadata methods.
+pub struct KvBatch {
+    /// The underlying MVCC batch (accumulates all operations)
+    inner: proven_mvcc::Batch,
+
+    /// Metadata partition handle (Arc internally, cheap to clone)
+    metadata_partition: fjall::PartitionHandle,
+}
+
+impl KvBatch {
+    /// Create a new batch (crate-local only)
+    pub(crate) fn new(storage: &MvccStorage<KvEntity>) -> Self {
+        Self {
+            inner: storage.batch(),
+            metadata_partition: storage.metadata_partition().clone(),
+        }
+    }
+
+    /// Get mutable access to the inner Fjall batch (crate-local only)
+    ///
+    /// This allows engine implementations to add engine-specific
+    /// operations to the batch.
+    pub(crate) fn inner(&mut self) -> &mut proven_mvcc::Batch {
+        &mut self.inner
+    }
+
+    /// Consume and commit the batch with log_index (crate-local only)
+    ///
+    /// This is called by TransactionEngine::commit_batch().
+    /// Stream processor cannot call this directly.
+    pub(crate) fn commit(mut self, log_index: u64) -> Result<(), String> {
+        // Add log_index to batch
+        self.inner.insert(
+            &self.metadata_partition,
+            b"_log_index",
+            log_index.to_le_bytes(),
+        );
+
+        // Commit atomically
+        self.inner.commit().map_err(|e| e.to_string())
+    }
+}
+
+impl BatchOperations for KvBatch {
+    fn insert_metadata(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.inner.insert(&self.metadata_partition, key, value);
+    }
+
+    fn remove_metadata(&mut self, key: Vec<u8>) {
+        self.inner.remove(self.metadata_partition.clone(), key);
+    }
+}
 
 /// KV-specific transaction engine with persistent storage
 pub struct KvTransactionEngine {
@@ -143,202 +200,28 @@ impl KvTransactionEngine {
             value,
         })
     }
-
-    /// Execute a get operation (with locking)
-    fn execute_get(
-        &mut self,
-        key: &str,
-        txn_id: TransactionId,
-        log_index: u64,
-    ) -> OperationResult<KvResponse> {
-        // Check if we can acquire the lock
-        match self.lock_manager.check(txn_id, key, LockMode::Shared) {
-            LockAttemptResult::WouldGrant => {
-                // Grant the lock
-                self.lock_manager
-                    .grant(txn_id, key.to_string(), LockMode::Shared);
-
-                // Perform the read (same conflict check as snapshot reads)
-                let kv_key = KvKey::from(key);
-                let value = self.storage.read(&kv_key, txn_id).expect("Read failed");
-
-                // Persist locks atomically with log_index update
-                let mut batch = self.storage.batch();
-                if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
-                    eprintln!("Failed to add locks to batch: {}", e);
-                }
-
-                // Update log_index in metadata atomically with locks
-                let metadata = self.storage.metadata_partition();
-                batch.insert(metadata, "_log_index", log_index.to_le_bytes());
-
-                batch.commit().expect("Batch commit failed");
-
-                OperationResult::Complete(KvResponse::GetResult {
-                    key: key.to_string(),
-                    value,
-                })
-            }
-            LockAttemptResult::Conflict { holders } => {
-                // For reads blocked by writes, we always need to wait for commit/abort
-                let blockers = holders
-                    .into_iter()
-                    .map(|(h, _mode)| BlockingInfo {
-                        txn: h,
-                        retry_on: RetryOn::CommitOrAbort,
-                    })
-                    .collect();
-
-                OperationResult::WouldBlock { blockers }
-            }
-        }
-    }
-
-    /// Execute a put operation
-    fn execute_put(
-        &mut self,
-        key: &str,
-        value: Value,
-        txn_id: TransactionId,
-        log_index: u64,
-    ) -> OperationResult<KvResponse> {
-        // Check if we can acquire the lock
-        match self.lock_manager.check(txn_id, key, LockMode::Exclusive) {
-            LockAttemptResult::WouldGrant => {
-                // Grant the lock
-                self.lock_manager
-                    .grant(txn_id, key.to_string(), LockMode::Exclusive);
-
-                // Get the previous value for the response
-                let kv_key = KvKey::from(key);
-                let previous = self.storage.read(&kv_key, txn_id).expect("Read failed");
-
-                // Create delta and write to storage
-                let delta = KvDelta::Put {
-                    key: key.to_string(),
-                    new_value: value.clone(),
-                    old_value: previous.clone(),
-                };
-
-                let mut batch = self.storage.batch();
-                self.storage
-                    .write_to_batch(&mut batch, delta, txn_id, log_index)
-                    .expect("Write failed");
-
-                // Add locks to the same batch (atomic with data + log_index)
-                if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
-                    eprintln!("Failed to add locks to batch: {}", e);
-                }
-
-                // Commit entire batch atomically (data + log_index + locks)
-                batch.commit().expect("Batch commit failed");
-
-                OperationResult::Complete(KvResponse::PutResult {
-                    key: key.to_string(),
-                    previous,
-                })
-            }
-            LockAttemptResult::Conflict { holders } => {
-                // Map each blocker to appropriate retry condition
-                let blockers = holders
-                    .into_iter()
-                    .map(|(h, mode)| BlockingInfo {
-                        txn: h,
-                        retry_on: if mode == LockMode::Shared {
-                            // Blocked by reader - can retry after prepare
-                            RetryOn::Prepare
-                        } else {
-                            // Blocked by writer - must wait for commit/abort
-                            RetryOn::CommitOrAbort
-                        },
-                    })
-                    .collect();
-
-                OperationResult::WouldBlock { blockers }
-            }
-        }
-    }
-
-    /// Execute a delete operation
-    fn execute_delete(
-        &mut self,
-        key: &str,
-        txn_id: TransactionId,
-        log_index: u64,
-    ) -> OperationResult<KvResponse> {
-        // Check if we can acquire the lock
-        match self.lock_manager.check(txn_id, key, LockMode::Exclusive) {
-            LockAttemptResult::WouldGrant => {
-                // Grant the lock
-                self.lock_manager
-                    .grant(txn_id, key.to_string(), LockMode::Exclusive);
-
-                // Check if key exists
-                let kv_key = KvKey::from(key);
-                let old_value = self.storage.read(&kv_key, txn_id).expect("Read failed");
-
-                let deleted = if let Some(old_val) = old_value.clone() {
-                    // Create delete delta
-                    let delta = KvDelta::Delete {
-                        key: key.to_string(),
-                        old_value: old_val,
-                    };
-
-                    let mut batch = self.storage.batch();
-                    self.storage
-                        .write_to_batch(&mut batch, delta, txn_id, log_index)
-                        .expect("Write failed");
-
-                    // Add locks to the same batch (atomic with data + log_index)
-                    if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
-                        eprintln!("Failed to add locks to batch: {}", e);
-                    }
-
-                    // Commit entire batch atomically (data + log_index + locks)
-                    batch.commit().expect("Batch commit failed");
-
-                    true
-                } else {
-                    // Even if no delete, still need to persist locks atomically
-                    let mut batch = self.storage.batch();
-                    if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
-                        eprintln!("Failed to add locks to batch: {}", e);
-                    }
-                    batch.commit().expect("Batch commit failed");
-
-                    false
-                };
-
-                OperationResult::Complete(KvResponse::DeleteResult {
-                    key: key.to_string(),
-                    deleted,
-                })
-            }
-            LockAttemptResult::Conflict { holders } => {
-                // Map each blocker to appropriate retry condition
-                let blockers = holders
-                    .into_iter()
-                    .map(|(h, mode)| BlockingInfo {
-                        txn: h,
-                        retry_on: if mode == LockMode::Shared {
-                            // Blocked by reader - can retry after prepare
-                            RetryOn::Prepare
-                        } else {
-                            // Blocked by writer - must wait for commit/abort
-                            RetryOn::CommitOrAbort
-                        },
-                    })
-                    .collect();
-
-                OperationResult::WouldBlock { blockers }
-            }
-        }
-    }
 }
 
 impl TransactionEngine for KvTransactionEngine {
     type Operation = KvOperation;
     type Response = KvResponse;
+    type Batch = KvBatch;
+
+    // ═══════════════════════════════════════════════════════════
+    // BATCH LIFECYCLE
+    // ═══════════════════════════════════════════════════════════
+
+    fn start_batch(&mut self) -> Self::Batch {
+        KvBatch::new(&self.storage)
+    }
+
+    fn commit_batch(&mut self, batch: Self::Batch, log_index: u64) {
+        batch.commit(log_index).expect("Batch commit failed");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // READ OPERATIONS
+    // ═══════════════════════════════════════════════════════════
 
     fn read_at_timestamp(
         &mut self,
@@ -351,112 +234,262 @@ impl TransactionEngine for KvTransactionEngine {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // WRITE OPERATIONS
+    // ═══════════════════════════════════════════════════════════
+
     fn apply_operation(
         &mut self,
+        batch: &mut Self::Batch,
         operation: Self::Operation,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> OperationResult<Self::Response> {
         match operation {
-            KvOperation::Get { ref key } => self.execute_get(key, txn_id, log_index),
-            KvOperation::Put { ref key, ref value } => {
-                self.execute_put(key, value.clone(), txn_id, log_index)
+            KvOperation::Get { ref key } => {
+                // GET with locking (for ReadWrite transactions)
+                match self.lock_manager.check(txn_id, key, LockMode::Shared) {
+                    LockAttemptResult::WouldGrant => {
+                        // Grant the lock
+                        self.lock_manager
+                            .grant(txn_id, key.clone(), LockMode::Shared);
+
+                        // Execute read
+                        let kv_key = KvKey::from(key.as_str());
+                        let value = self.storage.read(&kv_key, txn_id).expect("Read failed");
+
+                        // Add lock persistence to batch
+                        self.add_locks_to_batch(batch.inner(), txn_id)
+                            .expect("Failed to persist locks");
+
+                        OperationResult::Complete(KvResponse::GetResult {
+                            key: key.clone(),
+                            value,
+                        })
+                    }
+                    LockAttemptResult::Conflict { holders } => {
+                        let blockers = holders
+                            .into_iter()
+                            .map(|(holder_txn, _mode)| BlockingInfo {
+                                txn: holder_txn,
+                                retry_on: RetryOn::CommitOrAbort,
+                            })
+                            .collect();
+
+                        OperationResult::WouldBlock { blockers }
+                    }
+                }
             }
-            KvOperation::Delete { ref key } => self.execute_delete(key, txn_id, log_index),
+            KvOperation::Put { ref key, ref value } => {
+                // Try to acquire exclusive lock
+                match self.lock_manager.check(txn_id, key, LockMode::Exclusive) {
+                    LockAttemptResult::WouldGrant => {
+                        // Grant the lock
+                        self.lock_manager
+                            .grant(txn_id, key.clone(), LockMode::Exclusive);
+                        // Read old value for delta
+                        let kv_key = KvKey::from(key.as_str());
+                        let old_value = self.storage.read(&kv_key, txn_id).expect("Read failed");
+
+                        // Create delta
+                        let delta = KvDelta::Put {
+                            key: key.clone(),
+                            new_value: value.clone(),
+                            old_value: old_value.clone(),
+                        };
+
+                        // Add delta to batch
+                        self.storage
+                            .write_to_batch(batch.inner(), delta, txn_id)
+                            .expect("Failed to write to batch");
+
+                        // Add lock persistence to batch
+                        self.add_locks_to_batch(batch.inner(), txn_id)
+                            .expect("Failed to persist locks");
+
+                        OperationResult::Complete(KvResponse::PutResult {
+                            key: key.clone(),
+                            previous: old_value,
+                        })
+                    }
+                    LockAttemptResult::Conflict { holders } => {
+                        let blockers = holders
+                            .into_iter()
+                            .map(|(holder_txn, mode)| BlockingInfo {
+                                txn: holder_txn,
+                                retry_on: if mode == LockMode::Shared {
+                                    RetryOn::Prepare
+                                } else {
+                                    RetryOn::CommitOrAbort
+                                },
+                            })
+                            .collect();
+
+                        OperationResult::WouldBlock { blockers }
+                    }
+                }
+            }
+            KvOperation::Delete { ref key } => {
+                // Try to acquire exclusive lock
+                match self.lock_manager.check(txn_id, key, LockMode::Exclusive) {
+                    LockAttemptResult::WouldGrant => {
+                        // Grant the lock
+                        self.lock_manager
+                            .grant(txn_id, key.clone(), LockMode::Exclusive);
+                        let kv_key = KvKey::from(key.as_str());
+                        let old_value = self.storage.read(&kv_key, txn_id).expect("Read failed");
+
+                        if old_value.is_none() {
+                            // Key doesn't exist - still need to persist lock
+                            self.add_locks_to_batch(batch.inner(), txn_id)
+                                .expect("Failed to persist locks");
+
+                            return OperationResult::Complete(KvResponse::DeleteResult {
+                                key: key.clone(),
+                                deleted: false,
+                            });
+                        }
+
+                        // Create delta
+                        let delta = KvDelta::Delete {
+                            key: key.clone(),
+                            old_value: old_value.unwrap(),
+                        };
+
+                        // Add delta to batch
+                        self.storage
+                            .write_to_batch(batch.inner(), delta, txn_id)
+                            .expect("Failed to write to batch");
+
+                        // Add lock persistence to batch
+                        self.add_locks_to_batch(batch.inner(), txn_id)
+                            .expect("Failed to persist locks");
+
+                        OperationResult::Complete(KvResponse::DeleteResult {
+                            key: key.clone(),
+                            deleted: true,
+                        })
+                    }
+                    LockAttemptResult::Conflict { holders } => {
+                        let blockers = holders
+                            .into_iter()
+                            .map(|(holder_txn, mode)| BlockingInfo {
+                                txn: holder_txn,
+                                retry_on: if mode == LockMode::Shared {
+                                    RetryOn::Prepare
+                                } else {
+                                    RetryOn::CommitOrAbort
+                                },
+                            })
+                            .collect();
+
+                        OperationResult::WouldBlock { blockers }
+                    }
+                }
+            }
         }
     }
 
-    fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {
-        // Nothing to do - processor tracks active transactions
+    fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {
+        // KV engine doesn't need to do anything on begin
+        // No-op
     }
 
-    fn prepare(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Get locks held by this transaction from lock manager
+    fn prepare(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        // Release read locks (in-memory only)
         let locks = self.lock_manager.locks_held_by(txn_id);
-
-        // Release read locks (keep write locks)
         for (key, mode) in locks {
             if mode == LockMode::Shared {
                 self.lock_manager.release(txn_id, &key);
             }
         }
 
-        // Update persisted locks atomically with log_index (only write locks remain)
-        let mut batch = self.storage.batch();
-        if let Err(e) = self.add_locks_to_batch(&mut batch, txn_id) {
-            eprintln!("Failed to add locks to batch: {}", e);
-        }
-
-        // Update log_index in metadata atomically with locks
-        let metadata = self.storage.metadata_partition();
-        batch.insert(metadata, "_log_index", log_index.to_le_bytes());
-
-        batch.commit().expect("Batch commit failed");
+        // Persist remaining write locks to batch
+        self.add_locks_to_batch(batch.inner(), txn_id)
+            .expect("Failed to persist locks");
     }
 
-    fn commit(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Commit to storage and clear persisted locks atomically
-        let mut batch = self.storage.batch();
-
-        // Commit the transaction via storage
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        // Commit transaction data (moves from uncommitted to committed)
         self.storage
-            .commit_transaction_to_batch(&mut batch, txn_id, log_index)
-            .expect("Commit failed");
+            .commit_transaction_to_batch(batch.inner(), txn_id)
+            .expect("Failed to commit transaction");
 
-        // Clear persisted locks in the same batch
+        // Clear persisted locks
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        let metadata = self.storage.metadata_partition();
-        batch.remove(metadata.clone(), lock_key);
-
-        // Commit atomically: transaction commit + locks cleanup + log_index
-        batch.commit().expect("Batch commit failed");
+        batch.remove_metadata(lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
-        // Use timestamp component for cleanup
         self.storage
             .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
             .ok();
 
-        // Release all locks held by this transaction
+        // Release in-memory locks
         self.lock_manager.release_all(txn_id);
     }
 
-    fn abort(&mut self, txn_id: TransactionId, log_index: u64) {
-        // Abort in storage and clear persisted locks atomically
-        let mut batch = self.storage.batch();
-
-        // Abort the transaction via storage
+    fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+        // Abort transaction data (removes from uncommitted)
         self.storage
-            .abort_transaction_to_batch(&mut batch, txn_id, log_index)
-            .expect("Abort failed");
+            .abort_transaction_to_batch(batch.inner(), txn_id)
+            .expect("Failed to abort transaction");
 
-        // Clear persisted locks in the same batch
+        // Clear persisted locks
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        let metadata = self.storage.metadata_partition();
-        batch.remove(metadata.clone(), lock_key);
-
-        // Commit atomically: transaction abort + locks cleanup + log_index
-        batch.commit().expect("Batch commit failed");
+        batch.remove_metadata(lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
-        // Use timestamp component for cleanup
         self.storage
             .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
             .ok();
 
-        // Release all locks
+        // Release in-memory locks
         self.lock_manager.release_all(txn_id);
     }
 
-    fn engine_name(&self) -> &'static str {
-        "kv"
-    }
+    // ═══════════════════════════════════════════════════════════
+    // RECOVERY
+    // ═══════════════════════════════════════════════════════════
 
     fn get_log_index(&self) -> Option<u64> {
-        let log_index = self.storage.get_log_index();
+        // Read log_index from metadata partition where batch.commit() writes it
+        let metadata = self.storage.metadata_partition();
+        let log_index = metadata
+            .get(b"_log_index")
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                let array: [u8; 8] = bytes.as_ref().try_into().unwrap_or([0; 8]);
+                u64::from_le_bytes(array)
+            })
+            .unwrap_or(0);
+
         if log_index > 0 { Some(log_index) } else { None }
+    }
+
+    fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+        let metadata = self.storage.metadata_partition();
+        let mut results = Vec::new();
+
+        // Scan for all keys matching _txn_meta_* pattern
+        for (key_bytes, value_bytes) in metadata.prefix("_txn_meta_").flatten() {
+            // Extract transaction ID from key: _txn_meta_{16-byte-txn-id}
+            if key_bytes.len() == 10 + 16 {
+                // "_txn_meta_" = 10 bytes
+                let txn_id_bytes: [u8; 16] = key_bytes[10..26]
+                    .try_into()
+                    .expect("Invalid txn_id in metadata key");
+                let txn_id = TransactionId::from_bytes(txn_id_bytes);
+                results.push((txn_id, value_bytes.to_vec()));
+            }
+        }
+
+        results
+    }
+
+    fn engine_name(&self) -> &str {
+        "kv"
     }
 }
 

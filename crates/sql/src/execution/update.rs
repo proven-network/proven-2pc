@@ -224,14 +224,7 @@ pub fn execute_update(
 
     for (row_id, old_values, new_values) in &updates {
         // Update row
-        storage.write_row(
-            batch,
-            &table,
-            *row_id,
-            new_values,
-            tx_ctx.txn_id,
-            tx_ctx.log_index,
-        )?;
+        storage.write_row(batch, &table, *row_id, new_values, tx_ctx.txn_id)?;
 
         // Update indexes if values changed
         for index in &all_indexes {
@@ -248,7 +241,6 @@ pub fn execute_update(
                     new_index_values,
                     *row_id,
                     tx_ctx.txn_id,
-                    tx_ctx.log_index,
                 )?;
             }
         }

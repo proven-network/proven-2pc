@@ -264,6 +264,11 @@ impl SqlStorage {
         self.keyspace.batch()
     }
 
+    /// Get the metadata partition handle
+    pub fn metadata_partition(&self) -> fjall::PartitionHandle {
+        self.metadata.clone()
+    }
+
     /// Get schemas (for query planning)
     pub fn get_schemas(&self) -> HashMap<String, Arc<TableSchema>> {
         self.schemas.clone()
@@ -272,20 +277,6 @@ impl SqlStorage {
     /// Get index metadata (for query planning)
     pub fn get_index_metadata(&self) -> HashMap<String, IndexMetadata> {
         self.index_metadata.clone()
-    }
-
-    /// Reload schemas and indexes from metadata (used after rollback)
-    pub fn reload_metadata(&mut self) -> Result<()> {
-        // Clear existing state
-        self.table_storages.clear();
-        self.index_storages.clear();
-        self.schemas.clear();
-        self.table_generations.clear();
-        self.index_metadata.clear();
-        self.next_row_ids.clear();
-
-        // Reload from persistent metadata
-        self.load_metadata()
     }
 
     /// Rollback CREATE TABLE: remove schema from metadata (batched)
@@ -299,6 +290,12 @@ impl SqlStorage {
 
         let row_id_key = format!("next_row_id_{}", table_name);
         batch.remove(self.metadata.clone(), row_id_key);
+
+        // Update in-memory cache immediately
+        self.schemas.remove(table_name);
+        self.table_storages.remove(table_name);
+        self.table_generations.remove(table_name);
+        self.next_row_ids.remove(table_name);
 
         Ok(())
     }
@@ -316,6 +313,63 @@ impl SqlStorage {
             .map_err(|e| Error::Serialization(e.to_string()))?;
 
         batch.insert(&self.metadata, schema_key, schema_bytes);
+
+        // Update in-memory cache immediately
+        self.schemas.insert(
+            table_name.to_string(),
+            std::sync::Arc::new(old_schema.clone()),
+        );
+
+        // Recreate table_storage so queries can access the data
+        // The data wasn't physically deleted, just the schema was removed
+        let gen_key = format!("table_generation_{}", table_name);
+        let generation = self
+            .metadata
+            .get(&gen_key)?
+            .map(|bytes| {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&bytes);
+                u64::from_be_bytes(buf)
+            })
+            .unwrap_or(1);
+
+        let mvcc_config = MvccConfig {
+            data_dir: self.config.data_dir.clone(),
+            block_cache_size: self.config.block_cache_size as u64,
+            compression: self.config.compression,
+            persist_mode: self.config.persist_mode,
+            history_bucket_duration: std::time::Duration::from_secs(60),
+            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
+            history_retention_window: std::time::Duration::from_secs(300),
+            uncommitted_retention_window: std::time::Duration::from_secs(120),
+            cleanup_interval: std::time::Duration::from_secs(30),
+        };
+
+        let partition_name = format!("{}_g{}", table_name, generation);
+        let table_storage = MvccStorage::<TableEntity>::with_shared_keyspace(
+            self.keyspace.clone(),
+            partition_name,
+            mvcc_config,
+        )?;
+
+        self.table_storages
+            .insert(table_name.to_string(), table_storage);
+        self.table_generations
+            .insert(table_name.to_string(), generation);
+
+        // Restore next_row_id
+        let row_id_key = format!("next_row_id_{}", table_name);
+        let next_row_id = self
+            .metadata
+            .get(&row_id_key)?
+            .map(|bytes| {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&bytes);
+                u64::from_be_bytes(buf)
+            })
+            .unwrap_or(1);
+        self.next_row_ids
+            .insert(table_name.to_string(), AtomicU64::new(next_row_id));
 
         Ok(())
     }
@@ -349,6 +403,27 @@ impl SqlStorage {
         // Remove new name's schema
         let new_schema_key = format!("schema_{}", new_name);
         batch.remove(self.metadata.clone(), new_schema_key);
+
+        // Update in-memory cache immediately
+        self.schemas.insert(
+            old_name.to_string(),
+            std::sync::Arc::new(old_schema.clone()),
+        );
+        self.schemas.remove(new_name);
+
+        // Move storage back from new_name to old_name
+        if let Some(storage) = self.table_storages.remove(new_name) {
+            self.table_storages.insert(old_name.to_string(), storage);
+        }
+
+        // Move generation and row_id counters back
+        if let Some(generation) = self.table_generations.remove(new_name) {
+            self.table_generations
+                .insert(old_name.to_string(), generation);
+        }
+        if let Some(counter) = self.next_row_ids.remove(new_name) {
+            self.next_row_ids.insert(old_name.to_string(), counter);
+        }
 
         Ok(())
     }
@@ -547,7 +622,7 @@ impl SqlStorage {
         column: crate::types::schema::Column,
         default_value: Value,
         txn_id: TransactionId,
-        log_index: u64,
+        _log_index: u64,
     ) -> Result<()> {
         // Get current schema
         let mut schema = self
@@ -592,7 +667,7 @@ impl SqlStorage {
 
         // Write all updated rows with new schema
         for (row_id, values) in rows_to_update {
-            self.write_row(batch, table_name, row_id, &values, txn_id, log_index)?;
+            self.write_row(batch, table_name, row_id, &values, txn_id)?;
         }
 
         // Persist updated schema to batch (atomic with transaction)
@@ -609,7 +684,7 @@ impl SqlStorage {
         column_name: &str,
         if_exists: bool,
         txn_id: TransactionId,
-        log_index: u64,
+        _log_index: u64,
     ) -> Result<()> {
         // Get current schema
         let mut schema = self
@@ -691,7 +766,7 @@ impl SqlStorage {
 
         // Write all updated rows with new schema
         for (row_id, values) in rows_to_update {
-            self.write_row(batch, table_name, row_id, &values, txn_id, log_index)?;
+            self.write_row(batch, table_name, row_id, &values, txn_id)?;
         }
 
         // Persist updated schema to batch (atomic with transaction)
@@ -911,7 +986,6 @@ impl SqlStorage {
         row_id: u64,
         values: &[Value],
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Get table storage
         let table_storage = self
@@ -946,7 +1020,7 @@ impl SqlStorage {
         };
 
         // Write to MVCC storage via batch
-        table_storage.write_to_batch(batch, delta, txn_id, log_index)?;
+        table_storage.write_to_batch(batch, delta, txn_id)?;
 
         Ok(())
     }
@@ -989,7 +1063,6 @@ impl SqlStorage {
         table_name: &str,
         row_id: u64,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<bool> {
         // Get table storage
         let table_storage = self
@@ -1012,34 +1085,32 @@ impl SqlStorage {
         };
 
         // Write to MVCC storage via batch
-        table_storage.write_to_batch(batch, delta, txn_id, log_index)?;
+        table_storage.write_to_batch(batch, delta, txn_id)?;
 
         Ok(true)
     }
 
-    /// Commit a transaction (atomic across all tables and indexes)
-    pub fn commit_transaction(&mut self, txn_id: TransactionId, log_index: u64) -> Result<()> {
-        // Create shared batch for atomic commit
-        let mut batch = self.keyspace.batch();
-
+    /// Commit a transaction to an external batch (for engine batching)
+    pub fn commit_transaction_to_batch(
+        &mut self,
+        batch: &mut fjall::Batch,
+        txn_id: TransactionId,
+    ) -> Result<()> {
         // Commit all table storages
         for table_storage in self.table_storages.values_mut() {
-            table_storage.commit_transaction_to_batch(&mut batch, txn_id, log_index)?;
+            table_storage.commit_transaction_to_batch(batch, txn_id)?;
         }
 
         // Commit all index storages
         for index_storage in self.index_storages.values_mut() {
-            index_storage.commit_transaction_to_batch(&mut batch, txn_id, log_index)?;
+            index_storage.commit_transaction_to_batch(batch, txn_id)?;
         }
 
         // Remove predicates (on commit)
-        self.predicate_store.remove_all(&mut batch, txn_id)?;
+        self.predicate_store.remove_all(batch, txn_id)?;
 
         // Remove pending DDLs (on commit)
-        self.cleanup_pending_ddls(&mut batch, txn_id)?;
-
-        // Atomic commit across ALL entities!
-        batch.commit()?;
+        self.cleanup_pending_ddls(batch, txn_id)?;
 
         // Cleanup old buckets if needed (throttled internally by each storage)
         use proven_common::Timestamp;
@@ -1060,16 +1131,15 @@ impl SqlStorage {
         &mut self,
         batch: &mut fjall::Batch,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Abort all table storages
         for table_storage in self.table_storages.values_mut() {
-            table_storage.abort_transaction_to_batch(batch, txn_id, log_index)?;
+            table_storage.abort_transaction_to_batch(batch, txn_id)?;
         }
 
         // Abort all index storages
         for index_storage in self.index_storages.values_mut() {
-            index_storage.abort_transaction_to_batch(batch, txn_id, log_index)?;
+            index_storage.abort_transaction_to_batch(batch, txn_id)?;
         }
 
         // Remove predicates (on abort)
@@ -1093,12 +1163,15 @@ impl SqlStorage {
 
     /// Get log index (for crash recovery)
     pub fn get_log_index(&self) -> u64 {
-        // Get log index from any table storage (they should all be in sync)
-        // If no tables, return 0
-        self.table_storages
-            .values()
-            .next()
-            .map(|s| s.get_log_index())
+        // Read log index from metadata partition where it's actually stored
+        self.metadata_partition()
+            .get(b"_log_index")
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                let array: [u8; 8] = bytes.as_ref().try_into().unwrap_or([0; 8]);
+                u64::from_le_bytes(array)
+            })
             .unwrap_or(0)
     }
 
@@ -1168,11 +1241,13 @@ impl SqlStorage {
         Ok(())
     }
 
-    /// Prepare transaction (release read predicates)
-    pub fn prepare_transaction(&self, txn_id: TransactionId) -> Result<()> {
-        let mut batch = self.keyspace.batch();
-        self.predicate_store.remove_reads(&mut batch, txn_id)?;
-        batch.commit()?;
+    /// Prepare transaction to batch (release read predicates atomically)
+    pub fn prepare_transaction_to_batch(
+        &self,
+        batch: &mut fjall::Batch,
+        txn_id: TransactionId,
+    ) -> Result<()> {
+        self.predicate_store.remove_reads(batch, txn_id)?;
         Ok(())
     }
 
@@ -1303,7 +1378,6 @@ impl SqlStorage {
         index_values: Vec<Value>,
         row_id: u64,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Get index storage
         let index_storage = self
@@ -1321,7 +1395,7 @@ impl SqlStorage {
         let delta = IndexDelta::Insert { key };
 
         // Write to MVCC storage via batch
-        index_storage.write_to_batch(batch, delta, txn_id, log_index)?;
+        index_storage.write_to_batch(batch, delta, txn_id)?;
 
         Ok(())
     }
@@ -1334,7 +1408,6 @@ impl SqlStorage {
         index_values: Vec<Value>,
         row_id: u64,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Get index storage
         let index_storage = self
@@ -1352,7 +1425,7 @@ impl SqlStorage {
         let delta = IndexDelta::Delete { key };
 
         // Write to MVCC storage via batch
-        index_storage.write_to_batch(batch, delta, txn_id, log_index)?;
+        index_storage.write_to_batch(batch, delta, txn_id)?;
 
         Ok(())
     }
@@ -1367,13 +1440,12 @@ impl SqlStorage {
         new_values: Vec<Value>,
         row_id: u64,
         txn_id: TransactionId,
-        log_index: u64,
     ) -> Result<()> {
         // Delete old entry
-        self.delete_index_entry(batch, index_name, old_values, row_id, txn_id, log_index)?;
+        self.delete_index_entry(batch, index_name, old_values, row_id, txn_id)?;
 
         // Insert new entry
-        self.insert_index_entry(batch, index_name, new_values, row_id, txn_id, log_index)?;
+        self.insert_index_entry(batch, index_name, new_values, row_id, txn_id)?;
 
         Ok(())
     }
@@ -1807,7 +1879,7 @@ mod tests {
         // Write row
         let mut batch = storage.batch();
         storage
-            .write_row(&mut batch, "users", 1, &values, txn_id, 1)
+            .write_row(&mut batch, "users", 1, &values, txn_id)
             .unwrap();
         batch.commit().unwrap();
 
@@ -1832,15 +1904,13 @@ mod tests {
         // Write row
         let mut batch = storage.batch();
         storage
-            .write_row(&mut batch, "users", 1, &values, txn_id, 1)
+            .write_row(&mut batch, "users", 1, &values, txn_id)
             .unwrap();
         batch.commit().unwrap();
 
         // Delete row
         let mut batch = storage.batch();
-        let deleted = storage
-            .delete_row(&mut batch, "users", 1, txn_id, 2)
-            .unwrap();
+        let deleted = storage.delete_row(&mut batch, "users", 1, txn_id).unwrap();
         batch.commit().unwrap();
 
         assert!(deleted);
@@ -1905,7 +1975,6 @@ mod tests {
                 vec![Value::string("Alice")],
                 1,
                 txn_id,
-                1,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -1919,7 +1988,6 @@ mod tests {
                 vec![Value::string("Alice")],
                 1,
                 txn_id,
-                2,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -1941,12 +2009,16 @@ mod tests {
         // Write row
         let mut batch = storage.batch();
         storage
-            .write_row(&mut batch, "users", 1, &values, txn_id, 1)
+            .write_row(&mut batch, "users", 1, &values, txn_id)
             .unwrap();
         batch.commit().unwrap();
 
         // Commit transaction
-        storage.commit_transaction(txn_id, 2).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .commit_transaction_to_batch(&mut batch, txn_id)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Verify readable by LATER transaction (committed data)
         let later_txn = TransactionId::new();
@@ -1975,7 +2047,6 @@ mod tests {
                 1,
                 &[Value::integer(1), Value::string("Alice")],
                 txn_id,
-                1,
             )
             .unwrap();
         storage
@@ -1985,7 +2056,6 @@ mod tests {
                 2,
                 &[Value::integer(2), Value::string("Bob")],
                 txn_id,
-                2,
             )
             .unwrap();
         storage
@@ -1995,7 +2065,6 @@ mod tests {
                 5,
                 &[Value::integer(5), Value::string("Charlie")],
                 txn_id,
-                3,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2052,7 +2121,6 @@ mod tests {
                     Value::string("Seattle"),
                 ],
                 txn_id,
-                1,
             )
             .unwrap();
         storage
@@ -2066,7 +2134,6 @@ mod tests {
                     Value::string("Seattle"),
                 ],
                 txn_id,
-                2,
             )
             .unwrap();
         storage
@@ -2080,7 +2147,6 @@ mod tests {
                     Value::string("Portland"),
                 ],
                 txn_id,
-                3,
             )
             .unwrap();
         storage
@@ -2094,7 +2160,6 @@ mod tests {
                     Value::string("Seattle"),
                 ],
                 txn_id,
-                4,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2108,7 +2173,6 @@ mod tests {
                 vec![Value::string("Seattle")],
                 1,
                 txn_id,
-                1,
             )
             .unwrap();
         storage
@@ -2118,7 +2182,6 @@ mod tests {
                 vec![Value::string("Seattle")],
                 2,
                 txn_id,
-                2,
             )
             .unwrap();
         storage
@@ -2128,7 +2191,6 @@ mod tests {
                 vec![Value::string("Portland")],
                 3,
                 txn_id,
-                3,
             )
             .unwrap();
         storage
@@ -2138,7 +2200,6 @@ mod tests {
                 vec![Value::string("Seattle")],
                 4,
                 txn_id,
-                4,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2214,7 +2275,6 @@ mod tests {
                     Value::integer(25),
                 ],
                 txn_id,
-                1,
             )
             .unwrap();
         storage
@@ -2224,7 +2284,6 @@ mod tests {
                 2,
                 &[Value::integer(2), Value::string("Bob"), Value::integer(30)],
                 txn_id,
-                2,
             )
             .unwrap();
         storage
@@ -2238,7 +2297,6 @@ mod tests {
                     Value::integer(35),
                 ],
                 txn_id,
-                3,
             )
             .unwrap();
         storage
@@ -2252,7 +2310,6 @@ mod tests {
                     Value::integer(40),
                 ],
                 txn_id,
-                4,
             )
             .unwrap();
         storage
@@ -2262,7 +2319,6 @@ mod tests {
                 5,
                 &[Value::integer(5), Value::string("Eve"), Value::integer(45)],
                 txn_id,
-                5,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2270,54 +2326,19 @@ mod tests {
         // Add index entries
         let mut batch = storage.batch();
         storage
-            .insert_index_entry(
-                &mut batch,
-                "idx_age",
-                vec![Value::integer(25)],
-                1,
-                txn_id,
-                1,
-            )
+            .insert_index_entry(&mut batch, "idx_age", vec![Value::integer(25)], 1, txn_id)
             .unwrap();
         storage
-            .insert_index_entry(
-                &mut batch,
-                "idx_age",
-                vec![Value::integer(30)],
-                2,
-                txn_id,
-                2,
-            )
+            .insert_index_entry(&mut batch, "idx_age", vec![Value::integer(30)], 2, txn_id)
             .unwrap();
         storage
-            .insert_index_entry(
-                &mut batch,
-                "idx_age",
-                vec![Value::integer(35)],
-                3,
-                txn_id,
-                3,
-            )
+            .insert_index_entry(&mut batch, "idx_age", vec![Value::integer(35)], 3, txn_id)
             .unwrap();
         storage
-            .insert_index_entry(
-                &mut batch,
-                "idx_age",
-                vec![Value::integer(40)],
-                4,
-                txn_id,
-                4,
-            )
+            .insert_index_entry(&mut batch, "idx_age", vec![Value::integer(40)], 4, txn_id)
             .unwrap();
         storage
-            .insert_index_entry(
-                &mut batch,
-                "idx_age",
-                vec![Value::integer(45)],
-                5,
-                txn_id,
-                5,
-            )
+            .insert_index_entry(&mut batch, "idx_age", vec![Value::integer(45)], 5, txn_id)
             .unwrap();
         batch.commit().unwrap();
 
@@ -2409,7 +2430,6 @@ mod tests {
                 1,
                 &[Value::integer(1), Value::string("Alice")],
                 txn_id,
-                1,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2423,7 +2443,6 @@ mod tests {
                 vec![Value::string("Alice")],
                 1,
                 txn_id,
-                1,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2471,7 +2490,6 @@ mod tests {
                 2,
                 &[Value::integer(2), Value::string("Bob")],
                 txn_id,
-                2,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2484,7 +2502,6 @@ mod tests {
                 vec![Value::string("Bob")],
                 2,
                 txn_id,
-                2,
             )
             .unwrap();
         batch.commit().unwrap();
@@ -2576,7 +2593,11 @@ mod tests {
         assert_eq!(stored_predicates.len(), 2, "Should have 2 predicates");
 
         // Cleanup
-        storage.commit_transaction(txn_id, 1).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .commit_transaction_to_batch(&mut batch, txn_id)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Verify predicates are removed
         let active_txns = storage.get_active_transactions().unwrap();
@@ -2615,7 +2636,6 @@ mod tests {
                 1,
                 &[Value::integer(1), Value::string("Alice")],
                 txn_id,
-                1,
             )
             .unwrap();
         storage
@@ -2632,7 +2652,11 @@ mod tests {
         assert_eq!(active_txns[&txn_id].len(), 1, "Should have 1 predicate");
 
         // Commit and verify cleanup
-        storage.commit_transaction(txn_id, 2).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .commit_transaction_to_batch(&mut batch, txn_id)
+            .unwrap();
+        batch.commit().unwrap();
 
         let active_txns = storage.get_active_transactions().unwrap();
         assert_eq!(active_txns.len(), 0, "Should have no active transactions");
@@ -2678,7 +2702,11 @@ mod tests {
         );
 
         // Prepare transaction (removes read predicates only)
-        storage.prepare_transaction(txn_id).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .prepare_transaction_to_batch(&mut batch, txn_id)
+            .unwrap();
+        batch.commit().unwrap();
 
         // Verify only write predicate remains
         let active_txns = storage.get_active_transactions().unwrap();
@@ -2689,7 +2717,11 @@ mod tests {
         );
 
         // Cleanup
-        storage.commit_transaction(txn_id, 1).unwrap();
+        let mut batch = storage.batch();
+        storage
+            .commit_transaction_to_batch(&mut batch, txn_id)
+            .unwrap();
+        batch.commit().unwrap();
 
         let active_txns = storage.get_active_transactions().unwrap();
         assert_eq!(active_txns.len(), 0, "Should have no active transactions");
@@ -2732,7 +2764,7 @@ mod tests {
         // Abort transaction
         let mut batch = storage.batch();
         storage
-            .abort_transaction_to_batch(&mut batch, txn_id, 1)
+            .abort_transaction_to_batch(&mut batch, txn_id)
             .unwrap();
         batch.commit().unwrap();
 

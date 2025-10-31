@@ -64,23 +64,11 @@ impl<'a, E: TransactionEngine> ReadOnlyExecutor<'a, E> {
                     blockers,
                     coordinator_id,
                     request_id,
+                    false, // ReadOnly operations are not atomic
                 );
                 Ok(())
             }
         }
-    }
-
-    /// Retry deferred read-only operations
-    ///
-    /// Called when a transaction completes that was blocking read-only ops
-    ///
-    /// TODO: This needs the read_timestamp to be stored with the DeferredOp
-    pub fn retry_deferred(
-        &self,
-        _ready_ops: Vec<crate::transaction::DeferredOp<E::Operation>>,
-    ) -> Result<()> {
-        // TODO: Implement retry logic - need to store read_timestamp with deferred op
-        Ok(())
     }
 }
 
@@ -109,9 +97,22 @@ mod tests {
         should_block: bool,
     }
 
+    struct TestBatch;
+    impl crate::engine::BatchOperations for TestBatch {
+        fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
+        fn remove_metadata(&mut self, _key: Vec<u8>) {}
+    }
+
     impl TransactionEngine for TestEngine {
         type Operation = TestOp;
         type Response = TestResponse;
+        type Batch = TestBatch;
+
+        fn start_batch(&mut self) -> Self::Batch {
+            TestBatch
+        }
+
+        fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
 
         fn read_at_timestamp(
             &mut self,
@@ -132,17 +133,23 @@ mod tests {
 
         fn apply_operation(
             &mut self,
+            _batch: &mut Self::Batch,
             _operation: Self::Operation,
             _txn_id: TransactionId,
-            _log_index: u64,
         ) -> OperationResult<Self::Response> {
             unimplemented!()
         }
 
-        fn begin(&mut self, _txn_id: TransactionId, _log_index: u64) {}
-        fn prepare(&mut self, _txn_id: TransactionId, _log_index: u64) {}
-        fn commit(&mut self, _txn_id: TransactionId, _log_index: u64) {}
-        fn abort(&mut self, _txn_id: TransactionId, _log_index: u64) {}
+        fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn get_log_index(&self) -> Option<u64> {
+            None
+        }
+        fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+            vec![]
+        }
         fn engine_name(&self) -> &str {
             "test"
         }

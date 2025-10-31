@@ -54,7 +54,9 @@ impl TestContext {
     pub fn begin(&mut self) {
         let tx = self.next_timestamp();
         let log_index = self.next_log_index();
-        self.engine.begin(tx, log_index);
+        let mut batch = self.engine.start_batch();
+        self.engine.begin(&mut batch, tx);
+        self.engine.commit_batch(batch, log_index);
         self.in_transaction = true;
         self.current_tx = Some(tx);
     }
@@ -63,7 +65,9 @@ impl TestContext {
     pub fn commit(&mut self) {
         if let Some(tx) = self.current_tx {
             let log_index = self.next_log_index();
-            self.engine.commit(tx, log_index);
+            let mut batch = self.engine.start_batch();
+            self.engine.commit(&mut batch, tx);
+            self.engine.commit_batch(batch, log_index);
             self.in_transaction = false;
             self.current_tx = None;
         }
@@ -73,7 +77,9 @@ impl TestContext {
     pub fn abort(&mut self) {
         if let Some(tx) = self.current_tx {
             let log_index = self.next_log_index();
-            self.engine.abort(tx, log_index);
+            let mut batch = self.engine.start_batch();
+            self.engine.abort(&mut batch, tx);
+            self.engine.commit_batch(batch, log_index);
             self.in_transaction = false;
             self.current_tx = None;
         }
@@ -89,14 +95,16 @@ impl TestContext {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
         let log_index = self.next_log_index();
 
+        let mut batch = self.engine.start_batch();
         let result = self.engine.apply_operation(
+            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: Some(params),
             },
             tx,
-            log_index,
         );
+        self.engine.commit_batch(batch, log_index);
 
         match result {
             OperationResult::Complete(SqlResponse::Error(err)) => {
@@ -113,21 +121,27 @@ impl TestContext {
             // No active transaction - create and begin a new one
             let tx = self.next_timestamp();
             let log_idx = self.next_log_index();
-            self.engine.begin(tx, log_idx);
+            let mut batch = self.engine.start_batch();
+            self.engine.begin(&mut batch, tx);
+            self.engine.commit_batch(batch, log_idx);
             self.current_tx = Some(tx);
             self.in_transaction = true;
             tx
         });
         let log_index = self.next_log_index();
 
-        match self.engine.apply_operation(
+        let mut batch = self.engine.start_batch();
+        let result = self.engine.apply_operation(
+            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: None,
             },
             tx,
-            log_index,
-        ) {
+        );
+        self.engine.commit_batch(batch, log_index);
+
+        match result {
             OperationResult::Complete(response) => response,
             _ => panic!("SQL execution failed: {}", sql),
         }
@@ -147,14 +161,16 @@ impl TestContext {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
         let log_index = self.next_log_index();
 
+        let mut batch = self.engine.start_batch();
         let result = self.engine.apply_operation(
+            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: Some(params),
             },
             tx,
-            log_index,
         );
+        self.engine.commit_batch(batch, log_index);
 
         match result {
             OperationResult::Complete(SqlResponse::QueryResult { columns, rows }) => {
@@ -186,14 +202,18 @@ impl TestContext {
         let tx = self.current_tx.unwrap_or_else(|| self.next_timestamp());
         let log_index = self.next_log_index();
 
-        match self.engine.apply_operation(
+        let mut batch = self.engine.start_batch();
+        let result = self.engine.apply_operation(
+            &mut batch,
             SqlOperation::Execute {
                 sql: sql.to_string(),
                 params: None,
             },
             tx,
-            log_index,
-        ) {
+        );
+        self.engine.commit_batch(batch, log_index);
+
+        match result {
             OperationResult::Complete(SqlResponse::Error(err)) => err,
             _ => panic!("Expected error for SQL: {}", sql),
         }

@@ -34,6 +34,12 @@ pub struct DeferredOp<O> {
     /// What this op is still waiting for
     pub waiting_for: WaitingFor,
 
+    /// Whether this is an atomic operation (AdHoc)
+    ///
+    /// When true, this operation must be retried using the sequence:
+    /// begin → apply_operation → commit (all in same batch)
+    pub is_atomic: bool,
+
     /// Whether this operation has been taken (ready for retry)
     taken: bool,
 }
@@ -105,6 +111,7 @@ impl<O: Clone> DeferralManager<O> {
         blockers: Vec<BlockingInfo>,
         coordinator_id: String,
         request_id: String,
+        is_atomic: bool,
     ) {
         let waiting_for = WaitingFor::from_blockers(&blockers);
 
@@ -122,6 +129,7 @@ impl<O: Clone> DeferralManager<O> {
                 request_id,
                 owner_txn_id: txn_id,
                 waiting_for: waiting_for.clone(),
+                is_atomic,
                 taken: false,
             },
         );
@@ -287,6 +295,7 @@ mod tests {
             vec![blocker(blocker_txn, RetryOn::Prepare)],
             "coord1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         assert_eq!(mgr.count_for_transaction(txn1), 1);
@@ -316,6 +325,7 @@ mod tests {
             vec![blocker(blocker_txn, RetryOn::CommitOrAbort)],
             "coord1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         // Should not be ready on prepare
@@ -346,6 +356,7 @@ mod tests {
             ],
             "coord1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         // After blocker1 prepares, should not be ready yet
@@ -373,6 +384,7 @@ mod tests {
             vec![blocker(blocker_txn, RetryOn::Prepare)],
             "coord1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         // Blocker completes (aborts before prepare)
@@ -393,6 +405,7 @@ mod tests {
             vec![blocker(blocker_txn, RetryOn::CommitOrAbort)],
             "coord1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         assert_eq!(mgr.count_for_transaction(txn1), 1);
@@ -418,6 +431,7 @@ mod tests {
             vec![blocker(blocker1, RetryOn::CommitOrAbort)],
             "coord1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         mgr.defer(
@@ -426,6 +440,7 @@ mod tests {
             vec![blocker(blocker2, RetryOn::CommitOrAbort)],
             "coord1".to_string(),
             "req1".to_string(),
+            false,
         );
 
         assert_eq!(mgr.count_for_transaction(txn1), 2);

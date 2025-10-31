@@ -258,19 +258,12 @@ pub fn execute_insert(
 
     for (row, row_id) in final_rows.iter().zip(&row_ids) {
         // Insert row
-        storage.write_row(batch, &table, *row_id, row, tx_ctx.txn_id, tx_ctx.log_index)?;
+        storage.write_row(batch, &table, *row_id, row, tx_ctx.txn_id)?;
 
         // Update all indexes for this table
         for index in &all_indexes {
             let index_values = helpers::extract_index_values(row, index, schema, tx_ctx)?;
-            storage.insert_index_entry(
-                batch,
-                &index.name,
-                index_values,
-                *row_id,
-                tx_ctx.txn_id,
-                tx_ctx.log_index,
-            )?;
+            storage.insert_index_entry(batch, &index.name, index_values, *row_id, tx_ctx.txn_id)?;
         }
     }
 
