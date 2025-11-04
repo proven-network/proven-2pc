@@ -182,11 +182,6 @@ impl SqlStorage {
                     block_cache_size: self.config.block_cache_size as u64,
                     compression: self.config.compression,
                     persist_mode: self.config.persist_mode,
-                    history_bucket_duration: std::time::Duration::from_secs(60),
-                    uncommitted_bucket_duration: std::time::Duration::from_secs(30),
-                    history_retention_window: std::time::Duration::from_secs(300),
-                    uncommitted_retention_window: std::time::Duration::from_secs(120),
-                    cleanup_interval: std::time::Duration::from_secs(30),
                 };
 
                 // Use generation in partition name
@@ -236,11 +231,6 @@ impl SqlStorage {
                     block_cache_size: self.config.block_cache_size as u64,
                     compression: self.config.compression,
                     persist_mode: self.config.persist_mode,
-                    history_bucket_duration: std::time::Duration::from_secs(60),
-                    uncommitted_bucket_duration: std::time::Duration::from_secs(30),
-                    history_retention_window: std::time::Duration::from_secs(300),
-                    uncommitted_retention_window: std::time::Duration::from_secs(120),
-                    cleanup_interval: std::time::Duration::from_secs(30),
                 };
 
                 let index_storage = MvccStorage::<IndexEntity>::with_shared_keyspace(
@@ -338,11 +328,6 @@ impl SqlStorage {
             block_cache_size: self.config.block_cache_size as u64,
             compression: self.config.compression,
             persist_mode: self.config.persist_mode,
-            history_bucket_duration: std::time::Duration::from_secs(60),
-            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
-            history_retention_window: std::time::Duration::from_secs(300),
-            uncommitted_retention_window: std::time::Duration::from_secs(120),
-            cleanup_interval: std::time::Duration::from_secs(30),
         };
 
         let partition_name = format!("{}_g{}", table_name, generation);
@@ -461,11 +446,6 @@ impl SqlStorage {
             block_cache_size: self.config.block_cache_size as u64,
             compression: self.config.compression,
             persist_mode: self.config.persist_mode,
-            history_bucket_duration: std::time::Duration::from_secs(60),
-            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
-            history_retention_window: std::time::Duration::from_secs(300),
-            uncommitted_retention_window: std::time::Duration::from_secs(120),
-            cleanup_interval: std::time::Duration::from_secs(30),
         };
 
         let index_storage = MvccStorage::<IndexEntity>::with_shared_keyspace(
@@ -540,11 +520,6 @@ impl SqlStorage {
             block_cache_size: self.config.block_cache_size as u64,
             compression: self.config.compression,
             persist_mode: self.config.persist_mode,
-            history_bucket_duration: std::time::Duration::from_secs(60),
-            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
-            history_retention_window: std::time::Duration::from_secs(300),
-            uncommitted_retention_window: std::time::Duration::from_secs(120),
-            cleanup_interval: std::time::Duration::from_secs(30),
         };
 
         // Use generation in partition name to avoid reusing old data
@@ -1112,16 +1087,6 @@ impl SqlStorage {
         // Remove pending DDLs (on commit)
         self.cleanup_pending_ddls(batch, txn_id)?;
 
-        // Cleanup old buckets if needed (throttled internally by each storage)
-        use proven_common::Timestamp;
-        let current_time = Timestamp::now();
-        for table_storage in self.table_storages.values_mut() {
-            table_storage.maybe_cleanup(current_time).ok();
-        }
-        for index_storage in self.index_storages.values_mut() {
-            index_storage.maybe_cleanup(current_time).ok();
-        }
-
         Ok(())
     }
 
@@ -1147,16 +1112,6 @@ impl SqlStorage {
 
         // Remove pending DDLs (on abort)
         self.cleanup_pending_ddls(batch, txn_id)?;
-
-        // Cleanup old buckets if needed (throttled internally by each storage)
-        use proven_common::Timestamp;
-        let current_time = Timestamp::now();
-        for table_storage in self.table_storages.values_mut() {
-            table_storage.maybe_cleanup(current_time).ok();
-        }
-        for index_storage in self.index_storages.values_mut() {
-            index_storage.maybe_cleanup(current_time).ok();
-        }
 
         Ok(())
     }
@@ -1312,11 +1267,6 @@ impl SqlStorage {
             block_cache_size: self.config.block_cache_size as u64,
             compression: self.config.compression,
             persist_mode: self.config.persist_mode,
-            history_bucket_duration: std::time::Duration::from_secs(60),
-            uncommitted_bucket_duration: std::time::Duration::from_secs(30),
-            history_retention_window: std::time::Duration::from_secs(300),
-            uncommitted_retention_window: std::time::Duration::from_secs(120),
-            cleanup_interval: std::time::Duration::from_secs(30),
         };
 
         let index_storage = MvccStorage::<IndexEntity>::with_shared_keyspace(

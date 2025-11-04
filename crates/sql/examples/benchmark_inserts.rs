@@ -183,7 +183,7 @@ fn main() {
     drop(sql_engine); // Ensure engine releases file handles
 
     // Reopen (triggers journal replay and cleanup)
-    let mut sql_engine = AutoBatchEngine::new(SqlTransactionEngine::new(config));
+    let mut sql_engine = AutoBatchEngine::new(SqlTransactionEngine::new(config.clone()));
 
     // Verify count
     println!("\nVerifying persisted count...");
@@ -222,6 +222,9 @@ fn main() {
     }
 
     drop(sql_engine); // Ensure engine releases file handles
+
+    // Wait a moment for any background operations to complete
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     // Calculate directory size
     println!("\nCalculating storage size...");

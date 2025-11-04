@@ -7,7 +7,6 @@
 //! - Efficient cleanup (time-bucketed partitions)
 
 use crate::FjallIter;
-use crate::bucket_manager::BucketManager;
 use crate::config::StorageConfig;
 use crate::encoding::{Decode, Encode};
 use crate::entity::{MvccDelta, MvccEntity};
@@ -15,7 +14,7 @@ use crate::error::Result;
 use crate::history::HistoryStore;
 use crate::uncommitted::UncommittedStore;
 use fjall::{Batch, Keyspace, Partition, PartitionCreateOptions};
-use proven_common::{Timestamp, TransactionId};
+use proven_common::TransactionId;
 use std::marker::PhantomData;
 use std::path::Path;
 
@@ -34,10 +33,6 @@ pub struct MvccStorage<E: MvccEntity> {
     // MVCC components
     uncommitted: UncommittedStore<E>,
     history: HistoryStore<E>,
-
-    // Shared state
-    config: StorageConfig,
-    last_cleanup: Option<Timestamp>,
 
     _phantom: PhantomData<E>,
 }
@@ -78,39 +73,37 @@ impl<E: MvccEntity> MvccStorage<E> {
                 .compression(config.compression),
         )?;
 
-        // Create bucket manager for uncommitted data
-        let uncommitted_mgr = BucketManager::new(
-            keyspace.clone(),
-            format!("{}_uncommitted", entity_prefix),
-            config.uncommitted_bucket_duration,
+        // Create single partition for uncommitted data
+        let uncommitted_partition = keyspace.open_partition(
+            &format!("{}_uncommitted", entity_prefix),
             PartitionCreateOptions::default()
                 .block_size(32 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let uncommitted =
-            UncommittedStore::new(uncommitted_mgr, config.uncommitted_retention_window);
+                .compression(config.compression),
+        )?;
+        let uncommitted = UncommittedStore::new(uncommitted_partition);
 
-        // Create bucket manager for history
-        let history_mgr = BucketManager::new(
-            keyspace.clone(),
-            format!("{}_history", entity_prefix),
-            config.history_bucket_duration,
+        // Create single partition for history
+        let history_partition = keyspace.open_partition(
+            &format!("{}_history", entity_prefix),
             PartitionCreateOptions::default()
                 .block_size(32 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let history = HistoryStore::new(history_mgr, config.history_retention_window);
+                .compression(config.compression),
+        )?;
+        let history = HistoryStore::new(history_partition);
 
-        Ok(Self {
+        let mut storage = Self {
             keyspace,
             metadata_partition,
             data_partition,
             uncommitted,
             history,
-            config,
-            last_cleanup: None,
             _phantom: PhantomData,
-        })
+        };
+
+        // Cleanup old history on startup (anything older than 5 minutes)
+        storage.cleanup_old_history();
+
+        Ok(storage)
     }
 
     /// Open storage at a specific path
@@ -139,39 +132,37 @@ impl<E: MvccEntity> MvccStorage<E> {
                 .compression(config.compression),
         )?;
 
-        // Create bucket manager for uncommitted data
-        let uncommitted_mgr = BucketManager::new(
-            keyspace.clone(),
-            format!("{}_{}", E::entity_name(), "uncommitted"),
-            config.uncommitted_bucket_duration,
+        // Create single partition for uncommitted data
+        let uncommitted_partition = keyspace.open_partition(
+            &format!("{}_{}", E::entity_name(), "uncommitted"),
             PartitionCreateOptions::default()
                 .block_size(32 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let uncommitted =
-            UncommittedStore::new(uncommitted_mgr, config.uncommitted_retention_window);
+                .compression(config.compression),
+        )?;
+        let uncommitted = UncommittedStore::new(uncommitted_partition);
 
-        // Create bucket manager for history
-        let history_mgr = BucketManager::new(
-            keyspace.clone(),
-            format!("{}_{}", E::entity_name(), "history"),
-            config.history_bucket_duration,
+        // Create single partition for history
+        let history_partition = keyspace.open_partition(
+            &format!("{}_{}", E::entity_name(), "history"),
             PartitionCreateOptions::default()
                 .block_size(32 * 1024)
-                .compression(fjall::CompressionType::None),
-        );
-        let history = HistoryStore::new(history_mgr, config.history_retention_window);
+                .compression(config.compression),
+        )?;
+        let history = HistoryStore::new(history_partition);
 
-        Ok(Self {
+        let mut storage = Self {
             keyspace,
             metadata_partition,
             data_partition,
             uncommitted,
             history,
-            config,
-            last_cleanup: None,
             _phantom: PhantomData,
-        })
+        };
+
+        // Cleanup old history on startup (anything older than 5 minutes)
+        storage.cleanup_old_history();
+
+        Ok(storage)
     }
 
     /// Read a value with MVCC semantics
@@ -412,26 +403,51 @@ impl<E: MvccEntity> MvccStorage<E> {
         &self.data_partition
     }
 
-    /// Cleanup old buckets if enough time has passed
-    pub fn maybe_cleanup(&mut self, current_time: Timestamp) -> Result<()> {
-        let should_cleanup = match self.last_cleanup {
-            None => true,
-            Some(last) => {
-                let cleanup_interval_micros = self.config.cleanup_interval.as_micros() as u64;
-                current_time.as_micros().saturating_sub(last.as_micros()) >= cleanup_interval_micros
-            }
-        };
+    /// Cleanup old deltas based on active transactions
+    ///
+    /// Removes uncommitted and history deltas that are older than the oldest
+    /// active transaction, ensuring correct snapshot isolation semantics.
+    ///
+    /// This should be called periodically with the oldest active transaction ID.
+    /// For best results, call after significant transaction completion activity.
+    pub fn cleanup_before(&mut self, oldest_txn_id: TransactionId) -> Result<(usize, usize)> {
+        let mut batch = self.keyspace.batch();
 
-        if should_cleanup {
-            self.uncommitted.cleanup_old_buckets(current_time)?;
-            self.history.cleanup_old_buckets(current_time)?;
-            self.last_cleanup = Some(current_time);
+        // Cleanup uncommitted data older than oldest active transaction
+        let uncommitted_removed = self.uncommitted.cleanup_before(&mut batch, oldest_txn_id)?;
 
-            // Persist after cleanup (drops partitions)
-            self.keyspace.persist(fjall::PersistMode::SyncAll)?;
-        }
+        // Cleanup history deltas older than oldest active transaction
+        let history_removed = self.history.cleanup_before(&mut batch, oldest_txn_id)?;
 
-        Ok(())
+        // Commit cleanup atomically
+        batch.commit()?;
+
+        // Persist after cleanup
+        self.keyspace.persist(fjall::PersistMode::SyncAll)?;
+
+        Ok((uncommitted_removed, history_removed))
+    }
+
+    /// Cleanup old history on startup (removes data older than 5 minutes)
+    ///
+    /// This is called automatically when opening storage to remove stale MVCC
+    /// history that can no longer be accessed. Uses a 5-minute retention window
+    /// which is appropriate for most workloads.
+    fn cleanup_old_history(&mut self) {
+        // Create a TransactionId representing "5 minutes ago"
+        let cutoff_time_ms = (proven_common::Timestamp::now()
+            .as_micros()
+            .saturating_sub(5 * 60 * 1_000_000))
+            / 1000;
+
+        // Create a minimal UUIDv7-like bytes with the cutoff timestamp
+        // UUIDv7 stores the timestamp in the first 48 bits (6 bytes)
+        let mut cutoff_bytes = [0u8; 16];
+        cutoff_bytes[0..6].copy_from_slice(&cutoff_time_ms.to_be_bytes()[2..8]);
+        let cutoff_txn = TransactionId::from_bytes(cutoff_bytes);
+
+        // Cleanup history older than cutoff (ignore errors - this is best-effort)
+        let _ = self.cleanup_before(cutoff_txn);
     }
 
     /// Get the keyspace (for custom operations)

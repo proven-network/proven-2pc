@@ -672,11 +672,6 @@ impl TransactionEngine for ResourceTransactionEngine {
         let metadata = self.storage.metadata_partition();
         inner_batch.remove(metadata.clone(), lock_key);
 
-        // Cleanup old buckets if needed (throttled internally)
-        self.storage
-            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
-            .ok();
-
         // Release all reservations held by this transaction
         self.reservations.release_transaction(txn_id);
     }
@@ -694,11 +689,6 @@ impl TransactionEngine for ResourceTransactionEngine {
         lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         inner_batch.remove(metadata.clone(), lock_key);
-
-        // Cleanup old buckets if needed (throttled internally)
-        self.storage
-            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
-            .ok();
 
         // Release all reservations
         self.reservations.release_transaction(txn_id);

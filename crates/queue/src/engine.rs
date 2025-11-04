@@ -610,11 +610,6 @@ impl TransactionEngine for QueueTransactionEngine {
         let metadata = self.storage.metadata_partition();
         batch.inner().remove(metadata.clone(), lock_key);
 
-        // Cleanup old buckets if needed (throttled internally)
-        self.storage
-            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
-            .ok();
-
         // Release all locks held by this transaction
         self.lock_manager.release_all(txn_id);
 
@@ -635,11 +630,6 @@ impl TransactionEngine for QueueTransactionEngine {
         lock_key.extend_from_slice(&txn_id.to_bytes());
         let metadata = self.storage.metadata_partition();
         batch.inner().remove(metadata.clone(), lock_key);
-
-        // Cleanup old buckets if needed (throttled internally)
-        self.storage
-            .maybe_cleanup(txn_id.to_timestamp_for_bucketing())
-            .ok();
 
         // Release all locks
         self.lock_manager.release_all(txn_id);

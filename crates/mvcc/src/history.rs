@@ -1,41 +1,39 @@
 //! History store for committed deltas (time-travel support)
 //!
-//! Stores committed deltas within a retention window, enabling:
+//! Stores committed deltas in a single partition, enabling:
 //! - Snapshot isolation (read at any past timestamp)
 //! - Time-travel queries
 //! - MVCC reconstruction via delta apply/unapply
 //!
-//! Uses time-bucketed partitions for O(1) cleanup.
+//! Cleanup strategy: Deltas are removed when they're older than the oldest
+//! active transaction, ensuring correct snapshot isolation semantics.
 
-use crate::bucket_manager::BucketManager;
 use crate::encoding::{Decode, Encode};
 use crate::entity::{MvccDelta, MvccEntity};
 use crate::error::Result;
-use fjall::Batch;
-use proven_common::{Timestamp, TransactionId};
+use fjall::{Batch, PartitionHandle};
+use proven_common::TransactionId;
 use std::collections::BTreeMap;
-use std::time::Duration;
 
-/// History store for committed deltas
+/// History store for committed deltas using a single partition
 pub struct HistoryStore<E: MvccEntity> {
-    bucket_manager: BucketManager,
-    retention_window: Duration,
+    partition: PartitionHandle,
     _phantom: std::marker::PhantomData<E>,
 }
 
 impl<E: MvccEntity> HistoryStore<E> {
-    /// Create a new history store
-    pub fn new(bucket_manager: BucketManager, retention_window: Duration) -> Self {
+    /// Create a new history store with a single partition
+    pub fn new(partition: PartitionHandle) -> Self {
         Self {
-            bucket_manager,
-            retention_window,
+            partition,
             _phantom: std::marker::PhantomData,
         }
     }
 
     /// Check if the store is empty (optimization for reads)
     pub fn is_empty(&self) -> bool {
-        !self.bucket_manager.has_partitions()
+        // Check if partition has any keys
+        self.partition.iter().next().is_none()
     }
 
     /// Encode key: {commit_txn_id(16)}{key_bytes}{seq(4)}
@@ -65,19 +63,13 @@ impl<E: MvccEntity> HistoryStore<E> {
             return Ok(());
         }
 
-        // Get or create partition for this time bucket (using timestamp component for bucketing)
-        let partition = self.bucket_manager.get_or_create_partition(
-            E::entity_name(),
-            commit_txn_id.to_timestamp_for_bucketing(),
-        )?;
-
-        // Add each delta with sequential numbering
+        // Add each delta with sequential numbering (single partition)
         for (seq, delta) in deltas.into_iter().enumerate() {
             let key_bytes = delta.key().encode()?;
             let encoded_key = Self::encode_key(commit_txn_id, &key_bytes, seq as u32);
             let encoded_delta = delta.encode()?;
 
-            batch.insert(&partition, encoded_key, encoded_delta);
+            batch.insert(&self.partition, encoded_key, encoded_delta);
         }
 
         Ok(())
@@ -91,27 +83,16 @@ impl<E: MvccEntity> HistoryStore<E> {
         &self,
         snapshot_txn_id: TransactionId,
     ) -> Result<BTreeMap<Vec<u8>, Vec<E::Delta>>> {
-        // Get partitions in the time range (using timestamp component for bucket selection)
-        let snapshot_time = snapshot_txn_id.to_timestamp_for_bucketing();
-        let far_future = Timestamp::from_micros(u64::MAX);
-        let partitions = self.bucket_manager.get_existing_partitions_for_range(
-            E::entity_name(),
-            snapshot_time,
-            far_future,
-        );
-
         let mut result: BTreeMap<Vec<u8>, Vec<E::Delta>> = BTreeMap::new();
         let snapshot_bytes = snapshot_txn_id.to_bytes();
 
-        // Scan all partitions for deltas after snapshot_time
-        for partition in partitions {
-            for entry in partition.range(snapshot_bytes.to_vec()..) {
-                let (_key, value_bytes) = entry?;
-                let delta = E::Delta::decode(&value_bytes)?;
-                let key_bytes = delta.key().encode()?;
+        // Scan partition for deltas after snapshot (single partition range scan)
+        for entry in self.partition.range(snapshot_bytes.to_vec()..) {
+            let (_key, value_bytes) = entry?;
+            let delta = E::Delta::decode(&value_bytes)?;
+            let key_bytes = delta.key().encode()?;
 
-                result.entry(key_bytes).or_default().push(delta);
-            }
+            result.entry(key_bytes).or_default().push(delta);
         }
 
         Ok(result)
@@ -135,17 +116,36 @@ impl<E: MvccEntity> HistoryStore<E> {
         Ok(all_deltas.get(&key_bytes).cloned().unwrap_or_default())
     }
 
-    /// Cleanup old buckets - O(1) per bucket!
-    pub fn cleanup_old_buckets(&mut self, current_time: Timestamp) -> Result<usize> {
-        self.bucket_manager
-            .cleanup_old_buckets(current_time, self.retention_window)
+    /// Cleanup history deltas older than oldest active transaction
+    ///
+    /// This ensures that no active transaction can reference deleted deltas,
+    /// maintaining snapshot isolation guarantees.
+    pub fn cleanup_before(
+        &mut self,
+        batch: &mut Batch,
+        oldest_txn_id: TransactionId,
+    ) -> Result<usize> {
+        let cutoff_bytes = oldest_txn_id.to_bytes();
+
+        // Scan for keys older than cutoff
+        let mut keys_to_delete = Vec::new();
+        for result in self.partition.range(..cutoff_bytes.to_vec()) {
+            let (key, _) = result?;
+            keys_to_delete.push(key.to_vec());
+        }
+
+        let removed_count = keys_to_delete.len();
+        for key in keys_to_delete {
+            batch.remove(self.partition.clone(), key);
+        }
+
+        Ok(removed_count)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::StorageConfig;
     use fjall::PartitionCreateOptions;
     use proven_common::TransactionId;
 
@@ -235,20 +235,13 @@ mod tests {
 
     #[test]
     fn test_history_add_and_get() -> Result<()> {
-        let config = StorageConfig::default();
         let temp_dir = tempfile::tempdir().unwrap();
         let keyspace = fjall::Config::new(temp_dir.path()).open()?;
-        let keyspace_clone = keyspace.clone();
 
-        let bucket_mgr = BucketManager::new(
-            keyspace,
-            "_history".to_string(),
-            config.history_bucket_duration,
-            PartitionCreateOptions::default(),
-        );
+        let partition =
+            keyspace.open_partition("test_history", PartitionCreateOptions::default())?;
 
-        let mut store =
-            HistoryStore::<TestEntity>::new(bucket_mgr, config.history_retention_window);
+        let mut store = HistoryStore::<TestEntity>::new(partition);
 
         // Add some deltas with a transaction ID
         let commit_txn_id = TransactionId::new();
@@ -258,7 +251,7 @@ mod tests {
             old_value: None,
         }];
 
-        let mut batch = keyspace_clone.batch();
+        let mut batch = keyspace.batch();
         store.add_committed_deltas_to_batch(&mut batch, commit_txn_id, deltas)?;
         batch.commit()?;
 

@@ -1,26 +1,24 @@
 //! Uncommitted delta store for active transactions
 //!
-//! Stores uncommitted deltas per transaction, providing:
+//! Stores uncommitted deltas per transaction in a single partition, providing:
 //! - Read-your-own-writes semantics
-//! - Fast abort (O(1) partition drop)
+//! - Fast abort (prefix delete by transaction ID)
 //! - Crash recovery (persisted to disk)
 //!
-//! Uses time-bucketed partitions for O(1) cleanup of orphaned transactions.
+//! Cleanup strategy: Transaction lifecycle (commit/abort) handles cleanup.
+//! Orphaned data only persists after crashes and is cleaned during recovery.
 
-use crate::bucket_manager::BucketManager;
 use crate::encoding::{Decode, Encode};
 use crate::entity::{MvccDelta, MvccEntity};
 use crate::error::Result;
-use fjall::Batch;
+use fjall::{Batch, PartitionHandle};
 use proven_common::TransactionId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
-/// Uncommitted delta store
+/// Uncommitted delta store using a single partition
 pub struct UncommittedStore<E: MvccEntity> {
-    bucket_manager: BucketManager,
-    retention_window: Duration,
+    partition: PartitionHandle,
     /// Sequence number for ordering deltas within a transaction
     /// In-memory only, resets on restart (fine for uncommitted data)
     next_seq: AtomicU64,
@@ -28,11 +26,10 @@ pub struct UncommittedStore<E: MvccEntity> {
 }
 
 impl<E: MvccEntity> UncommittedStore<E> {
-    /// Create a new uncommitted store
-    pub fn new(bucket_manager: BucketManager, retention_window: Duration) -> Self {
+    /// Create a new uncommitted store with a single partition
+    pub fn new(partition: PartitionHandle) -> Self {
         Self {
-            bucket_manager,
-            retention_window,
+            partition,
             next_seq: AtomicU64::new(0),
             _phantom: std::marker::PhantomData,
         }
@@ -64,19 +61,13 @@ impl<E: MvccEntity> UncommittedStore<E> {
     ) -> Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
 
-        // Get or create partition for this time bucket
-        // Extract timestamp from TransactionId for bucketing ONLY
-        let partition = self
-            .bucket_manager
-            .get_or_create_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())?;
-
         // Encode key and delta
         let key_bytes = delta.key().encode()?;
         let encoded_key = Self::encode_key(txn_id, &key_bytes, seq);
         let encoded_delta = delta.encode()?;
 
-        // Add to batch
-        batch.insert(&partition, encoded_key, encoded_delta);
+        // Add to batch (single partition)
+        batch.insert(&self.partition, encoded_key, encoded_delta);
 
         Ok(())
     }
@@ -87,15 +78,6 @@ impl<E: MvccEntity> UncommittedStore<E> {
     /// - `Some(value)` if the key exists with uncommitted changes
     /// - `None` if the key was deleted or has no uncommitted changes
     pub fn get(&self, txn_id: TransactionId, key: &E::Key) -> Result<Option<E::Value>> {
-        // Check if partition exists - if not, no uncommitted data
-        // Extract timestamp from TransactionId for bucketing ONLY
-        let Some(partition) = self
-            .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
-        else {
-            return Ok(None);
-        };
-
         // Scan for deltas affecting this key
         let prefix = Self::encode_tx_prefix(txn_id);
         let key_bytes = key.encode()?;
@@ -103,7 +85,7 @@ impl<E: MvccEntity> UncommittedStore<E> {
         let mut current_value: Option<E::Value> = None;
         let mut has_deltas = false;
 
-        for result in partition.prefix(&prefix) {
+        for result in self.partition.prefix(&prefix) {
             let (_key_bytes, value_bytes) = result?;
             let delta = E::Delta::decode(&value_bytes)?;
 
@@ -126,17 +108,10 @@ impl<E: MvccEntity> UncommittedStore<E> {
 
     /// Get all deltas for a transaction
     pub fn get_transaction_deltas(&self, txn_id: TransactionId) -> Result<Vec<E::Delta>> {
-        let Some(partition) = self
-            .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
-        else {
-            return Ok(Vec::new());
-        };
-
         let prefix = Self::encode_tx_prefix(txn_id);
         let mut deltas = Vec::new();
 
-        for result in partition.prefix(&prefix) {
+        for result in self.partition.prefix(&prefix) {
             let (_key, value_bytes) = result?;
             let delta = E::Delta::decode(&value_bytes)?;
             deltas.push(delta);
@@ -152,19 +127,12 @@ impl<E: MvccEntity> UncommittedStore<E> {
         &self,
         txn_id: TransactionId,
     ) -> Result<HashMap<Vec<u8>, Option<E::Value>>> {
-        let Some(partition) = self
-            .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
-        else {
-            return Ok(HashMap::new());
-        };
-
         let prefix = Self::encode_tx_prefix(txn_id);
 
         // Map of encoded key -> deltas
         let mut key_deltas: HashMap<Vec<u8>, Vec<E::Delta>> = HashMap::new();
 
-        for result in partition.prefix(&prefix) {
+        for result in self.partition.prefix(&prefix) {
             let (_key_bytes, value_bytes) = result?;
             let delta = E::Delta::decode(&value_bytes)?;
             let key_bytes = delta.key().encode()?;
@@ -187,43 +155,60 @@ impl<E: MvccEntity> UncommittedStore<E> {
 
     /// Remove transaction's uncommitted deltas from a batch
     pub fn remove_transaction(&mut self, batch: &mut Batch, txn_id: TransactionId) -> Result<()> {
-        let Some(partition) = self
-            .bucket_manager
-            .get_existing_partition(E::entity_name(), txn_id.to_timestamp_for_bucketing())
-        else {
-            return Ok(()); // No data to remove
-        };
-
         let prefix = Self::encode_tx_prefix(txn_id);
 
         // Collect all keys to delete
         let mut keys_to_delete = Vec::new();
-        for result in partition.prefix(&prefix) {
+        for result in self.partition.prefix(&prefix) {
             let (key, _) = result?;
             keys_to_delete.push(key.to_vec());
         }
 
         // Add deletions to batch
         for key in keys_to_delete {
-            batch.remove(partition.clone(), key);
+            batch.remove(self.partition.clone(), key);
         }
 
         Ok(())
     }
 
-    /// Cleanup old buckets (for orphaned transactions)
-    pub fn cleanup_old_buckets(&mut self, current_time: proven_common::Timestamp) -> Result<usize> {
-        self.bucket_manager
-            .cleanup_old_buckets(current_time, self.retention_window)
+    /// Cleanup orphaned transactions (after crash recovery)
+    ///
+    /// Removes uncommitted data for transactions older than the given transaction ID.
+    /// This should be called during recovery after identifying active transactions.
+    pub fn cleanup_before(
+        &mut self,
+        batch: &mut Batch,
+        oldest_txn_id: TransactionId,
+    ) -> Result<usize> {
+        let cutoff_bytes = oldest_txn_id.to_bytes();
+
+        // Scan all keys and remove those with txn_id < oldest_txn_id
+        let mut keys_to_delete = Vec::new();
+        for result in self.partition.iter() {
+            let (key, _) = result?;
+            // Extract txn_id from key (first 16 bytes)
+            if key.len() >= 16 {
+                let txn_bytes = &key[0..16];
+                if txn_bytes < cutoff_bytes.as_slice() {
+                    keys_to_delete.push(key.to_vec());
+                }
+            }
+        }
+
+        let removed_count = keys_to_delete.len();
+        for key in keys_to_delete {
+            batch.remove(self.partition.clone(), key);
+        }
+
+        Ok(removed_count)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::StorageConfig;
     use crate::encoding::{Decode, Encode};
-    use fjall::PartitionCreateOptions;
     use proven_common::TransactionId;
 
     // Implement Encode/Decode for String (for tests)
@@ -341,19 +326,15 @@ mod tests {
 
     #[test]
     fn test_uncommitted_put_get() -> Result<()> {
-        let config = StorageConfig::default();
+        use fjall::PartitionCreateOptions;
+
         let temp_dir = tempfile::tempdir().unwrap();
         let keyspace = fjall::Config::new(temp_dir.path()).open()?;
 
-        let bucket_mgr = BucketManager::new(
-            keyspace.clone(),
-            "_uncommitted".to_string(),
-            config.uncommitted_bucket_duration,
-            PartitionCreateOptions::default(),
-        );
+        let partition =
+            keyspace.open_partition("test_uncommitted", PartitionCreateOptions::default())?;
 
-        let mut store =
-            UncommittedStore::<TestEntity>::new(bucket_mgr, config.uncommitted_retention_window);
+        let mut store = UncommittedStore::<TestEntity>::new(partition);
 
         // Create a TransactionId for testing
         let txn_id = TransactionId::new();

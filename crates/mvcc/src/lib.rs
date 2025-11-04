@@ -5,7 +5,7 @@
 //! - Snapshot isolation with time-travel queries
 //! - Read-your-own-writes semantics
 //! - Crash recovery with persistent log index
-//! - Time-bucketed partitions for efficient cleanup
+//! - Transaction-aware cleanup based on active transactions
 //!
 //! # Architecture
 //!
@@ -17,7 +17,6 @@
 //! Each crate (KV, SQL, Queue, Resource) implements the `MvccEntity` trait
 //! to customize the storage for their specific needs while reusing the core MVCC logic.
 
-pub mod bucket_manager;
 pub mod config;
 pub mod encoding;
 pub mod entity;
