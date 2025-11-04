@@ -55,14 +55,33 @@ impl ReadOnlyExecutor {
                     |streams_and_messages| {
                         let client = client.clone();
                         async move {
-                            // Pubsub doesn't have a batched API, so send to each stream separately
+                            // Pubsub doesn't have a batched API, so send to each stream in parallel
+                            let mut tasks = tokio::task::JoinSet::new();
+
                             for (stream, messages) in streams_and_messages {
-                                let subject = format!("stream.{}.readonly", stream);
-                                client
-                                    .publish(&subject, messages)
-                                    .await
-                                    .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+                                let client = client.clone();
+                                tasks.spawn(async move {
+                                    let subject = format!("stream.{}.readonly", stream);
+                                    client
+                                        .publish(&subject, messages)
+                                        .await
+                                        .map_err(|e| CoordinatorError::EngineError(e.to_string()))
+                                });
                             }
+
+                            // Wait for all publishes to complete
+                            while let Some(result) = tasks.join_next().await {
+                                match result {
+                                    Ok(Ok(())) => continue,
+                                    Ok(Err(e)) => return Err(e),
+                                    Err(_join_err) => {
+                                        return Err(CoordinatorError::EngineError(
+                                            "Task failed during pubsub publish".to_string(),
+                                        ))
+                                    }
+                                }
+                            }
+
                             Ok(())
                         }
                     },

@@ -117,24 +117,48 @@ impl ExecutorInfra {
             .await
     }
 
-    /// Send messages to multiple streams (fire and forget)
+    /// Send messages to multiple streams in parallel (fire and forget)
+    ///
+    /// This publishes to each stream independently and in parallel, allowing
+    /// streams to be in different consensus groups without artificial constraints.
     pub async fn send_messages_batch(
         &self,
         messages: Vec<(String, HashMap<String, String>, Vec<u8>)>,
     ) -> Result<()> {
-        let mut streams_and_messages = HashMap::new();
+        let mut streams_and_messages: HashMap<String, Vec<Message>> = HashMap::new();
 
         for (stream, headers, body) in messages {
             streams_and_messages
                 .entry(stream)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(Message::new(body, headers));
         }
 
-        self.client
-            .publish_to_streams(streams_and_messages)
-            .await
-            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+        // Publish to each stream in parallel
+        let mut tasks = tokio::task::JoinSet::new();
+
+        for (stream, messages) in streams_and_messages {
+            let client = self.client.clone();
+            tasks.spawn(async move {
+                client
+                    .publish_to_stream(stream, messages)
+                    .await
+                    .map_err(|e| CoordinatorError::EngineError(e.to_string()))
+            });
+        }
+
+        // Wait for all publishes to complete
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(_)) => continue,
+                Ok(Err(e)) => return Err(e),
+                Err(_join_err) => {
+                    return Err(CoordinatorError::EngineError(
+                        "Task failed during batch send".to_string(),
+                    ));
+                }
+            }
+        }
 
         Ok(())
     }
@@ -306,7 +330,7 @@ impl ExecutorInfra {
     /// Returns receivers for each prediction's result
     ///
     /// The send_messages closure receives a HashMap<String, Vec<Message>> where the key is the
-    /// stream name, allowing for optimized batch sending (e.g., publish_to_streams for consensus groups)
+    /// stream name, allowing for parallel sending to multiple independent streams
     pub async fn execute_predictions<H, S, Fut>(
         &self,
         predictions: &[PredictedOperation],

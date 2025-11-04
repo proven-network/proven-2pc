@@ -113,15 +113,37 @@ impl ReadWriteExecutor {
                         let client = client.clone();
                         let offsets = offsets_for_closure.clone();
                         async move {
-                            // Use publish_to_streams for batched consensus round-trip
-                            // All streams in a 2PC transaction must be in the same consensus group
-                            let stream_offsets = client
-                                .publish_to_streams(streams_and_messages)
-                                .await
-                                .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+                            // Publish to each stream in parallel (no consensus group requirement)
+                            let mut tasks = tokio::task::JoinSet::new();
 
-                            // Store the offsets for recovery purposes
-                            offsets.lock().extend(stream_offsets);
+                            for (stream, messages) in streams_and_messages {
+                                let client = client.clone();
+                                tasks.spawn(async move {
+                                    let offset = client
+                                        .publish_to_stream(stream.clone(), messages)
+                                        .await
+                                        .map_err(|e| {
+                                            CoordinatorError::EngineError(e.to_string())
+                                        })?;
+                                    Ok::<_, CoordinatorError>((stream, offset))
+                                });
+                            }
+
+                            // Wait for all publishes and collect offsets
+                            while let Some(result) = tasks.join_next().await {
+                                match result {
+                                    Ok(Ok((stream, offset))) => {
+                                        offsets.lock().insert(stream, offset);
+                                    }
+                                    Ok(Err(e)) => return Err(e),
+                                    Err(_join_err) => {
+                                        return Err(CoordinatorError::EngineError(
+                                            "Task failed during speculation publish".to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+
                             Ok(())
                         }
                     },
@@ -339,22 +361,45 @@ impl ReadWriteExecutor {
         // Send prepare messages and collect votes
         use proven_protocol::TransactionPhase;
 
-        // Send all prepare messages without waiting for responses (parallel)
+        // Send all prepare messages in parallel (without waiting for responses)
+        let mut tasks = tokio::task::JoinSet::new();
+
         for participant in participants {
-            if let Err(e) = self
-                .infra
-                .send_control_message(
-                    participant,
-                    self.txn_id,
-                    TransactionPhase::Prepare(all_participants.clone()),
-                    Some(request_id.clone()),
-                    None, // Don't wait - we'll collect all responses in parallel
-                )
-                .await
-            {
-                // Failed to send prepare message - abort the transaction
-                let _ = self.abort().await;
-                return Err(e);
+            let infra = self.infra.clone();
+            let txn_id = self.txn_id;
+            let participants_clone = all_participants.clone();
+            let req_id = request_id.clone();
+            let participant = participant.clone(); // Clone the string to move into task
+
+            tasks.spawn(async move {
+                infra
+                    .send_control_message(
+                        &participant,
+                        txn_id,
+                        TransactionPhase::Prepare(participants_clone),
+                        Some(req_id),
+                        None, // Don't wait - we'll collect all responses in parallel
+                    )
+                    .await
+            });
+        }
+
+        // Wait for all sends to complete and check for errors
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(_)) => continue, // Successfully sent (ignore response option)
+                Ok(Err(e)) => {
+                    // Failed to send prepare message - abort the transaction
+                    let _ = self.abort().await;
+                    return Err(e);
+                }
+                Err(_join_err) => {
+                    // Task panic - abort the transaction
+                    let _ = self.abort().await;
+                    return Err(CoordinatorError::EngineError(
+                        "Task failed during prepare send".to_string(),
+                    ));
+                }
             }
         }
 
@@ -394,20 +439,28 @@ impl ReadWriteExecutor {
 
         *self.state.lock() = TransactionState::Committing;
 
-        // Send commit messages using typed helper (fire-and-forget)
+        // Send commit messages in parallel (fire-and-forget)
         use proven_protocol::TransactionPhase;
+        let mut tasks = tokio::task::JoinSet::new();
+
         for participant in participants {
-            let _ = self
-                .infra
-                .send_control_message(
-                    &participant,
-                    self.txn_id,
-                    TransactionPhase::Commit,
-                    None,
-                    None,
-                )
-                .await;
+            let infra = self.infra.clone();
+            let txn_id = self.txn_id;
+            tasks.spawn(async move {
+                let _ = infra
+                    .send_control_message(
+                        &participant,
+                        txn_id,
+                        TransactionPhase::Commit,
+                        None,
+                        None,
+                    )
+                    .await;
+            });
         }
+
+        // Wait for all sends to complete (ignore individual results since fire-and-forget)
+        while (tasks.join_next().await).is_some() {}
 
         *self.state.lock() = TransactionState::Committed;
         Ok(())
@@ -428,20 +481,22 @@ impl ReadWriteExecutor {
 
         let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
 
-        // Send abort messages using typed helper (fire-and-forget)
+        // Send abort messages in parallel (fire-and-forget)
         use proven_protocol::TransactionPhase;
+        let mut tasks = tokio::task::JoinSet::new();
+
         for participant in participants {
-            let _ = self
-                .infra
-                .send_control_message(
-                    &participant,
-                    self.txn_id,
-                    TransactionPhase::Abort,
-                    None,
-                    None,
-                )
-                .await;
+            let infra = self.infra.clone();
+            let txn_id = self.txn_id;
+            tasks.spawn(async move {
+                let _ = infra
+                    .send_control_message(&participant, txn_id, TransactionPhase::Abort, None, None)
+                    .await;
+            });
         }
+
+        // Wait for all sends to complete (ignore individual results since fire-and-forget)
+        while (tasks.join_next().await).is_some() {}
 
         *self.state.lock() = TransactionState::Aborted;
         Ok(())
