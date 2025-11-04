@@ -5,7 +5,7 @@
 
 use crate::engine::TransactionEngine;
 use crate::error::{Error, Result};
-use crate::flow::{OrderedFlow, ReadOnlyFlow};
+use crate::flow::{OrderedFlow, UnorderedFlow};
 use crate::support::ResponseSender;
 use crate::transaction::TransactionManager;
 use proven_common::Timestamp;
@@ -129,7 +129,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
         // Use read-only flow
-        ReadOnlyFlow::process(
+        UnorderedFlow::process(
             &mut self.engine,
             &mut self.tx_manager,
             &self.response,

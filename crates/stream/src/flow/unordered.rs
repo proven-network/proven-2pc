@@ -10,11 +10,11 @@ use crate::support::ResponseSender;
 use crate::transaction::TransactionManager;
 use proven_protocol::ReadOnlyMessage;
 
-/// Handles read-only messages from pubsub
-pub struct ReadOnlyFlow;
+/// Handles unordered messages from pubsub (no batching, immediate response)
+pub struct UnorderedFlow;
 
-impl ReadOnlyFlow {
-    /// Process a read-only message (no batching, immediate response)
+impl UnorderedFlow {
+    /// Process a unordered message (no batching, immediate response)
     pub fn process<E: TransactionEngine>(
         engine: &mut E,
         tx_manager: &mut TransactionManager<E>,

@@ -5,7 +5,7 @@
 //! - `readonly`: Direct execution for read-only pubsub messages
 
 pub mod ordered;
-pub mod readonly;
+pub mod unordered;
 
 pub use ordered::OrderedFlow;
-pub use readonly::ReadOnlyFlow;
+pub use unordered::UnorderedFlow;
