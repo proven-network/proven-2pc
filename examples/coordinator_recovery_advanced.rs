@@ -13,7 +13,7 @@ use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{Message, MockClient, MockEngine};
 use proven_kv_client::KvClient;
 use proven_runner::Runner;
-use proven_snapshot_memory::MemorySnapshotStore;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,11 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create and start the runner
     let runner_client = Arc::new(MockClient::new("runner-node".to_string(), engine.clone()));
-    let snapshot_store = Arc::new(MemorySnapshotStore::new());
+    let temp_dir = tempfile::tempdir()?;
     let runner = Arc::new(Runner::new(
         "runner-node",
         runner_client.clone(),
-        snapshot_store,
+        temp_dir.path(),
     ));
     runner.start().await?;
     println!("✓ Started runner\n");

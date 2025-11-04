@@ -34,17 +34,6 @@ Generic MVCC storage layer providing snapshot isolation, time-travel queries, an
 #### `proven-value` - Value Types and Serialization
 Common value types and encoding/decoding utilities shared across storage engines.
 
-### Snapshot Storage
-
-#### `proven-snapshot` - Snapshot Storage Trait
-Core trait and types for snapshot storage backends used by stream processors.
-
-#### `proven-snapshot-memory` - In-Memory Snapshots
-Memory-based snapshot storage for testing and development.
-
-#### `proven-snapshot-file` - File System Snapshots
-Persistent filesystem-based snapshot storage for production use.
-
 ### Storage Engines
 
 #### `proven-sql` - SQL Storage Engine
@@ -126,13 +115,11 @@ Resource client for token management operations.
 
 ### Transaction Support
 All storage engines implement the `TransactionEngine` trait providing:
-- `begin_transaction` - Start a new transaction
+- `begin` - Start a new transaction
 - `apply_operation` - Execute operations within a transaction
 - `prepare` - Phase 1 of 2PC, validate and prepare to commit
 - `commit` - Phase 2 of 2PC, make changes permanent
 - `abort` - Rollback all changes
-- `snapshot` - Generate a point-in-time snapshot of engine state
-- `restore_from_snapshot` - Restore engine state from a snapshot
 
 ### Concurrency Control
 - **SQL**: Predicate-based locking with retry on conflicts
@@ -163,26 +150,34 @@ This demonstrates a transaction that:
 ### Basic Usage
 
 ```rust
-use proven_kv::stream::{KvTransactionEngine, KvOperation};
-use proven_stream::TransactionEngine;
+use proven_coordinator::{Coordinator, Executor};
+use proven_kv_client::KvClient;
+use std::time::Duration;
 
-// Create a KV engine
-let mut engine = KvTransactionEngine::new();
+// Create a coordinator
+let coordinator = Coordinator::new(
+    "my-coordinator".to_string(),
+    client,
+    runner,
+);
 
-// Begin a transaction
-let txn_id = HlcTimestamp::new(100, 0, NodeId::new(1));
-engine.begin_transaction(txn_id);
+// Begin a distributed transaction
+let executor = coordinator
+    .begin_read_write(
+        Duration::from_secs(60),
+        vec![],
+        "my-transaction".to_string(),
+    )
+    .await?;
+
+// Create a KV client
+let kv = KvClient::new(executor.clone());
 
 // Put a value
-let op = KvOperation::Put {
-    key: "user:123".to_string(),
-    value: KvValue::String("Alice".to_string()),
-};
-let result = engine.apply_operation(op, txn_id);
+kv.put("kv_stream", "user:123", "Alice").await?;
 
 // Commit the transaction
-engine.prepare(txn_id)?;
-engine.commit(txn_id)?;
+executor.finish().await?;
 ```
 
 ## Testing
@@ -201,15 +196,14 @@ cargo test -p proven-resource
 ## Development Status
 
 ### Production Ready
-- ✅ Stream processing framework
+- ✅ Stream processing framework with atomic persistence
 - ✅ KV storage engine
 - ✅ Queue storage engine
 - ✅ Resource storage engine
 - ✅ Two-phase commit coordinator
-- ✅ Snapshot infrastructure with memory and file backends
+- ✅ Runner with storage management
 
 ### In Development
-- 🚧 SQL engine (basic functionality complete, optimization ongoing)
 - 🚧 Production consensus integration (monorepo using a mock version of engine)
 - 🚧 Client libraries and runtime integration
 - 🚧 Performance optimizations

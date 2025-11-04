@@ -7,8 +7,8 @@ use crate::messages::{ProcessorAck, ProcessorExtension, ProcessorRequest};
 use crate::processor::{self, ProcessorHandle};
 use parking_lot::Mutex;
 use proven_engine::MockClient;
-use proven_snapshot::SnapshotStore;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
@@ -30,7 +30,7 @@ type PendingRequests = Arc<Mutex<HashMap<Uuid, oneshot::Sender<ProcessorInfo>>>>
 pub struct Runner {
     node_id: String,
     client: Arc<MockClient>,
-    snapshot_store: Arc<dyn SnapshotStore>,
+    base_dir: PathBuf,
 
     // Core components
     pub(crate) processors: Arc<Mutex<HashMap<String, ProcessorHandle>>>,
@@ -44,16 +44,23 @@ pub struct Runner {
 }
 
 impl Runner {
-    /// Create a new runner with snapshot store
+    /// Create a new runner with base directory for storage
     pub fn new(
         node_id: impl Into<String>,
         client: Arc<MockClient>,
-        snapshot_store: Arc<dyn SnapshotStore>,
+        base_dir: impl Into<PathBuf>,
     ) -> Self {
+        let base_dir = base_dir.into();
+
+        // Create base directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&base_dir) {
+            tracing::warn!("Failed to create base directory {:?}: {}", base_dir, e);
+        }
+
         Self {
             node_id: node_id.into(),
             client,
-            snapshot_store,
+            base_dir,
             processors: Arc::new(Mutex::new(HashMap::new())),
             cluster_view: Arc::new(RwLock::new(ClusterView::new())),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -290,12 +297,10 @@ impl Runner {
         let client = self.client.clone();
         let node_id = self.node_id.clone();
         let processors = self.processors.clone();
-        let snapshot_store = self.snapshot_store.clone();
+        let base_dir = self.base_dir.clone();
 
         tokio::spawn(async move {
-            if let Err(e) =
-                Self::listen_for_requests(client, node_id, processors, snapshot_store).await
-            {
+            if let Err(e) = Self::listen_for_requests(client, node_id, processors, base_dir).await {
                 tracing::error!("Request listener failed: {}", e);
             }
         })
@@ -331,7 +336,7 @@ impl Runner {
         client: Arc<MockClient>,
         node_id: String,
         processors: Arc<Mutex<HashMap<String, ProcessorHandle>>>,
-        snapshot_store: Arc<dyn SnapshotStore>,
+        base_dir: PathBuf,
     ) -> Result<()> {
         // Subscribe to processor requests
         let mut subscription = client
@@ -359,7 +364,7 @@ impl Runner {
                     request.stream.clone(),
                     Duration::from_millis(request.min_duration_ms),
                     client.clone(),
-                    snapshot_store.clone(),
+                    base_dir.clone(),
                 )
                 .await
                 {
@@ -470,7 +475,6 @@ impl Runner {
 mod tests {
     use super::*;
     use proven_engine::{MockClient, MockEngine};
-    use proven_snapshot_memory::MemorySnapshotStore;
     use std::time::Duration;
 
     /// Create a test engine with a stream
@@ -484,8 +488,8 @@ mod tests {
     async fn test_processor_extension() {
         let engine = create_test_engine_with_stream("ext-stream").await;
         let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
-        let snapshot_store: Arc<dyn SnapshotStore> = Arc::new(MemorySnapshotStore::new());
-        let runner = Runner::new("node1", client.clone(), snapshot_store);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let runner = Runner::new("node1", client.clone(), temp_dir.path());
 
         runner.start().await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;

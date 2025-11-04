@@ -16,9 +16,6 @@ members = [
     "crates/resource",
     "crates/resource-client",
     "crates/runner",
-    "crates/snapshot",
-    "crates/snapshot-file",
-    "crates/snapshot-memory",
     "crates/sql",
     "crates/sql-client",
     "crates/stream",
@@ -38,9 +35,6 @@ default-members = [
     "crates/resource",
     "crates/resource-client",
     "crates/runner",
-    "crates/snapshot",
-    "crates/snapshot-file",
-    "crates/snapshot-memory",
     "crates/sql",
     "crates/sql-client",
     "crates/stream",
@@ -91,9 +85,6 @@ proven-queue-client = { path = "crates/queue-client" }
 proven-resource = { path = "crates/resource" }
 proven-resource-client = { path = "crates/resource-client" }
 proven-runner = { path = "crates/runner" }
-proven-snapshot = { path = "crates/snapshot" }
-proven-snapshot-file = { path = "crates/snapshot-file" }
-proven-snapshot-memory = { path = "crates/snapshot-memory" }
 proven-sql = { path = "crates/sql" }
 proven-sql-client = { path = "crates/sql-client" }
 proven-stream = { path = "crates/stream" }
@@ -116,11 +107,11 @@ proven-queue-client.workspace = true
 proven-resource.workspace = true
 proven-resource-client.workspace = true
 proven-runner.workspace = true
-proven-snapshot-memory.workspace = true
 proven-sql.workspace = true
 proven-sql-client.workspace = true
 proven-stream.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 
 [[example]]

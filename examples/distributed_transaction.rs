@@ -13,7 +13,6 @@ use proven_kv_client::KvClient;
 use proven_queue_client::QueueClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
-use proven_snapshot_memory::MemorySnapshotStore;
 use proven_sql_client::SqlClient;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,15 +40,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create and start the runner to manage stream processors
     let runner_client = Arc::new(MockClient::new("runner-node".to_string(), engine.clone()));
-    // Create a memory-based snapshot store for this example
-    let snapshot_store = Arc::new(MemorySnapshotStore::new());
+    let temp_dir = tempfile::tempdir()?;
     let runner = Arc::new(Runner::new(
         "runner-node",
         runner_client.clone(),
-        snapshot_store,
+        temp_dir.path(),
     ));
     runner.start().await.unwrap();
-    println!("✓ Started runner with snapshot support");
+    println!(
+        "✓ Started runner with persistent storage at {:?}",
+        temp_dir.path()
+    );
 
     // The runner will automatically start processors as needed when transactions are executed
     println!("✓ Runner will manage stream processors on demand\n");

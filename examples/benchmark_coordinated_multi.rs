@@ -11,7 +11,7 @@ use proven_queue::types::QueueValue;
 use proven_queue_client::QueueClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
-use proven_snapshot_memory::MemorySnapshotStore;
+
 use proven_sql::Value as SqlValue;
 use proven_sql_client::SqlClient;
 use serde_json::json;
@@ -36,11 +36,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Create and start the runner
     let runner_client = Arc::new(MockClient::new("runner-node".to_string(), engine.clone()));
-    let snapshot_store = Arc::new(MemorySnapshotStore::new());
+    let temp_dir = tempfile::tempdir()?;
     let runner = Arc::new(Runner::new(
         "runner-node",
         runner_client.clone(),
-        snapshot_store,
+        temp_dir.path(),
     ));
     runner.start().await.unwrap();
     println!("✓ Started runner with snapshot support");

@@ -1,7 +1,7 @@
 //! Processor lifecycle management
 
 use proven_engine::MockClient;
-use proven_snapshot::SnapshotStore;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -45,7 +45,7 @@ pub async fn start_processor(
     stream: String,
     duration: Duration,
     client: Arc<MockClient>,
-    snapshot_store: Arc<dyn SnapshotStore>,
+    base_dir: PathBuf,
 ) -> Result<ProcessorHandle, crate::RunnerError> {
     // Determine processor type from stream name
     let processor_type = determine_processor_type(&stream);
@@ -57,7 +57,7 @@ pub async fn start_processor(
     match processor_type {
         ProcessorType::Kv => {
             let processor =
-                create_kv_processor(stream.clone(), client.clone(), snapshot_store.clone()).await?;
+                create_kv_processor(stream.clone(), client.clone(), base_dir.clone()).await?;
             tokio::spawn(async move {
                 if let Err(e) = processor.start_with_replay(shutdown_rx).await {
                     tracing::error!("KV processor error: {:?}", e);
@@ -66,8 +66,7 @@ pub async fn start_processor(
         }
         ProcessorType::Sql => {
             let processor =
-                create_sql_processor(stream.clone(), client.clone(), snapshot_store.clone())
-                    .await?;
+                create_sql_processor(stream.clone(), client.clone(), base_dir.clone()).await?;
             tokio::spawn(async move {
                 if let Err(e) = processor.start_with_replay(shutdown_rx).await {
                     tracing::error!("SQL processor error: {:?}", e);
@@ -76,8 +75,7 @@ pub async fn start_processor(
         }
         ProcessorType::Queue => {
             let processor =
-                create_queue_processor(stream.clone(), client.clone(), snapshot_store.clone())
-                    .await?;
+                create_queue_processor(stream.clone(), client.clone(), base_dir.clone()).await?;
             tokio::spawn(async move {
                 if let Err(e) = processor.start_with_replay(shutdown_rx).await {
                     tracing::error!("Queue processor error: {:?}", e);
@@ -86,8 +84,7 @@ pub async fn start_processor(
         }
         ProcessorType::Resource => {
             let processor =
-                create_resource_processor(stream.clone(), client.clone(), snapshot_store.clone())
-                    .await?;
+                create_resource_processor(stream.clone(), client.clone(), base_dir.clone()).await?;
             tokio::spawn(async move {
                 if let Err(e) = processor.start_with_replay(shutdown_rx).await {
                     tracing::error!("Resource processor error: {:?}", e);
@@ -135,9 +132,15 @@ fn determine_processor_type(stream: &str) -> ProcessorType {
 async fn create_kv_processor(
     stream: String,
     client: Arc<MockClient>,
-    _snapshot_store: Arc<dyn SnapshotStore>,
+    base_dir: PathBuf,
 ) -> Result<proven_stream::StreamProcessor<proven_kv::KvTransactionEngine>, crate::RunnerError> {
-    let engine = proven_kv::KvTransactionEngine::new();
+    // Create directory structure: {base_dir}/kv/{stream_name}
+    let storage_path = base_dir.join("kv").join(&stream);
+    std::fs::create_dir_all(&storage_path)
+        .map_err(|e| crate::RunnerError::Other(format!("Failed to create KV directory: {}", e)))?;
+
+    let config = proven_mvcc::StorageConfig::new(storage_path);
+    let engine = proven_kv::KvTransactionEngine::with_config(config);
     Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 
@@ -145,9 +148,15 @@ async fn create_kv_processor(
 async fn create_sql_processor(
     stream: String,
     client: Arc<MockClient>,
-    _snapshot_store: Arc<dyn SnapshotStore>,
+    base_dir: PathBuf,
 ) -> Result<proven_stream::StreamProcessor<proven_sql::SqlTransactionEngine>, crate::RunnerError> {
-    let engine = proven_sql::SqlTransactionEngine::default();
+    // Create directory structure: {base_dir}/sql/{stream_name}
+    let storage_path = base_dir.join("sql").join(&stream);
+    std::fs::create_dir_all(&storage_path)
+        .map_err(|e| crate::RunnerError::Other(format!("Failed to create SQL directory: {}", e)))?;
+
+    let config = proven_sql::SqlStorageConfig::with_data_dir(storage_path);
+    let engine = proven_sql::SqlTransactionEngine::new(config);
     Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 
@@ -155,10 +164,17 @@ async fn create_sql_processor(
 async fn create_queue_processor(
     stream: String,
     client: Arc<MockClient>,
-    _snapshot_store: Arc<dyn SnapshotStore>,
+    base_dir: PathBuf,
 ) -> Result<proven_stream::StreamProcessor<proven_queue::QueueTransactionEngine>, crate::RunnerError>
 {
-    let engine = proven_queue::QueueTransactionEngine::new();
+    // Create directory structure: {base_dir}/queue/{stream_name}
+    let storage_path = base_dir.join("queue").join(&stream);
+    std::fs::create_dir_all(&storage_path).map_err(|e| {
+        crate::RunnerError::Other(format!("Failed to create Queue directory: {}", e))
+    })?;
+
+    let config = proven_mvcc::StorageConfig::new(storage_path);
+    let engine = proven_queue::QueueTransactionEngine::with_config(config);
     Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 
@@ -166,12 +182,19 @@ async fn create_queue_processor(
 async fn create_resource_processor(
     stream: String,
     client: Arc<MockClient>,
-    _snapshot_store: Arc<dyn SnapshotStore>,
+    base_dir: PathBuf,
 ) -> Result<
     proven_stream::StreamProcessor<proven_resource::ResourceTransactionEngine>,
     crate::RunnerError,
 > {
-    let engine = proven_resource::ResourceTransactionEngine::new();
+    // Create directory structure: {base_dir}/resource/{stream_name}
+    let storage_path = base_dir.join("resource").join(&stream);
+    std::fs::create_dir_all(&storage_path).map_err(|e| {
+        crate::RunnerError::Other(format!("Failed to create Resource directory: {}", e))
+    })?;
+
+    let config = proven_mvcc::StorageConfig::new(storage_path);
+    let engine = proven_resource::ResourceTransactionEngine::with_config(config);
     Ok(proven_stream::StreamProcessor::new(engine, client, stream))
 }
 

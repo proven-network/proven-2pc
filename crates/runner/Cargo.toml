@@ -10,9 +10,8 @@ proven-stream.workspace = true
 proven-kv.workspace = true
 proven-queue.workspace = true
 proven-resource.workspace = true
-proven-snapshot.workspace = true
-proven-snapshot-file.workspace = true
 proven-sql.workspace = true
+proven-mvcc.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,4 +21,4 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-proven-snapshot-memory.workspace = true
+tempfile.workspace = true

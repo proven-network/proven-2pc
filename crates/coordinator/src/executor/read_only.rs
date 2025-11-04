@@ -77,7 +77,7 @@ impl ReadOnlyExecutor {
                                     Err(_join_err) => {
                                         return Err(CoordinatorError::EngineError(
                                             "Task failed during pubsub publish".to_string(),
-                                        ))
+                                        ));
                                     }
                                 }
                             }

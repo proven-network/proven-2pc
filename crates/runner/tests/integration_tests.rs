@@ -1,6 +1,5 @@
 use proven_engine::{ConsensusGroupId, MockClient, MockEngine};
 use proven_runner::Runner;
-use proven_snapshot_memory::MemorySnapshotStore;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -16,16 +15,19 @@ async fn create_test_engine_with_stream(stream_name: &str) -> Arc<MockEngine> {
 async fn test_basic_processor_request_ack_flow() {
     let engine = create_test_engine_with_stream("test-stream").await;
 
+    let temp_dir1 = tempfile::tempdir().unwrap();
+    let temp_dir2 = tempfile::tempdir().unwrap();
+
     // Create two runners (nodes)
     let runner1 = Runner::new(
         "node1",
         Arc::new(MockClient::new("node1".to_string(), engine.clone())),
-        Arc::new(MemorySnapshotStore::new()),
+        temp_dir1.path(),
     );
     let runner2 = Runner::new(
         "node2",
         Arc::new(MockClient::new("node2".to_string(), engine.clone())),
-        Arc::new(MemorySnapshotStore::new()),
+        temp_dir2.path(),
     );
 
     // Start both runners
@@ -77,17 +79,12 @@ async fn test_direct_node_assignment() {
     let groups2 = client2.node_groups().await.unwrap();
     assert!(groups2.contains(&ConsensusGroupId(1)));
 
+    let temp_dir1 = tempfile::tempdir().unwrap();
+    let temp_dir2 = tempfile::tempdir().unwrap();
+
     // Create runners
-    let runner1 = Runner::new(
-        "node1",
-        client1.clone(),
-        Arc::new(MemorySnapshotStore::new()),
-    );
-    let runner2 = Runner::new(
-        "node2",
-        client2.clone(),
-        Arc::new(MemorySnapshotStore::new()),
-    );
+    let runner1 = Runner::new("node1", client1.clone(), temp_dir1.path());
+    let runner2 = Runner::new("node2", client2.clone(), temp_dir2.path());
 
     // Start both runners
     runner1.start().await.unwrap();
@@ -123,11 +120,8 @@ async fn test_direct_node_assignment() {
 async fn test_heartbeat_includes_groups() {
     let engine = Arc::new(MockEngine::new());
     let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
-    let runner = Runner::new(
-        "node1",
-        client.clone(),
-        Arc::new(MemorySnapshotStore::new()),
-    );
+    let temp_dir = tempfile::tempdir().unwrap();
+    let runner = Runner::new("node1", client.clone(), temp_dir.path());
 
     runner.start().await.unwrap();
 
@@ -156,11 +150,8 @@ async fn test_concurrent_processor_requests() {
     let engine = Arc::new(MockEngine::new());
 
     let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
-    let runner = Arc::new(Runner::new(
-        "node1",
-        client.clone(),
-        Arc::new(MemorySnapshotStore::new()),
-    ));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let runner = Arc::new(Runner::new("node1", client.clone(), temp_dir.path()));
 
     runner.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
