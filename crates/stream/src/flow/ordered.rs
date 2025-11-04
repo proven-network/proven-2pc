@@ -120,6 +120,10 @@ impl OrderedFlow {
         // ═══════════════════════════════════════════════════════════
         // STEP 8: COMMIT BATCH ATOMICALLY
         // ═══════════════════════════════════════════════════════════
+
+        // Flush all dirty transaction states before commit (lazy persistence optimization)
+        ctx.flush_dirty_states(&mut batch)?;
+
         ctx.engine.commit_batch(batch, log_index);
 
         Ok(())
@@ -238,8 +242,8 @@ impl OrderedFlow {
                     // Also begin in engine (add to active transactions)
                     ctx.engine.begin(batch, txn_id);
 
-                    // Persist initial state
-                    ctx.persist_transaction_state(batch, txn_id)?;
+                    // Mark dirty for lazy persistence
+                    ctx.mark_dirty(txn_id);
                 }
 
                 ReadWriteExecution::execute(

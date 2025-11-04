@@ -13,6 +13,8 @@ pub struct ExecutionContext<'a, E: TransactionEngine> {
     pub engine: &'a mut E,
     pub tx_manager: &'a mut TransactionManager<E>,
     pub response: &'a ResponseSender,
+    /// Transactions with dirty state that need persistence (optimization)
+    dirty_transactions: std::collections::HashSet<TransactionId>,
 }
 
 impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
@@ -22,10 +24,12 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         tx_manager: &'a mut TransactionManager<E>,
         response: &'a ResponseSender,
     ) -> Self {
+        use std::collections::HashSet;
         Self {
             engine,
             tx_manager,
             response,
+            dirty_transactions: HashSet::new(),
         }
     }
 
@@ -69,8 +73,8 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
                 self.tx_manager
                     .transition_to_committed(deferred.owner_txn_id)?;
 
-                // Persist completed state
-                self.persist_completed_state(batch, deferred.owner_txn_id)?;
+                // Mark as dirty (lazy persistence)
+                self.mark_dirty(deferred.owner_txn_id);
 
                 // Send response
                 if phase == ProcessorPhase::Live {
@@ -112,8 +116,8 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
             .apply_operation(batch, deferred.operation.clone(), deferred.owner_txn_id)
         {
             OperationResult::Complete(resp) => {
-                // Update transaction state
-                self.persist_transaction_state(batch, deferred.owner_txn_id)?;
+                // Mark transaction state as dirty (lazy persistence)
+                self.mark_dirty(deferred.owner_txn_id);
 
                 // Send response
                 if phase == ProcessorPhase::Live {
@@ -182,8 +186,8 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
                 is_atomic,
             );
 
-            // Persist deferral state
-            self.persist_transaction_state(batch, txn_id)?;
+            // Mark as dirty (lazy persistence)
+            self.mark_dirty(txn_id);
         }
 
         Ok(())
@@ -223,8 +227,8 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         self.tx_manager
             .transition_to_aborted(victim, AbortReason::Wounded { by: wounded_by })?;
 
-        // Persist aborted state
-        self.persist_completed_state(batch, victim)?;
+        // Mark as dirty (lazy persistence)
+        self.mark_dirty(victim);
 
         Ok(())
     }
@@ -249,8 +253,8 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         // Transition state
         self.tx_manager.transition_to_aborted(txn_id, reason)?;
 
-        // Persist completed state
-        self.persist_completed_state(batch, txn_id)?;
+        // Mark as dirty (lazy persistence)
+        self.mark_dirty(txn_id);
 
         // Send notification
         if let Some(coord) = coordinator_id
@@ -282,8 +286,8 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         // Transition to committed
         self.tx_manager.transition_to_committed(txn_id)?;
 
-        // Persist completed state
-        self.persist_completed_state(batch, txn_id)?;
+        // Mark as dirty (lazy persistence)
+        self.mark_dirty(txn_id);
 
         // Send response
         if phase == ProcessorPhase::Live {
@@ -302,31 +306,32 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
     // METADATA PERSISTENCE HELPERS
     // ═══════════════════════════════════════════════════════════
 
-    /// Persist active/prepared transaction state to batch
-    pub fn persist_transaction_state(
-        &self,
-        batch: &mut E::Batch,
-        txn_id: TransactionId,
-    ) -> Result<()> {
-        let state = self.tx_manager.get_state_for_persistence(txn_id)?;
-        let key = TransactionState::<E::Operation>::metadata_key(txn_id);
-        let value = state.to_bytes()?;
-        batch.insert_metadata(key, value);
-        Ok(())
+    /// Mark a transaction as needing persistence (lazy approach)
+    pub fn mark_dirty(&mut self, txn_id: TransactionId) {
+        self.dirty_transactions.insert(txn_id);
     }
 
-    /// Persist completed transaction state to batch
-    pub fn persist_completed_state(
-        &self,
-        batch: &mut E::Batch,
-        txn_id: TransactionId,
-    ) -> Result<()> {
-        let state = self
-            .tx_manager
-            .get_completed_state_for_persistence(txn_id)?;
-        let key = TransactionState::<E::Operation>::metadata_key(txn_id);
-        let value = state.to_bytes()?;
-        batch.insert_metadata(key, value);
+    /// Persist all dirty transaction states in one batch (lazy flush)
+    pub fn flush_dirty_states(&mut self, batch: &mut E::Batch) -> Result<()> {
+        for txn_id in self.dirty_transactions.drain() {
+            // Check if transaction still exists (active/prepared)
+            if self.tx_manager.exists(txn_id) {
+                // Check if it's completed
+                if let Ok(completed_state) =
+                    self.tx_manager.get_completed_state_for_persistence(txn_id)
+                {
+                    // Persist completed state
+                    let key = TransactionState::<E::Operation>::metadata_key(txn_id);
+                    let value = completed_state.to_bytes()?;
+                    batch.insert_metadata(key, value);
+                } else if let Ok(state) = self.tx_manager.get_state_for_persistence(txn_id) {
+                    // Persist active/prepared state
+                    let key = TransactionState::<E::Operation>::metadata_key(txn_id);
+                    let value = state.to_bytes()?;
+                    batch.insert_metadata(key, value);
+                }
+            }
+        }
         Ok(())
     }
 }

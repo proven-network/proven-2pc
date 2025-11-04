@@ -55,8 +55,8 @@ impl ReadWriteExecution {
         // Try to execute operation
         match ctx.engine.apply_operation(batch, operation.clone(), txn_id) {
             OperationResult::Complete(response) => {
-                // Success - persist state and send response
-                ctx.persist_transaction_state(batch, txn_id)?;
+                // Success - mark dirty for lazy persistence
+                ctx.mark_dirty(txn_id);
 
                 if phase == ProcessorPhase::Live {
                     ctx.response.send_success(
@@ -96,8 +96,8 @@ impl ReadWriteExecution {
                     // Retry operation after wounding (use same batch)
                     match ctx.engine.apply_operation(batch, operation.clone(), txn_id) {
                         OperationResult::Complete(response) => {
-                            // Success after wounding
-                            ctx.persist_transaction_state(batch, txn_id)?;
+                            // Success after wounding - mark dirty for lazy persistence
+                            ctx.mark_dirty(txn_id);
 
                             if phase == ProcessorPhase::Live {
                                 ctx.response.send_success(
@@ -127,7 +127,7 @@ impl ReadWriteExecution {
                                 false,
                             );
 
-                            ctx.persist_transaction_state(batch, txn_id)?;
+                            ctx.mark_dirty(txn_id);
                             return Ok(());
                         }
                     }
@@ -152,7 +152,7 @@ impl ReadWriteExecution {
                     false,
                 );
 
-                ctx.persist_transaction_state(batch, txn_id)?;
+                ctx.mark_dirty(txn_id);
                 Ok(())
             }
         }
@@ -175,8 +175,8 @@ impl ReadWriteExecution {
         ctx.tx_manager
             .transition_to_prepared_with_participants(txn_id, participants)?;
 
-        // Persist updated transaction metadata (with participants)
-        ctx.persist_transaction_state(batch, txn_id)?;
+        // Mark dirty for lazy persistence
+        ctx.mark_dirty(txn_id);
 
         // Send prepared response
         if phase == ProcessorPhase::Live {
@@ -215,8 +215,8 @@ impl ReadWriteExecution {
         ctx.tx_manager
             .transition_to_aborted(txn_id, crate::transaction::AbortReason::Explicit)?;
 
-        // Persist completed state
-        ctx.persist_completed_state(batch, txn_id)?;
+        // Mark dirty for lazy persistence
+        ctx.mark_dirty(txn_id);
 
         // Send response
         if phase == ProcessorPhase::Live {

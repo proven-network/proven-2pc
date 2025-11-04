@@ -42,7 +42,9 @@ impl AdHocExecution {
                 // Success: commit in same batch
                 ctx.engine.commit(batch, txn_id);
                 ctx.tx_manager.transition_to_committed(txn_id)?;
-                ctx.persist_completed_state(batch, txn_id)?;
+
+                // Mark as dirty (lazy persistence)
+                ctx.mark_dirty(txn_id);
 
                 // Send response
                 if phase == ProcessorPhase::Live {
