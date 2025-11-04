@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::executor::read_write::AckResponse;
 use crate::processor::ProcessorPhase;
 use crate::support::ResponseSender;
-use crate::transaction::{AbortReason, DeferredOp, TransactionManager, TransactionState};
+use crate::transaction::{AbortReason, DeferredOp, TransactionManager};
 use proven_common::TransactionId;
 
 /// Execution context bundles all state needed for operation execution
@@ -321,14 +321,12 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
                     self.tx_manager.get_completed_state_for_persistence(txn_id)
                 {
                     // Persist completed state
-                    let key = TransactionState::<E::Operation>::metadata_key(txn_id);
                     let value = completed_state.to_bytes()?;
-                    batch.insert_metadata(key, value);
+                    batch.insert_transaction_metadata(txn_id, value);
                 } else if let Ok(state) = self.tx_manager.get_state_for_persistence(txn_id) {
                     // Persist active/prepared state
-                    let key = TransactionState::<E::Operation>::metadata_key(txn_id);
                     let value = state.to_bytes()?;
-                    batch.insert_metadata(key, value);
+                    batch.insert_transaction_metadata(txn_id, value);
                 }
             }
         }

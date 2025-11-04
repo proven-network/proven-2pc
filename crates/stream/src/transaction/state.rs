@@ -96,14 +96,6 @@ impl<O> TransactionState<O> {
         ciborium::de::from_reader(bytes)
             .map_err(|e| format!("Failed to deserialize transaction state: {}", e))
     }
-
-    /// Get metadata key for this transaction
-    /// Note: Generic parameter O is not used, just for type safety
-    pub fn metadata_key(txn_id: TransactionId) -> Vec<u8> {
-        let mut key = b"_txn_meta_".to_vec();
-        key.extend_from_slice(&txn_id.to_bytes());
-        key
-    }
 }
 
 /// Clear lifecycle phases for a transaction

@@ -59,11 +59,15 @@ impl ResourceBatch {
 }
 
 impl BatchOperations for ResourceBatch {
-    fn insert_metadata(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    fn insert_transaction_metadata(&mut self, txn_id: TransactionId, value: Vec<u8>) {
+        let mut key = b"_txn_".to_vec();
+        key.extend_from_slice(&txn_id.to_bytes());
         self.inner.insert(&self.metadata_partition, key, value);
     }
 
-    fn remove_metadata(&mut self, key: Vec<u8>) {
+    fn remove_transaction_metadata(&mut self, txn_id: TransactionId) {
+        let mut key = b"_txn_".to_vec();
+        key.extend_from_slice(&txn_id.to_bytes());
         self.inner.remove(self.metadata_partition.clone(), key);
     }
 }
@@ -665,7 +669,8 @@ impl TransactionEngine for ResourceTransactionEngine {
         // Clear persisted reservations in the same batch
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        batch.remove_metadata(lock_key);
+        let metadata = self.storage.metadata_partition();
+        inner_batch.remove(metadata.clone(), lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
         self.storage
@@ -687,7 +692,8 @@ impl TransactionEngine for ResourceTransactionEngine {
         // Clear persisted reservations in the same batch
         let mut lock_key = b"_locks_".to_vec();
         lock_key.extend_from_slice(&txn_id.to_bytes());
-        batch.remove_metadata(lock_key);
+        let metadata = self.storage.metadata_partition();
+        inner_batch.remove(metadata.clone(), lock_key);
 
         // Cleanup old buckets if needed (throttled internally)
         self.storage
@@ -718,11 +724,11 @@ impl TransactionEngine for ResourceTransactionEngine {
         let metadata = self.storage.metadata_partition();
         let mut results = Vec::new();
 
-        // Scan for all keys matching _txn_meta_* pattern
-        for (key_bytes, value_bytes) in metadata.prefix("_txn_meta_").flatten() {
-            // Extract transaction ID from key: _txn_meta_{16-byte-txn-id}
+        // Scan for all keys matching _txn_* pattern
+        for (key_bytes, value_bytes) in metadata.prefix("_txn_").flatten() {
+            // Extract transaction ID from key: _txn_{16-byte-txn-id}
             if key_bytes.len() == 10 + 16 {
-                // "_txn_meta_" = 10 bytes
+                // "_txn_" = 10 bytes
                 let txn_id_bytes: [u8; 16] = key_bytes[10..26]
                     .try_into()
                     .expect("Invalid txn_id in metadata key");

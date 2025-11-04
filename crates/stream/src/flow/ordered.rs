@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::executor::context::ExecutionContext;
 use crate::executor::{AdHocExecution, ReadWriteExecution};
 use crate::processor::ProcessorPhase;
-use crate::transaction::{AbortReason, RecoveryManager, TransactionDecision, TransactionState};
+use crate::transaction::{AbortReason, RecoveryManager, TransactionDecision};
 use proven_common::{Timestamp, TransactionId};
 use proven_protocol::OrderedMessage;
 use std::collections::HashMap;
@@ -78,8 +78,7 @@ impl OrderedFlow {
         // ═══════════════════════════════════════════════════════════
         let to_gc = ctx.tx_manager.gc_completed_by_deadline(timestamp);
         for txn_id in to_gc {
-            let metadata_key = TransactionState::<E::Operation>::metadata_key(txn_id);
-            batch.remove_metadata(metadata_key);
+            batch.remove_transaction_metadata(txn_id);
         }
 
         // ═══════════════════════════════════════════════════════════

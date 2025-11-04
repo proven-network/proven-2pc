@@ -9,8 +9,8 @@ use std::collections::HashMap;
 pub struct TestBatch;
 
 impl BatchOperations for TestBatch {
-    fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
-    fn remove_metadata(&mut self, _key: Vec<u8>) {}
+    fn insert_transaction_metadata(&mut self, _txn_id: TransactionId, _value: Vec<u8>) {}
+    fn remove_transaction_metadata(&mut self, _txn_id: TransactionId) {}
 }
 
 /// Test engine with lock tracking for wound-wait tests

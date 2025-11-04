@@ -439,11 +439,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                             );
 
                             let mut batch = self.engine.start_batch();
-                            let metadata_key =
-                                crate::transaction::TransactionState::<E::Operation>::metadata_key(
-                                    txn_id,
-                                );
-                            batch.remove_metadata(metadata_key);
+                            batch.remove_transaction_metadata(txn_id);
 
                             let log_index = self.engine.get_log_index().unwrap_or(0);
                             self.engine.commit_batch(batch, log_index);
@@ -709,8 +705,8 @@ mod tests {
 
     struct TestBatch;
     impl crate::engine::BatchOperations for TestBatch {
-        fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
-        fn remove_metadata(&mut self, _key: Vec<u8>) {}
+        fn insert_transaction_metadata(&mut self, _txn_id: TransactionId, _value: Vec<u8>) {}
+        fn remove_transaction_metadata(&mut self, _txn_id: TransactionId) {}
     }
 
     impl TransactionEngine for TestEngine {

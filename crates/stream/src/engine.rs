@@ -13,16 +13,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// to the same batch that the engine uses for data changes, ensuring
 /// atomic persistence.
 pub trait BatchOperations: Send + Sync {
-    /// Insert metadata into the batch
+    /// Insert transaction metadata into the batch
     ///
-    /// Key format convention: "_txn_meta_{txn_id}" for transaction state
     /// The engine will commit this atomically with data changes.
-    fn insert_metadata(&mut self, key: Vec<u8>, value: Vec<u8>);
+    fn insert_transaction_metadata(&mut self, txn_id: TransactionId, value: Vec<u8>);
 
-    /// Remove metadata from the batch
+    /// Remove transaction metadata from the batch
     ///
     /// Used when cleaning up transaction state on commit/abort.
-    fn remove_metadata(&mut self, key: Vec<u8>);
+    fn remove_transaction_metadata(&mut self, txn_id: TransactionId);
 }
 
 /// When a blocked operation can be retried
