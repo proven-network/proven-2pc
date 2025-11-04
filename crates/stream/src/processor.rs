@@ -329,9 +329,8 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     /// the TransactionManager's in-memory state. This is critical for:
     /// - Restoring active transactions with their coordinator information
     /// - Restoring prepared transactions with their participant lists
-    /// - Cleaning up stale metadata from completed transactions
+    /// - Restoring completed transactions to completed map and rebuilding deadline index
     fn recover_transaction_state(&mut self) -> Result<()> {
-        use crate::engine::BatchOperations;
         let metadata_entries = self.engine.scan_transaction_metadata();
 
         if metadata_entries.is_empty() {
@@ -350,7 +349,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
         let mut recovered_active = 0;
         let mut recovered_prepared = 0;
-        let mut cleaned_stale = 0;
+        let mut recovered_completed = 0;
 
         for (txn_id, metadata_bytes) in metadata_entries {
             match crate::transaction::TransactionState::<E::Operation>::from_bytes(&metadata_bytes)
@@ -426,23 +425,46 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                             );
                         }
 
-                        crate::transaction::TransactionPhase::Committed
-                        | crate::transaction::TransactionPhase::Aborted { .. } => {
-                            // Stale metadata - should have been cleaned up but wasn't
-                            // Clean it up now
-                            cleaned_stale += 1;
-                            tracing::debug!(
-                                "[{}] Cleaning up stale transaction {} ({:?})",
-                                self.stream_name,
+                        crate::transaction::TransactionPhase::Committed => {
+                            // Restore completed transaction to completed map and rebuild deadline index
+                            // These are kept until their deadline passes for late message handling
+                            self.tx_manager.restore_completed(
                                 txn_id,
-                                state.phase
+                                state.coordinator_id.clone(),
+                                state.phase,
+                                Timestamp::now(), // Use current time as completed_at
+                                state.deadline,
                             );
 
-                            let mut batch = self.engine.start_batch();
-                            batch.remove_transaction_metadata(txn_id);
+                            recovered_completed += 1;
+                            tracing::debug!(
+                                "[{}] Recovered Completed transaction {} (deadline: {})",
+                                self.stream_name,
+                                txn_id,
+                                state.deadline.as_micros()
+                            );
+                        }
 
-                            let log_index = self.engine.get_log_index().unwrap_or(0);
-                            self.engine.commit_batch(batch, log_index);
+                        crate::transaction::TransactionPhase::Aborted { aborted_at, reason } => {
+                            // Restore completed transaction to completed map and rebuild deadline index
+                            self.tx_manager.restore_completed(
+                                txn_id,
+                                state.coordinator_id.clone(),
+                                crate::transaction::TransactionPhase::Aborted {
+                                    aborted_at,
+                                    reason,
+                                },
+                                aborted_at,
+                                state.deadline,
+                            );
+
+                            recovered_completed += 1;
+                            tracing::debug!(
+                                "[{}] Recovered Aborted transaction {} (deadline: {})",
+                                self.stream_name,
+                                txn_id,
+                                state.deadline.as_micros()
+                            );
                         }
                     }
                 }
@@ -459,11 +481,11 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         }
 
         tracing::info!(
-            "[{}] Recovery complete: {} Active, {} Prepared, {} stale cleaned",
+            "[{}] Recovery complete: {} Active, {} Prepared, {} Completed",
             self.stream_name,
             recovered_active,
             recovered_prepared,
-            cleaned_stale
+            recovered_completed
         );
 
         Ok(())
@@ -1089,9 +1111,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_crash_recovery_cleans_stale_metadata() {
-        // Test that committed/aborted transactions are cleaned up
-        // (not added back to manager, and cleanup batch is created)
+    async fn test_crash_recovery_restores_completed_transactions() {
+        // Test that committed/aborted transactions are restored to completed map
+        // and deadline index is rebuilt
 
         struct RecoveryTestEngine {
             metadata: Vec<(TransactionId, Vec<u8>)>,
@@ -1185,10 +1207,13 @@ mod tests {
         // Recover transaction state
         processor.recover_transaction_state().unwrap();
 
-        // Verify stale transactions were NOT added to transaction manager
-        // (the important invariant - they should be cleaned up, not restored)
-        assert!(!processor.transaction_manager().exists(committed_txn));
-        assert!(!processor.transaction_manager().exists(aborted_txn));
+        // Verify completed transactions were restored to completed map
+        assert!(processor.transaction_manager().is_completed(committed_txn));
+        assert!(processor.transaction_manager().is_completed(aborted_txn));
+
+        // Verify they exist in the system (any state including completed)
+        assert!(processor.transaction_manager().exists(committed_txn));
+        assert!(processor.transaction_manager().exists(aborted_txn));
 
         tokio::task::yield_now().await;
     }

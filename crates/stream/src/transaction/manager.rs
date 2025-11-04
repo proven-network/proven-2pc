@@ -7,7 +7,7 @@ use super::state::{AbortReason, CompletedInfo, TransactionPhase, TransactionStat
 use crate::engine::{BlockingInfo, TransactionEngine};
 use crate::error::{Error, Result};
 use proven_common::{Timestamp, TransactionId};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::marker::PhantomData;
 
 /// Manages all transaction state and lifecycle
@@ -20,6 +20,10 @@ pub struct TransactionManager<E: TransactionEngine> {
 
     /// Recently completed (for late message handling, GC'd by deadline)
     completed: HashMap<TransactionId, CompletedInfo>,
+
+    /// Deadline index for efficient GC (deadline -> transaction IDs)
+    /// Allows O(log n + k) GC instead of O(n)
+    completed_by_deadline: BTreeMap<Timestamp, Vec<TransactionId>>,
 
     /// Deferral manager
     deferral: DeferralManager<E::Operation>,
@@ -35,6 +39,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
             active: HashMap::new(),
             prepared: HashMap::new(),
             completed: HashMap::new(),
+            completed_by_deadline: BTreeMap::new(),
             deferral: DeferralManager::new(),
             _engine: PhantomData,
         }
@@ -98,15 +103,23 @@ impl<E: TransactionEngine> TransactionManager<E> {
             .or_else(|| self.prepared.remove(&txn_id))
             .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))?;
 
+        let deadline = state.deadline;
+
         self.completed.insert(
             txn_id,
             CompletedInfo {
                 coordinator_id: state.coordinator_id,
                 phase: TransactionPhase::Committed,
                 completed_at: Timestamp::now(),
-                deadline: state.deadline, // NEW: preserve deadline for GC
+                deadline, // NEW: preserve deadline for GC
             },
         );
+
+        // Add to deadline index for efficient GC
+        self.completed_by_deadline
+            .entry(deadline)
+            .or_default()
+            .push(txn_id);
 
         Ok(self.deferral.take_ready_on_complete(txn_id))
     }
@@ -125,6 +138,8 @@ impl<E: TransactionEngine> TransactionManager<E> {
             .or_else(|| self.prepared.remove(&txn_id))
             .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))?;
 
+        let deadline = state.deadline;
+
         self.completed.insert(
             txn_id,
             CompletedInfo {
@@ -134,9 +149,15 @@ impl<E: TransactionEngine> TransactionManager<E> {
                     reason,
                 },
                 completed_at: Timestamp::now(),
-                deadline: state.deadline, // NEW: preserve deadline for GC
+                deadline, // NEW: preserve deadline for GC
             },
         );
+
+        // Add to deadline index for efficient GC
+        self.completed_by_deadline
+            .entry(deadline)
+            .or_default()
+            .push(txn_id);
 
         // Remove any deferred ops owned by this transaction
         self.deferral.remove_for_transaction(txn_id);
@@ -251,6 +272,12 @@ impl<E: TransactionEngine> TransactionManager<E> {
         self.prepared.len()
     }
 
+    /// Check if a transaction is in the completed map
+    #[cfg(test)]
+    pub fn is_completed(&self, txn_id: TransactionId) -> bool {
+        self.completed.contains_key(&txn_id)
+    }
+
     /// Check if there are any transactions that need processing
     /// Returns true if there are expired transactions or completed transactions past deadline
     pub fn needs_processing(&self, current_time: Timestamp) -> bool {
@@ -316,17 +343,27 @@ impl<E: TransactionEngine> TransactionManager<E> {
 
     /// Garbage collect completed transactions past their deadline
     /// Returns transaction IDs that were removed (for metadata cleanup)
+    ///
+    /// This is now O(log n + k) instead of O(n) thanks to the deadline index,
+    /// where k is the number of transactions to remove.
     pub fn gc_completed_by_deadline(&mut self, timestamp: Timestamp) -> Vec<TransactionId> {
         let mut to_remove = Vec::new();
 
-        for (txn_id, info) in &self.completed {
-            if info.deadline < timestamp {
-                to_remove.push(*txn_id);
-            }
-        }
+        // Collect all deadlines that have passed (O(log n + k))
+        let deadlines_to_remove: Vec<Timestamp> = self
+            .completed_by_deadline
+            .range(..timestamp)
+            .map(|(deadline, _)| *deadline)
+            .collect();
 
-        for txn_id in &to_remove {
-            self.completed.remove(txn_id);
+        // Remove all transactions for those deadlines
+        for deadline in deadlines_to_remove {
+            if let Some(txn_ids) = self.completed_by_deadline.remove(&deadline) {
+                for txn_id in txn_ids {
+                    self.completed.remove(&txn_id);
+                    to_remove.push(txn_id);
+                }
+            }
         }
 
         to_remove
@@ -374,6 +411,36 @@ impl<E: TransactionEngine> TransactionManager<E> {
     /// Take all ready deferrals sorted by age (for centralized processing)
     pub fn take_all_ready_deferrals_sorted(&mut self) -> Vec<DeferredOp<E::Operation>> {
         self.deferral.take_all_ready_sorted()
+    }
+
+    /// Restore completed transaction from crash recovery
+    ///
+    /// Adds transaction to completed map and rebuilds deadline index.
+    /// This is called during crash recovery to restore completed transactions
+    /// that haven't yet reached their deadline.
+    pub fn restore_completed(
+        &mut self,
+        txn_id: TransactionId,
+        coordinator_id: String,
+        phase: TransactionPhase,
+        completed_at: Timestamp,
+        deadline: Timestamp,
+    ) {
+        self.completed.insert(
+            txn_id,
+            CompletedInfo {
+                coordinator_id,
+                phase,
+                completed_at,
+                deadline,
+            },
+        );
+
+        // Rebuild deadline index
+        self.completed_by_deadline
+            .entry(deadline)
+            .or_default()
+            .push(txn_id);
     }
 }
 
