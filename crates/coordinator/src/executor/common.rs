@@ -3,8 +3,9 @@
 use crate::error::{CoordinatorError, Result};
 use crate::responses::{ResponseCollector, ResponseMessage};
 use crate::speculation::predictor::PredictedOperation;
-use proven_common::Timestamp;
+use proven_common::{Operation, Timestamp, TransactionId};
 use proven_engine::{Message, MockClient};
+use proven_protocol::{OrderedMessage, ReadOnlyMessage, TransactionPhase};
 use proven_runner::Runner;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -136,6 +137,167 @@ impl ExecutorInfra {
             .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Send a transaction operation message (typed, safe)
+    pub async fn send_transaction_operation<O: Operation>(
+        &self,
+        stream: &str,
+        txn_id: TransactionId,
+        txn_deadline: Timestamp,
+        operation: O,
+        timeout: Duration,
+    ) -> Result<(u64, ResponseMessage)> {
+        let request_id = self.generate_request_id();
+
+        // Ensure processor is running
+        self.ensure_processor(stream, timeout).await?;
+
+        // Build typed message
+        let message = OrderedMessage::TransactionOperation {
+            txn_id,
+            coordinator_id: self.coordinator_id.clone(),
+            request_id: request_id.clone(),
+            txn_deadline,
+            operation,
+        };
+
+        // Send and wait
+        let offset = self
+            .client
+            .publish_to_stream(stream.to_string(), vec![message.into_message()])
+            .await
+            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+
+        let response = self
+            .response_collector
+            .wait_for_response(request_id, timeout)
+            .await?;
+
+        Ok((offset, response))
+    }
+
+    /// Send an auto-commit operation message (typed, safe)
+    pub async fn send_auto_commit_operation<O: Operation>(
+        &self,
+        stream: &str,
+        txn_id: TransactionId,
+        txn_deadline: Timestamp,
+        operation: O,
+        timeout: Duration,
+    ) -> Result<(u64, ResponseMessage)> {
+        let request_id = self.generate_request_id();
+
+        // Ensure processor is running
+        self.ensure_processor(stream, timeout).await?;
+
+        // Build typed message
+        let message = OrderedMessage::AutoCommitOperation {
+            txn_id,
+            coordinator_id: self.coordinator_id.clone(),
+            request_id: request_id.clone(),
+            txn_deadline,
+            operation,
+        };
+
+        // Send and wait
+        let offset = self
+            .client
+            .publish_to_stream(stream.to_string(), vec![message.into_message()])
+            .await
+            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+
+        let response = self
+            .response_collector
+            .wait_for_response(request_id, timeout)
+            .await?;
+
+        Ok((offset, response))
+    }
+
+    /// Send a read-only operation message via pubsub (typed, safe)
+    pub async fn send_readonly_operation<O: Operation>(
+        &self,
+        stream: &str,
+        read_timestamp: TransactionId,
+        operation: O,
+        timeout: Duration,
+    ) -> Result<ResponseMessage> {
+        let request_id = self.generate_request_id();
+
+        // Ensure processor is running
+        self.ensure_processor(stream, timeout).await?;
+
+        // Build typed message
+        let message = ReadOnlyMessage {
+            read_timestamp,
+            coordinator_id: self.coordinator_id.clone(),
+            request_id: request_id.clone(),
+            operation,
+        };
+
+        // Send via pubsub
+        let subject = format!("stream.{}.readonly", stream);
+        self.client
+            .publish(&subject, vec![message.into_message()])
+            .await
+            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+
+        // Wait for response
+        self.response_collector
+            .wait_for_response(request_id, timeout)
+            .await
+    }
+
+    /// Send a transaction control message (prepare/commit/abort)
+    ///
+    /// If request_id and timeout are provided, waits for a response.
+    /// Otherwise, sends fire-and-forget.
+    pub async fn send_control_message(
+        &self,
+        stream: &str,
+        txn_id: TransactionId,
+        phase: TransactionPhase,
+        request_id: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<Option<ResponseMessage>> {
+        // Build control message manually (no operation needed)
+        let mut headers = HashMap::new();
+        headers.insert("txn_id".to_string(), txn_id.to_string());
+        headers.insert("txn_phase".to_string(), phase.phase_name().to_string());
+        headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
+
+        // Add request_id if provided (for prepare votes)
+        if let Some(ref req_id) = request_id {
+            headers.insert("request_id".to_string(), req_id.clone());
+        }
+
+        // Add participants if this is a prepare phase
+        if let Some(participants) = phase.participants() {
+            headers.insert(
+                "participants".to_string(),
+                serde_json::to_string(&participants).unwrap(),
+            );
+        }
+
+        let message = Message::new(Vec::new(), headers);
+
+        let _ = self
+            .client
+            .publish_to_stream(stream.to_string(), vec![message])
+            .await
+            .map_err(|e| CoordinatorError::EngineError(e.to_string()))?;
+
+        // Wait for response if request_id and timeout provided
+        if let (Some(req_id), Some(timeout)) = (request_id, timeout) {
+            let response = self
+                .response_collector
+                .wait_for_response(req_id, timeout)
+                .await?;
+            Ok(Some(response))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Execute predictions speculatively

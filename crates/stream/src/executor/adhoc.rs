@@ -20,17 +20,17 @@ impl AdHocExecution {
     ///
     /// Ad-hoc operations are atomic: begin → apply → commit in one batch.
     /// If blocked, they use wound-wait and defer.
+    #[allow(clippy::too_many_arguments)]
     pub fn execute<E: TransactionEngine>(
         ctx: &mut ExecutionContext<E>,
         batch: &mut E::Batch,
+        txn_id: TransactionId,
+        deadline: Timestamp,
         operation: E::Operation,
         coordinator_id: String,
         request_id: String,
         phase: ProcessorPhase,
     ) -> Result<()> {
-        let txn_id = TransactionId::new();
-        let deadline = Timestamp::now().add_micros(60_000_000); // 60 second deadline
-
         // Begin transaction
         ctx.engine.begin(batch, txn_id);
         ctx.tx_manager
@@ -190,9 +190,14 @@ mod tests {
         let mut ctx = ExecutionContext::new(&mut engine, &mut tx_manager, &response);
         let mut batch = ctx.engine.start_batch();
 
+        let txn_id = TransactionId::new();
+        let deadline = Timestamp::now().add_micros(60_000_000);
+
         let result = AdHocExecution::execute(
             &mut ctx,
             &mut batch,
+            txn_id,
+            deadline,
             TestOp("write1".to_string()),
             "coord-1".to_string(),
             "req-1".to_string(),
@@ -222,9 +227,14 @@ mod tests {
         let mut ctx = ExecutionContext::new(&mut engine, &mut tx_manager, &response);
         let mut batch = ctx.engine.start_batch();
 
+        let txn_id = TransactionId::new();
+        let deadline = Timestamp::now().add_micros(60_000_000);
+
         let result = AdHocExecution::execute(
             &mut ctx,
             &mut batch,
+            txn_id,
+            deadline,
             TestOp("write1".to_string()),
             "coord-1".to_string(),
             "req-1".to_string(),
@@ -249,9 +259,14 @@ mod tests {
         let mut ctx = ExecutionContext::new(&mut engine, &mut tx_manager, &response);
         let mut batch = ctx.engine.start_batch();
 
+        let txn_id = TransactionId::new();
+        let deadline = Timestamp::now().add_micros(60_000_000);
+
         AdHocExecution::execute(
             &mut ctx,
             &mut batch,
+            txn_id,
+            deadline,
             TestOp("write1".to_string()),
             "coord-1".to_string(),
             "req-1".to_string(),

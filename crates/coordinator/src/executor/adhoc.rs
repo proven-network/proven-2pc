@@ -3,9 +3,7 @@
 use super::{Executor as ExecutorTrait, common::ExecutorInfra};
 use crate::error::Result;
 use async_trait::async_trait;
-use proven_common::TransactionId;
-use proven_common::{Operation, OperationType};
-use std::collections::HashMap;
+use proven_common::{Operation, OperationType, TransactionId};
 use std::sync::Arc;
 
 /// Ad-hoc executor with auto-commit operations
@@ -22,60 +20,35 @@ impl AdHocExecutor {
 
     /// Execute a single auto-commit operation
     async fn execute_adhoc<O: Operation>(&self, stream: &str, operation: &O) -> Result<Vec<u8>> {
-        // Generate a fresh timestamp for this operation
-        let timestamp = TransactionId::new();
+        // Generate a fresh transaction ID for this operation (contains timestamp for MVCC)
+        let txn_id = TransactionId::new();
 
-        // Use a reasonable timeout
+        // Set deadline for this operation (30 seconds from now)
+        let deadline = proven_common::Timestamp::now().add_micros(30_000_000);
         let timeout = std::time::Duration::from_secs(30);
-
-        // Generate request ID
-        let request_id = self.infra.generate_request_id();
-
-        // Ensure processor is running
-        self.infra.ensure_processor(stream, timeout).await?;
-
-        // Serialize operation
-        let operation_bytes = serde_json::to_vec(operation)
-            .map_err(crate::error::CoordinatorError::SerializationError)?;
 
         // Route based on operation type
         match operation.operation_type() {
             OperationType::Read => {
-                // Read operations go through pubsub for better performance
-                let mut headers = HashMap::new();
-                headers.insert("request_id".to_string(), request_id.clone());
-                headers.insert(
-                    "coordinator_id".to_string(),
-                    self.infra.coordinator_id.clone(),
-                );
-                headers.insert("read_timestamp".to_string(), timestamp.to_string());
-                headers.insert("txn_mode".to_string(), "adhoc".to_string());
-                headers.insert("auto_commit".to_string(), "true".to_string());
-
-                // Use readonly pubsub subject pattern
-                let subject = format!("stream.{}.readonly", stream);
+                // Read operations use snapshot isolation via pubsub
                 let response = self
                     .infra
-                    .send_pubsub_and_wait(&subject, headers, operation_bytes, timeout)
+                    .send_readonly_operation(stream, txn_id, operation.clone(), timeout)
                     .await?;
 
                 ExecutorInfra::handle_response(response)
             }
             OperationType::Write => {
-                // Write operations go through streams for ordering
-                let mut headers = HashMap::new();
-                headers.insert("request_id".to_string(), request_id.clone());
-                headers.insert(
-                    "coordinator_id".to_string(),
-                    self.infra.coordinator_id.clone(),
-                );
-                headers.insert("operation_timestamp".to_string(), timestamp.to_string());
-                headers.insert("txn_mode".to_string(), "adhoc".to_string());
-                headers.insert("auto_commit".to_string(), "true".to_string());
-
+                // Write operations use auto-commit via ordered stream
                 let (_, response) = self
                     .infra
-                    .send_and_wait(stream, headers, operation_bytes, timeout)
+                    .send_auto_commit_operation(
+                        stream,
+                        txn_id,
+                        deadline,
+                        operation.clone(),
+                        timeout,
+                    )
                     .await?;
 
                 ExecutorInfra::handle_response(response)

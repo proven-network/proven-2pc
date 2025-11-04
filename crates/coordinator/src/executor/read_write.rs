@@ -170,35 +170,11 @@ impl ReadWriteExecutor {
     }
 
     /// Track participant and return deadline string if needed
-    fn track_participant(&self, stream: &str) -> Option<String> {
-        let mut streams_with_deadline = self.streams_with_deadline.lock();
-
-        // Check if this is first contact with stream
-        let needs_deadline = !streams_with_deadline.contains(stream);
-
-        if needs_deadline {
-            streams_with_deadline.insert(stream.to_string());
-        }
-
-        // Note: participant_offsets will be populated when we get the offset back from send_and_wait
-
-        if needs_deadline {
-            Some(self.deadline.to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Build base headers for a message
-    fn build_base_headers(&self, request_id: &str) -> HashMap<String, String> {
-        let mut headers = HashMap::new();
-        headers.insert("txn_id".to_string(), self.txn_id.to_string());
-        headers.insert(
-            "coordinator_id".to_string(),
-            self.infra.coordinator_id.clone(),
-        );
-        headers.insert("request_id".to_string(), request_id.to_string());
-        headers
+    fn track_participant(&self, stream: &str) {
+        // Note: We always send deadline now (required by protocol)
+        // Just track that we've seen this participant
+        self.streams_with_deadline.lock().insert(stream.to_string());
+        // Note: participant_offsets will be populated when we get the offset back from send_transaction_operation
     }
 
     /// Execute operation with speculation check
@@ -270,29 +246,19 @@ impl ReadWriteExecutor {
         // Calculate timeout
         let timeout = common::calculate_timeout(self.deadline)?;
 
-        // Track participant and get deadline if needed
-        let deadline_str = self.track_participant(stream);
+        // Track participant (always send deadline now)
+        self.track_participant(stream);
 
-        // Generate request ID
-        let request_id = self.infra.generate_request_id();
-
-        // Build headers
-        let mut headers = self.build_base_headers(&request_id);
-        if let Some(deadline) = deadline_str {
-            headers.insert("txn_deadline".to_string(), deadline);
-        }
-
-        // Ensure processor is running
-        self.infra.ensure_processor(stream, timeout).await?;
-
-        // Serialize operation
-        let operation_bytes =
-            serde_json::to_vec(operation).map_err(CoordinatorError::SerializationError)?;
-
-        // Send and wait for response, capturing offset
+        // Use typed helper to send transaction operation
         let (offset, response) = self
             .infra
-            .send_and_wait(stream, headers, operation_bytes, timeout)
+            .send_transaction_operation(
+                stream,
+                self.txn_id,
+                self.deadline,
+                operation.clone(),
+                timeout,
+            )
             .await?;
 
         // Store the offset for this participant (if not already stored)
@@ -320,33 +286,44 @@ impl ReadWriteExecutor {
     async fn prepare_single(&self, participant: &str) -> Result<()> {
         *self.state.lock() = TransactionState::Preparing;
 
+        // Use PrepareAndCommit for single participant optimization
+        use proven_protocol::TransactionPhase;
         let request_id = self.infra.generate_request_id();
-        let mut headers = self.build_base_headers(&request_id);
-        headers.insert("txn_phase".to_string(), "prepare_and_commit".to_string());
-
         let timeout = common::calculate_timeout(self.deadline)?;
 
-        let (_, response) = match self
+        match self
             .infra
-            .send_and_wait(participant, headers, Vec::new(), timeout)
+            .send_control_message(
+                participant,
+                self.txn_id,
+                TransactionPhase::PrepareAndCommit,
+                Some(request_id),
+                Some(timeout),
+            )
             .await
         {
-            Ok(resp) => resp,
-            Err(e) => {
-                // On error (e.g., timeout), abort the transaction
-                let _ = self.abort().await;
-                return Err(e);
+            Ok(Some(response)) => {
+                let vote = self.parse_prepare_vote(&response);
+                if matches!(vote, PrepareVote::Prepared) {
+                    *self.state.lock() = TransactionState::Committed;
+                    Ok(())
+                } else {
+                    let _ = self.abort().await;
+                    Err(CoordinatorError::TransactionAborted)
+                }
             }
-        };
-
-        let vote = self.parse_prepare_vote(&response);
-
-        if matches!(vote, PrepareVote::Prepared) {
-            *self.state.lock() = TransactionState::Committed;
-            Ok(())
-        } else {
-            let _ = self.abort().await;
-            Err(CoordinatorError::TransactionAborted)
+            Ok(None) => {
+                // Shouldn't happen since we provided request_id
+                let _ = self.abort().await;
+                Err(CoordinatorError::Other(
+                    "No response from prepare".to_string(),
+                ))
+            }
+            Err(e) => {
+                // On error, abort the transaction
+                let _ = self.abort().await;
+                Err(e)
+            }
         }
     }
 
@@ -359,31 +336,29 @@ impl ReadWriteExecutor {
         // Get all participant offsets to send with PREPARE messages
         let all_participants = self.participant_offsets.lock().clone();
 
-        // Build prepare messages
-        let mut prepare_messages = Vec::new();
+        // Send prepare messages and collect votes
+        use proven_protocol::TransactionPhase;
+
+        // Send all prepare messages without waiting for responses (parallel)
         for participant in participants {
-            let mut headers = self.build_base_headers(&request_id);
-            headers.insert("txn_phase".to_string(), "prepare".to_string());
-
-            // Send full participant list with offsets for recovery
-            if !all_participants.is_empty() {
-                headers.insert(
-                    "participants".to_string(),
-                    serde_json::to_string(&all_participants).unwrap(),
-                );
+            if let Err(e) = self
+                .infra
+                .send_control_message(
+                    participant,
+                    self.txn_id,
+                    TransactionPhase::Prepare(all_participants.clone()),
+                    Some(request_id.clone()),
+                    None, // Don't wait - we'll collect all responses in parallel
+                )
+                .await
+            {
+                // Failed to send prepare message - abort the transaction
+                let _ = self.abort().await;
+                return Err(e);
             }
-
-            prepare_messages.push((participant.clone(), headers, Vec::new()));
         }
 
-        // Send all prepare messages
-        if let Err(e) = self.infra.send_messages_batch(prepare_messages).await {
-            // Failed to send prepare messages - abort the transaction
-            let _ = self.abort().await;
-            return Err(e);
-        }
-
-        // Collect votes
+        // Now collect all votes in parallel
         let all_prepared = match self.collect_prepare_votes(participants, &request_id).await {
             Ok(prepared) => prepared,
             Err(e) => {
@@ -419,17 +394,20 @@ impl ReadWriteExecutor {
 
         *self.state.lock() = TransactionState::Committing;
 
-        // Build commit messages
-        let mut commit_messages = Vec::new();
+        // Send commit messages using typed helper (fire-and-forget)
+        use proven_protocol::TransactionPhase;
         for participant in participants {
-            let mut headers = HashMap::new();
-            headers.insert("txn_id".to_string(), self.txn_id.to_string());
-            headers.insert("txn_phase".to_string(), "commit".to_string());
-            commit_messages.push((participant, headers, Vec::new()));
+            let _ = self
+                .infra
+                .send_control_message(
+                    &participant,
+                    self.txn_id,
+                    TransactionPhase::Commit,
+                    None,
+                    None,
+                )
+                .await;
         }
-
-        // Send all commit messages
-        let _ = self.infra.send_messages_batch(commit_messages).await;
 
         *self.state.lock() = TransactionState::Committed;
         Ok(())
@@ -450,18 +428,19 @@ impl ReadWriteExecutor {
 
         let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
 
-        // Build abort messages
-        let mut abort_messages = Vec::new();
+        // Send abort messages using typed helper (fire-and-forget)
+        use proven_protocol::TransactionPhase;
         for participant in participants {
-            let mut headers = HashMap::new();
-            headers.insert("txn_id".to_string(), self.txn_id.to_string());
-            headers.insert("txn_phase".to_string(), "abort".to_string());
-            abort_messages.push((participant, headers, Vec::new()));
-        }
-
-        // Send all abort messages
-        if !abort_messages.is_empty() {
-            let _ = self.infra.send_messages_batch(abort_messages).await;
+            let _ = self
+                .infra
+                .send_control_message(
+                    &participant,
+                    self.txn_id,
+                    TransactionPhase::Abort,
+                    None,
+                    None,
+                )
+                .await;
         }
 
         *self.state.lock() = TransactionState::Aborted;

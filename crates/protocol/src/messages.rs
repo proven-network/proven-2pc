@@ -1,4 +1,8 @@
 //! Typed message wrappers for coordinator-to-participant communication
+//!
+//! Messages are split by delivery channel:
+//! - OrderedMessage: For operations requiring deterministic ordering (sent via stream)
+//! - ReadOnlyMessage: For snapshot isolation reads (sent via pubsub)
 
 use proven_common::{Operation, Timestamp, TransactionId};
 use proven_engine::Message;
@@ -38,96 +42,58 @@ impl TransactionPhase {
     }
 }
 
-/// Transaction mode for different execution paths
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransactionMode {
-    /// Read-only transaction using snapshot isolation
-    ReadOnly,
-    /// Ad-hoc operation with auto-commit
-    AdHoc,
-    /// Full read-write transaction with 2PC
-    ReadWrite,
-}
-
-impl TransactionMode {
-    /// Parse from string header value
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "read_only" => Some(Self::ReadOnly),
-            "adhoc" => Some(Self::AdHoc),
-            _ => None, // Default is read-write
-        }
-    }
-
-    /// Convert to string header value (None means read-write, which is the default)
-    pub fn as_str(&self) -> Option<&'static str> {
-        match self {
-            Self::ReadOnly => Some("read_only"),
-            Self::AdHoc => Some("adhoc"),
-            Self::ReadWrite => None, // Default mode doesn't need explicit header
-        }
-    }
-}
-
-/// Typed wrapper around Message for coordinator-to-participant communication
+/// Messages sent via ordered stream (deterministic, durable)
 #[derive(Debug, Clone)]
-pub enum CoordinatorMessage<O: Operation> {
-    /// Regular operation message
-    Operation(OperationMessage<O>),
-    /// Transaction control message (prepare/commit/abort)
-    Control(TransactionControlMessage),
-    /// Read-only operation (via pubsub)
-    ReadOnly {
-        /// Read timestamp for snapshot isolation
-        read_timestamp: TransactionId,
-        /// Coordinator ID for responses
+pub enum OrderedMessage<O: Operation> {
+    /// Operation in a read-write transaction
+    TransactionOperation {
+        txn_id: TransactionId,
         coordinator_id: String,
-        /// Request ID for matching responses
         request_id: String,
-        /// Parsed operation
+        txn_deadline: Timestamp,
         operation: O,
     },
+
+    /// Single write operation with auto-commit
+    AutoCommitOperation {
+        txn_id: TransactionId,
+        coordinator_id: String,
+        request_id: String,
+        txn_deadline: Timestamp,
+        operation: O,
+    },
+
+    /// 2PC control message (prepare/commit/abort)
+    TransactionControl {
+        txn_id: TransactionId,
+        phase: TransactionPhase,
+        coordinator_id: Option<String>,
+        request_id: Option<String>,
+    },
+
     /// No-op message for triggering recovery/GC without real work
-    /// Used when stream is idle but has expired transactions
     Noop,
 }
 
-/// Operation message in a transaction
+/// Read-only message sent via pubsub (snapshot isolation)
 #[derive(Debug, Clone)]
-pub struct OperationMessage<O: Operation> {
-    /// Transaction ID
-    pub txn_id: TransactionId,
+pub struct ReadOnlyMessage<O: Operation> {
+    /// Read timestamp for snapshot isolation (also serves as txn_id for MVCC)
+    pub read_timestamp: TransactionId,
     /// Coordinator ID for responses
     pub coordinator_id: String,
     /// Request ID for matching responses
     pub request_id: String,
-    /// Transaction deadline (sent on first contact with stream)
-    pub txn_deadline: Option<Timestamp>,
-    /// Transaction mode (read_only, adhoc, or read-write as default)
-    pub mode: TransactionMode,
     /// Parsed operation
     pub operation: O,
 }
 
-/// Transaction control message (prepare/commit/abort)
-#[derive(Debug, Clone)]
-pub struct TransactionControlMessage {
-    /// Transaction ID
-    pub txn_id: TransactionId,
-    /// Transaction phase (includes participants for prepare phases)
-    pub phase: TransactionPhase,
-    /// Coordinator ID for responses (optional for commit/abort)
-    pub coordinator_id: Option<String>,
-    /// Request ID for matching responses (optional for commit/abort)
-    pub request_id: Option<String>,
-}
-
-impl<O: Operation> CoordinatorMessage<O> {
-    /// Parse a Message into a typed CoordinatorMessage
+impl<O: Operation> OrderedMessage<O> {
+    /// Parse a Message from the ordered stream into a typed OrderedMessage
     pub fn from_message(msg: Message) -> Result<Self, ParseError> {
         // Check for noop message
         if msg.get_header("noop").is_some() {
-            return Ok(CoordinatorMessage::Noop);
+            return Ok(OrderedMessage::Noop);
         }
 
         // Check if this is a control message (empty body)
@@ -162,42 +128,15 @@ impl<O: Operation> CoordinatorMessage<O> {
                 _ => return Err(ParseError::InvalidPhase(phase_str.to_string())),
             };
 
-            return Ok(CoordinatorMessage::Control(TransactionControlMessage {
+            return Ok(OrderedMessage::TransactionControl {
                 txn_id,
                 phase,
                 coordinator_id,
                 request_id,
-            }));
-        }
-
-        // Check for read-only mode (should come via pubsub, not ordered stream)
-        if let Some(read_ts_str) = msg.get_header("read_timestamp") {
-            let read_timestamp = TransactionId::parse(read_ts_str)
-                .map_err(|_| ParseError::InvalidTransactionId(read_ts_str.to_string()))?;
-
-            let coordinator_id = msg
-                .get_header("coordinator_id")
-                .ok_or(ParseError::MissingHeader("coordinator_id"))?
-                .to_string();
-
-            let request_id = msg
-                .get_header("request_id")
-                .ok_or(ParseError::MissingHeader("request_id"))?
-                .to_string();
-
-            // Deserialize the operation
-            let operation: O = serde_json::from_slice(&msg.body)
-                .map_err(|e| ParseError::InvalidOperation(e.to_string()))?;
-
-            return Ok(CoordinatorMessage::ReadOnly {
-                read_timestamp,
-                coordinator_id,
-                request_id,
-                operation,
             });
         }
 
-        // Regular operation message
+        // Operation message - check for auto-commit
         let txn_id_str = msg
             .get_header("txn_id")
             .ok_or(ParseError::MissingHeader("txn_id"))?;
@@ -214,67 +153,94 @@ impl<O: Operation> CoordinatorMessage<O> {
             .ok_or(ParseError::MissingHeader("request_id"))?
             .to_string();
 
-        // Parse optional deadline
-        let txn_deadline = msg
+        // Parse deadline (required for all operations)
+        let txn_deadline_str = msg
             .get_header("txn_deadline")
-            .and_then(|s| Timestamp::parse(s).ok());
-
-        // Parse transaction mode
-        let mode = msg
-            .get_header("txn_mode")
-            .and_then(TransactionMode::parse)
-            .unwrap_or(TransactionMode::ReadWrite);
+            .ok_or(ParseError::MissingHeader("txn_deadline"))?;
+        let txn_deadline = Timestamp::parse(txn_deadline_str)
+            .map_err(|_| ParseError::InvalidTimestamp(txn_deadline_str.to_string()))?;
 
         // Deserialize the operation
         let operation: O = serde_json::from_slice(&msg.body)
             .map_err(|e| ParseError::InvalidOperation(e.to_string()))?;
 
-        Ok(CoordinatorMessage::Operation(OperationMessage {
+        // Check if this is auto-commit
+        if msg.get_header("auto_commit").is_some() {
+            return Ok(OrderedMessage::AutoCommitOperation {
+                txn_id,
+                coordinator_id,
+                request_id,
+                txn_deadline,
+                operation,
+            });
+        }
+
+        // Regular transaction operation
+        Ok(OrderedMessage::TransactionOperation {
             txn_id,
             coordinator_id,
             request_id,
             txn_deadline,
-            mode,
             operation,
-        }))
+        })
     }
 
     /// Convert to a raw Message for sending
     pub fn into_message(self) -> Message {
         match self {
-            CoordinatorMessage::Operation(op) => {
+            OrderedMessage::TransactionOperation {
+                txn_id,
+                coordinator_id,
+                request_id,
+                txn_deadline,
+                operation,
+            } => {
                 let mut headers = HashMap::new();
-                headers.insert("txn_id".to_string(), op.txn_id.to_string());
-                headers.insert("coordinator_id".to_string(), op.coordinator_id);
-                headers.insert("request_id".to_string(), op.request_id);
+                headers.insert("txn_id".to_string(), txn_id.to_string());
+                headers.insert("coordinator_id".to_string(), coordinator_id);
+                headers.insert("request_id".to_string(), request_id);
+                headers.insert("txn_deadline".to_string(), txn_deadline.to_string());
 
-                if let Some(deadline) = op.txn_deadline {
-                    headers.insert("txn_deadline".to_string(), deadline.to_string());
-                }
-
-                if let Some(mode_str) = op.mode.as_str() {
-                    headers.insert("txn_mode".to_string(), mode_str.to_string());
-                }
-
-                // Serialize the operation
-                let body = serde_json::to_vec(&op.operation).unwrap();
+                let body = serde_json::to_vec(&operation).unwrap();
                 Message::new(body, headers)
             }
-            CoordinatorMessage::Control(ctrl) => {
+            OrderedMessage::AutoCommitOperation {
+                txn_id,
+                coordinator_id,
+                request_id,
+                txn_deadline,
+                operation,
+            } => {
                 let mut headers = HashMap::new();
-                headers.insert("txn_id".to_string(), ctrl.txn_id.to_string());
-                headers.insert("txn_phase".to_string(), ctrl.phase.phase_name().to_string());
+                headers.insert("txn_id".to_string(), txn_id.to_string());
+                headers.insert("coordinator_id".to_string(), coordinator_id);
+                headers.insert("request_id".to_string(), request_id);
+                headers.insert("txn_deadline".to_string(), txn_deadline.to_string());
+                headers.insert("auto_commit".to_string(), "1".to_string());
 
-                if let Some(coordinator_id) = ctrl.coordinator_id {
+                let body = serde_json::to_vec(&operation).unwrap();
+                Message::new(body, headers)
+            }
+            OrderedMessage::TransactionControl {
+                txn_id,
+                phase,
+                coordinator_id,
+                request_id,
+            } => {
+                let mut headers = HashMap::new();
+                headers.insert("txn_id".to_string(), txn_id.to_string());
+                headers.insert("txn_phase".to_string(), phase.phase_name().to_string());
+
+                if let Some(coordinator_id) = coordinator_id {
                     headers.insert("coordinator_id".to_string(), coordinator_id);
                 }
 
-                if let Some(request_id) = ctrl.request_id {
+                if let Some(request_id) = request_id {
                     headers.insert("request_id".to_string(), request_id);
                 }
 
                 // Add participants if this is a prepare phase
-                if let Some(participants) = ctrl.phase.participants() {
+                if let Some(participants) = phase.participants() {
                     headers.insert(
                         "participants".to_string(),
                         serde_json::to_string(&participants).unwrap(),
@@ -283,22 +249,7 @@ impl<O: Operation> CoordinatorMessage<O> {
 
                 Message::new(Vec::new(), headers)
             }
-            CoordinatorMessage::ReadOnly {
-                read_timestamp,
-                coordinator_id,
-                request_id,
-                operation,
-            } => {
-                let mut headers = HashMap::new();
-                headers.insert("read_timestamp".to_string(), read_timestamp.to_string());
-                headers.insert("coordinator_id".to_string(), coordinator_id);
-                headers.insert("request_id".to_string(), request_id);
-
-                // Serialize the operation
-                let body = serde_json::to_vec(&operation).unwrap();
-                Message::new(body, headers)
-            }
-            CoordinatorMessage::Noop => {
+            OrderedMessage::Noop => {
                 let mut headers = HashMap::new();
                 headers.insert("noop".to_string(), "true".to_string());
                 Message::new(Vec::new(), headers)
@@ -309,31 +260,76 @@ impl<O: Operation> CoordinatorMessage<O> {
     /// Get transaction ID if this message has one
     pub fn txn_id(&self) -> Option<TransactionId> {
         match self {
-            CoordinatorMessage::Operation(op) => Some(op.txn_id),
-            CoordinatorMessage::Control(ctrl) => Some(ctrl.txn_id),
-            CoordinatorMessage::ReadOnly { .. } => None,
-            CoordinatorMessage::Noop => None,
+            OrderedMessage::TransactionOperation { txn_id, .. } => Some(*txn_id),
+            OrderedMessage::AutoCommitOperation { txn_id, .. } => Some(*txn_id),
+            OrderedMessage::TransactionControl { txn_id, .. } => Some(*txn_id),
+            OrderedMessage::Noop => None,
         }
     }
 
     /// Get coordinator ID for sending responses
     pub fn coordinator_id(&self) -> Option<&str> {
         match self {
-            CoordinatorMessage::Operation(op) => Some(&op.coordinator_id),
-            CoordinatorMessage::Control(ctrl) => ctrl.coordinator_id.as_deref(),
-            CoordinatorMessage::ReadOnly { coordinator_id, .. } => Some(coordinator_id),
-            CoordinatorMessage::Noop => None,
+            OrderedMessage::TransactionOperation { coordinator_id, .. } => Some(coordinator_id),
+            OrderedMessage::AutoCommitOperation { coordinator_id, .. } => Some(coordinator_id),
+            OrderedMessage::TransactionControl { coordinator_id, .. } => coordinator_id.as_deref(),
+            OrderedMessage::Noop => None,
         }
     }
 
     /// Get request ID for matching responses
     pub fn request_id(&self) -> Option<&str> {
         match self {
-            CoordinatorMessage::Operation(op) => Some(&op.request_id),
-            CoordinatorMessage::Control(ctrl) => ctrl.request_id.as_deref(),
-            CoordinatorMessage::ReadOnly { request_id, .. } => Some(request_id),
-            CoordinatorMessage::Noop => None,
+            OrderedMessage::TransactionOperation { request_id, .. } => Some(request_id),
+            OrderedMessage::AutoCommitOperation { request_id, .. } => Some(request_id),
+            OrderedMessage::TransactionControl { request_id, .. } => request_id.as_deref(),
+            OrderedMessage::Noop => None,
         }
+    }
+}
+
+impl<O: Operation> ReadOnlyMessage<O> {
+    /// Parse a Message from pubsub into a typed ReadOnlyMessage
+    pub fn from_message(msg: Message) -> Result<Self, ParseError> {
+        let read_ts_str = msg
+            .get_header("read_timestamp")
+            .ok_or(ParseError::MissingHeader("read_timestamp"))?;
+        let read_timestamp = TransactionId::parse(read_ts_str)
+            .map_err(|_| ParseError::InvalidTransactionId(read_ts_str.to_string()))?;
+
+        let coordinator_id = msg
+            .get_header("coordinator_id")
+            .ok_or(ParseError::MissingHeader("coordinator_id"))?
+            .to_string();
+
+        let request_id = msg
+            .get_header("request_id")
+            .ok_or(ParseError::MissingHeader("request_id"))?
+            .to_string();
+
+        let operation: O = serde_json::from_slice(&msg.body)
+            .map_err(|e| ParseError::InvalidOperation(e.to_string()))?;
+
+        Ok(ReadOnlyMessage {
+            read_timestamp,
+            coordinator_id,
+            request_id,
+            operation,
+        })
+    }
+
+    /// Convert to a raw Message for sending
+    pub fn into_message(self) -> Message {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "read_timestamp".to_string(),
+            self.read_timestamp.to_string(),
+        );
+        headers.insert("coordinator_id".to_string(), self.coordinator_id);
+        headers.insert("request_id".to_string(), self.request_id);
+
+        let body = serde_json::to_vec(&self.operation).unwrap();
+        Message::new(body, headers)
     }
 }
 
@@ -345,6 +341,9 @@ pub enum ParseError {
 
     #[error("Invalid transaction ID: {0}")]
     InvalidTransactionId(String),
+
+    #[error("Invalid timestamp: {0}")]
+    InvalidTimestamp(String),
 
     #[error("Invalid transaction phase: {0}")]
     InvalidPhase(String),

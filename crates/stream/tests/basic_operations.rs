@@ -10,10 +10,7 @@ mod common;
 
 use common::{BasicOp, BasicResponse, TestEngine, txn_id};
 use proven_engine::{MockClient, MockEngine};
-use proven_protocol::{
-    CoordinatorMessage, OperationMessage, TransactionControlMessage, TransactionMode,
-    TransactionPhase,
-};
+use proven_protocol::{OrderedMessage, TransactionPhase};
 use proven_stream::StreamProcessor;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -52,17 +49,16 @@ async fn test_full_2pc_commit() {
     let txn_id = txn_id(1000);
 
     // Execute: Write key1=value1
-    let op_msg = CoordinatorMessage::Operation(OperationMessage {
+    let op_msg = OrderedMessage::TransactionOperation {
         txn_id,
         coordinator_id: "coord1".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: BasicOp::Write {
             key: "key1".to_string(),
             value: "value1".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![op_msg.into_message()])
@@ -80,12 +76,12 @@ async fn test_full_2pc_commit() {
     assert_eq!(response.get_header("status").unwrap(), "complete");
 
     // Prepare
-    let prepare_msg = CoordinatorMessage::<BasicOp>::Control(TransactionControlMessage {
+    let prepare_msg = OrderedMessage::<BasicOp>::TransactionControl {
         txn_id,
         phase: TransactionPhase::Prepare(std::collections::HashMap::new()),
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("req2".to_string()),
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![prepare_msg.into_message()])
@@ -103,12 +99,12 @@ async fn test_full_2pc_commit() {
     assert_eq!(response.get_header("status").unwrap(), "prepared");
 
     // Commit
-    let commit_msg = CoordinatorMessage::<BasicOp>::Control(TransactionControlMessage {
+    let commit_msg = OrderedMessage::<BasicOp>::TransactionControl {
         txn_id,
         phase: TransactionPhase::Commit,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("req3".to_string()),
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![commit_msg.into_message()])
@@ -153,17 +149,16 @@ async fn test_2pc_abort() {
     let txn_id = txn_id(2000);
 
     // Execute operation
-    let op_msg = CoordinatorMessage::Operation(OperationMessage {
+    let op_msg = OrderedMessage::TransactionOperation {
         txn_id,
         coordinator_id: "coord1".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: BasicOp::Write {
             key: "key1".to_string(),
             value: "value1".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![op_msg.into_message()])
@@ -178,12 +173,12 @@ async fn test_2pc_abort() {
     .await;
 
     // Abort
-    let abort_msg = CoordinatorMessage::<BasicOp>::Control(TransactionControlMessage {
+    let abort_msg = OrderedMessage::<BasicOp>::TransactionControl {
         txn_id,
         phase: TransactionPhase::Abort,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("req2".to_string()),
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![abort_msg.into_message()])
@@ -227,17 +222,16 @@ async fn test_adhoc_autocommit() {
     let txn_id = txn_id(3000);
 
     // Ad-hoc write (should auto-commit)
-    let op_msg = CoordinatorMessage::Operation(OperationMessage {
+    let op_msg = OrderedMessage::AutoCommitOperation {
         txn_id,
         coordinator_id: "coord1".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: None,
-        mode: TransactionMode::AdHoc,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: BasicOp::Write {
             key: "key1".to_string(),
             value: "value1".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![op_msg.into_message()])
@@ -290,17 +284,16 @@ async fn test_multiple_operations_in_transaction() {
 
     // Multiple operations
     for i in 1..=3 {
-        let op_msg = CoordinatorMessage::Operation(OperationMessage {
+        let op_msg = OrderedMessage::TransactionOperation {
             txn_id,
             coordinator_id: "coord1".to_string(),
             request_id: format!("req{}", i),
-            txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-            mode: TransactionMode::ReadWrite,
+            txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
             operation: BasicOp::Write {
                 key: format!("key{}", i),
                 value: format!("value{}", i),
             },
-        });
+        };
 
         client
             .publish_to_stream("test-stream".to_string(), vec![op_msg.into_message()])
@@ -316,12 +309,12 @@ async fn test_multiple_operations_in_transaction() {
     }
 
     // Prepare and commit
-    let prepare_msg = CoordinatorMessage::<BasicOp>::Control(TransactionControlMessage {
+    let prepare_msg = OrderedMessage::<BasicOp>::TransactionControl {
         txn_id,
         phase: TransactionPhase::PrepareAndCommit,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("prepare".to_string()),
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![prepare_msg.into_message()])
@@ -372,17 +365,16 @@ async fn test_prepare_and_commit_optimization() {
     let txn_id = txn_id(5000);
 
     // Execute operation
-    let op_msg = CoordinatorMessage::Operation(OperationMessage {
+    let op_msg = OrderedMessage::TransactionOperation {
         txn_id,
         coordinator_id: "coord1".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: BasicOp::Write {
             key: "key1".to_string(),
             value: "value1".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![op_msg.into_message()])
@@ -397,12 +389,12 @@ async fn test_prepare_and_commit_optimization() {
     .await;
 
     // Prepare and commit in one message
-    let prepare_commit_msg = CoordinatorMessage::<BasicOp>::Control(TransactionControlMessage {
+    let prepare_commit_msg = OrderedMessage::<BasicOp>::TransactionControl {
         txn_id,
         phase: TransactionPhase::PrepareAndCommit,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("prepare_commit".to_string()),
-    });
+    };
 
     client
         .publish_to_stream(

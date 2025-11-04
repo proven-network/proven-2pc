@@ -17,7 +17,6 @@ mod transaction;
 // Re-export key types
 pub use engine::{
     AutoBatchEngine, BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine,
-    TransactionMode,
 };
 pub use error::{Error, Result};
 pub use processor::{ProcessorPhase, StreamProcessor};

@@ -57,17 +57,6 @@ pub enum OperationResult<R> {
     },
 }
 
-/// Transaction mode for execution
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransactionMode {
-    /// Read-only transaction using snapshot isolation
-    ReadOnly,
-    /// Ad-hoc operation with auto-commit
-    AdHoc,
-    /// Full read-write transaction with 2PC
-    ReadWrite,
-}
-
 /// Transaction engine that handles the actual storage operations
 ///
 /// Note: All methods are synchronous since stream processing must be

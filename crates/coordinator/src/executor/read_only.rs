@@ -4,8 +4,7 @@ use super::{Executor as ExecutorTrait, common::ExecutorInfra};
 use crate::error::{CoordinatorError, Result};
 use crate::speculation::{CheckResult, PredictionContext};
 use async_trait::async_trait;
-use proven_common::TransactionId;
-use proven_common::{Operation, OperationType};
+use proven_common::{Operation, OperationType, TransactionId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
@@ -35,24 +34,22 @@ impl ReadOnlyExecutor {
         infra: Arc<ExecutorInfra>,
         prediction_context: PredictionContext,
     ) -> Self {
-        // Execute predictions with read-only headers via pubsub
+        // Execute predictions with ReadOnlyMessage via pubsub
         let speculation_result = if !prediction_context.predictions().is_empty() {
             let timeout = std::time::Duration::from_secs(30); // Reasonable timeout for reads
 
-            // Build headers for predictions
             let coordinator_id = infra.coordinator_id.clone();
-            let read_timestamp_str = read_timestamp.to_string();
-
             let client = infra.client.clone();
+
             infra
                 .execute_predictions(
                     prediction_context.predictions(),
                     timeout,
                     || {
+                        // Return base headers - will be extended with request_id per operation
                         let mut headers = HashMap::new();
                         headers.insert("coordinator_id".to_string(), coordinator_id.clone());
-                        headers.insert("read_timestamp".to_string(), read_timestamp_str.clone());
-                        headers.insert("txn_mode".to_string(), "read_only".to_string());
+                        headers.insert("read_timestamp".to_string(), read_timestamp.to_string());
                         headers
                     },
                     |streams_and_messages| {
@@ -177,34 +174,10 @@ impl ReadOnlyExecutor {
         // Use a reasonable timeout for read operations
         let timeout = std::time::Duration::from_secs(30);
 
-        // Generate request ID
-        let request_id = self.infra.generate_request_id();
-
-        // Build headers for snapshot read
-        let mut headers = HashMap::new();
-        headers.insert("request_id".to_string(), request_id.clone());
-        headers.insert(
-            "coordinator_id".to_string(),
-            self.infra.coordinator_id.clone(),
-        );
-        headers.insert(
-            "read_timestamp".to_string(),
-            self.read_timestamp.to_string(),
-        );
-        headers.insert("txn_mode".to_string(), "read_only".to_string());
-
-        // Ensure processor is running
-        self.infra.ensure_processor(stream, timeout).await?;
-
-        // Serialize operation
-        let operation_bytes =
-            serde_json::to_vec(operation).map_err(CoordinatorError::SerializationError)?;
-
-        // Send via pubsub to stream.{stream_name}.readonly subject
-        let subject = format!("stream.{}.readonly", stream);
+        // Use typed helper to send read-only message
         let response = self
             .infra
-            .send_pubsub_and_wait(&subject, headers, operation_bytes, timeout)
+            .send_readonly_operation(stream, self.read_timestamp, operation.clone(), timeout)
             .await?;
 
         // Handle response

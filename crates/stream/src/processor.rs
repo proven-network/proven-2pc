@@ -3,14 +3,14 @@
 //! Manages stream consumption, phase transitions, and delegates message
 //! processing to the flow layer.
 
-use crate::flow::{OrderedFlow, ReadOnlyFlow};
 use crate::engine::TransactionEngine;
 use crate::error::{Error, Result};
+use crate::flow::{OrderedFlow, ReadOnlyFlow};
 use crate::support::ResponseSender;
 use crate::transaction::TransactionManager;
 use proven_common::Timestamp;
 use proven_engine::{Message, MockClient};
-use proven_protocol::CoordinatorMessage;
+use proven_protocol::{OrderedMessage, ReadOnlyMessage};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -125,7 +125,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     /// Process a read-only message from pubsub
     fn process_readonly(&mut self, message: Message) -> Result<()> {
         // Parse message
-        let coord_msg: CoordinatorMessage<E::Operation> = CoordinatorMessage::from_message(message)
+        let coord_msg = ReadOnlyMessage::from_message(message)
             .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
         // Use read-only flow
@@ -145,7 +145,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         offset: u64,
     ) -> Result<()> {
         // Parse message
-        let coord_msg: CoordinatorMessage<E::Operation> = CoordinatorMessage::from_message(message)
+        let coord_msg = OrderedMessage::from_message(message)
             .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
         // Use ordered flow (8-step deterministic processing)
@@ -659,7 +659,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                             self.stream_name
                         );
 
-                        let noop_msg = CoordinatorMessage::<E::Operation>::Noop;
+                        let noop_msg = OrderedMessage::<E::Operation>::Noop;
                         if let Err(e) = self.client.publish_to_stream(
                             self.stream_name.clone(),
                             vec![noop_msg.into_message()],
@@ -685,7 +685,7 @@ mod tests {
     use crate::engine::{OperationResult, TransactionEngine};
     use proven_common::{Operation, OperationType, Response, TransactionId};
     use proven_engine::MockClient;
-    use proven_protocol::{OperationMessage, TransactionControlMessage, TransactionMode};
+    use proven_protocol::TransactionPhase;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
 
@@ -785,17 +785,18 @@ mod tests {
     async fn test_process_adhoc_operation() {
         let mut processor = create_processor();
 
-        let op_msg = CoordinatorMessage::Operation(OperationMessage {
+        let op_msg = OrderedMessage::AutoCommitOperation {
             txn_id: TransactionId::new(),
             coordinator_id: "coord-1".to_string(),
             request_id: "req-1".to_string(),
-            txn_deadline: None,
-            mode: TransactionMode::AdHoc,
+            txn_deadline: Timestamp::now().add_micros(10_000_000),
             operation: TestOp("write1".to_string()),
-        });
+        };
 
         let message = op_msg.into_message();
-        let result = processor.process_ordered(message, Timestamp::now(), 1).await;
+        let result = processor
+            .process_ordered(message, Timestamp::now(), 1)
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(processor.engine().operations.len(), 1);
@@ -811,17 +812,18 @@ mod tests {
         processor.transition_to(ProcessorPhase::Replay);
 
         let txn_id = TransactionId::new();
-        let op_msg = CoordinatorMessage::Operation(OperationMessage {
+        let op_msg = OrderedMessage::TransactionOperation {
             txn_id,
             coordinator_id: "coord-1".to_string(),
             request_id: "req-1".to_string(),
-            txn_deadline: Some(Timestamp::from_micros(10000)),
-            mode: TransactionMode::ReadWrite,
+            txn_deadline: Timestamp::from_micros(10000),
             operation: TestOp("write1".to_string()),
-        });
+        };
 
         let message = op_msg.into_message();
-        let result = processor.process_ordered(message, Timestamp::now(), 1).await;
+        let result = processor
+            .process_ordered(message, Timestamp::now(), 1)
+            .await;
 
         assert!(result.is_ok());
 
@@ -861,14 +863,13 @@ mod tests {
         let deadline = Timestamp::from_micros(1_000_000_000); // Far future
 
         // First, track begin
-        let op_msg = CoordinatorMessage::Operation(OperationMessage {
+        let op_msg = OrderedMessage::TransactionOperation {
             txn_id,
             coordinator_id: "coord-1".to_string(),
             request_id: "req-1".to_string(),
-            txn_deadline: Some(deadline),
-            mode: TransactionMode::ReadWrite,
+            txn_deadline: deadline,
             operation: TestOp("write1".to_string()),
-        });
+        };
 
         processor
             .process_ordered(op_msg.into_message(), ts1, 1)
@@ -876,13 +877,12 @@ mod tests {
             .unwrap();
 
         // Then track prepare
-        let ctrl_msg: CoordinatorMessage<TestOp> =
-            CoordinatorMessage::Control(TransactionControlMessage {
-                txn_id,
-                phase: proven_protocol::TransactionPhase::Prepare(std::collections::HashMap::new()),
-                coordinator_id: Some("coord-1".to_string()),
-                request_id: Some("req-1".to_string()),
-            });
+        let ctrl_msg = OrderedMessage::<TestOp>::TransactionControl {
+            txn_id,
+            phase: TransactionPhase::Prepare(std::collections::HashMap::new()),
+            coordinator_id: Some("coord-1".to_string()),
+            request_id: Some("req-1".to_string()),
+        };
 
         processor
             .process_ordered(ctrl_msg.into_message(), ts2, 2)

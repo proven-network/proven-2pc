@@ -9,6 +9,7 @@ dashmap.workspace = true
 parking_lot.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true
+proven-protocol.workspace = true
 proven-runner.workspace = true
 serde.workspace = true
 serde_json.workspace = true

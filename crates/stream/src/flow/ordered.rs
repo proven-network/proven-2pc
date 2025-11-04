@@ -17,7 +17,7 @@ use crate::executor::{AdHocExecution, ReadWriteExecution};
 use crate::processor::ProcessorPhase;
 use crate::transaction::{AbortReason, RecoveryManager, TransactionDecision, TransactionState};
 use proven_common::{Timestamp, TransactionId};
-use proven_protocol::{CoordinatorMessage, TransactionMode};
+use proven_protocol::OrderedMessage;
 use std::collections::HashMap;
 
 /// Orchestrates the 8-step deterministic flow for ordered messages
@@ -34,7 +34,7 @@ impl OrderedFlow {
         tx_manager: &mut crate::transaction::TransactionManager<E>,
         recovery_manager: &RecoveryManager,
         response: &crate::support::ResponseSender,
-        message: CoordinatorMessage<E::Operation>,
+        message: OrderedMessage<E::Operation>,
         timestamp: Timestamp,
         log_index: u64,
         phase: ProcessorPhase,
@@ -99,7 +99,7 @@ impl OrderedFlow {
         // ═══════════════════════════════════════════════════════════
         // STEP 6: VALIDATE & PROCESS ORIGINAL MESSAGE
         // ═══════════════════════════════════════════════════════════
-        if !matches!(message, CoordinatorMessage::Noop) {
+        if !matches!(message, OrderedMessage::Noop) {
             Self::dispatch_message(&mut ctx, &mut batch, message, phase)?;
         }
 
@@ -189,79 +189,84 @@ impl OrderedFlow {
     fn dispatch_message<E: TransactionEngine>(
         ctx: &mut ExecutionContext<'_, E>,
         batch: &mut E::Batch,
-        message: CoordinatorMessage<E::Operation>,
+        message: OrderedMessage<E::Operation>,
         phase: ProcessorPhase,
     ) -> Result<()> {
         match message {
-            CoordinatorMessage::Noop => {
+            OrderedMessage::Noop => {
                 // Noop message - just triggers processing without actual work
                 Ok(())
             }
-            CoordinatorMessage::ReadOnly { .. } => {
-                // Read-only should use pubsub, not ordered stream
-                Err("Read-only messages should use pubsub, not ordered stream".into())
+            OrderedMessage::AutoCommitOperation {
+                txn_id,
+                coordinator_id,
+                request_id,
+                txn_deadline,
+                operation,
+            } => {
+                // Auto-commit: begin, execute, commit in single batch
+                AdHocExecution::execute(
+                    ctx,
+                    batch,
+                    txn_id,
+                    txn_deadline,
+                    operation,
+                    coordinator_id,
+                    request_id,
+                    phase,
+                )
             }
-            CoordinatorMessage::Operation(op) => {
-                match op.mode {
-                    TransactionMode::ReadOnly => {
-                        // Shouldn't happen - read-only uses pubsub
-                        Err("Read-only operations should use pubsub".into())
-                    }
-                    TransactionMode::AdHoc => {
-                        // Ad-hoc: auto-begin, execute, auto-commit
-                        AdHocExecution::execute(
-                            ctx,
-                            batch,
-                            op.operation,
-                            op.coordinator_id,
-                            op.request_id,
-                            phase,
-                        )
-                    }
-                    TransactionMode::ReadWrite => {
-                        // Two-phase commit transaction
+            OrderedMessage::TransactionOperation {
+                txn_id,
+                coordinator_id,
+                request_id,
+                txn_deadline,
+                operation,
+            } => {
+                // Two-phase commit transaction
 
-                        // Ensure transaction is registered (needed for wound-wait)
-                        if !ctx.tx_manager.exists(op.txn_id)
-                            && let Some(deadline) = op.txn_deadline
-                        {
-                            // Register transaction in manager
-                            ctx.tx_manager.begin(
-                                op.txn_id,
-                                op.coordinator_id.clone(),
-                                deadline,
-                                HashMap::new(), // Empty until prepare
-                            );
+                // Ensure transaction is registered (needed for wound-wait)
+                if !ctx.tx_manager.exists(txn_id) {
+                    // Register transaction in manager
+                    ctx.tx_manager.begin(
+                        txn_id,
+                        coordinator_id.clone(),
+                        txn_deadline,
+                        HashMap::new(), // Empty until prepare
+                    );
 
-                            // Also begin in engine (add to active transactions)
-                            ctx.engine.begin(batch, op.txn_id);
+                    // Also begin in engine (add to active transactions)
+                    ctx.engine.begin(batch, txn_id);
 
-                            // Persist initial state
-                            ctx.persist_transaction_state(batch, op.txn_id)?;
-                        }
-
-                        ReadWriteExecution::execute(
-                            ctx,
-                            batch,
-                            op.operation,
-                            op.txn_id,
-                            op.coordinator_id,
-                            op.request_id,
-                            phase,
-                        )
-                    }
+                    // Persist initial state
+                    ctx.persist_transaction_state(batch, txn_id)?;
                 }
+
+                ReadWriteExecution::execute(
+                    ctx,
+                    batch,
+                    operation,
+                    txn_id,
+                    coordinator_id,
+                    request_id,
+                    phase,
+                )
             }
-            CoordinatorMessage::Control(ctrl) => {
+            OrderedMessage::TransactionControl {
+                txn_id,
+                phase: tx_phase,
+                coordinator_id,
+                request_id,
+            } => {
                 // All control messages go to ReadWriteExecutor
-                match ctrl.phase {
+                match tx_phase {
                     proven_protocol::TransactionPhase::Prepare(participants) => {
                         ReadWriteExecution::prepare(
                             ctx,
                             batch,
-                            ctrl.txn_id,
-                            ctrl.coordinator_id.unwrap_or_default(),
-                            ctrl.request_id.unwrap_or_default(),
+                            txn_id,
+                            coordinator_id.unwrap_or_default(),
+                            request_id.unwrap_or_default(),
                             participants,
                             phase,
                         )
@@ -270,35 +275,35 @@ impl OrderedFlow {
                         ReadWriteExecution::prepare(
                             ctx,
                             batch,
-                            ctrl.txn_id,
-                            ctrl.coordinator_id.clone().unwrap_or_default(),
-                            ctrl.request_id.clone().unwrap_or_default(),
+                            txn_id,
+                            coordinator_id.clone().unwrap_or_default(),
+                            request_id.clone().unwrap_or_default(),
                             HashMap::new(),
                             phase,
                         )?;
                         ReadWriteExecution::commit(
                             ctx,
                             batch,
-                            ctrl.txn_id,
-                            ctrl.coordinator_id.unwrap_or_default(),
-                            ctrl.request_id.unwrap_or_default(),
+                            txn_id,
+                            coordinator_id.unwrap_or_default(),
+                            request_id.unwrap_or_default(),
                             phase,
                         )
                     }
                     proven_protocol::TransactionPhase::Commit => ReadWriteExecution::commit(
                         ctx,
                         batch,
-                        ctrl.txn_id,
-                        ctrl.coordinator_id.unwrap_or_default(),
-                        ctrl.request_id.unwrap_or_default(),
+                        txn_id,
+                        coordinator_id.unwrap_or_default(),
+                        request_id.unwrap_or_default(),
                         phase,
                     ),
                     proven_protocol::TransactionPhase::Abort => ReadWriteExecution::abort(
                         ctx,
                         batch,
-                        ctrl.txn_id,
-                        ctrl.coordinator_id.unwrap_or_default(),
-                        ctrl.request_id.unwrap_or_default(),
+                        txn_id,
+                        coordinator_id.unwrap_or_default(),
+                        request_id.unwrap_or_default(),
                         phase,
                     ),
                 }

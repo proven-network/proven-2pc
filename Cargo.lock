@@ -866,6 +866,7 @@ dependencies = [
  "parking_lot",
  "proven-common",
  "proven-engine",
+ "proven-protocol",
  "proven-runner",
  "serde",
  "serde_json",

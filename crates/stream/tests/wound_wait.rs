@@ -9,7 +9,7 @@ mod common;
 
 use common::{LockOp, LockResponse, TestEngine, txn_id};
 use proven_engine::{MockClient, MockEngine};
-use proven_protocol::{CoordinatorMessage, OperationMessage, TransactionMode};
+use proven_protocol::OrderedMessage;
 use proven_stream::StreamProcessor;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -54,16 +54,15 @@ async fn test_older_wounds_younger() {
 
     // T2 (younger, timestamp=2000) acquires lock on "A"
     let t2_id = txn_id(2000);
-    let t2_msg = CoordinatorMessage::Operation(OperationMessage {
+    let t2_msg = OrderedMessage::TransactionOperation {
         txn_id: t2_id,
         coordinator_id: "younger".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![t2_msg.into_message()])
@@ -83,16 +82,15 @@ async fn test_older_wounds_younger() {
 
     // T1 (older, timestamp=1000) tries to acquire lock on "A"
     let t1_id = txn_id(1000);
-    let t1_msg = CoordinatorMessage::Operation(OperationMessage {
+    let t1_msg = OrderedMessage::TransactionOperation {
         txn_id: t1_id,
         coordinator_id: "older".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![t1_msg.into_message()])
@@ -164,16 +162,15 @@ async fn test_younger_defers_to_older() {
 
     // T1 (older, timestamp=1000) acquires lock on "A"
     let t1_id = txn_id(1000);
-    let t1_msg = CoordinatorMessage::Operation(OperationMessage {
+    let t1_msg = OrderedMessage::TransactionOperation {
         txn_id: t1_id,
         coordinator_id: "older".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![t1_msg.into_message()])
@@ -189,16 +186,15 @@ async fn test_younger_defers_to_older() {
 
     // T2 (younger, timestamp=2000) tries to acquire lock on "A"
     let t2_id = txn_id(2000);
-    let t2_msg = CoordinatorMessage::Operation(OperationMessage {
+    let t2_msg = OrderedMessage::TransactionOperation {
         txn_id: t2_id,
         coordinator_id: "younger".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![t2_msg.into_message()])
@@ -260,16 +256,15 @@ async fn test_multi_level_wound_chain() {
 
     // T3 (youngest=3000) acquires lock
     let t3_id = txn_id(3000);
-    let t3_msg = CoordinatorMessage::Operation(OperationMessage {
+    let t3_msg = OrderedMessage::TransactionOperation {
         txn_id: t3_id,
         coordinator_id: "youngest".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![t3_msg.into_message()])
@@ -284,16 +279,15 @@ async fn test_multi_level_wound_chain() {
 
     // T2 (middle=2000) tries to acquire - should defer
     let t2_id = txn_id(2000);
-    let t2_msg = CoordinatorMessage::Operation(OperationMessage {
+    let t2_msg = OrderedMessage::TransactionOperation {
         txn_id: t2_id,
         coordinator_id: "middle".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![t2_msg.into_message()])
@@ -304,16 +298,15 @@ async fn test_multi_level_wound_chain() {
 
     // T1 (oldest=1000) tries to acquire - should wound T3
     let t1_id = txn_id(1000);
-    let t1_msg = CoordinatorMessage::Operation(OperationMessage {
+    let t1_msg = OrderedMessage::TransactionOperation {
         txn_id: t1_id,
         coordinator_id: "oldest".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![t1_msg.into_message()])
@@ -379,16 +372,15 @@ async fn test_wound_preserves_determinism() {
 
         // Younger acquires lock
         let younger_id = txn_id(2000);
-        let msg = CoordinatorMessage::Operation(OperationMessage {
+        let msg = OrderedMessage::TransactionOperation {
             txn_id: younger_id,
             coordinator_id: "younger".to_string(),
             request_id: "req1".to_string(),
-            txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-            mode: TransactionMode::ReadWrite,
+            txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
             operation: LockOp::Lock {
                 resource: "A".to_string(),
             },
-        });
+        };
 
         client
             .publish_to_stream("test-stream".to_string(), vec![msg.into_message()])
@@ -403,16 +395,15 @@ async fn test_wound_preserves_determinism() {
 
         // Older tries to acquire
         let older_id = txn_id(1000);
-        let msg = CoordinatorMessage::Operation(OperationMessage {
+        let msg = OrderedMessage::TransactionOperation {
             txn_id: older_id,
             coordinator_id: "older".to_string(),
             request_id: "req1".to_string(),
-            txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-            mode: TransactionMode::ReadWrite,
+            txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
             operation: LockOp::Lock {
                 resource: "A".to_string(),
             },
-        });
+        };
 
         client
             .publish_to_stream("test-stream".to_string(), vec![msg.into_message()])
@@ -470,16 +461,15 @@ async fn test_prepare_phase_with_wound() {
 
     // Younger acquires lock
     let younger_id = txn_id(2000);
-    let msg = CoordinatorMessage::Operation(OperationMessage {
+    let msg = OrderedMessage::TransactionOperation {
         txn_id: younger_id,
         coordinator_id: "younger".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![msg.into_message()])
@@ -494,16 +484,15 @@ async fn test_prepare_phase_with_wound() {
 
     // Older tries to acquire - younger should be wounded
     let older_id = txn_id(1000);
-    let msg = CoordinatorMessage::Operation(OperationMessage {
+    let msg = OrderedMessage::TransactionOperation {
         txn_id: older_id,
         coordinator_id: "older".to_string(),
         request_id: "req1".to_string(),
-        txn_deadline: Some(proven_common::Timestamp::now().add_micros(10_000_000)),
-        mode: TransactionMode::ReadWrite,
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         operation: LockOp::Lock {
             resource: "A".to_string(),
         },
-    });
+    };
 
     client
         .publish_to_stream("test-stream".to_string(), vec![msg.into_message()])

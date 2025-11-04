@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::executor::ReadOnlyExecution;
 use crate::support::ResponseSender;
 use crate::transaction::TransactionManager;
-use proven_protocol::CoordinatorMessage;
+use proven_protocol::ReadOnlyMessage;
 
 /// Handles read-only messages from pubsub
 pub struct ReadOnlyFlow;
@@ -19,26 +19,16 @@ impl ReadOnlyFlow {
         engine: &mut E,
         tx_manager: &mut TransactionManager<E>,
         response: &ResponseSender,
-        message: CoordinatorMessage<E::Operation>,
+        message: ReadOnlyMessage<E::Operation>,
     ) -> Result<()> {
-        match message {
-            CoordinatorMessage::ReadOnly {
-                read_timestamp,
-                coordinator_id,
-                request_id,
-                operation,
-            } => {
-                ReadOnlyExecution::execute(
-                    engine,
-                    tx_manager,
-                    response,
-                    operation,
-                    read_timestamp,
-                    coordinator_id,
-                    request_id,
-                )
-            }
-            _ => Err("Only read-only messages allowed on pubsub channel".into()),
-        }
+        ReadOnlyExecution::execute(
+            engine,
+            tx_manager,
+            response,
+            message.operation,
+            message.read_timestamp,
+            message.coordinator_id,
+            message.request_id,
+        )
     }
 }

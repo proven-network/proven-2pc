@@ -7,8 +7,5 @@
 pub mod messages;
 pub mod responses;
 
-pub use messages::{
-    CoordinatorMessage, OperationMessage, TransactionControlMessage, TransactionMode,
-    TransactionPhase,
-};
+pub use messages::{OrderedMessage, ReadOnlyMessage, TransactionPhase};
 pub use responses::{ParticipantResponse, ResponseBuilder, ResponseStatus};
