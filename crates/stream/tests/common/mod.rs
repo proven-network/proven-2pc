@@ -1,7 +1,7 @@
 //! Common test utilities for integration tests
 
 use proven_common::{Operation, OperationType, Response, TransactionId};
-use proven_stream::engine::{BatchOperations, OperationResult, RetryOn, TransactionEngine};
+use proven_stream::{BatchOperations, OperationResult, RetryOn, TransactionEngine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

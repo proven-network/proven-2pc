@@ -3,143 +3,74 @@
 //! This executor handles single operations that:
 //! - Auto-begin and auto-commit
 //! - Don't participate in 2PC
-//! - Abort immediately if blocked (no waiting)
+//! - Use wound-wait protocol if blocked
 
-use crate::engine::{BatchOperations, OperationResult, TransactionEngine};
+use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::Result;
-use crate::support::ResponseSender;
-use crate::transaction::TransactionManager;
+use crate::executor::context::ExecutionContext;
+use crate::processor::ProcessorPhase;
 use proven_common::{Timestamp, TransactionId};
+use std::collections::HashMap;
 
-/// Executes ad-hoc operations with auto-commit
-pub struct AdHocExecutor<'a, E: TransactionEngine> {
-    engine: &'a mut E,
-    tx_manager: &'a mut TransactionManager<E>,
-    response: &'a ResponseSender,
-}
+/// Ad-hoc execution - stateless functions
+pub struct AdHocExecution;
 
-impl<'a, E: TransactionEngine> AdHocExecutor<'a, E> {
-    /// Create a new ad-hoc executor
-    pub fn new(
-        engine: &'a mut E,
-        tx_manager: &'a mut TransactionManager<E>,
-        response: &'a ResponseSender,
-    ) -> Self {
-        Self {
-            engine,
-            tx_manager,
-            response,
-        }
-    }
-
-    /// Execute an ad-hoc operation
+impl AdHocExecution {
+    /// Execute an ad-hoc operation (auto-begin, apply, auto-commit)
     ///
-    /// # Arguments
-    /// * `batch` - The batch to accumulate operations into
-    /// * `operation` - The operation to execute
-    /// * `coordinator_id` - Coordinator to send response to
-    /// * `request_id` - Request ID for matching responses
-    pub fn execute(
-        &mut self,
+    /// Ad-hoc operations are atomic: begin → apply → commit in one batch.
+    /// If blocked, they use wound-wait and defer.
+    pub fn execute<E: TransactionEngine>(
+        ctx: &mut ExecutionContext<E>,
         batch: &mut E::Batch,
         operation: E::Operation,
         coordinator_id: String,
         request_id: String,
-        _timestamp: Timestamp,
+        phase: ProcessorPhase,
     ) -> Result<()> {
-        // Generate a transaction ID for this ad-hoc operation
         let txn_id = TransactionId::new();
-
-        // ═══════════════════════════════════════════════════════════
-        // ADHOC PATTERN: begin → apply → commit in ONE batch
-        // ═══════════════════════════════════════════════════════════
+        let deadline = Timestamp::now().add_micros(60_000_000); // 60 second deadline
 
         // Begin transaction
-        self.engine.begin(batch, txn_id);
-        self.tx_manager.begin(
-            txn_id,
-            coordinator_id.clone(),
-            Timestamp::now().add_micros(60_000_000), // 60 second deadline
-            std::collections::HashMap::new(),
-        );
+        ctx.engine.begin(batch, txn_id);
+        ctx.tx_manager
+            .begin(txn_id, coordinator_id.clone(), deadline, HashMap::new());
 
-        // Apply operation
-        match self
-            .engine
-            .apply_operation(batch, operation.clone(), txn_id)
-        {
+        // Try to apply operation
+        match ctx.engine.apply_operation(batch, operation.clone(), txn_id) {
             OperationResult::Complete(response) => {
-                // ═══════════════════════════════════════════════════════
-                // SUCCESS: Commit in same batch
-                // ═══════════════════════════════════════════════════════
-
-                // Commit transaction (adds commit operations to batch)
-                self.engine.commit(batch, txn_id);
-
-                // Transition in manager
-                self.tx_manager.transition_to_committed(txn_id)?;
-
-                // Add transaction metadata to batch (for completed state)
-                let completed_info = self.tx_manager.get_completed(txn_id).ok_or_else(|| {
-                    crate::error::ProcessorError::TransactionNotFound(txn_id.to_string())
-                })?;
-
-                let state = crate::transaction::state::TransactionState {
-                    coordinator_id: completed_info.coordinator_id.clone(),
-                    deadline: Timestamp::now(),
-                    participants: std::collections::HashMap::new(),
-                    phase: completed_info.phase,
-                };
-
-                let metadata_key =
-                    crate::transaction::state::TransactionState::metadata_key(txn_id);
-                let metadata_value = state.to_bytes()?;
-                batch.insert_metadata(metadata_key, metadata_value);
-
-                // NOTE: Batch will be committed by dispatcher
-                // All changes (begin + apply + commit + metadata) are in the batch
+                // Success: commit in same batch
+                ctx.engine.commit(batch, txn_id);
+                ctx.tx_manager.transition_to_committed(txn_id)?;
+                ctx.persist_completed_state(batch, txn_id)?;
 
                 // Send response
-                self.response
-                    .send_success(&coordinator_id, None, request_id, response);
-
+                if phase == ProcessorPhase::Live {
+                    ctx.response
+                        .send_success(&coordinator_id, None, request_id, response);
+                }
                 Ok(())
             }
-
             OperationResult::WouldBlock { blockers } => {
-                // ═══════════════════════════════════════════════════════
-                // BLOCKED: Defer the operation
-                // ═══════════════════════════════════════════════════════
-
+                // Blocked: use wound-wait protocol
                 tracing::debug!(
-                    "Ad-hoc operation blocked by {:?}, deferring",
+                    "Ad-hoc operation blocked by {:?}, applying wound-wait",
                     blockers
                         .iter()
                         .map(|b| b.txn.to_string())
                         .collect::<Vec<_>>()
                 );
 
-                // Defer in manager with is_atomic=true flag
-                self.tx_manager.defer_operation(
+                ctx.handle_blocked(
+                    batch,
                     txn_id,
                     operation,
                     blockers,
                     coordinator_id,
                     request_id,
-                    true, // ← is_atomic=true (important!)
-                );
-
-                // Persist deferral state to batch (transaction metadata)
-                let state = self.tx_manager.get(txn_id)?;
-                let metadata_key =
-                    crate::transaction::state::TransactionState::metadata_key(txn_id);
-                let metadata_value = state.to_bytes()?;
-                batch.insert_metadata(metadata_key, metadata_value);
-
-                // NOTE: Batch will be committed by dispatcher even though operation was deferred
-                // This ensures transaction metadata is persisted for crash recovery
-
-                // Don't send response yet (operation deferred)
+                    true, // is_atomic
+                    phase,
+                )?;
                 Ok(())
             }
         }
@@ -149,8 +80,10 @@ impl<'a, E: TransactionEngine> AdHocExecutor<'a, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{BlockingInfo, RetryOn};
-    use proven_common::{Operation, OperationType, Response};
+    use crate::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
+    use crate::support::ResponseSender;
+    use crate::transaction::TransactionManager;
+    use proven_common::{Operation, OperationType, Response, TransactionId};
     use proven_engine::MockClient;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -167,15 +100,16 @@ mod tests {
     struct TestResponse(String);
     impl Response for TestResponse {}
 
-    struct TestEngine {
-        should_block: bool,
-        operations_executed: Vec<String>,
-    }
-
     struct TestBatch;
     impl crate::engine::BatchOperations for TestBatch {
         fn insert_metadata(&mut self, _key: Vec<u8>, _value: Vec<u8>) {}
         fn remove_metadata(&mut self, _key: Vec<u8>) {}
+    }
+
+    struct TestEngine {
+        should_block: bool,
+        operations_executed: Vec<String>,
+        blocker_txn: Option<TransactionId>,
     }
 
     impl TransactionEngine for TestEngine {
@@ -206,9 +140,10 @@ mod tests {
             self.operations_executed.push(operation.0.clone());
 
             if self.should_block {
+                let blocker = self.blocker_txn.unwrap_or_default();
                 OperationResult::WouldBlock {
                     blockers: vec![BlockingInfo {
-                        txn: TransactionId::new(),
+                        txn: blocker,
                         retry_on: RetryOn::CommitOrAbort,
                     }],
                 }
@@ -241,6 +176,7 @@ mod tests {
         let engine = TestEngine {
             should_block: false,
             operations_executed: Vec::new(),
+            blocker_txn: None,
         };
         let tx_manager = TransactionManager::new();
         let response = ResponseSender::new(client, "test-stream".to_string(), "test".to_string());
@@ -251,24 +187,24 @@ mod tests {
     #[tokio::test]
     async fn test_execute_successful_adhoc() {
         let (mut engine, mut tx_manager, response) = setup();
-        let mut batch = engine.start_batch();
-        {
-            let mut executor = AdHocExecutor::new(&mut engine, &mut tx_manager, &response);
-            let result = executor.execute(
-                &mut batch,
-                TestOp("write1".to_string()),
-                "coord-1".to_string(),
-                "req-1".to_string(),
-                Timestamp::now(),
-            );
-            assert!(result.is_ok());
-        }
-        engine.commit_batch(batch, 1);
+        let mut ctx = ExecutionContext::new(&mut engine, &mut tx_manager, &response);
+        let mut batch = ctx.engine.start_batch();
 
-        assert_eq!(engine.operations_executed.len(), 1);
-        assert_eq!(engine.operations_executed[0], "write1");
+        let result = AdHocExecution::execute(
+            &mut ctx,
+            &mut batch,
+            TestOp("write1".to_string()),
+            "coord-1".to_string(),
+            "req-1".to_string(),
+            ProcessorPhase::Live,
+        );
 
-        // Yield to allow spawned tasks to complete
+        assert!(result.is_ok());
+        ctx.engine.commit_batch(batch, 1);
+
+        assert_eq!(ctx.engine.operations_executed.len(), 1);
+        assert_eq!(ctx.engine.operations_executed[0], "write1");
+
         tokio::task::yield_now().await;
     }
 
@@ -276,28 +212,33 @@ mod tests {
     async fn test_execute_blocked_adhoc_defers() {
         let (mut engine, mut tx_manager, response) = setup();
 
-        // Make engine block
-        engine.should_block = true;
+        // Create an older blocker (wound-wait won't wound older transactions)
+        let blocker = TransactionId::new();
+        std::thread::sleep(std::time::Duration::from_millis(10)); // Ensure blocker is older
 
-        let mut batch = engine.start_batch();
-        {
-            let mut executor = AdHocExecutor::new(&mut engine, &mut tx_manager, &response);
-            let result = executor.execute(
-                &mut batch,
-                TestOp("write1".to_string()),
-                "coord-1".to_string(),
-                "req-1".to_string(),
-                Timestamp::now(),
-            );
-            assert!(result.is_ok());
-        }
-        engine.commit_batch(batch, 1);
+        engine.should_block = true;
+        engine.blocker_txn = Some(blocker);
+
+        let mut ctx = ExecutionContext::new(&mut engine, &mut tx_manager, &response);
+        let mut batch = ctx.engine.start_batch();
+
+        let result = AdHocExecution::execute(
+            &mut ctx,
+            &mut batch,
+            TestOp("write1".to_string()),
+            "coord-1".to_string(),
+            "req-1".to_string(),
+            ProcessorPhase::Live,
+        );
+
+        assert!(result.is_ok());
+        ctx.engine.commit_batch(batch, 1);
 
         // Should have tried to execute (and been blocked)
-        assert_eq!(engine.operations_executed.len(), 1);
+        assert_eq!(ctx.engine.operations_executed.len(), 1);
 
-        // Should have deferred (better UX than aborting)
-        assert_eq!(tx_manager.total_deferred_count(), 1);
+        // Should have deferred (blocked by older transaction)
+        assert_eq!(ctx.tx_manager.total_deferred_count(), 1);
 
         tokio::task::yield_now().await;
     }
@@ -305,27 +246,26 @@ mod tests {
     #[tokio::test]
     async fn test_adhoc_auto_commits_on_success() {
         let (mut engine, mut tx_manager, response) = setup();
+        let mut ctx = ExecutionContext::new(&mut engine, &mut tx_manager, &response);
+        let mut batch = ctx.engine.start_batch();
 
-        let mut batch = engine.start_batch();
-        {
-            let mut executor = AdHocExecutor::new(&mut engine, &mut tx_manager, &response);
-            executor
-                .execute(
-                    &mut batch,
-                    TestOp("write1".to_string()),
-                    "coord-1".to_string(),
-                    "req-1".to_string(),
-                    Timestamp::now(),
-                )
-                .unwrap();
-        }
-        engine.commit_batch(batch, 1);
+        AdHocExecution::execute(
+            &mut ctx,
+            &mut batch,
+            TestOp("write1".to_string()),
+            "coord-1".to_string(),
+            "req-1".to_string(),
+            ProcessorPhase::Live,
+        )
+        .unwrap();
+
+        ctx.engine.commit_batch(batch, 1);
 
         // Should have executed
-        assert_eq!(engine.operations_executed.len(), 1);
+        assert_eq!(ctx.engine.operations_executed.len(), 1);
 
         // Should NOT have deferred (completed successfully)
-        assert_eq!(tx_manager.total_deferred_count(), 0);
+        assert_eq!(ctx.tx_manager.total_deferred_count(), 0);
 
         tokio::task::yield_now().await;
     }

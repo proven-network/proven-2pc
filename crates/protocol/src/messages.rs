@@ -87,6 +87,9 @@ pub enum CoordinatorMessage<O: Operation> {
         /// Parsed operation
         operation: O,
     },
+    /// No-op message for triggering recovery/GC without real work
+    /// Used when stream is idle but has expired transactions
+    Noop,
 }
 
 /// Operation message in a transaction
@@ -122,6 +125,11 @@ pub struct TransactionControlMessage {
 impl<O: Operation> CoordinatorMessage<O> {
     /// Parse a Message into a typed CoordinatorMessage
     pub fn from_message(msg: Message) -> Result<Self, ParseError> {
+        // Check for noop message
+        if msg.get_header("noop").is_some() {
+            return Ok(CoordinatorMessage::Noop);
+        }
+
         // Check if this is a control message (empty body)
         if msg.body.is_empty() {
             // Must have txn_phase header
@@ -290,6 +298,11 @@ impl<O: Operation> CoordinatorMessage<O> {
                 let body = serde_json::to_vec(&operation).unwrap();
                 Message::new(body, headers)
             }
+            CoordinatorMessage::Noop => {
+                let mut headers = HashMap::new();
+                headers.insert("noop".to_string(), "true".to_string());
+                Message::new(Vec::new(), headers)
+            }
         }
     }
 
@@ -299,6 +312,7 @@ impl<O: Operation> CoordinatorMessage<O> {
             CoordinatorMessage::Operation(op) => Some(op.txn_id),
             CoordinatorMessage::Control(ctrl) => Some(ctrl.txn_id),
             CoordinatorMessage::ReadOnly { .. } => None,
+            CoordinatorMessage::Noop => None,
         }
     }
 
@@ -308,6 +322,7 @@ impl<O: Operation> CoordinatorMessage<O> {
             CoordinatorMessage::Operation(op) => Some(&op.coordinator_id),
             CoordinatorMessage::Control(ctrl) => ctrl.coordinator_id.as_deref(),
             CoordinatorMessage::ReadOnly { coordinator_id, .. } => Some(coordinator_id),
+            CoordinatorMessage::Noop => None,
         }
     }
 
@@ -317,6 +332,7 @@ impl<O: Operation> CoordinatorMessage<O> {
             CoordinatorMessage::Operation(op) => Some(&op.request_id),
             CoordinatorMessage::Control(ctrl) => ctrl.request_id.as_deref(),
             CoordinatorMessage::ReadOnly { request_id, .. } => Some(request_id),
+            CoordinatorMessage::Noop => None,
         }
     }
 }

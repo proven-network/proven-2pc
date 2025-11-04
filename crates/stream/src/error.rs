@@ -3,11 +3,11 @@
 use thiserror::Error;
 
 /// Result type for stream operations
-pub type Result<T> = std::result::Result<T, ProcessorError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur during stream processing
 #[derive(Error, Debug, Clone)]
-pub enum ProcessorError {
+pub enum Error {
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
 
@@ -30,14 +30,14 @@ pub enum ProcessorError {
     RecoveryFailed(String),
 }
 
-impl From<&str> for ProcessorError {
+impl From<&str> for Error {
     fn from(s: &str) -> Self {
-        ProcessorError::InvalidOperation(s.to_string())
+        Error::InvalidOperation(s.to_string())
     }
 }
 
-impl From<String> for ProcessorError {
+impl From<String> for Error {
     fn from(s: String) -> Self {
-        ProcessorError::InvalidOperation(s)
+        Error::InvalidOperation(s)
     }
 }

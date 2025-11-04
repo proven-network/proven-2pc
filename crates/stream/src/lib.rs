@@ -6,24 +6,18 @@
 //! - **Transaction Management**: Unified state management with clear lifecycle
 //! - **Deferral**: Simple, understandable blocking and retry logic
 
-pub mod dispatcher;
-pub mod engine;
-pub mod error;
-pub mod executor;
-pub mod processor;
-pub mod support;
-pub mod transaction;
+mod engine;
+mod error;
+mod executor;
+mod flow;
+mod processor;
+mod support;
+mod transaction;
 
 // Re-export key types
-pub use dispatcher::MessageDispatcher;
 pub use engine::{
-    AutoBatchEngine, BlockingInfo, OperationResult, RetryOn, TransactionEngine, TransactionMode,
+    AutoBatchEngine, BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine,
+    TransactionMode,
 };
-pub use error::{ProcessorError, Result};
-pub use executor::{AdHocExecutor, ReadOnlyExecutor, ReadWriteExecutor};
+pub use error::{Error, Result};
 pub use processor::{ProcessorPhase, StreamProcessor};
-pub use support::ResponseSender;
-pub use transaction::{
-    AbortReason, DeferralManager, DeferredOp, RecoveryManager, TransactionDecision,
-    TransactionManager, TransactionPhase, TransactionState, WaitingFor,
-};

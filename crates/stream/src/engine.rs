@@ -4,6 +4,7 @@
 //! systems must implement to work with the generic stream processor.
 
 use proven_common::{Operation, Response, TransactionId};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Operations that can be performed on a storage batch
@@ -74,7 +75,8 @@ pub enum TransactionMode {
 /// moving to the next one.
 pub trait TransactionEngine: Send + Sync {
     /// The type of operations this engine processes
-    type Operation: Operation;
+    /// MUST be serializable for crash recovery
+    type Operation: Operation + Clone + Serialize + for<'de> Deserialize<'de>;
 
     /// The type of responses this engine produces
     type Response: Response;

@@ -8,7 +8,7 @@ use crate::storage::{ReservationManager, ReservationType, ResourceMetadata};
 use crate::types::{Amount, ResourceOperation, ResourceResponse};
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::engine::{BatchOperations, BlockingInfo};
+use proven_stream::{BatchOperations, BlockingInfo};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 
 /// Wrapper around Fjall Batch that implements BatchOperations

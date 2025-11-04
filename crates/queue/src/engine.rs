@@ -13,9 +13,7 @@ use crate::storage::{LockAttemptResult, LockManager, LockMode};
 use crate::types::{QueueOperation, QueueResponse, QueueValue};
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::engine::{
-    BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine,
-};
+use proven_stream::{BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 /// Complete state for a single transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionState {
+pub struct TransactionState<O = ()> {
     /// Coordinator ID for sending responses
     pub coordinator_id: String,
 
@@ -18,9 +18,14 @@ pub struct TransactionState {
 
     /// Current lifecycle phase
     pub phase: TransactionPhase,
+
+    /// Deferred operations waiting to retry (NEW - for crash recovery)
+    /// Persisted so operations survive crashes
+    #[serde(bound(deserialize = "O: for<'de2> Deserialize<'de2>"))]
+    pub deferred_operations: Vec<crate::transaction::DeferredOp<O>>,
 }
 
-impl TransactionState {
+impl<O> TransactionState<O> {
     /// Create a new active transaction
     pub fn new(
         coordinator_id: String,
@@ -32,10 +37,12 @@ impl TransactionState {
             deadline,
             participants,
             phase: TransactionPhase::Active,
+            deferred_operations: Vec::new(),
         }
     }
 
     /// Check if this transaction is still active (not completed)
+    #[cfg(test)]
     pub fn is_active(&self) -> bool {
         matches!(
             self.phase,
@@ -44,11 +51,13 @@ impl TransactionState {
     }
 
     /// Check if this transaction is prepared
+    #[cfg(test)]
     pub fn is_prepared(&self) -> bool {
         matches!(self.phase, TransactionPhase::Prepared)
     }
 
     /// Check if this transaction is completed (committed or aborted)
+    #[cfg(test)]
     pub fn is_completed(&self) -> bool {
         matches!(
             self.phase,
@@ -57,6 +66,7 @@ impl TransactionState {
     }
 
     /// Check if this transaction was wounded
+    #[cfg(test)]
     pub fn is_wounded(&self) -> Option<TransactionId> {
         match self.phase {
             TransactionPhase::Aborted {
@@ -68,7 +78,10 @@ impl TransactionState {
     }
 
     /// Serialize to bytes for persistence
-    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String>
+    where
+        O: serde::Serialize,
+    {
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(self, &mut bytes)
             .map_err(|e| format!("Failed to serialize transaction state: {}", e))?;
@@ -76,12 +89,16 @@ impl TransactionState {
     }
 
     /// Deserialize from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String>
+    where
+        O: for<'de> serde::Deserialize<'de>,
+    {
         ciborium::de::from_reader(bytes)
             .map_err(|e| format!("Failed to deserialize transaction state: {}", e))
     }
 
     /// Get metadata key for this transaction
+    /// Note: Generic parameter O is not used, just for type safety
     pub fn metadata_key(txn_id: TransactionId) -> Vec<u8> {
         let mut key = b"_txn_meta_".to_vec();
         key.extend_from_slice(&txn_id.to_bytes());
@@ -130,11 +147,12 @@ pub enum AbortReason {
 }
 
 /// Information about a completed transaction (for late message handling)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletedInfo {
     pub coordinator_id: String,
     pub phase: TransactionPhase,
     pub completed_at: Timestamp,
+    pub deadline: Timestamp, // NEW: for deadline-based GC
 }
 
 #[cfg(test)]
@@ -207,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_serialization_roundtrip() {
-        let state = TransactionState {
+        let state = TransactionState::<()> {
             coordinator_id: "test-coord".to_string(),
             deadline: Timestamp::from_micros(5000),
             participants: {
@@ -217,10 +235,11 @@ mod tests {
                 map
             },
             phase: TransactionPhase::Prepared,
+            deferred_operations: Vec::new(),
         };
 
         let json = serde_json::to_string(&state).unwrap();
-        let deserialized: TransactionState = serde_json::from_str(&json).unwrap();
+        let deserialized: TransactionState<()> = serde_json::from_str(&json).unwrap();
 
         assert_eq!(state.coordinator_id, deserialized.coordinator_id);
         assert_eq!(state.deadline, deserialized.deadline);

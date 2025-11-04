@@ -12,53 +12,33 @@ use crate::support::ResponseSender;
 use crate::transaction::TransactionManager;
 use proven_common::TransactionId;
 
-/// Executes read-only operations using snapshot isolation
-pub struct ReadOnlyExecutor<'a, E: TransactionEngine> {
-    engine: &'a mut E,
-    tx_manager: &'a mut TransactionManager<E>,
-    response: &'a ResponseSender,
-}
+/// Read-only execution - stateless functions
+pub struct ReadOnlyExecution;
 
-impl<'a, E: TransactionEngine> ReadOnlyExecutor<'a, E> {
-    /// Create a new read-only executor
-    pub fn new(
-        engine: &'a mut E,
-        tx_manager: &'a mut TransactionManager<E>,
-        response: &'a ResponseSender,
-    ) -> Self {
-        Self {
-            engine,
-            tx_manager,
-            response,
-        }
-    }
-
-    /// Execute a read-only operation
+impl ReadOnlyExecution {
+    /// Execute a read-only operation using snapshot isolation
     ///
-    /// # Arguments
-    /// * `operation` - The operation to execute
-    /// * `read_timestamp` - The transaction ID to read at (snapshot)
-    /// * `coordinator_id` - Coordinator to send response to
-    /// * `request_id` - Request ID for matching responses
-    pub fn execute(
-        &mut self,
+    /// Read-only operations bypass batching and execute immediately.
+    /// If blocked by a write lock, they defer until the blocker completes.
+    pub fn execute<E: TransactionEngine>(
+        engine: &mut E,
+        tx_manager: &mut TransactionManager<E>,
+        response: &ResponseSender,
         operation: E::Operation,
         read_timestamp: TransactionId,
         coordinator_id: String,
         request_id: String,
     ) -> Result<()> {
-        match self
-            .engine
-            .read_at_timestamp(operation.clone(), read_timestamp)
-        {
-            OperationResult::Complete(response) => {
-                self.response
-                    .send_success(&coordinator_id, None, request_id, response);
+        match engine.read_at_timestamp(operation.clone(), read_timestamp) {
+            OperationResult::Complete(resp) => {
+                // Success - send response immediately
+                response.send_success(&coordinator_id, None, request_id, resp);
                 Ok(())
             }
             OperationResult::WouldBlock { blockers } => {
-                // Defer until blockers complete
-                self.tx_manager.defer_operation(
+                // Blocked by write lock - defer until blocker completes
+                // Note: Read-only doesn't use wound-wait (no transaction to wound)
+                tx_manager.defer_operation(
                     read_timestamp, // Use read timestamp as "transaction ID" for tracking
                     operation,
                     blockers,
@@ -173,9 +153,11 @@ mod tests {
     #[tokio::test]
     async fn test_execute_successful_read() {
         let (mut engine, mut tx_manager, response) = setup();
-        let mut executor = ReadOnlyExecutor::new(&mut engine, &mut tx_manager, &response);
 
-        let result = executor.execute(
+        let result = ReadOnlyExecution::execute(
+            &mut engine,
+            &mut tx_manager,
+            &response,
             TestOp("key1".to_string()),
             TransactionId::new(),
             "coord-1".to_string(),
@@ -189,14 +171,13 @@ mod tests {
     #[tokio::test]
     async fn test_execute_blocked_read() {
         let (mut engine, mut tx_manager, response) = setup();
-
-        // Make engine block
         engine.should_block = true;
 
-        let mut executor = ReadOnlyExecutor::new(&mut engine, &mut tx_manager, &response);
-
         let read_timestamp = TransactionId::new();
-        let result = executor.execute(
+        let result = ReadOnlyExecution::execute(
+            &mut engine,
+            &mut tx_manager,
+            &response,
             TestOp("key1".to_string()),
             read_timestamp,
             "coord-1".to_string(),

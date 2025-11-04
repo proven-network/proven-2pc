@@ -1,11 +1,11 @@
 //! Stream processor - main processing loop
 //!
 //! Manages stream consumption, phase transitions, and delegates message
-//! processing to the dispatcher.
+//! processing to the flow layer.
 
-use crate::dispatcher::MessageDispatcher;
+use crate::flow::{OrderedFlow, ReadOnlyFlow};
 use crate::engine::TransactionEngine;
-use crate::error::{ProcessorError, Result};
+use crate::error::{Error, Result};
 use crate::support::ResponseSender;
 use crate::transaction::TransactionManager;
 use proven_common::Timestamp;
@@ -108,7 +108,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     }
 
     /// Process a message from the ordered stream
-    fn process_ordered(
+    async fn process_ordered(
         &mut self,
         message: Message,
         timestamp: Timestamp,
@@ -117,27 +117,19 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         // Update offset
         self.current_offset = offset;
 
-        match self.phase {
-            ProcessorPhase::Replay => {
-                // During replay, execute operations to rebuild engine state
-                // Responses are suppressed (coordinators are long gone)
-                self.process_live_ordered(message, timestamp, offset)
-            }
-            ProcessorPhase::Live => {
-                // Normal live processing with responses
-                self.process_live_ordered(message, timestamp, offset)
-            }
-        }
+        // Both replay and live use same processing path now
+        // Phase is passed to dispatcher to control response suppression
+        self.process_live_ordered(message, timestamp, offset).await
     }
 
     /// Process a read-only message from pubsub
     fn process_readonly(&mut self, message: Message) -> Result<()> {
         // Parse message
         let coord_msg: CoordinatorMessage<E::Operation> = CoordinatorMessage::from_message(message)
-            .map_err(|e| ProcessorError::InvalidOperation(e.to_string()))?;
+            .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
-        // Dispatch to read-only executor
-        MessageDispatcher::dispatch_readonly(
+        // Use read-only flow
+        ReadOnlyFlow::process(
             &mut self.engine,
             &mut self.tx_manager,
             &self.response,
@@ -146,7 +138,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     }
 
     /// Process a live ordered message
-    fn process_live_ordered(
+    async fn process_live_ordered(
         &mut self,
         message: Message,
         timestamp: Timestamp,
@@ -154,17 +146,20 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     ) -> Result<()> {
         // Parse message
         let coord_msg: CoordinatorMessage<E::Operation> = CoordinatorMessage::from_message(message)
-            .map_err(|e| ProcessorError::InvalidOperation(e.to_string()))?;
+            .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
-        // Dispatch to appropriate executor
-        MessageDispatcher::dispatch_ordered(
+        // Use ordered flow (8-step deterministic processing)
+        OrderedFlow::process(
             &mut self.engine,
             &mut self.tx_manager,
+            &self.recovery_manager,
             &self.response,
             coord_msg,
             timestamp,
             offset,
+            self.phase, // Pass current phase (Replay or Live)
         )
+        .await
     }
 
     /// Run recovery for expired transactions (both active and prepared)
@@ -358,17 +353,31 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         let mut cleaned_stale = 0;
 
         for (txn_id, metadata_bytes) in metadata_entries {
-            match crate::transaction::TransactionState::from_bytes(&metadata_bytes) {
+            match crate::transaction::TransactionState::<E::Operation>::from_bytes(&metadata_bytes)
+            {
                 Ok(state) => {
                     match state.phase {
                         crate::transaction::TransactionPhase::Active => {
-                            // Restore active transaction
+                            // Restore active transaction with deferred operations
                             self.tx_manager.begin(
                                 txn_id,
                                 state.coordinator_id.clone(),
                                 state.deadline,
                                 state.participants.clone(),
                             );
+
+                            // Restore deferred operations
+                            for deferred_op in state.deferred_operations {
+                                let blockers = deferred_op.waiting_for.to_blocking_info();
+                                self.tx_manager.defer_operation(
+                                    txn_id,
+                                    deferred_op.operation,
+                                    blockers,
+                                    deferred_op.coordinator_id,
+                                    deferred_op.request_id,
+                                    deferred_op.is_atomic,
+                                );
+                            }
 
                             recovered_active += 1;
                             tracing::debug!(
@@ -380,7 +389,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                         }
 
                         crate::transaction::TransactionPhase::Prepared => {
-                            // Restore prepared transaction
+                            // Restore prepared transaction with deferred operations
                             // First begin, then transition to prepared
                             self.tx_manager.begin(
                                 txn_id,
@@ -393,6 +402,19 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                                 txn_id,
                                 state.participants.clone(),
                             )?;
+
+                            // Restore deferred operations
+                            for deferred_op in state.deferred_operations {
+                                let blockers = deferred_op.waiting_for.to_blocking_info();
+                                self.tx_manager.defer_operation(
+                                    txn_id,
+                                    deferred_op.operation,
+                                    blockers,
+                                    deferred_op.coordinator_id,
+                                    deferred_op.request_id,
+                                    deferred_op.is_atomic,
+                                );
+                            }
 
                             recovered_prepared += 1;
                             tracing::debug!(
@@ -418,7 +440,9 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
                             let mut batch = self.engine.start_batch();
                             let metadata_key =
-                                crate::transaction::TransactionState::metadata_key(txn_id);
+                                crate::transaction::TransactionState::<E::Operation>::metadata_key(
+                                    txn_id,
+                                );
                             batch.remove_metadata(metadata_key);
 
                             let log_index = self.engine.get_log_index().unwrap_or(0);
@@ -485,7 +509,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             .client
             .stream_messages(self.stream_name.clone(), Some(start_offset))
             .await
-            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
+            .map_err(|e| Error::EngineError(e.to_string()))?;
 
         let mut count = 0;
         let start_time = std::time::Instant::now();
@@ -497,7 +521,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                     match result {
                         Some((message, timestamp, offset)) => {
                             // Process in replay mode (tracks state without full execution)
-                            if let Err(e) = self.process_ordered(message, timestamp, offset) {
+                            if let Err(e) = self.process_ordered(message, timestamp, offset).await {
                                 tracing::error!(
                                     "[{}] Error during replay at offset {}: {:?}",
                                     self.stream_name, offset, e
@@ -544,8 +568,8 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         // Re-enable responses for live processing
         self.response.set_suppress(false);
 
-        // Run recovery once for any prepared transactions left at replay end
-        self.run_recovery(Timestamp::now()).await?;
+        // Note: Recovery now happens in dispatcher's 8-step flow
+        // No need for explicit recovery call here
 
         Ok(())
     }
@@ -569,18 +593,18 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             .client
             .stream_messages(self.stream_name.clone(), start_offset)
             .await
-            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
+            .map_err(|e| Error::EngineError(e.to_string()))?;
 
         // Subscribe to readonly pubsub (ReadOnly + AdHoc reads)
         let mut readonly_stream = self
             .client
             .subscribe(&format!("stream.{}.readonly", self.stream_name), None)
             .await
-            .map_err(|e| ProcessorError::EngineError(e.to_string()))?;
+            .map_err(|e| Error::EngineError(e.to_string()))?;
 
-        // Periodic maintenance interval (100ms)
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Idle detection for noop injection (check every 100ms)
+        let mut idle_check = tokio::time::interval(Duration::from_millis(100));
+        idle_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -597,7 +621,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                 result = ordered_stream.recv() => {
                     match result {
                         Some((message, timestamp, offset)) => {
-                            if let Err(e) = self.process_ordered(message, timestamp, offset) {
+                            if let Err(e) = self.process_ordered(message, timestamp, offset).await {
                                 tracing::error!(
                                     "[{}] Error processing ordered message at offset {}: {:?}",
                                     self.stream_name, offset, e
@@ -621,19 +645,31 @@ impl<E: TransactionEngine> StreamProcessor<E> {
                     }
                 }
 
-                // Periodic maintenance
-                _ = interval.tick() => {
-                    // Run recovery for expired prepared transactions
-                    if let Err(e) = self.run_recovery(Timestamp::now()).await {
-                        tracing::warn!(
-                            "[{}] Recovery check failed: {:?}",
-                            self.stream_name, e
-                        );
-                    }
+                // Idle detection for noop injection
+                // NOTE: Recovery and GC now happen in dispatcher's 8-step flow
+                // We just need to inject noops when stream is idle with expired transactions
+                _ = idle_check.tick() => {
+                    let now = Timestamp::now();
 
-                    // Garbage collect completed transactions (older than 5 minutes)
-                    let cutoff = Timestamp::now().sub_micros(5 * 60 * 1_000_000);
-                    self.tx_manager.gc_completed(cutoff);
+                    // Check if there are transactions that need processing (expired or GC-able)
+                    if self.tx_manager.needs_processing(now) {
+                        // Stream is idle with expired transactions - inject a noop
+                        tracing::debug!(
+                            "[{}] Injecting noop message to trigger recovery/GC",
+                            self.stream_name
+                        );
+
+                        let noop_msg = CoordinatorMessage::<E::Operation>::Noop;
+                        if let Err(e) = self.client.publish_to_stream(
+                            self.stream_name.clone(),
+                            vec![noop_msg.into_message()],
+                        ).await {
+                            tracing::warn!(
+                                "[{}] Failed to inject noop: {:?}",
+                                self.stream_name, e
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -759,7 +795,7 @@ mod tests {
         });
 
         let message = op_msg.into_message();
-        let result = processor.process_ordered(message, Timestamp::now(), 1);
+        let result = processor.process_ordered(message, Timestamp::now(), 1).await;
 
         assert!(result.is_ok());
         assert_eq!(processor.engine().operations.len(), 1);
@@ -785,7 +821,7 @@ mod tests {
         });
 
         let message = op_msg.into_message();
-        let result = processor.process_ordered(message, Timestamp::now(), 1);
+        let result = processor.process_ordered(message, Timestamp::now(), 1).await;
 
         assert!(result.is_ok());
 
@@ -819,18 +855,24 @@ mod tests {
 
         let txn_id = TransactionId::new();
 
+        // Use consistent timestamps to avoid expiration
+        let ts1 = Timestamp::from_micros(1000);
+        let ts2 = Timestamp::from_micros(2000);
+        let deadline = Timestamp::from_micros(1_000_000_000); // Far future
+
         // First, track begin
         let op_msg = CoordinatorMessage::Operation(OperationMessage {
             txn_id,
             coordinator_id: "coord-1".to_string(),
             request_id: "req-1".to_string(),
-            txn_deadline: Some(Timestamp::from_micros(10000)),
+            txn_deadline: Some(deadline),
             mode: TransactionMode::ReadWrite,
             operation: TestOp("write1".to_string()),
         });
 
         processor
-            .process_ordered(op_msg.into_message(), Timestamp::now(), 1)
+            .process_ordered(op_msg.into_message(), ts1, 1)
+            .await
             .unwrap();
 
         // Then track prepare
@@ -843,7 +885,8 @@ mod tests {
             });
 
         processor
-            .process_ordered(ctrl_msg.into_message(), Timestamp::now(), 2)
+            .process_ordered(ctrl_msg.into_message(), ts2, 2)
+            .await
             .unwrap();
 
         // Transaction should exist and be in prepared state
@@ -910,11 +953,12 @@ mod tests {
 
         // Create persisted transaction state
         let txn_id = TransactionId::new();
-        let state = crate::transaction::TransactionState {
+        let state = crate::transaction::TransactionState::<TestOp> {
             coordinator_id: "coord-1".to_string(),
             deadline: Timestamp::from_micros(10000),
             participants: std::collections::HashMap::new(),
             phase: crate::transaction::TransactionPhase::Active,
+            deferred_operations: Vec::new(),
         };
 
         let metadata_bytes = state.to_bytes().unwrap();
@@ -1006,11 +1050,12 @@ mod tests {
         participants.insert("participant1".to_string(), 10);
         participants.insert("participant2".to_string(), 11);
 
-        let state = crate::transaction::TransactionState {
+        let state = crate::transaction::TransactionState::<TestOp> {
             coordinator_id: "coord-1".to_string(),
             deadline: Timestamp::from_micros(10000),
             participants: participants.clone(),
             phase: crate::transaction::TransactionPhase::Prepared,
+            deferred_operations: Vec::new(),
         };
 
         let metadata_bytes = state.to_bytes().unwrap();
@@ -1107,14 +1152,15 @@ mod tests {
         let committed_txn = TransactionId::new();
         let aborted_txn = TransactionId::new();
 
-        let committed_state = crate::transaction::TransactionState {
+        let committed_state = crate::transaction::TransactionState::<TestOp> {
             coordinator_id: "coord-1".to_string(),
             deadline: Timestamp::from_micros(10000),
             participants: std::collections::HashMap::new(),
             phase: crate::transaction::TransactionPhase::Committed,
+            deferred_operations: Vec::new(),
         };
 
-        let aborted_state = crate::transaction::TransactionState {
+        let aborted_state = crate::transaction::TransactionState::<TestOp> {
             coordinator_id: "coord-2".to_string(),
             deadline: Timestamp::from_micros(10000),
             participants: std::collections::HashMap::new(),
@@ -1122,6 +1168,7 @@ mod tests {
                 aborted_at: Timestamp::now(),
                 reason: crate::transaction::AbortReason::Explicit,
             },
+            deferred_operations: Vec::new(),
         };
 
         let engine = RecoveryTestEngine {
@@ -1146,6 +1193,112 @@ mod tests {
         // (the important invariant - they should be cleaned up, not restored)
         assert!(!processor.transaction_manager().exists(committed_txn));
         assert!(!processor.transaction_manager().exists(aborted_txn));
+
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn test_crash_recovery_with_deferred_operations() {
+        // Test that deferred operations are recovered after crash
+
+        use crate::transaction::deferral::{DeferredOp, WaitingFor};
+        use std::collections::HashSet;
+
+        struct RecoveryTestEngine {
+            metadata: Vec<(TransactionId, Vec<u8>)>,
+        }
+
+        impl TransactionEngine for RecoveryTestEngine {
+            type Operation = TestOp;
+            type Response = TestResponse;
+            type Batch = TestBatch;
+
+            fn start_batch(&mut self) -> Self::Batch {
+                TestBatch
+            }
+            fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
+            fn read_at_timestamp(
+                &mut self,
+                _operation: Self::Operation,
+                _read_txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                OperationResult::Complete(TestResponse("read".to_string()))
+            }
+            fn apply_operation(
+                &mut self,
+                _batch: &mut Self::Batch,
+                operation: Self::Operation,
+                _txn_id: TransactionId,
+            ) -> OperationResult<Self::Response> {
+                OperationResult::Complete(TestResponse(format!("executed: {}", operation.0)))
+            }
+            fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn get_log_index(&self) -> Option<u64> {
+                Some(42)
+            }
+            fn scan_transaction_metadata(&self) -> Vec<(TransactionId, Vec<u8>)> {
+                self.metadata.clone()
+            }
+            fn engine_name(&self) -> &str {
+                "recovery-test"
+            }
+        }
+
+        // Create a transaction with deferred operations
+        let txn_id = TransactionId::new();
+        let blocker_txn = TransactionId::new();
+
+        // Create a deferred operation waiting on another transaction
+        let mut waiting_for_complete = HashSet::new();
+        waiting_for_complete.insert(blocker_txn);
+
+        let deferred_op = DeferredOp::new(
+            TestOp("deferred-write".to_string()),
+            "coord-1".to_string(),
+            "req-1".to_string(),
+            txn_id,
+            WaitingFor {
+                prepare: HashSet::new(),
+                complete: waiting_for_complete,
+            },
+            false,
+        );
+
+        let state = crate::transaction::TransactionState::<TestOp> {
+            coordinator_id: "coord-1".to_string(),
+            deadline: Timestamp::from_micros(1_000_000_000),
+            participants: std::collections::HashMap::new(),
+            phase: crate::transaction::TransactionPhase::Active,
+            deferred_operations: vec![deferred_op],
+        };
+
+        let metadata_bytes = state.to_bytes().unwrap();
+
+        let engine = RecoveryTestEngine {
+            metadata: vec![(txn_id, metadata_bytes)],
+        };
+
+        let mock_engine_for_client = Arc::new(proven_engine::MockEngine::new());
+        let client = Arc::new(MockClient::new(
+            "test-node".to_string(),
+            mock_engine_for_client,
+        ));
+
+        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+
+        // Recover transaction state
+        processor.recover_transaction_state().unwrap();
+
+        // Verify transaction was recovered
+        assert!(processor.transaction_manager().exists(txn_id));
+
+        // Verify deferred operation was recovered
+        // The deferred operation should be waiting on blocker_txn
+        let deferred_count = processor.transaction_manager().deferred_count(txn_id);
+        assert_eq!(deferred_count, 1, "Deferred operation should be recovered");
 
         tokio::task::yield_now().await;
     }

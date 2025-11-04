@@ -5,6 +5,7 @@
 
 use crate::engine::{BlockingInfo, RetryOn};
 use proven_common::TransactionId;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// Manages deferred operations
@@ -22,7 +23,7 @@ pub struct DeferralManager<O> {
 }
 
 /// A deferred operation that's waiting to retry
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeferredOp<O> {
     pub operation: O,
     pub coordinator_id: String,
@@ -41,17 +42,42 @@ pub struct DeferredOp<O> {
     pub is_atomic: bool,
 
     /// Whether this operation has been taken (ready for retry)
+    /// NOT persisted - transient state for in-memory management
+    #[serde(skip)]
     taken: bool,
 }
 
 /// What a deferred operation is waiting for
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingFor {
     /// Blockers that need to prepare (release read locks)
     pub prepare: HashSet<TransactionId>,
 
     /// Blockers that need to complete (release all locks)
     pub complete: HashSet<TransactionId>,
+}
+
+impl<O> DeferredOp<O> {
+    /// Create a new deferred operation (for testing)
+    #[cfg(test)]
+    pub fn new(
+        operation: O,
+        coordinator_id: String,
+        request_id: String,
+        owner_txn_id: TransactionId,
+        waiting_for: WaitingFor,
+        is_atomic: bool,
+    ) -> Self {
+        Self {
+            operation,
+            coordinator_id,
+            request_id,
+            owner_txn_id,
+            waiting_for,
+            is_atomic,
+            taken: false,
+        }
+    }
 }
 
 impl WaitingFor {
@@ -77,6 +103,24 @@ impl WaitingFor {
         }
 
         Self { prepare, complete }
+    }
+
+    /// Convert to BlockingInfo for re-deferral during crash recovery
+    pub fn to_blocking_info(&self) -> Vec<BlockingInfo> {
+        let mut blockers = Vec::new();
+        for txn in &self.prepare {
+            blockers.push(BlockingInfo {
+                txn: *txn,
+                retry_on: RetryOn::Prepare,
+            });
+        }
+        for txn in &self.complete {
+            blockers.push(BlockingInfo {
+                txn: *txn,
+                retry_on: RetryOn::CommitOrAbort,
+            });
+        }
+        blockers
     }
 }
 
@@ -247,13 +291,63 @@ impl<O: Clone> DeferralManager<O> {
     }
 
     /// Get count of deferred operations for a transaction
+    #[cfg(test)]
     pub fn count_for_transaction(&self, txn_id: TransactionId) -> usize {
         self.deferred.get(&txn_id).map(|ops| ops.len()).unwrap_or(0)
     }
 
     /// Get total count of deferred operations
+    #[cfg(test)]
     pub fn total_count(&self) -> usize {
         self.deferred.values().map(|ops| ops.len()).sum()
+    }
+
+    /// Get deferred operations for a transaction (for persistence)
+    pub fn get_deferred_for_transaction(&self, txn_id: TransactionId) -> Vec<DeferredOp<O>> {
+        self.deferred
+            .get(&txn_id)
+            .map(|ops| ops.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Take all ready deferred operations, sorted by transaction age (oldest first)
+    ///
+    /// CRITICAL: Returns operations sorted by transaction ID, which ensures
+    /// age-ordered execution (older transactions have smaller IDs via UUIDv7)
+    pub fn take_all_ready_sorted(&mut self) -> Vec<DeferredOp<O>> {
+        let mut ready = Vec::new();
+
+        // Collect all ops with no blockers
+        for ops in self.deferred.values() {
+            for op in ops.values() {
+                if op.waiting_for.is_empty() && !op.taken {
+                    ready.push(op.clone());
+                }
+            }
+        }
+
+        // CRITICAL: Sort by transaction ID (age order)
+        // Older transactions have smaller IDs (UUIDv7 is time-ordered)
+        ready.sort_by_key(|op| op.owner_txn_id);
+
+        // Mark as taken
+        for op in &ready {
+            if let Some(ops) = self.deferred.get_mut(&op.owner_txn_id) {
+                for (_, stored_op) in ops.iter_mut() {
+                    if stored_op.owner_txn_id == op.owner_txn_id
+                        && stored_op.coordinator_id == op.coordinator_id
+                        && stored_op.request_id == op.request_id
+                    {
+                        stored_op.taken = true;
+                    }
+                }
+            }
+        }
+
+        // Clean up taken operations
+        self.remove_taken_operations();
+
+        ready
     }
 
     /// Clean up operations that have been taken

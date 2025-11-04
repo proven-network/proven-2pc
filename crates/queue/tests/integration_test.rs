@@ -4,8 +4,8 @@ use proven_common::TransactionId;
 use proven_queue::engine::QueueTransactionEngine;
 use proven_queue::types::{QueueOperation, QueueResponse, QueueValue};
 use proven_stream::AutoBatchEngine;
+use proven_stream::OperationResult;
 use proven_stream::RetryOn;
-use proven_stream::engine::OperationResult;
 
 fn create_tx_id() -> TransactionId {
     TransactionId::new()

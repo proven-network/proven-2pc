@@ -5,7 +5,7 @@ pub mod manager;
 pub mod recovery;
 pub mod state;
 
-pub use deferral::{DeferralManager, DeferredOp, WaitingFor};
+pub use deferral::DeferredOp;
 pub use manager::TransactionManager;
 pub use recovery::{RecoveryManager, TransactionDecision};
-pub use state::{AbortReason, CompletedInfo, TransactionPhase, TransactionState};
+pub use state::{AbortReason, TransactionPhase, TransactionState};

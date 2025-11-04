@@ -5,7 +5,7 @@
 use super::deferral::{DeferralManager, DeferredOp};
 use super::state::{AbortReason, CompletedInfo, TransactionPhase, TransactionState};
 use crate::engine::{BlockingInfo, TransactionEngine};
-use crate::error::{ProcessorError, Result};
+use crate::error::{Error, Result};
 use proven_common::{Timestamp, TransactionId};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -13,12 +13,12 @@ use std::marker::PhantomData;
 /// Manages all transaction state and lifecycle
 pub struct TransactionManager<E: TransactionEngine> {
     /// Active transactions (not yet prepared)
-    active: HashMap<TransactionId, TransactionState>,
+    active: HashMap<TransactionId, TransactionState<E::Operation>>,
 
     /// Prepared transactions (eligible for recovery)
-    prepared: HashMap<TransactionId, TransactionState>,
+    prepared: HashMap<TransactionId, TransactionState<E::Operation>>,
 
-    /// Recently completed (for late message handling, GC'd after 5 min)
+    /// Recently completed (for late message handling, GC'd by deadline)
     completed: HashMap<TransactionId, CompletedInfo>,
 
     /// Deferral manager
@@ -57,6 +57,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
     /// Transition a transaction from active to prepared
     ///
     /// Returns operations that are now ready to retry
+    #[cfg(test)]
     pub fn transition_to_prepared(
         &mut self,
         txn_id: TransactionId,
@@ -75,7 +76,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
         let mut state = self
             .active
             .remove(&txn_id)
-            .ok_or_else(|| ProcessorError::TransactionNotFound(txn_id.to_string()))?;
+            .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))?;
 
         state.phase = TransactionPhase::Prepared;
         state.participants = participants; // Store participants for recovery
@@ -95,7 +96,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
             .active
             .remove(&txn_id)
             .or_else(|| self.prepared.remove(&txn_id))
-            .ok_or_else(|| ProcessorError::TransactionNotFound(txn_id.to_string()))?;
+            .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))?;
 
         self.completed.insert(
             txn_id,
@@ -103,6 +104,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
                 coordinator_id: state.coordinator_id,
                 phase: TransactionPhase::Committed,
                 completed_at: Timestamp::now(),
+                deadline: state.deadline, // NEW: preserve deadline for GC
             },
         );
 
@@ -121,7 +123,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
             .active
             .remove(&txn_id)
             .or_else(|| self.prepared.remove(&txn_id))
-            .ok_or_else(|| ProcessorError::TransactionNotFound(txn_id.to_string()))?;
+            .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))?;
 
         self.completed.insert(
             txn_id,
@@ -132,6 +134,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
                     reason,
                 },
                 completed_at: Timestamp::now(),
+                deadline: state.deadline, // NEW: preserve deadline for GC
             },
         );
 
@@ -147,7 +150,7 @@ impl<E: TransactionEngine> TransactionManager<E> {
         let state = self
             .active
             .get_mut(&victim)
-            .ok_or_else(|| ProcessorError::TransactionNotFound(victim.to_string()))?;
+            .ok_or_else(|| Error::TransactionNotFound(victim.to_string()))?;
 
         state.phase = TransactionPhase::Aborted {
             aborted_at: Timestamp::now(),
@@ -167,22 +170,15 @@ impl<E: TransactionEngine> TransactionManager<E> {
     }
 
     /// Get transaction state (only if active or prepared)
-    pub fn get(&self, txn_id: TransactionId) -> Result<&TransactionState> {
+    pub fn get(&self, txn_id: TransactionId) -> Result<&TransactionState<E::Operation>> {
         self.active
             .get(&txn_id)
             .or_else(|| self.prepared.get(&txn_id))
-            .ok_or_else(|| ProcessorError::TransactionNotFound(txn_id.to_string()))
-    }
-
-    /// Get transaction state mutably (only if active or prepared)
-    pub fn get_mut(&mut self, txn_id: TransactionId) -> Result<&mut TransactionState> {
-        self.active
-            .get_mut(&txn_id)
-            .or_else(|| self.prepared.get_mut(&txn_id))
-            .ok_or_else(|| ProcessorError::TransactionNotFound(txn_id.to_string()))
+            .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))
     }
 
     /// Get completed transaction info
+    #[cfg(test)]
     pub fn get_completed(&self, txn_id: TransactionId) -> Option<&CompletedInfo> {
         self.completed.get(&txn_id)
     }
@@ -238,18 +234,48 @@ impl<E: TransactionEngine> TransactionManager<E> {
     }
 
     /// Check if there are any active transactions
+    #[cfg(test)]
     pub fn has_active_transactions(&self) -> bool {
         !self.active.is_empty() || !self.prepared.is_empty()
     }
 
     /// Get count of active transactions
+    #[cfg(test)]
     pub fn active_count(&self) -> usize {
         self.active.len()
     }
 
     /// Get count of prepared transactions
+    #[cfg(test)]
     pub fn prepared_count(&self) -> usize {
         self.prepared.len()
+    }
+
+    /// Check if there are any transactions that need processing
+    /// Returns true if there are expired transactions or completed transactions past deadline
+    pub fn needs_processing(&self, current_time: Timestamp) -> bool {
+        // Check for expired active transactions
+        for state in self.active.values() {
+            if state.deadline < current_time {
+                return true;
+            }
+        }
+
+        // Check for expired prepared transactions
+        for state in self.prepared.values() {
+            if state.deadline < current_time {
+                return true;
+            }
+        }
+
+        // Check for completed transactions past deadline (ready for GC)
+        for info in self.completed.values() {
+            if info.deadline < current_time {
+                return true;
+            }
+        }
+
+        false
     }
 
     // === DEFERRAL METHODS ===
@@ -275,20 +301,79 @@ impl<E: TransactionEngine> TransactionManager<E> {
     }
 
     /// Get count of deferred operations for a transaction
+    #[cfg(test)]
     pub fn deferred_count(&self, txn_id: TransactionId) -> usize {
         self.deferral.count_for_transaction(txn_id)
     }
 
     /// Get total count of deferred operations
+    #[cfg(test)]
     pub fn total_deferred_count(&self) -> usize {
         self.deferral.total_count()
     }
 
     // === GARBAGE COLLECTION ===
 
-    /// Garbage collect completed transactions older than cutoff
-    pub fn gc_completed(&mut self, cutoff: Timestamp) {
-        self.completed.retain(|_, info| info.completed_at > cutoff);
+    /// Garbage collect completed transactions past their deadline
+    /// Returns transaction IDs that were removed (for metadata cleanup)
+    pub fn gc_completed_by_deadline(&mut self, timestamp: Timestamp) -> Vec<TransactionId> {
+        let mut to_remove = Vec::new();
+
+        for (txn_id, info) in &self.completed {
+            if info.deadline < timestamp {
+                to_remove.push(*txn_id);
+            }
+        }
+
+        for txn_id in &to_remove {
+            self.completed.remove(txn_id);
+        }
+
+        to_remove
+    }
+
+    // === PERSISTENCE AND RECOVERY ===
+
+    /// Get transaction state with deferred operations for persistence
+    pub fn get_state_for_persistence(
+        &self,
+        txn_id: TransactionId,
+    ) -> Result<TransactionState<E::Operation>> {
+        let mut state = self
+            .active
+            .get(&txn_id)
+            .or_else(|| self.prepared.get(&txn_id))
+            .cloned()
+            .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))?;
+
+        // Populate deferred operations from DeferralManager
+        state.deferred_operations = self.deferral.get_deferred_for_transaction(txn_id);
+
+        Ok(state)
+    }
+
+    /// Get completed transaction state for persistence (metadata-only, no deferred ops)
+    pub fn get_completed_state_for_persistence(
+        &self,
+        txn_id: TransactionId,
+    ) -> Result<TransactionState<E::Operation>> {
+        let info = self
+            .completed
+            .get(&txn_id)
+            .ok_or_else(|| Error::TransactionNotFound(txn_id.to_string()))?;
+
+        Ok(TransactionState {
+            coordinator_id: info.coordinator_id.clone(),
+            deadline: info.deadline,
+            participants: HashMap::new(), // Not needed for completed txns
+            phase: info.phase,
+            deferred_operations: Vec::new(), // Completed txns have no deferred ops
+        })
+    }
+
+    /// Take all ready deferrals sorted by age (for centralized processing)
+    pub fn take_all_ready_deferrals_sorted(&mut self) -> Vec<DeferredOp<E::Operation>> {
+        self.deferral.take_all_ready_sorted()
     }
 }
 
@@ -610,7 +695,7 @@ mod tests {
 
         // GC with cutoff far in the future (removes everything completed before now + 1 year)
         let far_future = Timestamp::now().add_micros(365 * 24 * 60 * 60 * 1_000_000);
-        mgr.gc_completed(far_future);
+        mgr.gc_completed_by_deadline(far_future);
 
         assert!(mgr.get_completed(txn1).is_none());
     }
