@@ -4,7 +4,7 @@
 //! The actual message structure is provided by the engine crate.
 
 use crate::types::Value;
-use proven_common::{Operation, OperationType};
+use proven_common::{Operation, OperationType, ProcessorType};
 use serde::{Deserialize, Serialize};
 
 /// KV operation types that can be sent in messages
@@ -27,5 +27,9 @@ impl Operation for KvOperation {
             KvOperation::Put { .. } => OperationType::Write,
             KvOperation::Delete { .. } => OperationType::Write,
         }
+    }
+
+    fn processor_type(&self) -> ProcessorType {
+        ProcessorType::Kv
     }
 }

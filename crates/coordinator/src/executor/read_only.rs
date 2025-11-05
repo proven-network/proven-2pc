@@ -129,10 +129,11 @@ impl ReadOnlyExecutor {
         // Check with predictions
         let op_value =
             serde_json::to_value(operation).map_err(CoordinatorError::SerializationError)?;
+        let processor_type = operation.processor_type();
 
         let check_result = {
             let mut pred_context = self.prediction_context.lock().await;
-            pred_context.check(stream, &op_value, false)
+            pred_context.check(stream, &op_value, processor_type, false)
         };
 
         match check_result {

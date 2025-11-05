@@ -161,11 +161,13 @@ mod tests {
             let _ = pred_ctx.check(
                 "kv_stream",
                 &json!({"Get": {"key": format!("user:{}:balance", user_id)}}),
+                proven_common::ProcessorType::Kv,
                 false,
             );
             let _ = pred_ctx.check(
                 "kv_stream",
                 &json!({"Put": {"key": format!("user:{}:balance", user_id), "value": 100 + i}}),
+                proven_common::ProcessorType::Kv,
                 true,
             );
 
@@ -174,6 +176,7 @@ mod tests {
                 let _ = pred_ctx.check(
                     "kv_stream",
                     &json!({"Get": {"key": format!("user:{}:history", user_id)}}),
+                    proven_common::ProcessorType::Kv,
                     false,
                 );
             }
@@ -202,6 +205,7 @@ mod tests {
         let result1 = pred_context.check(
             "kv_stream",
             &json!({"Get": {"key": "user:alice:balance"}}),
+            proven_common::ProcessorType::Kv,
             false,
         );
         assert!(matches!(result1, CheckResult::Match { .. }));
@@ -209,6 +213,7 @@ mod tests {
         let result2 = pred_context.check(
             "kv_stream",
             &json!({"Put": {"key": "user:alice:balance", "value": 500}}),
+            proven_common::ProcessorType::Kv,
             true,
         );
         assert!(matches!(result2, CheckResult::Match { .. }));
@@ -217,6 +222,7 @@ mod tests {
         let result3 = pred_context.check(
             "kv_stream",
             &json!({"Get": {"key": "user:alice:history"}}),
+            proven_common::ProcessorType::Kv,
             false,
         );
         assert!(matches!(result3, CheckResult::NoPrediction));
@@ -236,10 +242,16 @@ mod tests {
         // Learn a pattern using PredictionContext
         let args = vec![json!({"user": "bob", "amount": 100})];
         let mut pred_ctx = context.create_prediction_context("test", &args);
-        let _ = pred_ctx.check("kv", &json!({"Get": {"key": "user:bob"}}), false);
+        let _ = pred_ctx.check(
+            "kv",
+            &json!({"Get": {"key": "user:bob"}}),
+            proven_common::ProcessorType::Kv,
+            false,
+        );
         let _ = pred_ctx.check(
             "kv",
             &json!({"Put": {"key": "user:bob", "value": 100}}),
+            proven_common::ProcessorType::Kv,
             true,
         );
         pred_ctx.report_outcome(true);
@@ -251,13 +263,19 @@ mod tests {
         // No need to simulate receivers anymore - they're in executors
 
         // First operation matches
-        let result1 = pred_context.check("kv", &json!({"Get": {"key": "user:alice"}}), false);
+        let result1 = pred_context.check(
+            "kv",
+            &json!({"Get": {"key": "user:alice"}}),
+            proven_common::ProcessorType::Kv,
+            false,
+        );
         assert!(matches!(result1, CheckResult::Match { .. }));
 
         // Second operation doesn't match (different amount)
         let result2 = pred_context.check(
             "kv",
             &json!({"Put": {"key": "user:alice", "value": 999}}),
+            proven_common::ProcessorType::Kv,
             true,
         );
         assert!(matches!(result2, CheckResult::SpeculationMismatch { .. }));

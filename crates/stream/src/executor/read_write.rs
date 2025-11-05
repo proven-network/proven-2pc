@@ -9,7 +9,7 @@
 use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::Result;
 use crate::executor::context::ExecutionContext;
-use crate::processor::ProcessorPhase;
+use crate::kernel::ResponseMode;
 use proven_common::{Response, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ impl ReadWriteExecution {
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        phase: ProcessorPhase,
+        phase: ResponseMode,
     ) -> Result<()> {
         // Ensure transaction is registered (needed for wound-wait)
         if !ctx.tx_manager.exists(txn_id) {
@@ -58,7 +58,7 @@ impl ReadWriteExecution {
                 // Success - mark dirty for lazy persistence
                 ctx.mark_dirty(txn_id);
 
-                if phase == ProcessorPhase::Live {
+                if phase == ResponseMode::Send {
                     ctx.response.send_success(
                         &coordinator_id,
                         Some(&txn_id.to_string()),
@@ -99,7 +99,7 @@ impl ReadWriteExecution {
                             // Success after wounding - mark dirty for lazy persistence
                             ctx.mark_dirty(txn_id);
 
-                            if phase == ProcessorPhase::Live {
+                            if phase == ResponseMode::Send {
                                 ctx.response.send_success(
                                     &coordinator_id,
                                     Some(&txn_id.to_string()),
@@ -166,7 +166,7 @@ impl ReadWriteExecution {
         coordinator_id: String,
         request_id: String,
         participants: HashMap<String, u64>,
-        phase: ProcessorPhase,
+        phase: ResponseMode,
     ) -> Result<()> {
         // Prepare in engine (adds to batch)
         ctx.engine.prepare(batch, txn_id);
@@ -179,7 +179,7 @@ impl ReadWriteExecution {
         ctx.mark_dirty(txn_id);
 
         // Send prepared response
-        if phase == ProcessorPhase::Live {
+        if phase == ResponseMode::Send {
             ctx.response
                 .send_prepared(&coordinator_id, &txn_id.to_string(), Some(request_id));
         }
@@ -194,7 +194,7 @@ impl ReadWriteExecution {
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        phase: ProcessorPhase,
+        phase: ResponseMode,
     ) -> Result<()> {
         ctx.commit_transaction(batch, txn_id, coordinator_id, request_id, phase)
     }
@@ -206,7 +206,7 @@ impl ReadWriteExecution {
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        phase: ProcessorPhase,
+        phase: ResponseMode,
     ) -> Result<()> {
         // Abort in engine
         ctx.engine.abort(batch, txn_id);
@@ -219,7 +219,7 @@ impl ReadWriteExecution {
         ctx.mark_dirty(txn_id);
 
         // Send response
-        if phase == ProcessorPhase::Live {
+        if phase == ResponseMode::Send {
             ctx.response.send_success(
                 &coordinator_id,
                 Some(&txn_id.to_string()),
@@ -238,7 +238,9 @@ mod tests {
     use crate::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
     use crate::support::ResponseSender;
     use crate::transaction::TransactionManager;
-    use proven_common::{Operation, OperationType, Response, Timestamp, TransactionId};
+    use proven_common::{
+        Operation, OperationType, ProcessorType, Response, Timestamp, TransactionId,
+    };
     use proven_engine::MockClient;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -248,6 +250,10 @@ mod tests {
     impl Operation for TestOp {
         fn operation_type(&self) -> OperationType {
             OperationType::Write
+        }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
         }
     }
 
@@ -390,7 +396,7 @@ mod tests {
                 txn_id,
                 "coord-1".to_string(),
                 "req-2".to_string(),
-                ProcessorPhase::Live,
+                ResponseMode::Send,
             );
 
             ctx.engine.commit_batch(batch, 2);
@@ -432,7 +438,7 @@ mod tests {
                 txn_id,
                 "coord-1".to_string(),
                 "req-2".to_string(),
-                ProcessorPhase::Live,
+                ResponseMode::Send,
             )
             .unwrap();
             ctx.engine.commit_batch(batch, 2);
@@ -449,7 +455,7 @@ mod tests {
                 "coord-1".to_string(),
                 "req-3".to_string(),
                 HashMap::new(),
-                ProcessorPhase::Live,
+                ResponseMode::Send,
             )
             .unwrap();
             ctx.engine.commit_batch(batch, 3);
@@ -465,7 +471,7 @@ mod tests {
                 txn_id,
                 "coord-1".to_string(),
                 "req-4".to_string(),
-                ProcessorPhase::Live,
+                ResponseMode::Send,
             )
             .unwrap();
             ctx.engine.commit_batch(batch, 4);
@@ -509,7 +515,7 @@ mod tests {
                 txn_id,
                 "coord-1".to_string(),
                 "req-2".to_string(),
-                ProcessorPhase::Live,
+                ResponseMode::Send,
             )
             .unwrap();
             ctx.engine.commit_batch(batch, 2);
@@ -525,7 +531,7 @@ mod tests {
                 txn_id,
                 "coord-1".to_string(),
                 "req-3".to_string(),
-                ProcessorPhase::Live,
+                ResponseMode::Send,
             )
             .unwrap();
             ctx.engine.commit_batch(batch, 3);
@@ -573,7 +579,7 @@ mod tests {
                 txn_id,
                 "coord-1".to_string(),
                 "req-2".to_string(),
-                ProcessorPhase::Live,
+                ResponseMode::Send,
             );
             ctx.engine.commit_batch(batch, 2);
             res

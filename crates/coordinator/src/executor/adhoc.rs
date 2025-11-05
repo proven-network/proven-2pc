@@ -82,6 +82,7 @@ impl ExecutorTrait for AdHocExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proven_common::ProcessorType;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +94,10 @@ mod tests {
         fn operation_type(&self) -> OperationType {
             OperationType::Read
         }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +108,10 @@ mod tests {
     impl Operation for TestWriteOperation {
         fn operation_type(&self) -> OperationType {
             OperationType::Write
+        }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
         }
     }
 

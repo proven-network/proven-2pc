@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
+use crate::ProcessorType;
+
 /// Type of operation - read or write
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationType {
@@ -18,6 +20,9 @@ pub trait Operation:
 {
     /// Get the type of this operation (read or write)
     fn operation_type(&self) -> OperationType;
+
+    /// Get the processor type for this operation
+    fn processor_type(&self) -> ProcessorType;
 
     /// Convert this operation to a JSON value for pattern analysis
     fn as_json_value(&self) -> serde_json::Value {
@@ -44,6 +49,10 @@ mod tests {
             } else {
                 OperationType::Read
             }
+        }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
         }
     }
 

@@ -1,5 +1,6 @@
 //! Main runner implementation for managing stream processors
 
+use crate::ProcessorType;
 use crate::cluster_view::ClusterView;
 use crate::error::{Result, RunnerError};
 use crate::heartbeat;
@@ -101,6 +102,7 @@ impl Runner {
     pub async fn ensure_processor(
         &self,
         stream: &str,
+        processor_type: ProcessorType,
         min_duration: Duration,
     ) -> Result<ProcessorInfo> {
         // First check if we're running this processor locally
@@ -141,19 +143,24 @@ impl Runner {
             }
 
             // Processor exists but is expired - try to extend it
-            if let Ok(extended_info) = self.extend_processor(stream, min_duration).await {
+            if let Ok(extended_info) = self
+                .extend_processor(stream, processor_type, min_duration)
+                .await
+            {
                 return Ok(extended_info);
             }
         }
 
         // Request one to start
-        self.request_processor(stream, min_duration).await
+        self.request_processor(stream, processor_type, min_duration)
+            .await
     }
 
     /// Extend a processor's guaranteed time
     pub async fn extend_processor(
         &self,
         stream: &str,
+        processor_type: ProcessorType,
         additional_duration: Duration,
     ) -> Result<ProcessorInfo> {
         // Check if we're running this processor locally
@@ -203,7 +210,8 @@ impl Runner {
         } else {
             // Request extension from the node running it
             // For simplicity, just request a new processor
-            self.request_processor(stream, additional_duration).await
+            self.request_processor(stream, processor_type, additional_duration)
+                .await
         }
     }
 
@@ -211,6 +219,7 @@ impl Runner {
     async fn request_processor(
         &self,
         stream: &str,
+        processor_type: ProcessorType,
         min_duration: Duration,
     ) -> Result<ProcessorInfo> {
         // Get stream info to find its group
@@ -261,6 +270,7 @@ impl Runner {
         let request = ProcessorRequest {
             request_id,
             stream: stream.to_string(),
+            processor_type,
             min_duration_ms: min_duration.as_millis() as u64,
             requester: self.node_id.clone(),
             target_node: Some(target_node),
@@ -362,6 +372,7 @@ impl Runner {
                 // Start processor
                 match processor::start_processor(
                     request.stream.clone(),
+                    request.processor_type,
                     Duration::from_millis(request.min_duration_ms),
                     client.clone(),
                     base_dir.clone(),
@@ -504,7 +515,7 @@ mod tests {
 
         // Extend the processor
         let result = runner
-            .extend_processor("ext-stream", Duration::from_secs(60))
+            .extend_processor("ext-stream", ProcessorType::Kv, Duration::from_secs(60))
             .await;
 
         assert!(result.is_ok());

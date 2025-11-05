@@ -3,7 +3,7 @@
 use crate::engine::{BatchOperations, BlockingInfo, OperationResult, TransactionEngine};
 use crate::error::Result;
 use crate::executor::read_write::AckResponse;
-use crate::processor::ProcessorPhase;
+use crate::kernel::ResponseMode;
 use crate::support::ResponseSender;
 use crate::transaction::{AbortReason, DeferredOp, TransactionManager};
 use proven_common::TransactionId;
@@ -42,14 +42,14 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         &mut self,
         batch: &mut E::Batch,
         deferred: DeferredOp<E::Operation>,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         if deferred.is_atomic {
             // AdHoc: begin → apply → commit in same batch
-            self.execute_atomic_deferred(batch, deferred, phase)
+            self.execute_atomic_deferred(batch, deferred, response_mode)
         } else {
             // ReadWrite: just apply (already begun)
-            self.execute_transactional_deferred(batch, deferred, phase)
+            self.execute_transactional_deferred(batch, deferred, response_mode)
         }
     }
 
@@ -58,7 +58,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         &mut self,
         batch: &mut E::Batch,
         deferred: DeferredOp<E::Operation>,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         // Begin transaction
         self.engine.begin(batch, deferred.owner_txn_id);
@@ -77,7 +77,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
                 self.mark_dirty(deferred.owner_txn_id);
 
                 // Send response
-                if phase == ProcessorPhase::Live {
+                if response_mode == ResponseMode::Send {
                     self.response.send_success(
                         &deferred.coordinator_id,
                         None,
@@ -97,7 +97,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
                     deferred.coordinator_id,
                     deferred.request_id,
                     true, // is_atomic
-                    phase,
+                    response_mode,
                 )?;
                 Ok(())
             }
@@ -109,7 +109,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         &mut self,
         batch: &mut E::Batch,
         deferred: DeferredOp<E::Operation>,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         match self
             .engine
@@ -120,7 +120,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
                 self.mark_dirty(deferred.owner_txn_id);
 
                 // Send response
-                if phase == ProcessorPhase::Live {
+                if response_mode == ResponseMode::Send {
                     self.response.send_success(
                         &deferred.coordinator_id,
                         Some(&deferred.owner_txn_id.to_string()),
@@ -140,7 +140,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
                     deferred.coordinator_id,
                     deferred.request_id,
                     false, // not atomic
-                    phase,
+                    response_mode,
                 )?;
                 Ok(())
             }
@@ -158,7 +158,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         coordinator_id: String,
         request_id: String,
         is_atomic: bool,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         // Find younger victims to wound
         let younger_victims: Vec<TransactionId> = blockers
@@ -169,7 +169,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
 
         // Wound each younger victim
         for victim in younger_victims {
-            self.wound_transaction(batch, victim, txn_id, phase)?;
+            self.wound_transaction(batch, victim, txn_id, response_mode)?;
         }
 
         // Defer for older blockers
@@ -199,7 +199,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         batch: &mut E::Batch,
         victim: TransactionId,
         wounded_by: TransactionId,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         // Check if victim exists
         if !self.tx_manager.exists(victim) {
@@ -214,7 +214,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
 
         // Send wounded notification
         if let Some(coord) = victim_coord.as_ref()
-            && phase == ProcessorPhase::Live
+            && response_mode == ResponseMode::Send
         {
             self.response
                 .send_wounded(coord, &victim.to_string(), wounded_by, None);
@@ -239,7 +239,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         batch: &mut E::Batch,
         txn_id: TransactionId,
         reason: AbortReason,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         if !self.tx_manager.exists(txn_id) {
             return Ok(());
@@ -258,7 +258,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
 
         // Send notification
         if let Some(coord) = coordinator_id
-            && phase == ProcessorPhase::Live
+            && response_mode == ResponseMode::Send
         {
             self.response.send_error(
                 &coord,
@@ -278,7 +278,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         txn_id: TransactionId,
         coordinator_id: String,
         request_id: String,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         // Commit in engine
         self.engine.commit(batch, txn_id);
@@ -290,7 +290,7 @@ impl<'a, E: TransactionEngine> ExecutionContext<'a, E> {
         self.mark_dirty(txn_id);
 
         // Send response
-        if phase == ProcessorPhase::Live {
+        if response_mode == ResponseMode::Send {
             self.response.send_success(
                 &coordinator_id,
                 Some(&txn_id.to_string()),

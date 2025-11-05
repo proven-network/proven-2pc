@@ -454,7 +454,7 @@ impl<E: TransactionEngine> Default for TransactionManager<E> {
 mod tests {
     use super::*;
     use crate::engine::RetryOn;
-    use proven_common::{Operation, Response};
+    use proven_common::{Operation, ProcessorType, Response};
     use serde::{Deserialize, Serialize};
 
     // Mock types for testing
@@ -463,6 +463,10 @@ mod tests {
     impl Operation for TestOperation {
         fn operation_type(&self) -> proven_common::OperationType {
             proven_common::OperationType::Read
+        }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
         }
     }
 

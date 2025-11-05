@@ -3,7 +3,7 @@
 //! This module defines the queue-specific operations that can be sent in messages.
 
 use crate::types::QueueValue;
-use proven_common::{Operation, OperationType};
+use proven_common::{Operation, OperationType, ProcessorType};
 use serde::{Deserialize, Serialize};
 
 /// Queue operation types that can be sent in messages
@@ -84,5 +84,9 @@ impl Operation for QueueOperation {
             QueueOperation::IsEmpty => OperationType::Read,
             QueueOperation::Clear => OperationType::Write,
         }
+    }
+
+    fn processor_type(&self) -> ProcessorType {
+        ProcessorType::Queue
     }
 }

@@ -6,6 +6,7 @@
 use crate::speculation::SpeculationConfig;
 use crate::speculation::learning::Learner;
 use crate::speculation::template::TemplateInstantiator;
+use proven_common::ProcessorType;
 use serde_json::Value;
 
 /// A predicted operation with metadata for tracking
@@ -16,6 +17,9 @@ pub struct PredictedOperation {
 
     /// Which stream this targets
     pub stream: String,
+
+    /// Processor type for this operation
+    pub processor_type: ProcessorType,
 
     /// Whether this is a write
     pub is_write: bool,
@@ -78,6 +82,7 @@ impl Predictor {
                     predictions.push(PredictedOperation {
                         operation,
                         stream: op_pattern.stream.clone(),
+                        processor_type: op_pattern.processor_type,
                         is_write: op_pattern.is_write,
                         position: op_pattern.position,
                     });
@@ -124,11 +129,13 @@ mod tests {
                 (
                     "kv".to_string(),
                     json!({"Put": {"key": format!("user:{}:balance", user), "value": 100 + i}}),
+                    ProcessorType::Kv,
                     true,
                 ),
                 (
                     "kv".to_string(),
                     json!({"Get": {"key": format!("user:{}:balance", user)}}),
+                    ProcessorType::Kv,
                     false,
                 ),
             ];
@@ -189,6 +196,7 @@ mod tests {
                         "memo": null
                     }
                 }),
+                ProcessorType::Resource,
                 true,
             )];
 
@@ -251,6 +259,7 @@ mod tests {
                     "memo": null
                 }
             }),
+            ProcessorType::Resource,
             true,
         )];
         learner.learn_from_transaction("transfer", &args1, &ops1);
@@ -272,6 +281,7 @@ mod tests {
                     "memo": null
                 }
             }),
+            ProcessorType::Resource,
             true,
         )];
         learner.learn_from_transaction("transfer", &args2, &ops2);
@@ -318,11 +328,13 @@ mod tests {
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:alice"}}),
+                ProcessorType::Kv,
                 false,
             ),
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:alice", "value": "data"}}),
+                ProcessorType::Kv,
                 true,
             ),
         ];
@@ -369,11 +381,13 @@ mod tests {
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:alice:balance"}}),
+                ProcessorType::Kv,
                 false,
             ),
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:alice:balance", "value": 100}}),
+                ProcessorType::Kv,
                 true,
             ),
         ];

@@ -6,6 +6,7 @@
 use crate::speculation::learning::Learner;
 use crate::speculation::predictor::{PredictedOperation, PredictionResult};
 use parking_lot::RwLock;
+use proven_common::ProcessorType;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -50,8 +51,8 @@ pub struct PredictionContext {
     /// Reference to learner for feedback
     learner: Arc<RwLock<Learner>>,
 
-    /// Operations that were actually executed (stream_name, operation, is_write)
-    executed_operations: Vec<(String, Value, bool)>,
+    /// Operations that were actually executed (stream_name, operation, processor_type, is_write)
+    executed_operations: Vec<(String, Value, ProcessorType, bool)>,
 }
 
 impl PredictionContext {
@@ -88,10 +89,20 @@ impl PredictionContext {
     }
 
     /// Check if an operation matches the next predicted operation
-    pub fn check(&mut self, stream: &str, operation: &Value, is_write: bool) -> CheckResult {
+    pub fn check(
+        &mut self,
+        stream: &str,
+        operation: &Value,
+        processor_type: ProcessorType,
+        is_write: bool,
+    ) -> CheckResult {
         // Record this operation for learning
-        self.executed_operations
-            .push((stream.to_string(), operation.clone(), is_write));
+        self.executed_operations.push((
+            stream.to_string(),
+            operation.clone(),
+            processor_type,
+            is_write,
+        ));
 
         // Check if we have a prediction for this position
         if self.current_position >= self.predictions.len() {
@@ -261,11 +272,13 @@ mod tests {
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:alice"}}),
+                proven_common::ProcessorType::Kv,
                 false,
             ),
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:alice", "value": 100}}),
+                proven_common::ProcessorType::Kv,
                 true,
             ),
         ];
@@ -279,12 +292,18 @@ mod tests {
         let mut context = PredictionContext::new(prediction, new_args.clone(), learner_arc.clone());
 
         // Check matching operations (no longer need receivers since they're in executors)
-        let result1 = context.check("kv", &json!({"Get": {"key": "user:bob"}}), false);
+        let result1 = context.check(
+            "kv",
+            &json!({"Get": {"key": "user:bob"}}),
+            proven_common::ProcessorType::Kv,
+            false,
+        );
         assert!(matches!(result1, CheckResult::Match { .. }));
 
         let result2 = context.check(
             "kv",
             &json!({"Put": {"key": "user:bob", "value": 100}}),
+            proven_common::ProcessorType::Kv,
             true,
         );
         assert!(matches!(result2, CheckResult::Match { .. }));
@@ -311,11 +330,13 @@ mod tests {
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:alice"}}),
+                proven_common::ProcessorType::Kv,
                 false,
             ),
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:alice", "value": 100}}),
+                proven_common::ProcessorType::Kv,
                 true,
             ),
         ];
@@ -329,13 +350,19 @@ mod tests {
         let mut context = PredictionContext::new(prediction, new_args.clone(), learner_arc.clone());
 
         // First operation matches
-        let result1 = context.check("kv", &json!({"Get": {"key": "user:bob"}}), false);
+        let result1 = context.check(
+            "kv",
+            &json!({"Get": {"key": "user:bob"}}),
+            proven_common::ProcessorType::Kv,
+            false,
+        );
         assert!(matches!(result1, CheckResult::Match { .. }));
 
         // Second operation doesn't match (different value)
         let result2 = context.check(
             "kv",
             &json!({"Put": {"key": "user:bob", "value": 200}}),
+            proven_common::ProcessorType::Kv,
             true,
         );
         assert!(matches!(result2, CheckResult::SpeculationMismatch { .. }));

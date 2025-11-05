@@ -8,12 +8,10 @@
 
 mod common;
 
-use common::{BasicOp, BasicResponse, TestEngine, txn_id};
+use common::{BasicOp, BasicResponse, TestEngine, run_test_processor, txn_id};
 use proven_engine::{MockClient, MockEngine};
 use proven_protocol::{OrderedMessage, TransactionPhase};
-use proven_stream::StreamProcessor;
 use std::sync::Arc;
-use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 
 /// Test complete 2PC flow: begin → execute → prepare → commit
@@ -29,13 +27,8 @@ async fn test_full_2pc_commit() {
 
     let test_engine = TestEngine::<BasicOp, BasicResponse>::new();
 
-    // Start processor in background
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    // Start processor in background using test wrapper
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     // Wait for replay to complete (replay has 1 second timeout for empty stream)
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
@@ -116,7 +109,6 @@ async fn test_full_2pc_commit() {
 
     // Shutdown processor
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }
 
 /// Test 2PC abort flow
@@ -132,12 +124,7 @@ async fn test_2pc_abort() {
 
     let test_engine = TestEngine::<BasicOp, BasicResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -189,7 +176,6 @@ async fn test_2pc_abort() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }
 
 /// Test ad-hoc auto-commit
@@ -205,12 +191,7 @@ async fn test_adhoc_autocommit() {
 
     let test_engine = TestEngine::<BasicOp, BasicResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -250,7 +231,6 @@ async fn test_adhoc_autocommit() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }
 
 /// Test multiple operations in a transaction
@@ -266,12 +246,7 @@ async fn test_multiple_operations_in_transaction() {
 
     let test_engine = TestEngine::<BasicOp, BasicResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -332,7 +307,6 @@ async fn test_multiple_operations_in_transaction() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }
 
 /// Test prepare-and-commit optimization
@@ -348,12 +322,7 @@ async fn test_prepare_and_commit_optimization() {
 
     let test_engine = TestEngine::<BasicOp, BasicResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -418,5 +387,4 @@ async fn test_prepare_and_commit_optimization() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }

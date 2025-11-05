@@ -3,6 +3,7 @@
 //! This benchmark measures the throughput of SQL inserts using distributed
 //! transactions across multiple independent streams, allowing true parallelism.
 
+use proven_common::ProcessorType;
 use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_runner::Runner;
@@ -67,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let processor_duration = Duration::from_secs(600);
     for stream_name in &stream_names {
         runner
-            .ensure_processor(stream_name, processor_duration)
+            .ensure_processor(stream_name, ProcessorType::Sql, processor_duration)
             .await
             .unwrap();
         println!("✓ SQL processor pre-started for {}", stream_name);

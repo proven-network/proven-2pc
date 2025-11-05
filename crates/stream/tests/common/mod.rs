@@ -1,9 +1,15 @@
 //! Common test utilities for integration tests
 
-use proven_common::{Operation, OperationType, Response, TransactionId};
-use proven_stream::{BatchOperations, OperationResult, RetryOn, TransactionEngine};
+use proven_common::{Operation, OperationType, ProcessorType, Response, TransactionId};
+use proven_engine::MockClient;
+use proven_stream::{
+    BatchOperations, OperationResult, ResponseMode, RetryOn, StreamProcessingKernel,
+    TransactionEngine,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::oneshot;
 
 // Common test batch for all test engines
 pub struct TestBatch;
@@ -68,6 +74,10 @@ impl Operation for LockOp {
             LockOp::Read { .. } => OperationType::Read,
         }
     }
+
+    fn processor_type(&self) -> ProcessorType {
+        ProcessorType::Kv
+    }
 }
 
 /// Lock response for wound-wait tests
@@ -92,6 +102,10 @@ impl Operation for BasicOp {
             BasicOp::Read { .. } => OperationType::Read,
             BasicOp::Write { .. } => OperationType::Write,
         }
+    }
+
+    fn processor_type(&self) -> ProcessorType {
+        ProcessorType::Kv
     }
 }
 
@@ -271,4 +285,121 @@ pub fn txn_id(timestamp_ms: u64) -> proven_common::TransactionId {
 
     let uuid_str = format!("{:08x}-{:04x}-7000-8000-000000000000", high, mid);
     proven_common::TransactionId::from_uuid(uuid::Uuid::parse_str(&uuid_str).unwrap())
+}
+
+/// Helper to run a test processor with the kernel + orchestration pattern
+/// Returns a shutdown sender to stop the processor
+pub fn run_test_processor<E: TransactionEngine + Send + 'static>(
+    engine: E,
+    client: Arc<MockClient>,
+    stream_name: String,
+) -> oneshot::Sender<()> {
+    let kernel = StreamProcessingKernel::new(engine, client.clone(), stream_name.clone());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    tokio::spawn(async move {
+        if let Err(e) = run_stream_processor_simple(kernel, client, shutdown_rx).await {
+            tracing::error!("[{}] Processor error: {:?}", stream_name, e);
+        }
+    });
+
+    shutdown_tx
+}
+
+/// Simple orchestration for tests (mimics runner/orchestration.rs but simplified)
+async fn run_stream_processor_simple<E: TransactionEngine + 'static>(
+    mut kernel: StreamProcessingKernel<E>,
+    client: Arc<MockClient>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) -> Result<(), String> {
+    use std::time::Duration;
+
+    // Step 1: Recover transaction state
+    kernel
+        .recover_transaction_state()
+        .map_err(|e| format!("Recovery failed: {}", e))?;
+
+    // Step 2: Perform replay
+    let stream_name = kernel.stream_name().to_string();
+    let start_offset = kernel.current_offset() + 1;
+
+    kernel.set_response_mode(ResponseMode::Suppress);
+
+    let mut replay_stream = client
+        .stream_messages(stream_name.clone(), Some(start_offset))
+        .await
+        .map_err(|e| format!("Stream subscribe failed: {}", e))?;
+
+    // Replay until caught up (1 second timeout for empty stream detection)
+    loop {
+        tokio::select! {
+            result = replay_stream.recv() => {
+                match result {
+                    Some((message, timestamp, offset)) => {
+                        kernel.process_ordered(message, timestamp, offset).await
+                            .map_err(|e| format!("Process error: {}", e))?;
+                    }
+                    None => break,
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => break,
+        }
+    }
+
+    // Step 3: Transition to live (enable responses)
+    kernel.set_response_mode(ResponseMode::Send);
+
+    let start_offset = if kernel.current_offset() > 0 {
+        Some(kernel.current_offset() + 1)
+    } else {
+        Some(0)
+    };
+
+    let mut ordered_stream = client
+        .stream_messages(stream_name.clone(), start_offset)
+        .await
+        .map_err(|e| format!("Stream subscribe failed: {}", e))?;
+
+    let mut readonly_stream = client
+        .subscribe(&format!("stream.{}.readonly", stream_name), None)
+        .await
+        .map_err(|e| format!("Pubsub subscribe failed: {}", e))?;
+
+    let mut idle_check = tokio::time::interval(Duration::from_millis(100));
+    idle_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Event loop
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = &mut shutdown_rx => break,
+
+            result = ordered_stream.recv() => {
+                match result {
+                    Some((message, timestamp, offset)) => {
+                        let _ = kernel.process_ordered(message, timestamp, offset).await;
+                    }
+                    None => break,
+                }
+            }
+
+            Some(message) = readonly_stream.recv() => {
+                let _ = kernel.process_readonly(message);
+            }
+
+            _ = idle_check.tick() => {
+                let now = proven_common::Timestamp::now();
+                if kernel.needs_processing(now) {
+                    let noop_msg = proven_protocol::OrderedMessage::<E::Operation>::Noop;
+                    let _ = client.publish_to_stream(
+                        stream_name.clone(),
+                        vec![noop_msg.into_message()],
+                    ).await;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

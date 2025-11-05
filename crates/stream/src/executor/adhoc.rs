@@ -8,7 +8,7 @@
 use crate::engine::{OperationResult, TransactionEngine};
 use crate::error::Result;
 use crate::executor::context::ExecutionContext;
-use crate::processor::ProcessorPhase;
+use crate::kernel::ResponseMode;
 use proven_common::{Timestamp, TransactionId};
 use std::collections::HashMap;
 
@@ -29,7 +29,7 @@ impl AdHocExecution {
         operation: E::Operation,
         coordinator_id: String,
         request_id: String,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         // Begin transaction
         ctx.engine.begin(batch, txn_id);
@@ -47,7 +47,7 @@ impl AdHocExecution {
                 ctx.mark_dirty(txn_id);
 
                 // Send response
-                if phase == ProcessorPhase::Live {
+                if response_mode == ResponseMode::Send {
                     ctx.response
                         .send_success(&coordinator_id, None, request_id, response);
                 }
@@ -71,7 +71,7 @@ impl AdHocExecution {
                     coordinator_id,
                     request_id,
                     true, // is_atomic
-                    phase,
+                    response_mode,
                 )?;
                 Ok(())
             }
@@ -85,7 +85,7 @@ mod tests {
     use crate::engine::{BlockingInfo, OperationResult, RetryOn, TransactionEngine};
     use crate::support::ResponseSender;
     use crate::transaction::TransactionManager;
-    use proven_common::{Operation, OperationType, Response, TransactionId};
+    use proven_common::{Operation, OperationType, ProcessorType, Response, TransactionId};
     use proven_engine::MockClient;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -95,6 +95,10 @@ mod tests {
     impl Operation for TestOp {
         fn operation_type(&self) -> OperationType {
             OperationType::Write
+        }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
         }
     }
 
@@ -203,7 +207,7 @@ mod tests {
             TestOp("write1".to_string()),
             "coord-1".to_string(),
             "req-1".to_string(),
-            ProcessorPhase::Live,
+            ResponseMode::Send,
         );
 
         assert!(result.is_ok());
@@ -240,7 +244,7 @@ mod tests {
             TestOp("write1".to_string()),
             "coord-1".to_string(),
             "req-1".to_string(),
-            ProcessorPhase::Live,
+            ResponseMode::Send,
         );
 
         assert!(result.is_ok());
@@ -272,7 +276,7 @@ mod tests {
             TestOp("write1".to_string()),
             "coord-1".to_string(),
             "req-1".to_string(),
-            ProcessorPhase::Live,
+            ResponseMode::Send,
         )
         .unwrap();
 

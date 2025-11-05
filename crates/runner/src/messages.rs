@@ -1,5 +1,6 @@
 //! Message types for pubsub communication
 
+use proven_common::ProcessorType;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -51,6 +52,9 @@ pub struct ProcessorRequest {
 
     /// Stream to process
     pub stream: String,
+
+    /// Type of processor to start
+    pub processor_type: ProcessorType,
 
     /// Minimum duration to run (milliseconds)
     pub min_duration_ms: u64,

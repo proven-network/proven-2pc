@@ -985,9 +985,11 @@ name = "proven-runner"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "proven-common",
  "proven-engine",
  "proven-kv",
  "proven-mvcc",
+ "proven-protocol",
  "proven-queue",
  "proven-resource",
  "proven-sql",

@@ -7,12 +7,10 @@
 
 mod common;
 
-use common::{LockOp, LockResponse, TestEngine, txn_id};
+use common::{LockOp, LockResponse, TestEngine, run_test_processor, txn_id};
 use proven_engine::{MockClient, MockEngine};
 use proven_protocol::OrderedMessage;
-use proven_stream::StreamProcessor;
 use std::sync::Arc;
-use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 
 /// Test that an older transaction wounds a younger transaction
@@ -33,12 +31,7 @@ async fn test_older_wounds_younger() {
 
     let test_engine = TestEngine::<LockOp, LockResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -121,7 +114,6 @@ async fn test_older_wounds_younger() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }
 
 /// Test that a younger transaction defers to an older transaction
@@ -142,12 +134,7 @@ async fn test_younger_defers_to_older() {
 
     let test_engine = TestEngine::<LockOp, LockResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -215,7 +202,6 @@ async fn test_younger_defers_to_older() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }
 
 /// Test multi-level wound chain
@@ -236,12 +222,7 @@ async fn test_multi_level_wound_chain() {
 
     let test_engine = TestEngine::<LockOp, LockResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -337,7 +318,6 @@ async fn test_multi_level_wound_chain() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }
 
 /// Test that wound-wait preserves determinism across runs
@@ -355,13 +335,8 @@ async fn test_wound_preserves_determinism() {
 
         let test_engine = TestEngine::<LockOp, LockResponse>::new();
 
-        let processor =
-            StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-        let processor_handle =
-            tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+        let shutdown_tx =
+            run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
         tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -428,7 +403,6 @@ async fn test_wound_preserves_determinism() {
 
         // Shutdown
         let _ = shutdown_tx.send(());
-        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
     }
 }
 
@@ -445,12 +419,7 @@ async fn test_prepare_phase_with_wound() {
 
     let test_engine = TestEngine::<LockOp, LockResponse>::new();
 
-    let processor = StreamProcessor::new(test_engine, client.clone(), "test-stream".to_string());
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-    let processor_handle =
-        tokio::spawn(async move { processor.start_with_replay(shutdown_rx).await });
+    let shutdown_tx = run_test_processor(test_engine, client.clone(), "test-stream".to_string());
 
     tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
@@ -512,5 +481,4 @@ async fn test_prepare_phase_with_wound() {
 
     // Shutdown
     let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), processor_handle).await;
 }

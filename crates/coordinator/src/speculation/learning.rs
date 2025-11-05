@@ -5,6 +5,7 @@
 
 use crate::speculation::SpeculationConfig;
 use crate::speculation::template::{Template, TemplateExtractor};
+use proven_common::ProcessorType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -21,6 +22,9 @@ pub struct OperationPattern {
 
     /// Stream this operation targets
     pub stream: String,
+
+    /// Processor type for this operation
+    pub processor_type: ProcessorType,
 
     /// Whether this is a write operation
     pub is_write: bool,
@@ -178,10 +182,10 @@ impl Learner {
         &mut self,
         category: &str,
         args: &[Value],
-        operations: &[(String, Value, bool)],
+        operations: &[(String, Value, ProcessorType, bool)],
     ) {
         // Update category stats
-        let is_read_only = !operations.iter().any(|(_, _, is_write)| *is_write);
+        let is_read_only = !operations.iter().any(|(_, _, _, is_write)| *is_write);
         let stats = self.category_stats.entry(category.to_string()).or_default();
         stats.total_transactions += 1;
 
@@ -195,12 +199,15 @@ impl Learner {
         // Extract templates for this transaction
         let mut templates = Vec::new();
 
-        for (position, (stream, operation, is_write)) in operations.iter().enumerate() {
+        for (position, (stream, operation, processor_type, is_write)) in
+            operations.iter().enumerate()
+        {
             if let Some(template) = self.extractor.extract(stream, operation, args, *is_write) {
                 templates.push(OperationPattern {
                     template,
                     position,
                     stream: stream.clone(),
+                    processor_type: *processor_type,
                     is_write: *is_write,
                 });
             }
@@ -395,21 +402,25 @@ mod tests {
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:alice:balance", "value": 100}}),
+                ProcessorType::Kv,
                 true,
             ),
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:alice:balance"}}),
+                ProcessorType::Kv,
                 false,
             ),
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:alice:history", "value": "..."}}),
+                ProcessorType::Kv,
                 true,
             ),
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:alice:history"}}),
+                ProcessorType::Kv,
                 false,
             ),
         ];
@@ -421,21 +432,25 @@ mod tests {
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:bob:balance", "value": 200}}),
+                ProcessorType::Kv,
                 true,
             ),
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:bob:balance"}}),
+                ProcessorType::Kv,
                 false,
             ),
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:bob:history", "value": "..."}}),
+                ProcessorType::Kv,
                 true,
             ),
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:bob:history"}}),
+                ProcessorType::Kv,
                 false,
             ),
         ];
@@ -447,11 +462,13 @@ mod tests {
             (
                 "kv".to_string(),
                 json!({"Put": {"key": "user:charlie:balance", "value": 300}}),
+                ProcessorType::Kv,
                 true,
             ),
             (
                 "kv".to_string(),
                 json!({"Get": {"key": "user:charlie:balance"}}),
+                ProcessorType::Kv,
                 false,
             ),
         ];

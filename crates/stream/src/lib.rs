@@ -10,7 +10,7 @@ mod engine;
 mod error;
 mod executor;
 mod flow;
-mod processor;
+mod kernel;
 mod support;
 mod transaction;
 
@@ -19,4 +19,4 @@ pub use engine::{
     AutoBatchEngine, BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine,
 };
 pub use error::{Error, Result};
-pub use processor::{ProcessorPhase, StreamProcessor};
+pub use kernel::{ResponseMode, StreamProcessingKernel};

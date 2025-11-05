@@ -14,7 +14,7 @@ use crate::engine::{BatchOperations, TransactionEngine};
 use crate::error::Result;
 use crate::executor::context::ExecutionContext;
 use crate::executor::{AdHocExecution, ReadWriteExecution};
-use crate::processor::ProcessorPhase;
+use crate::kernel::ResponseMode;
 use crate::transaction::{AbortReason, RecoveryManager, TransactionDecision};
 use proven_common::{Timestamp, TransactionId};
 use proven_protocol::OrderedMessage;
@@ -37,7 +37,7 @@ impl OrderedFlow {
         message: OrderedMessage<E::Operation>,
         timestamp: Timestamp,
         log_index: u64,
-        phase: ProcessorPhase,
+        response_mode: ResponseMode,
     ) -> Result<()> {
         // ═══════════════════════════════════════════════════════════
         // STEP 1: CREATE BATCH
@@ -52,7 +52,12 @@ impl OrderedFlow {
 
         let mut ctx = ExecutionContext::new(engine, tx_manager, response);
         for txn_id in expired_active {
-            ctx.abort_transaction(&mut batch, txn_id, AbortReason::DeadlineExceeded, phase)?;
+            ctx.abort_transaction(
+                &mut batch,
+                txn_id,
+                AbortReason::DeadlineExceeded,
+                response_mode,
+            )?;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -68,7 +73,7 @@ impl OrderedFlow {
                 recovery_manager,
                 txn_id,
                 timestamp,
-                phase,
+                response_mode,
             )
             .await?;
         }
@@ -91,7 +96,7 @@ impl OrderedFlow {
             }
 
             for deferred in ready_ops {
-                ctx.execute_deferred(&mut batch, deferred, phase)?;
+                ctx.execute_deferred(&mut batch, deferred, response_mode)?;
             }
         }
 
@@ -99,7 +104,7 @@ impl OrderedFlow {
         // STEP 6: VALIDATE & PROCESS ORIGINAL MESSAGE
         // ═══════════════════════════════════════════════════════════
         if !matches!(message, OrderedMessage::Noop) {
-            Self::dispatch_message(&mut ctx, &mut batch, message, phase)?;
+            Self::dispatch_message(&mut ctx, &mut batch, message, response_mode)?;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -112,7 +117,7 @@ impl OrderedFlow {
             }
 
             for deferred in ready_ops {
-                ctx.execute_deferred(&mut batch, deferred, phase)?;
+                ctx.execute_deferred(&mut batch, deferred, response_mode)?;
             }
         }
 
@@ -135,7 +140,7 @@ impl OrderedFlow {
         recovery_manager: &RecoveryManager,
         txn_id: TransactionId,
         timestamp: Timestamp,
-        phase: ProcessorPhase,
+        phase: ResponseMode,
     ) -> Result<()> {
         // Get participants to query
         let participants = ctx.tx_manager.get_participants(txn_id);
@@ -193,7 +198,7 @@ impl OrderedFlow {
         ctx: &mut ExecutionContext<'_, E>,
         batch: &mut E::Batch,
         message: OrderedMessage<E::Operation>,
-        phase: ProcessorPhase,
+        phase: ResponseMode,
     ) -> Result<()> {
         match message {
             OrderedMessage::Noop => {

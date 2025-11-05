@@ -4,7 +4,7 @@
 //! The actual message structure is provided by the engine crate.
 
 use crate::types::Value;
-use proven_common::{Operation, OperationType};
+use proven_common::{Operation, OperationType, ProcessorType};
 use serde::{Deserialize, Serialize};
 
 /// SQL operation types that can be sent in messages
@@ -42,5 +42,9 @@ impl Operation for SqlOperation {
                 }
             }
         }
+    }
+
+    fn processor_type(&self) -> ProcessorType {
+        ProcessorType::Sql
     }
 }

@@ -1,7 +1,7 @@
 //! Resource operations that can be performed within transactions
 
 use crate::types::Amount;
-use proven_common::{Operation, OperationType};
+use proven_common::{Operation, OperationType, ProcessorType};
 use serde::{Deserialize, Serialize};
 
 /// Operations that can be performed on a resource
@@ -64,5 +64,9 @@ impl Operation for ResourceOperation {
             ResourceOperation::GetMetadata => OperationType::Read,
             ResourceOperation::GetTotalSupply => OperationType::Read,
         }
+    }
+
+    fn processor_type(&self) -> ProcessorType {
+        ProcessorType::Resource
     }
 }

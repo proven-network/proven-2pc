@@ -56,7 +56,7 @@ impl ReadOnlyExecution {
 mod tests {
     use super::*;
     use crate::engine::{BlockingInfo, RetryOn};
-    use proven_common::{Operation, OperationType, Response};
+    use proven_common::{Operation, OperationType, ProcessorType, Response};
     use proven_engine::MockClient;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -66,6 +66,10 @@ mod tests {
     impl Operation for TestOp {
         fn operation_type(&self) -> OperationType {
             OperationType::Read
+        }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
         }
     }
 

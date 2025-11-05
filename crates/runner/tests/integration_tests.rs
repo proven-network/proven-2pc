@@ -1,3 +1,4 @@
+use proven_common::ProcessorType;
 use proven_engine::{ConsensusGroupId, MockClient, MockEngine};
 use proven_runner::Runner;
 use std::sync::Arc;
@@ -40,7 +41,7 @@ async fn test_basic_processor_request_ack_flow() {
     // Request a processor from runner1
     let result = timeout(
         Duration::from_secs(2),
-        runner1.ensure_processor("test-stream", Duration::from_secs(60)),
+        runner1.ensure_processor("test-stream", ProcessorType::Kv, Duration::from_secs(60)),
     )
     .await;
 
@@ -96,7 +97,7 @@ async fn test_direct_node_assignment() {
     // Request a processor - it should be assigned to exactly one node
     let result = timeout(
         Duration::from_secs(2),
-        runner1.ensure_processor("group1-stream", Duration::from_secs(60)),
+        runner1.ensure_processor("group1-stream", ProcessorType::Kv, Duration::from_secs(60)),
     )
     .await;
 
@@ -165,7 +166,7 @@ async fn test_concurrent_processor_requests() {
 
         let handle = tokio::spawn(async move {
             runner_clone
-                .ensure_processor(&stream_name, Duration::from_secs(30))
+                .ensure_processor(&stream_name, ProcessorType::Kv, Duration::from_secs(30))
                 .await
         });
         handles.push(handle);

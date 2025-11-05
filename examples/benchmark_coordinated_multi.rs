@@ -3,6 +3,7 @@
 //! This benchmark executes transactions with a consistent pattern of 4 operations
 //! across different storage types, using predictable values that can be speculated.
 
+use proven_common::ProcessorType;
 use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::types::Value;
@@ -48,19 +49,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Pre-start all processors
     let processor_duration = Duration::from_secs(600);
     runner
-        .ensure_processor("sql_stream", processor_duration)
+        .ensure_processor("sql_stream", ProcessorType::Sql, processor_duration)
         .await
         .unwrap();
     runner
-        .ensure_processor("kv_stream", processor_duration)
+        .ensure_processor("kv_stream", ProcessorType::Kv, processor_duration)
         .await
         .unwrap();
     runner
-        .ensure_processor("queue_stream", processor_duration)
+        .ensure_processor("queue_stream", ProcessorType::Queue, processor_duration)
         .await
         .unwrap();
     runner
-        .ensure_processor("resource_stream", processor_duration)
+        .ensure_processor(
+            "resource_stream",
+            ProcessorType::Resource,
+            processor_duration,
+        )
         .await
         .unwrap();
     println!("✓ All processors pre-started");

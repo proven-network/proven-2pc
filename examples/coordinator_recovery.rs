@@ -8,6 +8,7 @@
 //! - Start a new coordinator and verify it can access the previously locked resources
 //! - Recovery should automatically release the abandoned locks
 
+use proven_common::ProcessorType;
 use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv_client::KvClient;
@@ -44,10 +45,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pre-start processors with long duration to prevent expiry during test
     let processor_duration = Duration::from_secs(600);
     runner
-        .ensure_processor("kv_stream", processor_duration)
+        .ensure_processor("kv_stream", ProcessorType::Kv, processor_duration)
         .await?;
     runner
-        .ensure_processor("resource_stream", processor_duration)
+        .ensure_processor(
+            "resource_stream",
+            ProcessorType::Resource,
+            processor_duration,
+        )
         .await?;
     println!("✓ Processors pre-started with 600s lease\n");
 

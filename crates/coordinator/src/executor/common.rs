@@ -3,7 +3,7 @@
 use crate::error::{CoordinatorError, Result};
 use crate::responses::{ResponseCollector, ResponseMessage};
 use crate::speculation::predictor::PredictedOperation;
-use proven_common::{Operation, Timestamp, TransactionId};
+use proven_common::{Operation, ProcessorType, Timestamp, TransactionId};
 use proven_engine::{Message, MockClient};
 use proven_protocol::{OrderedMessage, ReadOnlyMessage, TransactionPhase};
 use proven_runner::Runner;
@@ -49,9 +49,14 @@ impl ExecutorInfra {
     }
 
     /// Ensure processor is running for a stream
-    pub async fn ensure_processor(&self, stream: &str, timeout: Duration) -> Result<()> {
+    pub async fn ensure_processor(
+        &self,
+        stream: &str,
+        processor_type: ProcessorType,
+        timeout: Duration,
+    ) -> Result<()> {
         self.runner
-            .ensure_processor(stream, timeout)
+            .ensure_processor(stream, processor_type, timeout)
             .await
             .map_err(|e| {
                 CoordinatorError::EngineError(format!("Failed to ensure processor: {}", e))
@@ -175,7 +180,8 @@ impl ExecutorInfra {
         let request_id = self.generate_request_id();
 
         // Ensure processor is running
-        self.ensure_processor(stream, timeout).await?;
+        self.ensure_processor(stream, operation.processor_type(), timeout)
+            .await?;
 
         // Build typed message
         let message = OrderedMessage::TransactionOperation {
@@ -213,7 +219,8 @@ impl ExecutorInfra {
         let request_id = self.generate_request_id();
 
         // Ensure processor is running
-        self.ensure_processor(stream, timeout).await?;
+        self.ensure_processor(stream, operation.processor_type(), timeout)
+            .await?;
 
         // Build typed message
         let message = OrderedMessage::AutoCommitOperation {
@@ -250,7 +257,8 @@ impl ExecutorInfra {
         let request_id = self.generate_request_id();
 
         // Ensure processor is running
-        self.ensure_processor(stream, timeout).await?;
+        self.ensure_processor(stream, operation.processor_type(), timeout)
+            .await?;
 
         // Build typed message
         let message = ReadOnlyMessage {
@@ -371,10 +379,20 @@ impl ExecutorInfra {
             senders.insert(index, tx);
         }
 
-        // Ensure all processors are running
-        for stream in stream_operations.keys() {
-            if let Err(e) = self.runner.ensure_processor(stream, timeout).await {
-                for (idx, _) in &stream_operations[stream] {
+        // Ensure all processors are running (using processor_type from predictions)
+        let mut stream_processor_types: HashMap<String, ProcessorType> = HashMap::new();
+        for pred_op in predictions.iter() {
+            stream_processor_types.insert(pred_op.stream.clone(), pred_op.processor_type);
+        }
+
+        for (stream, processor_type) in stream_processor_types {
+            if let Err(e) = self
+                .runner
+                .ensure_processor(&stream, processor_type, timeout)
+                .await
+            {
+                // Mark all operations for this stream as failed
+                for (idx, _) in stream_operations.get(&stream).unwrap_or(&vec![]) {
                     if let Some(sender) = senders.remove(idx) {
                         let _ = sender.send(Err(CoordinatorError::EngineError(format!(
                             "Failed to ensure processor: {}",

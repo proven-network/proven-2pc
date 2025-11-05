@@ -8,7 +8,7 @@
 //!
 //! This tests the critical safety property: if any participant commits, all must commit.
 
-use proven_common::{Timestamp, TransactionId};
+use proven_common::{ProcessorType, Timestamp, TransactionId};
 use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{Message, MockClient, MockEngine};
 use proven_kv_client::KvClient;
@@ -59,13 +59,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Step 0: Pre-starting processors for all streams");
     let processor_duration = Duration::from_secs(600); // 10 minutes - long enough for test
     runner
-        .ensure_processor("stream_a", processor_duration)
+        .ensure_processor("stream_a", ProcessorType::Kv, processor_duration)
         .await?;
     runner
-        .ensure_processor("stream_b", processor_duration)
+        .ensure_processor("stream_b", ProcessorType::Kv, processor_duration)
         .await?;
     runner
-        .ensure_processor("stream_c", processor_duration)
+        .ensure_processor("stream_c", ProcessorType::Kv, processor_duration)
         .await?;
     println!("    ✓ All processors pre-started with 600s lease\n");
 

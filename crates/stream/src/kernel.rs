@@ -1,7 +1,8 @@
-//! Stream processor - main processing loop
+//! Stream processing kernel - core transaction processing without I/O orchestration
 //!
-//! Manages stream consumption, phase transitions, and delegates message
-//! processing to the flow layer.
+//! This module provides the pure processing logic for stream messages,
+//! separated from stream subscription and event loop orchestration.
+//! The runner crate owns the orchestration and uses this kernel to process messages.
 
 use crate::engine::TransactionEngine;
 use crate::error::{Error, Result};
@@ -12,25 +13,31 @@ use proven_common::Timestamp;
 use proven_engine::{Message, MockClient};
 use proven_protocol::{OrderedMessage, ReadOnlyMessage};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::oneshot;
 
-/// Processing phases
+/// Response mode for message processing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessorPhase {
-    /// Replaying from snapshot - execute operations but suppress responses
-    Replay,
-    /// Live processing - normal operation with responses
-    Live,
+pub enum ResponseMode {
+    /// Suppress responses (typically used during replay/catch-up)
+    Suppress,
+    /// Send responses normally (live processing)
+    Send,
 }
 
-/// Stream processor for distributed transactions
-pub struct StreamProcessor<E: TransactionEngine> {
+/// Stream processing kernel - handles message processing without I/O orchestration
+///
+/// This is the core transaction processing engine that:
+/// - Processes ordered and read-only messages
+/// - Manages transaction state
+/// - Handles crash recovery
+/// - Tracks processing offsets
+///
+/// It does NOT handle:
+/// - Stream subscriptions (runner's responsibility)
+/// - Event loop orchestration (runner's responsibility)
+/// - Shutdown signaling (runner's responsibility)
+pub struct StreamProcessingKernel<E: TransactionEngine> {
     /// Transaction engine
     engine: E,
-
-    /// Client for stream/pubsub
-    client: Arc<MockClient>,
 
     /// Transaction manager
     tx_manager: TransactionManager<E>,
@@ -41,18 +48,18 @@ pub struct StreamProcessor<E: TransactionEngine> {
     /// Response sender
     response: ResponseSender,
 
-    /// Current processing phase
-    phase: ProcessorPhase,
+    /// Current response mode
+    response_mode: ResponseMode,
 
-    /// Stream name
+    /// Stream name (for logging)
     stream_name: String,
 
     /// Current offset in the stream
     current_offset: u64,
 }
 
-impl<E: TransactionEngine> StreamProcessor<E> {
-    /// Create a new stream processor
+impl<E: TransactionEngine> StreamProcessingKernel<E> {
+    /// Create a new stream processing kernel
     pub fn new(engine: E, client: Arc<MockClient>, stream_name: String) -> Self {
         // Create response sender internally
         let response = ResponseSender::new(
@@ -65,7 +72,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         let engine_offset = engine.get_log_index().unwrap_or(0);
 
         tracing::info!(
-            "[{}] Engine is at log index {}, will replay from offset {}",
+            "[{}] Kernel initialized at log index {}, will replay from offset {}",
             stream_name,
             engine_offset,
             engine_offset + 1
@@ -73,33 +80,37 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 
         Self {
             engine,
-            recovery_manager: crate::transaction::RecoveryManager::new(
-                client.clone(),
-                stream_name.clone(),
-            ),
-            client,
+            recovery_manager: crate::transaction::RecoveryManager::new(client, stream_name.clone()),
             tx_manager: TransactionManager::new(),
             response,
-            phase: ProcessorPhase::Replay, // Always start in replay
+            response_mode: ResponseMode::Suppress, // Start with responses suppressed (for replay)
             stream_name,
             current_offset: engine_offset,
         }
     }
 
-    /// Get current processing phase
-    pub fn phase(&self) -> ProcessorPhase {
-        self.phase
+    /// Get current response mode
+    pub fn response_mode(&self) -> ResponseMode {
+        self.response_mode
     }
 
-    /// Transition to a new phase
-    fn transition_to(&mut self, phase: ProcessorPhase) {
-        tracing::info!(
-            "[{}] Phase transition: {:?} -> {:?}",
-            self.stream_name,
-            self.phase,
-            phase
-        );
-        self.phase = phase;
+    /// Set response mode (called by orchestrator)
+    pub fn set_response_mode(&mut self, mode: ResponseMode) {
+        if self.response_mode != mode {
+            tracing::info!(
+                "[{}] Response mode transition: {:?} -> {:?}",
+                self.stream_name,
+                self.response_mode,
+                mode
+            );
+            self.response_mode = mode;
+
+            // Update response sender
+            match mode {
+                ResponseMode::Suppress => self.response.set_suppress(true),
+                ResponseMode::Send => self.response.set_suppress(false),
+            }
+        }
     }
 
     /// Get current offset
@@ -107,8 +118,13 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         self.current_offset
     }
 
+    /// Get stream name
+    pub fn stream_name(&self) -> &str {
+        &self.stream_name
+    }
+
     /// Process a message from the ordered stream
-    async fn process_ordered(
+    pub async fn process_ordered(
         &mut self,
         message: Message,
         timestamp: Timestamp,
@@ -117,33 +133,6 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         // Update offset
         self.current_offset = offset;
 
-        // Both replay and live use same processing path now
-        // Phase is passed to dispatcher to control response suppression
-        self.process_live_ordered(message, timestamp, offset).await
-    }
-
-    /// Process a read-only message from pubsub
-    fn process_readonly(&mut self, message: Message) -> Result<()> {
-        // Parse message
-        let coord_msg = ReadOnlyMessage::from_message(message)
-            .map_err(|e| Error::InvalidOperation(e.to_string()))?;
-
-        // Use read-only flow
-        UnorderedFlow::process(
-            &mut self.engine,
-            &mut self.tx_manager,
-            &self.response,
-            coord_msg,
-        )
-    }
-
-    /// Process a live ordered message
-    async fn process_live_ordered(
-        &mut self,
-        message: Message,
-        timestamp: Timestamp,
-        offset: u64,
-    ) -> Result<()> {
         // Parse message
         let coord_msg = OrderedMessage::from_message(message)
             .map_err(|e| Error::InvalidOperation(e.to_string()))?;
@@ -157,21 +146,24 @@ impl<E: TransactionEngine> StreamProcessor<E> {
             coord_msg,
             timestamp,
             offset,
-            self.phase, // Pass current phase (Replay or Live)
+            self.response_mode,
         )
         .await
     }
 
-    /// Get reference to transaction manager
-    #[cfg(test)]
-    fn transaction_manager(&self) -> &TransactionManager<E> {
-        &self.tx_manager
-    }
+    /// Process a read-only message from pubsub
+    pub fn process_readonly(&mut self, message: Message) -> Result<()> {
+        // Parse message
+        let coord_msg = ReadOnlyMessage::from_message(message)
+            .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
-    /// Get reference to engine
-    #[cfg(test)]
-    fn engine(&self) -> &E {
-        &self.engine
+        // Use read-only flow
+        UnorderedFlow::process(
+            &mut self.engine,
+            &mut self.tx_manager,
+            &self.response,
+            coord_msg,
+        )
     }
 
     /// Recover transaction state from persisted metadata (called on startup)
@@ -181,7 +173,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
     /// - Restoring active transactions with their coordinator information
     /// - Restoring prepared transactions with their participant lists
     /// - Restoring completed transactions to completed map and rebuilding deadline index
-    fn recover_transaction_state(&mut self) -> Result<()> {
+    pub fn recover_transaction_state(&mut self) -> Result<()> {
         let metadata_entries = self.engine.scan_transaction_metadata();
 
         if metadata_entries.is_empty() {
@@ -342,209 +334,23 @@ impl<E: TransactionEngine> StreamProcessor<E> {
         Ok(())
     }
 
-    /// Start the processor with replay
-    pub async fn start_with_replay(mut self, shutdown_rx: oneshot::Receiver<()>) -> Result<()>
-    where
-        E: Send + 'static,
-    {
-        // Step 1: Recover persisted transaction state from metadata
-        // This rebuilds TransactionManager state from crash
-        self.recover_transaction_state()?;
-
-        // Step 2: Perform replay phase to catch up with stream
-        // This rebuilds deferred operation queue by replaying messages
-        self.perform_replay().await?;
-
-        // Step 3: Transition to live processing
-        self.transition_to(ProcessorPhase::Live);
-        self.run_live_processing(shutdown_rx).await
+    /// Check if the kernel needs processing (for idle detection)
+    ///
+    /// Returns true if there are transactions that need recovery/GC at the given timestamp
+    pub fn needs_processing(&self, now: Timestamp) -> bool {
+        self.tx_manager.needs_processing(now)
     }
 
-    /// Perform replay from engine's current position to stream head
-    async fn perform_replay(&mut self) -> Result<()> {
-        let start_offset = self.current_offset + 1;
-
-        tracing::info!(
-            "[{}] Starting replay from offset {}",
-            self.stream_name,
-            start_offset
-        );
-
-        // Suppress responses during replay (coordinators are long gone)
-        self.response.set_suppress(true);
-
-        // Subscribe to stream from where engine left off
-        let mut replay_stream = self
-            .client
-            .stream_messages(self.stream_name.clone(), Some(start_offset))
-            .await
-            .map_err(|e| Error::EngineError(e.to_string()))?;
-
-        let mut count = 0;
-        let start_time = std::time::Instant::now();
-
-        // Process messages until we catch up
-        loop {
-            tokio::select! {
-                result = replay_stream.recv() => {
-                    match result {
-                        Some((message, timestamp, offset)) => {
-                            // Process in replay mode (tracks state without full execution)
-                            if let Err(e) = self.process_ordered(message, timestamp, offset).await {
-                                tracing::error!(
-                                    "[{}] Error during replay at offset {}: {:?}",
-                                    self.stream_name, offset, e
-                                );
-                            }
-                            count += 1;
-
-                            // Log progress every 10k messages
-                            if count % 10_000 == 0 {
-                                tracing::info!(
-                                    "[{}] Replay progress: {} messages, at offset {}",
-                                    self.stream_name, count, offset
-                                );
-                            }
-                        }
-                        None => {
-                            // Stream ended (caught up)
-                            break;
-                        }
-                    }
-                }
-
-                // Add a timeout check - if we haven't received a message in 1 second,
-                // assume we're caught up
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                    tracing::debug!(
-                        "[{}] No messages for 1s during replay, assuming caught up",
-                        self.stream_name
-                    );
-                    break;
-                }
-            }
-        }
-
-        let elapsed = start_time.elapsed();
-        tracing::info!(
-            "[{}] Replay complete. Processed {} messages in {:.2}s, now at offset {}",
-            self.stream_name,
-            count,
-            elapsed.as_secs_f64(),
-            self.current_offset
-        );
-
-        // Re-enable responses for live processing
-        self.response.set_suppress(false);
-
-        // Note: Recovery now happens in dispatcher's 8-step flow
-        // No need for explicit recovery call here
-
-        Ok(())
+    /// Get reference to transaction manager (for testing)
+    #[cfg(test)]
+    pub fn transaction_manager(&self) -> &TransactionManager<E> {
+        &self.tx_manager
     }
 
-    /// Run live processing with event loop
-    async fn run_live_processing(mut self, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-        tracing::info!(
-            "[{}] Starting live processing from offset {}",
-            self.stream_name,
-            self.current_offset
-        );
-
-        // Subscribe to ordered stream (start from next offset after engine's position)
-        let start_offset = if self.current_offset > 0 {
-            Some(self.current_offset + 1)
-        } else {
-            Some(0)
-        };
-
-        let mut ordered_stream = self
-            .client
-            .stream_messages(self.stream_name.clone(), start_offset)
-            .await
-            .map_err(|e| Error::EngineError(e.to_string()))?;
-
-        // Subscribe to readonly pubsub (ReadOnly + AdHoc reads)
-        let mut readonly_stream = self
-            .client
-            .subscribe(&format!("stream.{}.readonly", self.stream_name), None)
-            .await
-            .map_err(|e| Error::EngineError(e.to_string()))?;
-
-        // Idle detection for noop injection (check every 100ms)
-        let mut idle_check = tokio::time::interval(Duration::from_millis(100));
-        idle_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                // Prioritize shutdown and ordered stream
-                biased;
-
-                // Shutdown signal
-                _ = &mut shutdown_rx => {
-                    tracing::info!("[{}] Shutdown signal received", self.stream_name);
-                    break;
-                }
-
-                // Ordered stream messages (ReadWrite + AdHoc writes)
-                result = ordered_stream.recv() => {
-                    match result {
-                        Some((message, timestamp, offset)) => {
-                            if let Err(e) = self.process_ordered(message, timestamp, offset).await {
-                                tracing::error!(
-                                    "[{}] Error processing ordered message at offset {}: {:?}",
-                                    self.stream_name, offset, e
-                                );
-                            }
-                        }
-                        None => {
-                            tracing::warn!("[{}] Ordered stream ended", self.stream_name);
-                            break;
-                        }
-                    }
-                }
-
-                // Unordered pubsub messages (ReadOnly + AdHoc reads)
-                Some(message) = readonly_stream.recv() => {
-                    if let Err(e) = self.process_readonly(message) {
-                        tracing::error!(
-                            "[{}] Error processing readonly message: {:?}",
-                            self.stream_name, e
-                        );
-                    }
-                }
-
-                // Idle detection for noop injection
-                // NOTE: Recovery and GC now happen in dispatcher's 8-step flow
-                // We just need to inject noops when stream is idle with expired transactions
-                _ = idle_check.tick() => {
-                    let now = Timestamp::now();
-
-                    // Check if there are transactions that need processing (expired or GC-able)
-                    if self.tx_manager.needs_processing(now) {
-                        // Stream is idle with expired transactions - inject a noop
-                        tracing::debug!(
-                            "[{}] Injecting noop message to trigger recovery/GC",
-                            self.stream_name
-                        );
-
-                        let noop_msg = OrderedMessage::<E::Operation>::Noop;
-                        if let Err(e) = self.client.publish_to_stream(
-                            self.stream_name.clone(),
-                            vec![noop_msg.into_message()],
-                        ).await {
-                            tracing::warn!(
-                                "[{}] Failed to inject noop: {:?}",
-                                self.stream_name, e
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        tracing::info!("[{}] Live processing stopped", self.stream_name);
-        Ok(())
+    /// Get reference to engine (for testing)
+    #[cfg(test)]
+    pub fn engine(&self) -> &E {
+        &self.engine
     }
 }
 
@@ -552,7 +358,7 @@ impl<E: TransactionEngine> StreamProcessor<E> {
 mod tests {
     use super::*;
     use crate::engine::{OperationResult, TransactionEngine};
-    use proven_common::{Operation, OperationType, Response, TransactionId};
+    use proven_common::{Operation, OperationType, ProcessorType, Response, TransactionId};
     use proven_engine::MockClient;
     use proven_protocol::TransactionPhase;
     use serde::{Deserialize, Serialize};
@@ -563,6 +369,10 @@ mod tests {
     impl Operation for TestOp {
         fn operation_type(&self) -> OperationType {
             OperationType::Write
+        }
+
+        fn processor_type(&self) -> ProcessorType {
+            ProcessorType::Kv
         }
     }
 
@@ -631,7 +441,7 @@ mod tests {
         }
     }
 
-    fn create_processor() -> StreamProcessor<TestEngine> {
+    fn create_kernel() -> StreamProcessingKernel<TestEngine> {
         let mock_engine_for_client = Arc::new(proven_engine::MockEngine::new());
         let client = Arc::new(MockClient::new(
             "test-node".to_string(),
@@ -643,16 +453,16 @@ mod tests {
             committed: Vec::new(),
         };
 
-        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+        let mut kernel = StreamProcessingKernel::new(engine, client, "test-stream".to_string());
 
-        // For tests, start in Live phase directly (skip replay)
-        processor.phase = ProcessorPhase::Live;
-        processor
+        // For tests, enable responses (Live mode)
+        kernel.set_response_mode(ResponseMode::Send);
+        kernel
     }
 
     #[tokio::test]
     async fn test_process_adhoc_operation() {
-        let mut processor = create_processor();
+        let mut kernel = create_kernel();
 
         let op_msg = OrderedMessage::AutoCommitOperation {
             txn_id: TransactionId::new(),
@@ -663,22 +473,20 @@ mod tests {
         };
 
         let message = op_msg.into_message();
-        let result = processor
-            .process_ordered(message, Timestamp::now(), 1)
-            .await;
+        let result = kernel.process_ordered(message, Timestamp::now(), 1).await;
 
         assert!(result.is_ok());
-        assert_eq!(processor.engine().operations.len(), 1);
-        assert_eq!(processor.engine().operations[0], "write1");
-        assert_eq!(processor.current_offset(), 1);
+        assert_eq!(kernel.engine().operations.len(), 1);
+        assert_eq!(kernel.engine().operations[0], "write1");
+        assert_eq!(kernel.current_offset(), 1);
 
         tokio::task::yield_now().await;
     }
 
     #[tokio::test]
     async fn test_replay_executes_operations() {
-        let mut processor = create_processor();
-        processor.transition_to(ProcessorPhase::Replay);
+        let mut kernel = create_kernel();
+        kernel.set_response_mode(ResponseMode::Suppress);
 
         let txn_id = TransactionId::new();
         let op_msg = OrderedMessage::TransactionOperation {
@@ -690,39 +498,37 @@ mod tests {
         };
 
         let message = op_msg.into_message();
-        let result = processor
-            .process_ordered(message, Timestamp::now(), 1)
-            .await;
+        let result = kernel.process_ordered(message, Timestamp::now(), 1).await;
 
         assert!(result.is_ok());
 
         // During replay, operations ARE executed to rebuild engine state
-        assert_eq!(processor.engine().operations.len(), 1);
-        assert_eq!(processor.engine().operations[0], "write1");
+        assert_eq!(kernel.engine().operations.len(), 1);
+        assert_eq!(kernel.engine().operations[0], "write1");
 
         // Transaction should be tracked
-        assert!(processor.transaction_manager().exists(txn_id));
+        assert!(kernel.transaction_manager().exists(txn_id));
 
         tokio::task::yield_now().await;
     }
 
     #[tokio::test]
-    async fn test_phase_transitions() {
-        let mut processor = create_processor();
+    async fn test_response_mode_transitions() {
+        let mut kernel = create_kernel();
 
-        assert_eq!(processor.phase(), ProcessorPhase::Live);
+        assert_eq!(kernel.response_mode(), ResponseMode::Send);
 
-        processor.transition_to(ProcessorPhase::Replay);
-        assert_eq!(processor.phase(), ProcessorPhase::Replay);
+        kernel.set_response_mode(ResponseMode::Suppress);
+        assert_eq!(kernel.response_mode(), ResponseMode::Suppress);
 
-        processor.transition_to(ProcessorPhase::Live);
-        assert_eq!(processor.phase(), ProcessorPhase::Live);
+        kernel.set_response_mode(ResponseMode::Send);
+        assert_eq!(kernel.response_mode(), ResponseMode::Send);
     }
 
     #[tokio::test]
     async fn test_replay_tracks_prepare() {
-        let mut processor = create_processor();
-        processor.transition_to(ProcessorPhase::Replay);
+        let mut kernel = create_kernel();
+        kernel.set_response_mode(ResponseMode::Suppress);
 
         let txn_id = TransactionId::new();
 
@@ -740,7 +546,7 @@ mod tests {
             operation: TestOp("write1".to_string()),
         };
 
-        processor
+        kernel
             .process_ordered(op_msg.into_message(), ts1, 1)
             .await
             .unwrap();
@@ -753,13 +559,13 @@ mod tests {
             request_id: Some("req-1".to_string()),
         };
 
-        processor
+        kernel
             .process_ordered(ctrl_msg.into_message(), ts2, 2)
             .await
             .unwrap();
 
         // Transaction should exist and be in prepared state
-        let state = processor.transaction_manager().get(txn_id).unwrap();
+        let state = kernel.transaction_manager().get(txn_id).unwrap();
         assert_eq!(state.phase, crate::transaction::TransactionPhase::Prepared);
     }
 
@@ -843,14 +649,14 @@ mod tests {
             mock_engine_for_client,
         ));
 
-        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+        let mut kernel = StreamProcessingKernel::new(engine, client, "test-stream".to_string());
 
         // Recover transaction state
-        processor.recover_transaction_state().unwrap();
+        kernel.recover_transaction_state().unwrap();
 
         // Verify transaction was recovered
-        assert!(processor.transaction_manager().exists(txn_id));
-        let recovered_state = processor.transaction_manager().get(txn_id).unwrap();
+        assert!(kernel.transaction_manager().exists(txn_id));
+        let recovered_state = kernel.transaction_manager().get(txn_id).unwrap();
         assert_eq!(recovered_state.coordinator_id, "coord-1");
         assert_eq!(
             recovered_state.phase,
@@ -939,21 +745,21 @@ mod tests {
             mock_engine_for_client,
         ));
 
-        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+        let mut kernel = StreamProcessingKernel::new(engine, client, "test-stream".to_string());
 
         // Recover transaction state
-        processor.recover_transaction_state().unwrap();
+        kernel.recover_transaction_state().unwrap();
 
         // Verify prepared transaction was recovered with participants
-        assert!(processor.transaction_manager().exists(txn_id));
-        let recovered_state = processor.transaction_manager().get(txn_id).unwrap();
+        assert!(kernel.transaction_manager().exists(txn_id));
+        let recovered_state = kernel.transaction_manager().get(txn_id).unwrap();
         assert_eq!(recovered_state.coordinator_id, "coord-1");
         assert_eq!(
             recovered_state.phase,
             crate::transaction::TransactionPhase::Prepared
         );
 
-        let recovered_participants = processor.transaction_manager().get_participants(txn_id);
+        let recovered_participants = kernel.transaction_manager().get_participants(txn_id);
         assert_eq!(recovered_participants.len(), 2);
         assert_eq!(recovered_participants.get("participant1"), Some(&10));
         assert_eq!(recovered_participants.get("participant2"), Some(&11));
@@ -1053,18 +859,18 @@ mod tests {
             mock_engine_for_client,
         ));
 
-        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+        let mut kernel = StreamProcessingKernel::new(engine, client, "test-stream".to_string());
 
         // Recover transaction state
-        processor.recover_transaction_state().unwrap();
+        kernel.recover_transaction_state().unwrap();
 
         // Verify completed transactions were restored to completed map
-        assert!(processor.transaction_manager().is_completed(committed_txn));
-        assert!(processor.transaction_manager().is_completed(aborted_txn));
+        assert!(kernel.transaction_manager().is_completed(committed_txn));
+        assert!(kernel.transaction_manager().is_completed(aborted_txn));
 
         // Verify they exist in the system (any state including completed)
-        assert!(processor.transaction_manager().exists(committed_txn));
-        assert!(processor.transaction_manager().exists(aborted_txn));
+        assert!(kernel.transaction_manager().exists(committed_txn));
+        assert!(kernel.transaction_manager().exists(aborted_txn));
 
         tokio::task::yield_now().await;
     }
@@ -1159,17 +965,17 @@ mod tests {
             mock_engine_for_client,
         ));
 
-        let mut processor = StreamProcessor::new(engine, client, "test-stream".to_string());
+        let mut kernel = StreamProcessingKernel::new(engine, client, "test-stream".to_string());
 
         // Recover transaction state
-        processor.recover_transaction_state().unwrap();
+        kernel.recover_transaction_state().unwrap();
 
         // Verify transaction was recovered
-        assert!(processor.transaction_manager().exists(txn_id));
+        assert!(kernel.transaction_manager().exists(txn_id));
 
         // Verify deferred operation was recovered
         // The deferred operation should be waiting on blocker_txn
-        let deferred_count = processor.transaction_manager().deferred_count(txn_id);
+        let deferred_count = kernel.transaction_manager().deferred_count(txn_id);
         assert_eq!(deferred_count, 1, "Deferred operation should be recovered");
 
         tokio::task::yield_now().await;
