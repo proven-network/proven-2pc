@@ -10,6 +10,7 @@ use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
 use proven_stream::{BatchOperations, BlockingInfo};
 use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use proven_value::Vault;
 
 /// Wrapper around Fjall Batch that implements BatchOperations
 ///
@@ -116,27 +117,31 @@ impl ResourceTransactionEngine {
                 for res in tx_res.reservations {
                     match res.reservation_type {
                         ReservationType::Debit(amt) => {
-                            // Need to restore balance context - read from storage
-                            let key = ResourceKey::Account(res.account.clone());
-                            let balance = self
-                                .storage
-                                .read(&key, tx_res.txn_id)
-                                .ok()
-                                .flatten()
-                                .and_then(|v| match v {
-                                    ResourceValue::Balance(amt) => Some(amt),
-                                    _ => None,
-                                })
-                                .unwrap_or_else(Amount::zero);
+                            if let Some(account) = &res.account {
+                                // Need to restore balance context - read from storage
+                                let key = ResourceKey::Account(account.clone());
+                                let balance = self
+                                    .storage
+                                    .read(&key, tx_res.txn_id)
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|v| match v {
+                                        ResourceValue::Balance(amt) => Some(amt),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(Amount::zero);
 
-                            self.reservations
-                                .reserve_debit(tx_res.txn_id, &res.account, amt, balance)
-                                .ok();
+                                self.reservations
+                                    .reserve_debit(tx_res.txn_id, account, amt, balance)
+                                    .ok();
+                            }
                         }
                         ReservationType::Credit(amt) => {
-                            self.reservations
-                                .reserve_credit(tx_res.txn_id, &res.account, amt)
-                                .ok();
+                            if let Some(account) = &res.account {
+                                self.reservations
+                                    .reserve_credit(tx_res.txn_id, account, amt)
+                                    .ok();
+                            }
                         }
                         ReservationType::MetadataUpdate => {
                             self.reservations.reserve_metadata(tx_res.txn_id).ok();
@@ -201,8 +206,8 @@ impl ResourceTransactionEngine {
     }
 
     /// Get balance for an account at a transaction (reads from storage)
-    fn get_balance(&self, account: &str, txn_id: TransactionId) -> Amount {
-        let key = ResourceKey::Account(account.to_string());
+    fn get_balance(&self, account: &Vault, txn_id: TransactionId) -> Amount {
+        let key = ResourceKey::Account(account.clone());
         self.storage
             .read(&key, txn_id)
             .ok()
@@ -281,7 +286,7 @@ impl ResourceTransactionEngine {
             } => {
                 // Check for metadata reservation conflict
                 if let Some(blocking_txs) = self.reservations.would_conflict(
-                    "",
+                    None,
                     &ReservationType::MetadataUpdate,
                     Amount::zero(),
                 ) {
@@ -341,7 +346,7 @@ impl ResourceTransactionEngine {
             ResourceOperation::UpdateMetadata { name, symbol } => {
                 // Check for metadata reservation conflict
                 if let Some(blocking_txs) = self.reservations.would_conflict(
-                    "",
+                    None,
                     &ReservationType::MetadataUpdate,
                     Amount::zero(),
                 ) {
@@ -445,7 +450,7 @@ impl ResourceTransactionEngine {
 
                 // Check for debit reservation conflict
                 if let Some(blocking_txs) = self.reservations.would_conflict(
-                    from,
+                    Some(from),
                     &ReservationType::Debit(*amount),
                     old_balance,
                 ) {
@@ -509,7 +514,7 @@ impl ResourceTransactionEngine {
 
                 // Check for debit reservation conflict
                 if let Some(blocking_txs) = self.reservations.would_conflict(
-                    from,
+                    Some(from),
                     &ReservationType::Debit(*amount),
                     old_from_balance,
                 ) {
@@ -770,8 +775,10 @@ mod tests {
         assert!(matches!(result, OperationResult::Complete(_)));
 
         // Mint tokens
+        let alice_vault = Vault::new(uuid::Uuid::new_v4());
+
         let op = ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault.clone(),
             amount: Amount::from_integer(1000, 0),
             memo: None,
         };
@@ -788,7 +795,7 @@ mod tests {
         engine.begin(tx2);
 
         let op = ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault,
         };
 
         let result = engine.apply_operation(op, tx2);
@@ -817,9 +824,12 @@ mod tests {
         );
 
         // Mint to alice
+        let alice_vault = Vault::new(uuid::Uuid::new_v4());
+        let bob_vault = Vault::new(uuid::Uuid::new_v4());
+
         engine.apply_operation(
             ResourceOperation::Mint {
-                to: "alice".to_string(),
+                to: alice_vault.clone(),
                 amount: Amount::from_integer(1000, 0),
                 memo: None,
             },
@@ -834,8 +844,8 @@ mod tests {
 
         let result = engine.apply_operation(
             ResourceOperation::Transfer {
-                from: "alice".to_string(),
-                to: "bob".to_string(),
+                from: alice_vault.clone(),
+                to: bob_vault.clone(),
                 amount: Amount::from_integer(300, 0),
                 memo: None,
             },
@@ -850,8 +860,8 @@ mod tests {
         let tx3 = make_timestamp(300);
         engine.begin(tx3);
 
-        let alice_balance = engine.engine().get_balance("alice", tx3);
-        let bob_balance = engine.engine().get_balance("bob", tx3);
+        let alice_balance = engine.engine().get_balance(&alice_vault, tx3);
+        let bob_balance = engine.engine().get_balance(&bob_vault, tx3);
 
         assert_eq!(alice_balance, Amount::from_integer(700, 0));
         assert_eq!(bob_balance, Amount::from_integer(300, 0));
@@ -874,9 +884,11 @@ mod tests {
             tx1,
         );
 
+        let alice_vault = Vault::new(uuid::Uuid::new_v4());
+
         engine.apply_operation(
             ResourceOperation::Mint {
-                to: "alice".to_string(),
+                to: alice_vault.clone(),
                 amount: Amount::from_integer(1000, 0),
                 memo: None,
             },
@@ -891,7 +903,7 @@ mod tests {
 
         let result = engine.apply_operation(
             ResourceOperation::Burn {
-                from: "alice".to_string(),
+                from: alice_vault.clone(),
                 amount: Amount::from_integer(400, 0),
                 memo: None,
             },
@@ -904,7 +916,7 @@ mod tests {
 
         // Verify balance and supply
         let tx3 = make_timestamp(300);
-        let balance = engine.engine().get_balance("alice", tx3);
+        let balance = engine.engine().get_balance(&alice_vault, tx3);
         let supply = engine.engine().get_supply(tx3);
 
         assert_eq!(balance, Amount::from_integer(600, 0));

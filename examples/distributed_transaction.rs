@@ -14,8 +14,10 @@ use proven_queue_client::QueueClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
 use proven_sql_client::SqlClient;
+use proven_value::Vault;
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
 // Queue and Resource clients are now imported from their respective crates
 
@@ -81,6 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let queue = QueueClient::new(executor.clone());
     let resource = ResourceClient::new(executor.clone());
 
+    // Create vaults for resource accounts
+    let system_vault = Vault::new(Uuid::new_v4());
+    let alice_vault = Vault::new(Uuid::new_v4());
+    let shop_vault = Vault::new(Uuid::new_v4());
+
     // Execute real operations through the processors
     println!("Executing distributed operations:");
 
@@ -110,12 +117,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n3. Resource Operations:");
     resource
-        .mint_integer("resource_stream", "system", 1000)
+        .mint_integer("resource_stream", system_vault.clone(), 1000)
         .await?;
     println!("   ✓ Minted 1000 coins to system");
 
     resource
-        .transfer_integer("resource_stream", "system", "alice", 500)
+        .transfer_integer(
+            "resource_stream",
+            system_vault.clone(),
+            alice_vault.clone(),
+            500,
+        )
         .await?;
     println!("   ✓ Transferred 500 coins to alice");
 
@@ -146,7 +158,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Transfer resources
     resource
-        .transfer_integer("resource_stream", "alice", "shop", 100)
+        .transfer_integer(
+            "resource_stream",
+            alice_vault.clone(),
+            shop_vault.clone(),
+            100,
+        )
         .await?;
     println!("   ✓ Transferred 100 coins for purchase");
 
@@ -195,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let balance = resource_verify
-        .get_balance_integer("resource_stream", "alice")
+        .get_balance_integer("resource_stream", alice_vault)
         .await?;
     println!("  Alice's balance: {} coins", balance);
 

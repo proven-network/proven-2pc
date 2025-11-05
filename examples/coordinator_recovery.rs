@@ -14,9 +14,18 @@ use proven_engine::{MockClient, MockEngine};
 use proven_kv_client::KvClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
-
+use proven_value::Vault;
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
+
+fn alice_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
+}
+
+fn bob_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -91,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("    ✓ Wrote to kv_stream (lock acquired)");
 
         resource
-            .mint_integer("resource_stream", "alice", 1000)
+            .mint_integer("resource_stream", alice_vault(), 1000)
             .await?;
         println!("    ✓ Minted to resource_stream (lock acquired)");
 
@@ -205,7 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    ✓ Wrote to kv_stream (lock acquired after recovery)");
 
     resource3
-        .mint_integer("resource_stream", "bob", 500)
+        .mint_integer("resource_stream", bob_vault(), 500)
         .await?;
     println!("    ✓ Minted to resource_stream (lock acquired after recovery)");
 
@@ -249,12 +258,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let alice_balance = resource_verify
-        .get_balance_integer("resource_stream", "alice")
+        .get_balance_integer("resource_stream", alice_vault())
         .await?;
     println!("    alice balance = {} coins", alice_balance);
 
     let bob_balance = resource_verify
-        .get_balance_integer("resource_stream", "bob")
+        .get_balance_integer("resource_stream", bob_vault())
         .await?;
     println!("    bob balance = {} coins", bob_balance);
 

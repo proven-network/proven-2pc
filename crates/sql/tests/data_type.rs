@@ -33,4 +33,5 @@ mod tests {
     pub mod uint64;
     pub mod uint8;
     pub mod uuid;
+    pub mod vault;
 }

@@ -563,6 +563,9 @@ pub fn compare(left: &Value, right: &Value) -> Result<Ordering> {
         // Identity
         (Identity(a), Identity(b)) => a.cmp(b),
 
+        // Vault
+        (Vault(a), Vault(b)) => a.cmp(b),
+
         // Collections - Arrays and Lists are comparable
         (Array(a), Array(b)) | (List(a), List(b)) => a.cmp(b),
         (Array(a), List(b)) | (List(a), Array(b)) => a.cmp(b),

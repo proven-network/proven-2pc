@@ -10,6 +10,7 @@ use proven_common::TransactionId;
 use proven_resource::engine::ResourceTransactionEngine;
 use proven_resource::types::{Amount, ResourceOperation, ResourceResponse};
 use proven_stream::{AutoBatchEngine, OperationResult};
+use proven_value::Vault;
 use uuid::Uuid;
 
 fn make_timestamp(n: u64) -> TransactionId {
@@ -18,6 +19,18 @@ fn make_timestamp(n: u64) -> TransactionId {
 
 fn create_engine() -> AutoBatchEngine<ResourceTransactionEngine> {
     AutoBatchEngine::new(ResourceTransactionEngine::new())
+}
+
+fn alice_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
+}
+
+fn bob_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap())
+}
+
+fn charlie_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap())
 }
 
 #[test]
@@ -43,7 +56,7 @@ fn test_supply_delta_merging_within_transaction() {
     // Each creates a SetSupply delta that should merge
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(100, 0),
             memo: None,
         },
@@ -52,7 +65,7 @@ fn test_supply_delta_merging_within_transaction() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "bob".to_string(),
+            to: bob_vault(),
             amount: Amount::from_integer(200, 0),
             memo: None,
         },
@@ -61,7 +74,7 @@ fn test_supply_delta_merging_within_transaction() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "charlie".to_string(),
+            to: charlie_vault(),
             amount: Amount::from_integer(300, 0),
             memo: None,
         },
@@ -107,7 +120,7 @@ fn test_reservation_prevents_double_spending() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 0),
             memo: None,
         },
@@ -122,8 +135,8 @@ fn test_reservation_prevents_double_spending() {
 
     let result1 = engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(700, 0),
             memo: None,
         },
@@ -137,8 +150,8 @@ fn test_reservation_prevents_double_spending() {
 
     let result2 = engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "charlie".to_string(),
+            from: alice_vault(),
+            to: charlie_vault(),
             amount: Amount::from_integer(700, 0),
             memo: None,
         },
@@ -173,8 +186,8 @@ fn test_reservation_prevents_double_spending() {
     // Now TX2 should definitely fail (not enough balance)
     let result2_retry = engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "charlie".to_string(),
+            from: alice_vault(),
+            to: charlie_vault(),
             amount: Amount::from_integer(700, 0),
             memo: None,
         },
@@ -214,7 +227,7 @@ fn test_mvcc_snapshot_isolation() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 0),
             memo: None,
         },
@@ -229,7 +242,7 @@ fn test_mvcc_snapshot_isolation() {
 
     let result1 = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx1,
     );
@@ -246,8 +259,8 @@ fn test_mvcc_snapshot_isolation() {
 
     engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(300, 0),
             memo: None,
         },
@@ -259,7 +272,7 @@ fn test_mvcc_snapshot_isolation() {
     // TX1 reads Alice's balance again - should still see 1000 (snapshot isolation)
     let result1_again = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx1,
     );
@@ -280,7 +293,7 @@ fn test_mvcc_snapshot_isolation() {
 
     let result3 = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx3,
     );
@@ -317,7 +330,7 @@ fn test_multi_key_atomicity() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 0),
             memo: None,
         },
@@ -332,8 +345,8 @@ fn test_multi_key_atomicity() {
 
     let result = engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(400, 0),
             memo: None,
         },
@@ -344,7 +357,7 @@ fn test_multi_key_atomicity() {
     // Before commit, verify within transaction
     let alice_balance = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx1,
     );
@@ -357,7 +370,7 @@ fn test_multi_key_atomicity() {
 
     let bob_balance = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "bob".to_string(),
+            account: bob_vault(),
         },
         tx1,
     );
@@ -374,13 +387,13 @@ fn test_multi_key_atomicity() {
     let tx2 = make_timestamp(300);
     let alice_final = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx2,
     );
     let bob_final = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "bob".to_string(),
+            account: bob_vault(),
         },
         tx2,
     );
@@ -434,7 +447,7 @@ fn test_mint_burn_supply_consistency() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(100, 0),
             memo: None,
         },
@@ -443,7 +456,7 @@ fn test_mint_burn_supply_consistency() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "bob".to_string(),
+            to: bob_vault(),
             amount: Amount::from_integer(200, 0),
             memo: None,
         },
@@ -452,7 +465,7 @@ fn test_mint_burn_supply_consistency() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "charlie".to_string(),
+            to: charlie_vault(),
             amount: Amount::from_integer(300, 0),
             memo: None,
         },
@@ -466,19 +479,19 @@ fn test_mint_burn_supply_consistency() {
     let supply = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx_check);
     let alice = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx_check,
     );
     let bob = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "bob".to_string(),
+            account: bob_vault(),
         },
         tx_check,
     );
     let charlie = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "charlie".to_string(),
+            account: charlie_vault(),
         },
         tx_check,
     );
@@ -512,7 +525,7 @@ fn test_mint_burn_supply_consistency() {
 
     engine.apply_operation(
         ResourceOperation::Burn {
-            from: "alice".to_string(),
+            from: alice_vault(),
             amount: Amount::from_integer(50, 0),
             memo: None,
         },
@@ -526,7 +539,7 @@ fn test_mint_burn_supply_consistency() {
     let supply2 = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx_check2);
     let alice2 = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx_check2,
     );
@@ -571,7 +584,7 @@ fn test_abort_rollback_consistency() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 0),
             memo: None,
         },
@@ -586,8 +599,8 @@ fn test_abort_rollback_consistency() {
 
     engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(400, 0),
             memo: None,
         },
@@ -601,13 +614,13 @@ fn test_abort_rollback_consistency() {
     let tx_check = make_timestamp(300);
     let alice_balance = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx_check,
     );
     let bob_balance = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "bob".to_string(),
+            account: bob_vault(),
         },
         tx_check,
     );
@@ -641,8 +654,8 @@ fn test_abort_rollback_consistency() {
 
     let result = engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(400, 0),
             memo: None,
         },

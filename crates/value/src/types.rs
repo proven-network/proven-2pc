@@ -15,6 +15,7 @@ use crate::interval::Interval;
 use crate::point::Point;
 use crate::private_key::PrivateKey;
 use crate::public_key::PublicKey;
+use crate::vault::Vault;
 
 /// Universal value type for Proven database components
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +55,7 @@ pub enum Value {
     PrivateKey(PrivateKey),
     PublicKey(PublicKey),
     Identity(Identity),
+    Vault(Vault),
     // Collection types
     Array(Vec<Value>),            // Fixed-size array
     List(Vec<Value>),             // Variable-size list
@@ -262,11 +264,12 @@ impl Value {
             Value::PrivateKey(_) => 23,
             Value::PublicKey(_) => 24,
             Value::Identity(_) => 25,
-            Value::Array(_) => 26,
-            Value::List(_) => 27,
-            Value::Map(_) => 28,
-            Value::Struct(_) => 29,
-            Value::Json(_) => 30,
+            Value::Vault(_) => 26,
+            Value::Array(_) => 27,
+            Value::List(_) => 28,
+            Value::Map(_) => 29,
+            Value::Struct(_) => 30,
+            Value::Json(_) => 31,
             Value::Null => 255, // NULL sorts last (SQL standard)
         }
     }
@@ -301,6 +304,7 @@ impl Value {
             Value::PrivateKey(_) => "private_key",
             Value::PublicKey(_) => "public_key",
             Value::Identity(_) => "identity",
+            Value::Vault(_) => "vault",
             Value::Array(_) => "array",
             Value::List(_) => "list",
             Value::Map(_) => "map",
@@ -362,6 +366,7 @@ impl fmt::Debug for Value {
             Value::PrivateKey(k) => write!(f, "PrivateKey({:?})", k),
             Value::PublicKey(k) => write!(f, "PublicKey({:?})", k),
             Value::Identity(i) => write!(f, "Identity({:?})", i),
+            Value::Vault(v) => write!(f, "Vault({:?})", v),
             Value::Array(arr) => write!(f, "Array({:?})", arr),
             Value::List(list) => write!(f, "List({:?})", list),
             Value::Map(map) => write!(f, "Map({:?})", map),
@@ -401,6 +406,7 @@ impl fmt::Display for Value {
             Value::PrivateKey(k) => write!(f, "{}", k),
             Value::PublicKey(k) => write!(f, "{}", k),
             Value::Identity(i) => write!(f, "{}", i),
+            Value::Vault(v) => write!(f, "{}", v),
             Value::Array(_) | Value::List(_) | Value::Map(_) | Value::Struct(_) => {
                 write!(f, "{:?}", self)
             }
@@ -456,6 +462,7 @@ impl std::hash::Hash for Value {
             Value::PrivateKey(k) => k.hash(state),
             Value::PublicKey(k) => k.hash(state),
             Value::Identity(i) => i.hash(state),
+            Value::Vault(v) => v.hash(state),
             Value::Array(arr) => arr.hash(state),
             Value::List(list) => list.hash(state),
             Value::Map(map) => {
@@ -552,6 +559,7 @@ impl Ord for Value {
             (Value::PrivateKey(a), Value::PrivateKey(b)) => a.cmp(b),
             (Value::PublicKey(a), Value::PublicKey(b)) => a.cmp(b),
             (Value::Identity(a), Value::Identity(b)) => a.cmp(b),
+            (Value::Vault(a), Value::Vault(b)) => a.cmp(b),
             (Value::Array(a), Value::Array(b)) => a.cmp(b),
             (Value::List(a), Value::List(b)) => a.cmp(b),
             (Value::Map(a), Value::Map(b)) => {

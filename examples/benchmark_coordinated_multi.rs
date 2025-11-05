@@ -12,14 +12,17 @@ use proven_queue::types::QueueValue;
 use proven_queue_client::QueueClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
+use proven_value::Vault;
 
 use proven_sql::Value as SqlValue;
 use proven_sql_client::SqlClient;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
+use uuid::Uuid;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -104,23 +107,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("✓ Created SQL table");
 
     // Initialize resource system with treasury
+    let treasury_vault = Vault::new(Uuid::new_v4());
     resource_setup
-        .mint_integer("resource_stream", "treasury", 10_000_000_000)
+        .mint_integer("resource_stream", treasury_vault.clone(), 10_000_000_000)
         .await?;
 
     // Create initial accounts with much higher balance
     const NUM_ACCOUNTS: usize = 100;
+    let mut account_vaults: HashMap<usize, Vault> = HashMap::new();
     for i in 0..NUM_ACCOUNTS {
+        let vault = Vault::new(Uuid::new_v4());
         resource_setup
             .transfer_integer(
                 "resource_stream",
-                "treasury",
-                &format!("account_{}", i),
+                treasury_vault.clone(),
+                vault.clone(),
                 1_000_000, // 100x more than before
             )
             .await?;
+        account_vaults.insert(i, vault);
     }
     println!("✓ Created {} accounts with initial balances", NUM_ACCOUNTS);
+
+    // Share account vaults across all tasks
+    let account_vaults = Arc::new(account_vaults);
 
     setup_executor.finish().await?;
 
@@ -152,15 +162,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let coordinator = coordinator.clone();
         let successful = warmup_successful.clone();
         let failed = warmup_failed.clone();
+        let vaults = account_vaults.clone();
 
         warmup_tasks.spawn(async move {
+            let from_idx = i % NUM_ACCOUNTS;
+            let to_idx = (i + 1) % NUM_ACCOUNTS;
+
             // Create transaction arguments that directly map to operations
             let args = vec![json!({
                 "key": format!("item_{}", i),
                 "value": format!("value_{}", i),
                 "message": format!("msg_{}", i),
-                "from_account": format!("account_{}", i % NUM_ACCOUNTS),
-                "to_account": format!("account_{}", (i + 1) % NUM_ACCOUNTS),
+                "from_vault_uuid": vaults[&from_idx].uuid().to_string(),
+                "to_vault_uuid": vaults[&to_idx].uuid().to_string(),
                 "amount": 10
             })];
 
@@ -263,16 +277,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let failed = failed_txns.clone();
         let retries = total_retries.clone();
         let latency_tracker = total_latency_us.clone();
+        let vaults = account_vaults.clone();
 
         tasks.spawn(async move {
             let task_start = Instant::now();
+            let from_idx = i % NUM_ACCOUNTS;
+            let to_idx = (i + 1) % NUM_ACCOUNTS;
+
             // Same pattern of arguments as warmup
             let args = vec![json!({
                 "key": format!("item_{}", i + WARMUP_TRANSACTIONS),
                 "value": format!("value_{}", i + WARMUP_TRANSACTIONS),
                 "message": format!("msg_{}", i + WARMUP_TRANSACTIONS),
-                "from_account": format!("account_{}", i % NUM_ACCOUNTS),
-                "to_account": format!("account_{}", (i + 1) % NUM_ACCOUNTS),
+                "from_vault_uuid": vaults[&from_idx].uuid().to_string(),
+                "to_vault_uuid": vaults[&to_idx].uuid().to_string(),
                 "amount": 10
             })];
 
@@ -530,9 +548,17 @@ where
     let key = args["key"].as_str().unwrap_or("default_key");
     let value = args["value"].as_str().unwrap_or("default_value");
     let message = args["message"].as_str().unwrap_or("default_message");
-    let from_account = args["from_account"].as_str().unwrap_or("account_0");
-    let to_account = args["to_account"].as_str().unwrap_or("account_1");
+    let from_uuid_str = args["from_vault_uuid"]
+        .as_str()
+        .unwrap_or("00000000-0000-0000-0000-000000000000");
+    let to_uuid_str = args["to_vault_uuid"]
+        .as_str()
+        .unwrap_or("00000000-0000-0000-0000-000000000001");
     let amount = args["amount"].as_u64().unwrap_or(10);
+
+    // Parse UUIDs and create Vaults
+    let from_vault = Vault::new(Uuid::parse_str(from_uuid_str).unwrap());
+    let to_vault = Vault::new(Uuid::parse_str(to_uuid_str).unwrap());
 
     // 1. KV Put operation - using key and value from args
     kv.put("kv_stream", key, Value::Str(value.to_string()))
@@ -545,7 +571,7 @@ where
 
     // 3. Resource Transfer operation - using accounts and amount from args
     resource
-        .transfer_integer("resource_stream", from_account, to_account, amount)
+        .transfer_integer("resource_stream", from_vault, to_vault, amount)
         .await?;
 
     // 4. SQL Insert operation - using key and value from args

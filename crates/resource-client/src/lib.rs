@@ -3,6 +3,7 @@
 use proven_coordinator::Executor;
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceResponse};
+use proven_value::Vault;
 use std::sync::Arc;
 
 /// Resource client that works with coordinator executors
@@ -62,7 +63,7 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn mint(
         &self,
         stream_name: impl Into<String>,
-        to: impl Into<String>,
+        to: Vault,
         amount: Amount,
     ) -> Result<(Amount, Amount), ResourceError> {
         self.mint_with_memo(stream_name, to, amount, None).await
@@ -72,16 +73,12 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn mint_with_memo(
         &self,
         stream_name: impl Into<String>,
-        to: impl Into<String>,
+        to: Vault,
         amount: Amount,
         memo: Option<String>,
     ) -> Result<(Amount, Amount), ResourceError> {
         let stream_name = stream_name.into();
-        let operation = ResourceOperation::Mint {
-            to: to.into(),
-            amount,
-            memo,
-        };
+        let operation = ResourceOperation::Mint { to, amount, memo };
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -99,7 +96,7 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn mint_integer(
         &self,
         stream_name: impl Into<String>,
-        to: impl Into<String>,
+        to: Vault,
         amount: u64,
     ) -> Result<(Amount, Amount), ResourceError> {
         use rust_decimal::Decimal;
@@ -111,7 +108,7 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn burn(
         &self,
         stream_name: impl Into<String>,
-        from: impl Into<String>,
+        from: Vault,
         amount: Amount,
     ) -> Result<(Amount, Amount), ResourceError> {
         self.burn_with_memo(stream_name, from, amount, None).await
@@ -121,16 +118,12 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn burn_with_memo(
         &self,
         stream_name: impl Into<String>,
-        from: impl Into<String>,
+        from: Vault,
         amount: Amount,
         memo: Option<String>,
     ) -> Result<(Amount, Amount), ResourceError> {
         let stream_name = stream_name.into();
-        let operation = ResourceOperation::Burn {
-            from: from.into(),
-            amount,
-            memo,
-        };
+        let operation = ResourceOperation::Burn { from, amount, memo };
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -148,8 +141,8 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn transfer(
         &self,
         stream_name: impl Into<String>,
-        from: impl Into<String>,
-        to: impl Into<String>,
+        from: Vault,
+        to: Vault,
         amount: Amount,
     ) -> Result<(Amount, Amount), ResourceError> {
         self.transfer_with_memo(stream_name, from, to, amount, None)
@@ -160,15 +153,15 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn transfer_with_memo(
         &self,
         stream_name: impl Into<String>,
-        from: impl Into<String>,
-        to: impl Into<String>,
+        from: Vault,
+        to: Vault,
         amount: Amount,
         memo: Option<String>,
     ) -> Result<(Amount, Amount), ResourceError> {
         let stream_name = stream_name.into();
         let operation = ResourceOperation::Transfer {
-            from: from.into(),
-            to: to.into(),
+            from,
+            to,
             amount,
             memo,
         };
@@ -189,8 +182,8 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn transfer_integer(
         &self,
         stream_name: impl Into<String>,
-        from: impl Into<String>,
-        to: impl Into<String>,
+        from: Vault,
+        to: Vault,
         amount: u64,
     ) -> Result<(Amount, Amount), ResourceError> {
         use rust_decimal::Decimal;
@@ -202,12 +195,10 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn get_balance(
         &self,
         stream_name: impl Into<String>,
-        account: impl Into<String>,
+        account: Vault,
     ) -> Result<Amount, ResourceError> {
         let stream_name = stream_name.into();
-        let operation = ResourceOperation::GetBalance {
-            account: account.into(),
-        };
+        let operation = ResourceOperation::GetBalance { account };
 
         let response = self.execute_operation(stream_name, operation).await?;
 
@@ -221,7 +212,7 @@ impl<E: Executor> ResourceClient<E> {
     pub async fn get_balance_integer(
         &self,
         stream_name: impl Into<String>,
-        account: impl Into<String>,
+        account: Vault,
     ) -> Result<u64, ResourceError> {
         let balance = self.get_balance(stream_name, account).await?;
         use rust_decimal::prelude::ToPrimitive;

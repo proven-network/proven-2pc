@@ -4,6 +4,7 @@ use proven_common::TransactionId;
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
 use proven_stream::{AutoBatchEngine, OperationResult, RetryOn};
+use proven_value::Vault;
 use uuid::Uuid;
 
 fn make_timestamp(n: u64) -> TransactionId {
@@ -12,6 +13,18 @@ fn make_timestamp(n: u64) -> TransactionId {
 
 fn create_engine() -> AutoBatchEngine<ResourceTransactionEngine> {
     AutoBatchEngine::new(ResourceTransactionEngine::new())
+}
+
+fn alice_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
+}
+
+fn bob_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap())
+}
+
+fn charlie_vault() -> Vault {
+    Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap())
 }
 
 #[test]
@@ -84,7 +97,7 @@ fn test_mint_and_burn() {
 
     // Mint tokens to alice
     let mint_op = ResourceOperation::Mint {
-        to: "alice".to_string(),
+        to: alice_vault(),
         amount: Amount::from_integer(1000, 8),
         memo: Some("Initial mint".to_string()),
     };
@@ -97,7 +110,7 @@ fn test_mint_and_burn() {
             new_balance,
             total_supply,
         }) => {
-            assert_eq!(to, "alice");
+            assert_eq!(to, alice_vault());
             assert_eq!(amount, Amount::from_integer(1000, 8));
             assert_eq!(new_balance, Amount::from_integer(1000, 8));
             assert_eq!(total_supply, Amount::from_integer(1000, 8));
@@ -114,7 +127,7 @@ fn test_mint_and_burn() {
     engine.begin(tx2);
 
     let burn_op = ResourceOperation::Burn {
-        from: "alice".to_string(),
+        from: alice_vault(),
         amount: Amount::from_integer(300, 8),
         memo: Some("Burn tokens".to_string()),
     };
@@ -127,7 +140,7 @@ fn test_mint_and_burn() {
             new_balance,
             total_supply,
         }) => {
-            assert_eq!(from, "alice");
+            assert_eq!(from, alice_vault());
             assert_eq!(amount, Amount::from_integer(300, 8));
             assert_eq!(new_balance, Amount::from_integer(700, 8));
             assert_eq!(total_supply, Amount::from_integer(700, 8));
@@ -144,13 +157,13 @@ fn test_mint_and_burn() {
     engine.begin(tx3);
 
     let balance_op = ResourceOperation::GetBalance {
-        account: "alice".to_string(),
+        account: alice_vault(),
     };
 
     let result = engine.apply_operation(balance_op, tx3);
     match result {
         OperationResult::Complete(ResourceResponse::Balance { account, amount }) => {
-            assert_eq!(account, "alice");
+            assert_eq!(account, alice_vault());
             assert_eq!(amount, Amount::from_integer(700, 8));
         }
         _ => panic!("Expected Balance response"),
@@ -185,7 +198,7 @@ fn test_transfer() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 6),
             memo: None,
         },
@@ -201,8 +214,8 @@ fn test_transfer() {
     engine.begin(tx2);
 
     let transfer_op = ResourceOperation::Transfer {
-        from: "alice".to_string(),
-        to: "bob".to_string(),
+        from: alice_vault(),
+        to: bob_vault(),
         amount: Amount::from_integer(250, 6),
         memo: Some("Payment".to_string()),
     };
@@ -216,8 +229,8 @@ fn test_transfer() {
             from_balance,
             to_balance,
         }) => {
-            assert_eq!(from, "alice");
-            assert_eq!(to, "bob");
+            assert_eq!(from, alice_vault());
+            assert_eq!(to, bob_vault());
             assert_eq!(amount, Amount::from_integer(250, 6));
             assert_eq!(from_balance, Amount::from_integer(750, 6));
             assert_eq!(to_balance, Amount::from_integer(250, 6));
@@ -235,14 +248,14 @@ fn test_transfer() {
 
     let alice_balance = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx3,
     );
 
     let bob_balance = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "bob".to_string(),
+            account: bob_vault(),
         },
         tx3,
     );
@@ -281,7 +294,7 @@ fn test_insufficient_balance() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(100, 0),
             memo: None,
         },
@@ -297,8 +310,8 @@ fn test_insufficient_balance() {
     engine.begin(tx2);
 
     let transfer_op = ResourceOperation::Transfer {
-        from: "alice".to_string(),
-        to: "bob".to_string(),
+        from: alice_vault(),
+        to: bob_vault(),
         amount: Amount::from_integer(150, 0),
         memo: None,
     };
@@ -316,7 +329,7 @@ fn test_insufficient_balance() {
     engine.begin(tx3);
 
     let burn_op = ResourceOperation::Burn {
-        from: "alice".to_string(),
+        from: alice_vault(),
         amount: Amount::from_integer(150, 0),
         memo: None,
     };
@@ -349,7 +362,7 @@ fn test_concurrent_transfers_with_reservations() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(100, 0),
             memo: None,
         },
@@ -370,8 +383,8 @@ fn test_concurrent_transfers_with_reservations() {
 
     // First transfer: alice -> bob 60
     let transfer1 = ResourceOperation::Transfer {
-        from: "alice".to_string(),
-        to: "bob".to_string(),
+        from: alice_vault(),
+        to: bob_vault(),
         amount: Amount::from_integer(60, 0),
         memo: None,
     };
@@ -381,8 +394,8 @@ fn test_concurrent_transfers_with_reservations() {
 
     // Second transfer: alice -> charlie 50 (should block due to insufficient balance after reservation)
     let transfer2 = ResourceOperation::Transfer {
-        from: "alice".to_string(),
-        to: "charlie".to_string(),
+        from: alice_vault(),
+        to: charlie_vault(),
         amount: Amount::from_integer(50, 0),
         memo: None,
     };
@@ -410,8 +423,8 @@ fn test_concurrent_transfers_with_reservations() {
     engine.begin(tx4);
 
     let transfer3 = ResourceOperation::Transfer {
-        from: "alice".to_string(),
-        to: "charlie".to_string(),
+        from: alice_vault(),
+        to: charlie_vault(),
         amount: Amount::from_integer(40, 0), // Reduced amount
         memo: None,
     };
@@ -515,7 +528,7 @@ fn test_transaction_rollback() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 0),
             memo: None,
         },
@@ -533,8 +546,8 @@ fn test_transaction_rollback() {
     // Transfer to bob
     engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(500, 0),
             memo: None,
         },
@@ -544,7 +557,7 @@ fn test_transaction_rollback() {
     // Burn from alice
     engine.apply_operation(
         ResourceOperation::Burn {
-            from: "alice".to_string(),
+            from: alice_vault(),
             amount: Amount::from_integer(200, 0),
             memo: None,
         },
@@ -560,14 +573,14 @@ fn test_transaction_rollback() {
 
     let alice_balance = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         tx3,
     );
 
     let bob_balance = engine.apply_operation(
         ResourceOperation::GetBalance {
-            account: "bob".to_string(),
+            account: bob_vault(),
         },
         tx3,
     );
@@ -606,7 +619,7 @@ fn test_snapshot_read_properly_blocks_on_pending_writes() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -621,8 +634,8 @@ fn test_snapshot_read_properly_blocks_on_pending_writes() {
 
     engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(100, 8),
             memo: None,
         },
@@ -633,7 +646,7 @@ fn test_snapshot_read_properly_blocks_on_pending_writes() {
     // because there's a pending write from timestamp 200
     let read_ts = make_timestamp(300);
     let get_op = ResourceOperation::GetBalance {
-        account: "alice".to_string(),
+        account: alice_vault(),
     };
 
     let result = engine.read_at_timestamp(get_op, read_ts);
@@ -653,7 +666,7 @@ fn test_snapshot_read_properly_blocks_on_pending_writes() {
 
     // Now the same read should succeed
     let get_op = ResourceOperation::GetBalance {
-        account: "alice".to_string(),
+        account: alice_vault(),
     };
     let result = engine.read_at_timestamp(get_op, read_ts);
 
@@ -747,7 +760,7 @@ fn test_supply_read_properly_blocks() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -762,7 +775,7 @@ fn test_supply_read_properly_blocks() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "bob".to_string(),
+            to: bob_vault(),
             amount: Amount::from_integer(500, 8),
             memo: None,
         },
@@ -818,7 +831,7 @@ fn test_no_blocking_when_no_pending_writes() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -833,7 +846,7 @@ fn test_no_blocking_when_no_pending_writes() {
     // Test balance read
     let result = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         read_ts,
     );
@@ -867,7 +880,7 @@ fn test_snapshot_read_balance_doesnt_block_write() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -882,8 +895,8 @@ fn test_snapshot_read_balance_doesnt_block_write() {
 
     // Apply a transfer (write operation)
     let transfer_op = ResourceOperation::Transfer {
-        from: "alice".to_string(),
-        to: "bob".to_string(),
+        from: alice_vault(),
+        to: bob_vault(),
         amount: Amount::from_integer(100, 8),
         memo: None,
     };
@@ -894,7 +907,7 @@ fn test_snapshot_read_balance_doesnt_block_write() {
     // (read is BEFORE the write transaction at 300)
     let read_ts = make_timestamp(250);
     let get_op = ResourceOperation::GetBalance {
-        account: "alice".to_string(),
+        account: alice_vault(),
     };
 
     let result = engine.read_at_timestamp(get_op, read_ts);
@@ -929,7 +942,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -944,8 +957,8 @@ fn test_snapshot_read_blocks_on_earlier_write() {
 
     // Apply a transfer
     let transfer_op = ResourceOperation::Transfer {
-        from: "alice".to_string(),
-        to: "bob".to_string(),
+        from: alice_vault(),
+        to: bob_vault(),
         amount: Amount::from_integer(100, 8),
         memo: None,
     };
@@ -955,7 +968,7 @@ fn test_snapshot_read_blocks_on_earlier_write() {
     // (the write at 200 is earlier than read at 250)
     let read_ts = make_timestamp(250);
     let get_op = ResourceOperation::GetBalance {
-        account: "alice".to_string(),
+        account: alice_vault(),
     };
 
     let result = engine.read_at_timestamp(get_op, read_ts);
@@ -1052,7 +1065,7 @@ fn test_snapshot_read_total_supply() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -1067,7 +1080,7 @@ fn test_snapshot_read_total_supply() {
 
     engine.apply_operation(
         ResourceOperation::Burn {
-            from: "alice".to_string(),
+            from: alice_vault(),
             amount: Amount::from_integer(300, 8),
             memo: None,
         },
@@ -1121,7 +1134,7 @@ fn test_snapshot_read_ignores_aborted_writes() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -1136,8 +1149,8 @@ fn test_snapshot_read_ignores_aborted_writes() {
 
     engine.apply_operation(
         ResourceOperation::Transfer {
-            from: "alice".to_string(),
-            to: "bob".to_string(),
+            from: alice_vault(),
+            to: bob_vault(),
             amount: Amount::from_integer(500, 8),
             memo: None,
         },
@@ -1151,7 +1164,7 @@ fn test_snapshot_read_ignores_aborted_writes() {
     // (aborted transaction should not affect reads)
     let read_ts = make_timestamp(250);
     let get_op = ResourceOperation::GetBalance {
-        account: "alice".to_string(),
+        account: alice_vault(),
     };
 
     let result = engine.read_at_timestamp(get_op, read_ts);
@@ -1185,7 +1198,7 @@ fn test_concurrent_snapshot_reads() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "alice".to_string(),
+            to: alice_vault(),
             amount: Amount::from_integer(1000, 8),
             memo: None,
         },
@@ -1194,7 +1207,7 @@ fn test_concurrent_snapshot_reads() {
 
     engine.apply_operation(
         ResourceOperation::Mint {
-            to: "bob".to_string(),
+            to: bob_vault(),
             amount: Amount::from_integer(500, 8),
             memo: None,
         },
@@ -1209,7 +1222,7 @@ fn test_concurrent_snapshot_reads() {
     // Read alice's balance
     let result1 = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "alice".to_string(),
+            account: alice_vault(),
         },
         read_ts,
     );
@@ -1218,7 +1231,7 @@ fn test_concurrent_snapshot_reads() {
     // Read bob's balance
     let result2 = engine.read_at_timestamp(
         ResourceOperation::GetBalance {
-            account: "bob".to_string(),
+            account: bob_vault(),
         },
         read_ts,
     );

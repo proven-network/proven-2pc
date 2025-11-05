@@ -2,6 +2,7 @@
 
 use crate::types::Amount;
 use proven_common::TransactionId;
+use proven_value::Vault;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -20,7 +21,7 @@ pub enum ReservationType {
 #[derive(Debug, Clone)]
 pub struct BalanceReservation {
     pub transaction_id: TransactionId,
-    pub account: String,
+    pub account: Vault,
     pub reservation_type: ReservationType,
     pub timestamp: TransactionId,
 }
@@ -29,13 +30,13 @@ pub struct BalanceReservation {
 pub struct ReservationManager {
     /// Active reservations by account
     /// Map<account, Vec<Reservation>>
-    account_reservations: HashMap<String, Vec<BalanceReservation>>,
+    account_reservations: HashMap<Vault, Vec<BalanceReservation>>,
 
     /// Metadata reservations (only one transaction can update metadata at a time)
     metadata_reservation: Option<TransactionId>,
 
     /// Track which accounts each transaction has reservations on
-    transaction_accounts: HashMap<TransactionId, HashSet<String>>,
+    transaction_accounts: HashMap<TransactionId, HashSet<Vault>>,
 }
 
 impl ReservationManager {
@@ -50,7 +51,7 @@ impl ReservationManager {
     /// Check if a debit reservation can be made
     pub fn can_reserve_debit(
         &self,
-        account: &str,
+        account: &Vault,
         amount: Amount,
         current_balance: Amount,
     ) -> bool {
@@ -62,17 +63,17 @@ impl ReservationManager {
     }
 
     /// Get total amount reserved for debits on an account
-    fn get_total_reserved_debits(&self, account: &str) -> Amount {
+    fn get_total_reserved_debits(&self, account: &Vault) -> Amount {
         self.account_reservations
             .get(account)
             .map(|reservations| {
                 reservations
                     .iter()
                     .filter_map(|r| match &r.reservation_type {
-                        ReservationType::Debit(amt) => Some(*amt),
+                        ReservationType::Debit(amt) => Some(amt),
                         _ => None,
                     })
-                    .fold(Amount::zero(), |acc, amt| acc + amt)
+                    .fold(Amount::zero(), |acc, amt| acc + *amt)
             })
             .unwrap_or_else(Amount::zero)
     }
@@ -81,7 +82,7 @@ impl ReservationManager {
     pub fn reserve_debit(
         &mut self,
         transaction_id: TransactionId,
-        account: &str,
+        account: &Vault,
         amount: Amount,
         current_balance: Amount,
     ) -> Result<(), String> {
@@ -91,20 +92,20 @@ impl ReservationManager {
 
         let reservation = BalanceReservation {
             transaction_id,
-            account: account.to_string(),
+            account: account.clone(),
             reservation_type: ReservationType::Debit(amount),
             timestamp: transaction_id,
         };
 
         self.account_reservations
-            .entry(account.to_string())
+            .entry(account.clone())
             .or_default()
             .push(reservation);
 
         self.transaction_accounts
             .entry(transaction_id)
             .or_default()
-            .insert(account.to_string());
+            .insert(account.clone());
 
         Ok(())
     }
@@ -113,25 +114,25 @@ impl ReservationManager {
     pub fn reserve_credit(
         &mut self,
         transaction_id: TransactionId,
-        account: &str,
+        account: &Vault,
         amount: Amount,
     ) -> Result<(), String> {
         let reservation = BalanceReservation {
             transaction_id,
-            account: account.to_string(),
+            account: account.clone(),
             reservation_type: ReservationType::Credit(amount),
             timestamp: transaction_id,
         };
 
         self.account_reservations
-            .entry(account.to_string())
+            .entry(account.clone())
             .or_default()
             .push(reservation);
 
         self.transaction_accounts
             .entry(transaction_id)
             .or_default()
-            .insert(account.to_string());
+            .insert(account.clone());
 
         Ok(())
     }
@@ -152,12 +153,13 @@ impl ReservationManager {
     /// Check if operations would conflict
     pub fn would_conflict(
         &self,
-        account: &str,
+        account: Option<&Vault>,
         operation: &ReservationType,
         current_balance: Amount,
     ) -> Option<Vec<TransactionId>> {
         match operation {
             ReservationType::Debit(amount) => {
+                let account = account.expect("Debit operations require an account");
                 // Check if debit would exceed available balance
                 if !self.can_reserve_debit(account, *amount, current_balance) {
                     // Return transactions that are blocking this debit
@@ -204,7 +206,7 @@ impl ReservationManager {
     }
 
     /// Get all transactions that have reservations on an account
-    pub fn get_blocking_transactions(&self, account: &str) -> Vec<TransactionId> {
+    pub fn get_blocking_transactions(&self, account: &Vault) -> Vec<TransactionId> {
         self.account_reservations
             .get(account)
             .map(|reservations| {
@@ -220,15 +222,16 @@ impl ReservationManager {
 
     /// Get all reservations held by a transaction
     /// Returns list of (account, reservation_type) pairs
+    /// For metadata updates, account will be None
     pub fn reservations_held_by(
         &self,
         transaction_id: TransactionId,
-    ) -> Vec<(String, ReservationType)> {
+    ) -> Vec<(Option<Vault>, ReservationType)> {
         let mut result = Vec::new();
 
         // Check metadata reservation
         if self.metadata_reservation == Some(transaction_id) {
-            result.push((String::new(), ReservationType::MetadataUpdate));
+            result.push((None, ReservationType::MetadataUpdate));
         }
 
         // Check account reservations
@@ -237,7 +240,10 @@ impl ReservationManager {
                 if let Some(reservations) = self.account_reservations.get(account) {
                     for reservation in reservations {
                         if reservation.transaction_id == transaction_id {
-                            result.push((account.clone(), reservation.reservation_type.clone()));
+                            result.push((
+                                Some(account.clone()),
+                                reservation.reservation_type.clone(),
+                            ));
                         }
                     }
                 }
@@ -265,24 +271,28 @@ mod tests {
 
     #[test]
     fn test_debit_reservations() {
+        use uuid::Uuid;
+
         let mut manager = ReservationManager::new();
         let balance = Amount::from_integer(100, 0);
+        let alice_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
 
         // First reservation should succeed
         let tx1 = make_timestamp(1);
         manager
-            .reserve_debit(tx1, "alice", Amount::from_integer(50, 0), balance)
+            .reserve_debit(tx1, &alice_vault, Amount::from_integer(50, 0), balance)
             .unwrap();
 
         // Second reservation should succeed (50 + 30 = 80 < 100)
         let tx2 = make_timestamp(2);
         manager
-            .reserve_debit(tx2, "alice", Amount::from_integer(30, 0), balance)
+            .reserve_debit(tx2, &alice_vault, Amount::from_integer(30, 0), balance)
             .unwrap();
 
         // Third reservation should fail (50 + 30 + 30 = 110 > 100)
         let tx3 = make_timestamp(3);
-        let result = manager.reserve_debit(tx3, "alice", Amount::from_integer(30, 0), balance);
+        let result = manager.reserve_debit(tx3, &alice_vault, Amount::from_integer(30, 0), balance);
         assert!(result.is_err());
 
         // Release first transaction
@@ -290,7 +300,7 @@ mod tests {
 
         // Now third reservation should succeed (30 + 30 = 60 < 100)
         manager
-            .reserve_debit(tx3, "alice", Amount::from_integer(30, 0), balance)
+            .reserve_debit(tx3, &alice_vault, Amount::from_integer(30, 0), balance)
             .unwrap();
     }
 

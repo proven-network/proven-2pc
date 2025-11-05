@@ -864,9 +864,11 @@ dependencies = [
  "proven-sql",
  "proven-sql-client",
  "proven-stream",
+ "proven-value",
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -958,6 +960,7 @@ dependencies = [
  "proven-engine",
  "proven-mvcc",
  "proven-stream",
+ "proven-value",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -975,6 +978,7 @@ version = "0.1.0"
 dependencies = [
  "proven-coordinator",
  "proven-resource",
+ "proven-value",
  "rust_decimal",
  "serde_json",
  "thiserror",

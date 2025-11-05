@@ -2,6 +2,7 @@
 
 use crate::types::Amount;
 use proven_common::{Operation, OperationType, ProcessorType};
+use proven_value::Vault;
 use serde::{Deserialize, Serialize};
 
 /// Operations that can be performed on a resource
@@ -22,28 +23,28 @@ pub enum ResourceOperation {
 
     /// Mint new units of the resource
     Mint {
-        to: String,
+        to: Vault,
         amount: Amount,
         memo: Option<String>,
     },
 
     /// Burn units of the resource
     Burn {
-        from: String,
+        from: Vault,
         amount: Amount,
         memo: Option<String>,
     },
 
     /// Transfer units between accounts
     Transfer {
-        from: String,
-        to: String,
+        from: Vault,
+        to: Vault,
         amount: Amount,
         memo: Option<String>,
     },
 
     /// Query balance for an account
-    GetBalance { account: String },
+    GetBalance { account: Vault },
 
     /// Query resource metadata
     GetMetadata,

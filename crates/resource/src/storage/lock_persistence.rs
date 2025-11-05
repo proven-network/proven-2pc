@@ -8,12 +8,13 @@
 
 use super::reservation::ReservationType;
 use proven_common::TransactionId;
+use proven_value::Vault;
 use serde::{Deserialize, Serialize};
 
 /// Persisted reservation information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedReservation {
-    pub account: String,
+    pub account: Option<Vault>,
     pub reservation_type: ReservationType,
 }
 
@@ -32,7 +33,7 @@ impl TransactionReservations {
         }
     }
 
-    pub fn add_reservation(&mut self, account: String, reservation_type: ReservationType) {
+    pub fn add_reservation(&mut self, account: Option<Vault>, reservation_type: ReservationType) {
         self.reservations.push(PersistedReservation {
             account,
             reservation_type,
@@ -57,11 +58,14 @@ pub fn encode_transaction_reservations(
 
     // Encode each reservation
     for reservation in &reservations.reservations {
-        // Encode account
-        let account_bytes = reservation.account.as_bytes();
-        buf.write_all(&(account_bytes.len() as u32).to_be_bytes())
-            .map_err(|e| e.to_string())?;
-        buf.write_all(account_bytes).map_err(|e| e.to_string())?;
+        // Encode account presence flag (1 byte) and Vault UUID if present (16 bytes)
+        if let Some(account) = &reservation.account {
+            buf.push(1); // Has account
+            buf.write_all(account.as_bytes())
+                .map_err(|e| e.to_string())?;
+        } else {
+            buf.push(0); // No account (metadata operation)
+        }
 
         // Encode reservation type (1 byte tag + data)
         match &reservation.reservation_type {
@@ -106,18 +110,22 @@ pub fn decode_transaction_reservations(bytes: &[u8]) -> Result<TransactionReserv
 
     // Decode each reservation
     for _ in 0..num_reservations {
-        // Decode account
+        // Decode account presence flag
+        let mut has_account = [0u8; 1];
         cursor
-            .read_exact(&mut len_bytes)
+            .read_exact(&mut has_account)
             .map_err(|e| e.to_string())?;
-        let account_len = u32::from_be_bytes(len_bytes) as usize;
 
-        let mut account_bytes = vec![0u8; account_len];
-        cursor
-            .read_exact(&mut account_bytes)
-            .map_err(|e| e.to_string())?;
-        let account =
-            String::from_utf8(account_bytes).map_err(|e| format!("Invalid UTF-8: {}", e))?;
+        let account = if has_account[0] == 1 {
+            // Decode Vault UUID (16 bytes)
+            let mut uuid_bytes = [0u8; 16];
+            cursor
+                .read_exact(&mut uuid_bytes)
+                .map_err(|e| e.to_string())?;
+            Some(Vault::from_bytes(uuid_bytes))
+        } else {
+            None
+        };
 
         // Decode reservation type
         let mut type_byte = [0u8; 1];
@@ -199,16 +207,21 @@ mod tests {
 
     #[test]
     fn test_encode_decode_reservations() {
+        let alice_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+        let bob_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap());
+
         let mut tx_res = TransactionReservations::new(make_timestamp(100));
         tx_res.add_reservation(
-            "alice".to_string(),
+            Some(alice_vault),
             ReservationType::Debit(Amount::from_integer(50, 0)),
         );
         tx_res.add_reservation(
-            "bob".to_string(),
+            Some(bob_vault),
             ReservationType::Credit(Amount::from_integer(50, 0)),
         );
-        tx_res.add_reservation("".to_string(), ReservationType::MetadataUpdate);
+        tx_res.add_reservation(None, ReservationType::MetadataUpdate);
 
         let encoded = encode_transaction_reservations(&tx_res).unwrap();
         let decoded = decode_transaction_reservations(&encoded).unwrap();
@@ -219,15 +232,24 @@ mod tests {
 
     #[test]
     fn test_encode_decode_all_reservation_types() {
+        let test_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+
         let types = vec![
-            ReservationType::Debit(Amount::from_integer(100, 0)),
-            ReservationType::Credit(Amount::from_integer(50, 0)),
-            ReservationType::MetadataUpdate,
+            (
+                Some(test_vault.clone()),
+                ReservationType::Debit(Amount::from_integer(100, 0)),
+            ),
+            (
+                Some(test_vault.clone()),
+                ReservationType::Credit(Amount::from_integer(50, 0)),
+            ),
+            (None, ReservationType::MetadataUpdate),
         ];
 
-        for res_type in types {
+        for (account, res_type) in types {
             let mut tx_res = TransactionReservations::new(make_timestamp(100));
-            tx_res.add_reservation("test".to_string(), res_type.clone());
+            tx_res.add_reservation(account, res_type.clone());
 
             let encoded = encode_transaction_reservations(&tx_res).unwrap();
             let decoded = decode_transaction_reservations(&encoded).unwrap();

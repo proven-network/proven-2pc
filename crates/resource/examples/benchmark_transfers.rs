@@ -7,9 +7,12 @@ use proven_common::TransactionId;
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceTransactionEngine};
 use proven_stream::AutoBatchEngine;
+use proven_value::Vault;
 use rust_decimal::Decimal;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::Instant;
+use uuid::Uuid;
 
 fn main() {
     println!("=== 1 Million Transfer Benchmark ===\n");
@@ -36,6 +39,9 @@ fn main() {
         _ => panic!("Failed to initialize resource"),
     }
 
+    // Create source account vault
+    let source_vault = Vault::new(Uuid::new_v4());
+
     // Mint initial supply to the source account
     println!("Minting initial supply...");
     let mint_txn = TransactionId::new();
@@ -44,7 +50,7 @@ fn main() {
     // Mint 1 billion tokens (with 6 decimals)
     let mint_amount = Amount::from(Decimal::from(1_000_000_000i64));
     let mint_op = ResourceOperation::Mint {
-        to: "source_account".to_string(),
+        to: source_vault.clone(),
         amount: mint_amount,
         memo: Some("Initial supply".to_string()),
     };
@@ -63,13 +69,19 @@ fn main() {
     // Give each account 10,000 tokens to ensure they have enough for transfers
     let initial_balance = Amount::from(Decimal::from(10_000i64));
 
+    // Create vaults for all target accounts
+    let mut account_vaults: HashMap<usize, Vault> = HashMap::new();
+    for i in 0..NUM_ACCOUNTS {
+        account_vaults.insert(i, Vault::new(Uuid::new_v4()));
+    }
+
     for i in 0..NUM_ACCOUNTS {
         let setup_txn = TransactionId::new();
         resource_engine.begin(setup_txn);
 
         let transfer_op = ResourceOperation::Transfer {
-            from: "source_account".to_string(),
-            to: format!("account_{}", i),
+            from: source_vault.clone(),
+            to: account_vaults[&i].clone(),
             amount: initial_balance,
             memo: None,
         };
@@ -104,16 +116,16 @@ fn main() {
 
         // Create transfer operation
         // Transfer between different account pairs to avoid conflicts
-        let from_account = if i % 2 == 0 {
-            "source_account".to_string()
+        let from_vault = if i % 2 == 0 {
+            source_vault.clone()
         } else {
-            format!("account_{}", i % NUM_ACCOUNTS)
+            account_vaults[&(i % NUM_ACCOUNTS)].clone()
         };
 
-        let to_account = if i % 2 == 0 {
-            format!("account_{}", i % NUM_ACCOUNTS)
+        let to_vault = if i % 2 == 0 {
+            account_vaults[&(i % NUM_ACCOUNTS)].clone()
         } else {
-            "source_account".to_string()
+            source_vault.clone()
         };
 
         // Variable transfer amounts to simulate real usage (small amounts to avoid exhaustion)
@@ -126,8 +138,8 @@ fn main() {
         };
 
         let transfer = ResourceOperation::Transfer {
-            from: from_account,
-            to: to_account,
+            from: from_vault,
+            to: to_vault,
             amount,
             memo: if i % 10 == 0 {
                 Some(format!("Transfer #{}", i))
@@ -189,7 +201,7 @@ fn main() {
 
     // Check source account balance
     let balance_op = ResourceOperation::GetBalance {
-        account: "source_account".to_string(),
+        account: source_vault.clone(),
     };
 
     match resource_engine.apply_operation(balance_op, verify_txn) {
@@ -205,7 +217,7 @@ fn main() {
 
     for account_idx in sample_accounts {
         let balance_op = ResourceOperation::GetBalance {
-            account: format!("account_{}", account_idx),
+            account: account_vaults[&account_idx].clone(),
         };
 
         match resource_engine.apply_operation(balance_op, verify_txn) {
@@ -213,7 +225,7 @@ fn main() {
                 verified += 1;
             }
             _ => {
-                println!("⚠ Failed to get balance for account_{}", account_idx);
+                println!("⚠ Failed to get balance for account index {}", account_idx);
             }
         }
     }

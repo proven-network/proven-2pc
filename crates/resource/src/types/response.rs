@@ -2,6 +2,7 @@
 
 use crate::types::Amount;
 use proven_common::Response;
+use proven_value::Vault;
 use serde::{Deserialize, Serialize};
 
 /// Response from a resource operation
@@ -22,7 +23,7 @@ pub enum ResourceResponse {
 
     /// Units were minted
     Minted {
-        to: String,
+        to: Vault,
         amount: Amount,
         new_balance: Amount,
         total_supply: Amount,
@@ -30,7 +31,7 @@ pub enum ResourceResponse {
 
     /// Units were burned
     Burned {
-        from: String,
+        from: Vault,
         amount: Amount,
         new_balance: Amount,
         total_supply: Amount,
@@ -38,15 +39,15 @@ pub enum ResourceResponse {
 
     /// Units were transferred
     Transferred {
-        from: String,
-        to: String,
+        from: Vault,
+        to: Vault,
         amount: Amount,
         from_balance: Amount,
         to_balance: Amount,
     },
 
     /// Balance query result
-    Balance { account: String, amount: Amount },
+    Balance { account: Vault, amount: Amount },
 
     /// Metadata query result
     Metadata {

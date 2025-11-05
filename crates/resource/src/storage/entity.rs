@@ -6,6 +6,7 @@
 use crate::storage::ResourceMetadata;
 use crate::types::Amount;
 use proven_mvcc::{Decode, Encode, MvccDelta, MvccEntity, Result};
+use proven_value::Vault;
 use rust_decimal::Decimal;
 use std::io::{Cursor, Read, Write};
 use std::str::FromStr;
@@ -140,7 +141,7 @@ pub enum ResourceKey {
     /// Total supply key
     Supply,
     /// Account balance key
-    Account(String),
+    Account(Vault),
 }
 
 impl Encode for ResourceKey {
@@ -155,12 +156,10 @@ impl Encode for ResourceKey {
             ResourceKey::Supply => {
                 buf.push(2); // Tag for Supply
             }
-            ResourceKey::Account(account) => {
+            ResourceKey::Account(vault) => {
                 buf.push(3); // Tag for Account
-                let account_bytes = account.as_bytes();
-                buf.write_all(&(account_bytes.len() as u32).to_be_bytes())
-                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
-                buf.write_all(account_bytes)
+                // Encode Vault UUID (16 bytes)
+                buf.write_all(vault.as_bytes())
                     .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
             }
         }
@@ -188,21 +187,14 @@ impl Decode for ResourceKey {
             1 => Ok(ResourceKey::Metadata),
             2 => Ok(ResourceKey::Supply),
             3 => {
-                let mut len_bytes = [0u8; 4];
+                // Decode Vault UUID (16 bytes)
+                let mut uuid_bytes = [0u8; 16];
                 cursor
-                    .read_exact(&mut len_bytes)
-                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
-                let len = u32::from_be_bytes(len_bytes) as usize;
-
-                let mut account_bytes = vec![0u8; len];
-                cursor
-                    .read_exact(&mut account_bytes)
+                    .read_exact(&mut uuid_bytes)
                     .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
 
-                let account = String::from_utf8(account_bytes)
-                    .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid UTF-8: {}", e)))?;
-
-                Ok(ResourceKey::Account(account))
+                let vault = Vault::from_bytes(uuid_bytes);
+                Ok(ResourceKey::Account(vault))
             }
             _ => Err(proven_mvcc::Error::Encoding(format!(
                 "Unknown ResourceKey tag: {}",
@@ -298,7 +290,7 @@ pub enum ResourceDelta {
 
     /// Update account balance
     SetBalance {
-        account: String,
+        account: Vault,
         old: Amount,
         new: Amount,
     },
@@ -327,10 +319,8 @@ impl Encode for ResourceDelta {
             }
             ResourceDelta::SetBalance { account, old, new } => {
                 buf.push(3); // Tag for SetBalance
-                let account_bytes = account.as_bytes();
-                buf.write_all(&(account_bytes.len() as u32).to_be_bytes())
-                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
-                buf.write_all(account_bytes)
+                // Encode Vault UUID (16 bytes)
+                buf.write_all(account.as_bytes())
                     .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
                 encode_amount(*old, &mut buf)?;
                 encode_amount(*new, &mut buf)?;
@@ -381,20 +371,13 @@ impl Decode for ResourceDelta {
             }
             3 => {
                 // SetBalance
-                let mut len_bytes = [0u8; 4];
+                // Decode Vault UUID (16 bytes)
+                let mut uuid_bytes = [0u8; 16];
                 cursor
-                    .read_exact(&mut len_bytes)
-                    .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
-                let len = u32::from_be_bytes(len_bytes) as usize;
-
-                let mut account_bytes = vec![0u8; len];
-                cursor
-                    .read_exact(&mut account_bytes)
+                    .read_exact(&mut uuid_bytes)
                     .map_err(|e| proven_mvcc::Error::Encoding(e.to_string()))?;
 
-                let account = String::from_utf8(account_bytes)
-                    .map_err(|e| proven_mvcc::Error::Encoding(format!("Invalid UTF-8: {}", e)))?;
-
+                let account = Vault::from_bytes(uuid_bytes);
                 let old = decode_amount(&mut cursor)?;
                 let new = decode_amount(&mut cursor)?;
 
@@ -468,10 +451,15 @@ mod tests {
 
     #[test]
     fn test_encode_decode_key() {
+        use uuid::Uuid;
+
+        let alice_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+
         let keys = vec![
             ResourceKey::Metadata,
             ResourceKey::Supply,
-            ResourceKey::Account("alice".to_string()),
+            ResourceKey::Account(alice_vault),
         ];
 
         for key in keys {
@@ -498,8 +486,13 @@ mod tests {
 
     #[test]
     fn test_delta_apply() {
+        use uuid::Uuid;
+
+        let alice_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+
         let delta = ResourceDelta::SetBalance {
-            account: "alice".to_string(),
+            account: alice_vault,
             old: Amount::from_integer(50, 0),
             new: Amount::from_integer(150, 0),
         };
@@ -514,8 +507,13 @@ mod tests {
 
     #[test]
     fn test_delta_unapply() {
+        use uuid::Uuid;
+
+        let alice_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+
         let delta = ResourceDelta::SetBalance {
-            account: "alice".to_string(),
+            account: alice_vault,
             old: Amount::from_integer(50, 0),
             new: Amount::from_integer(150, 0),
         };
@@ -530,14 +528,19 @@ mod tests {
 
     #[test]
     fn test_delta_merge() {
+        use uuid::Uuid;
+
+        let alice_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+
         let delta1 = ResourceDelta::SetBalance {
-            account: "alice".to_string(),
+            account: alice_vault.clone(),
             old: Amount::from_integer(100, 0),
             new: Amount::from_integer(150, 0),
         };
 
         let delta2 = ResourceDelta::SetBalance {
-            account: "alice".to_string(),
+            account: alice_vault.clone(),
             old: Amount::from_integer(150, 0),
             new: Amount::from_integer(200, 0),
         };
@@ -545,7 +548,7 @@ mod tests {
         let merged = delta1.merge(delta2);
         match merged {
             ResourceDelta::SetBalance { account, old, new } => {
-                assert_eq!(account, "alice");
+                assert_eq!(account, alice_vault);
                 assert_eq!(old, Amount::from_integer(100, 0)); // Original old value
                 assert_eq!(new, Amount::from_integer(200, 0)); // Final new value
             }
@@ -555,12 +558,17 @@ mod tests {
 
     #[test]
     fn test_delta_key() {
+        use uuid::Uuid;
+
+        let alice_vault =
+            Vault::new(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+
         let delta = ResourceDelta::SetBalance {
-            account: "alice".to_string(),
+            account: alice_vault.clone(),
             old: Amount::from_integer(100, 0),
             new: Amount::from_integer(150, 0),
         };
 
-        assert_eq!(delta.key(), ResourceKey::Account("alice".to_string()));
+        assert_eq!(delta.key(), ResourceKey::Account(alice_vault));
     }
 }

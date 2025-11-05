@@ -68,6 +68,7 @@ impl ValueExt for Value {
             (Value::PrivateKey(_), DataType::PrivateKey) => Ok(()),
             (Value::PublicKey(_), DataType::PublicKey) => Ok(()),
             (Value::Identity(_), DataType::Identity) => Ok(()),
+            (Value::Vault(_), DataType::Vault) => Ok(()),
 
             // Collection types
             (Value::Array(_), DataType::Array(_, _)) => Ok(()),
@@ -123,6 +124,7 @@ impl ValueExt for Value {
             Value::PrivateKey(_) => DataType::PrivateKey,
             Value::PublicKey(_) => DataType::PublicKey,
             Value::Identity(_) => DataType::Identity,
+            Value::Vault(_) => DataType::Vault,
             Value::Array(arr) => {
                 if let Some(first) = arr.first() {
                     DataType::Array(Box::new(first.data_type()), Some(arr.len()))

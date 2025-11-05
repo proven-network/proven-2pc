@@ -279,6 +279,11 @@ fn encode_value_compact(value: &Value, expected_type: &DataType, buf: &mut Vec<u
             buf.extend_from_slice(i.as_bytes());
         }
 
+        (Value::Vault(v), DataType::Vault) => {
+            // Encode UUID (16 bytes)
+            buf.extend_from_slice(v.as_bytes());
+        }
+
         // Array/List: encode count + null bitmap + elements recursively
         (Value::Array(arr), DataType::Array(elem_type, _)) => {
             buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
@@ -743,6 +748,12 @@ fn decode_value_compact(cursor: &mut Cursor<&[u8]>, expected_type: &DataType) ->
             let mut uuid_bytes = [0u8; 16];
             cursor.read_exact(&mut uuid_bytes)?;
             Value::Identity(proven_value::Identity::from_bytes(uuid_bytes))
+        }
+
+        DataType::Vault => {
+            let mut uuid_bytes = [0u8; 16];
+            cursor.read_exact(&mut uuid_bytes)?;
+            Value::Vault(proven_value::Vault::from_bytes(uuid_bytes))
         }
 
         // Array/List: decode count + null bitmap + elements recursively

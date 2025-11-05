@@ -66,6 +66,7 @@ pub trait TypeParser: TokenHelper {
             // Special types
             Token::Keyword(Keyword::Uuid) => DataType::Uuid,
             Token::Keyword(Keyword::Identity) => DataType::Identity,
+            Token::Keyword(Keyword::Vault) => DataType::Vault,
             Token::Keyword(Keyword::Private) => {
                 self.expect(Token::Keyword(Keyword::Key))?;
                 DataType::PrivateKey

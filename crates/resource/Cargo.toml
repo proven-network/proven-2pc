@@ -10,6 +10,7 @@ proven-common.workspace = true
 proven-engine.workspace = true
 proven-mvcc.workspace = true
 proven-stream.workspace = true
+proven-value.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
