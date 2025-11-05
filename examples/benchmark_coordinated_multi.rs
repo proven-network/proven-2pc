@@ -449,7 +449,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Wait a bit for any pending operations to complete
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!("\nWaiting 5 seconds for commits to propagate...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    println!("Done waiting.");
 
     // Verification phase - use the same coordinator
     println!("\n=== Verification Phase ===");
@@ -532,30 +534,59 @@ where
     let to_vault = Vault::new(Uuid::parse_str(to_uuid_str).unwrap());
 
     // 1. KV Put operation - using key and value from args
-    kv.put("kv_stream", key, Value::Str(value.to_string()))
-        .await?;
+    if let Err(e) = kv
+        .put("kv_stream", key, Value::Str(value.to_string()))
+        .await
+    {
+        eprintln!("[{}] KV put failed for key '{}': {:?}", _index, key, e);
+        return Err(e.into());
+    }
 
     // 2. Queue Enqueue operation - using message from args
-    queue
+    if let Err(e) = queue
         .enqueue("queue_stream", Value::Str(message.to_string()))
-        .await?;
+        .await
+    {
+        eprintln!(
+            "[{}] Queue enqueue failed for message '{}': {:?}",
+            _index, message, e
+        );
+        return Err(e.into());
+    }
 
     // 3. Resource Transfer operation - using accounts and amount from args
-    resource
-        .transfer_integer("resource_stream", from_vault, to_vault, amount)
-        .await?;
+    if let Err(e) = resource
+        .transfer_integer(
+            "resource_stream",
+            from_vault.clone(),
+            to_vault.clone(),
+            amount,
+        )
+        .await
+    {
+        eprintln!(
+            "[{}] Resource transfer failed from {:?} to {:?} amount {}: {:?}",
+            _index, from_vault, to_vault, amount, e
+        );
+        return Err(e.into());
+    }
 
     // 4. SQL Insert operation - using key and value from args
-    sql.insert_with_params(
-        "sql_stream",
-        "items",
-        &["id", "value"],
-        vec![
-            SqlValue::string(key.to_string()),
-            SqlValue::string(value.to_string()),
-        ],
-    )
-    .await?;
+    if let Err(e) = sql
+        .insert_with_params(
+            "sql_stream",
+            "items",
+            &["id", "value"],
+            vec![
+                SqlValue::string(key.to_string()),
+                SqlValue::string(value.to_string()),
+            ],
+        )
+        .await
+    {
+        eprintln!("[{}] SQL insert failed for key '{}': {:?}", _index, key, e);
+        return Err(e.into());
+    }
 
     executor.finish().await?;
     Ok(())
