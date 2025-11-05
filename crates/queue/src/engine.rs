@@ -10,10 +10,11 @@ use crate::storage::lock_persistence::{
     QueueTransactionLock, decode_transaction_lock, encode_transaction_lock,
 };
 use crate::storage::{LockAttemptResult, LockManager, LockMode};
-use crate::types::{QueueOperation, QueueResponse, QueueValue};
+use crate::types::{QueueOperation, QueueResponse};
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
 use proven_stream::{BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine};
+use proven_value::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -195,7 +196,7 @@ impl QueueTransactionEngine {
 
     /// Get the head of the queue (oldest non-dequeued entry) for a transaction
     /// This scans from entry_id=1 forward until finding a valid entry
-    fn get_head(&self, txn_id: TransactionId) -> Option<(u64, QueueValue)> {
+    fn get_head(&self, txn_id: TransactionId) -> Option<(u64, Value)> {
         // Start from entry_id 1 and scan forward
         let max_entry_id = self.next_entry_id.load(Ordering::SeqCst);
         let dequeued = self.dequeued_entries.get(&txn_id);
@@ -360,7 +361,7 @@ impl QueueTransactionEngine {
     fn execute_enqueue(
         &mut self,
         batch: &mut proven_mvcc::Batch,
-        value: QueueValue,
+        value: Value,
         txn_id: TransactionId,
     ) -> OperationResult<QueueResponse> {
         // Generate next entry ID
@@ -697,7 +698,7 @@ mod tests {
 
         // Test enqueue
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::I64(42),
+            value: Value::I64(42),
         };
 
         let result = engine.apply_operation(enqueue_op, tx1);
@@ -712,7 +713,7 @@ mod tests {
         let result = engine.apply_operation(peek_op, tx1);
         assert!(matches!(
             result,
-            OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(42))))
+            OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(42))))
         ));
 
         // Test commit
@@ -730,7 +731,7 @@ mod tests {
 
         // tx1 gets append lock
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::Str("tx1".to_string()),
+            value: Value::Str("tx1".to_string()),
         };
 
         let result = engine.apply_operation(enqueue_op, tx1);
@@ -752,7 +753,7 @@ mod tests {
 
         // Execute operation
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::Bool(true),
+            value: Value::Bool(true),
         };
 
         engine.apply_operation(enqueue_op, tx1);
@@ -781,14 +782,14 @@ mod tests {
         // Enqueue two values
         engine.apply_operation(
             QueueOperation::Enqueue {
-                value: QueueValue::Str("first".to_string()),
+                value: Value::Str("first".to_string()),
             },
             tx1,
         );
 
         engine.apply_operation(
             QueueOperation::Enqueue {
-                value: QueueValue::Str("second".to_string()),
+                value: Value::Str("second".to_string()),
             },
             tx1,
         );
@@ -797,13 +798,13 @@ mod tests {
         let result = engine.apply_operation(QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
-            OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "first"
+            OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) if s == "first"
         ));
 
         let result = engine.apply_operation(QueueOperation::Dequeue, tx1);
         assert!(matches!(
             result,
-            OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "second"
+            OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) if s == "second"
         ));
 
         // Should be empty now
@@ -827,7 +828,7 @@ mod tests {
 
             engine.apply_operation(
                 QueueOperation::Enqueue {
-                    value: QueueValue::I64(i as i64),
+                    value: Value::I64(i as i64),
                 },
                 tx,
             );
@@ -854,7 +855,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(2))))
+                OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(2))))
             ),
             "Expected to see value 2, got: {:?}",
             result

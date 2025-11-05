@@ -1,7 +1,7 @@
 //! Queue response types
 
-use crate::types::QueueValue;
 use proven_common::Response;
+use proven_value::Value;
 use serde::{Deserialize, Serialize};
 
 /// Response types for queue operations
@@ -11,10 +11,10 @@ pub enum QueueResponse {
     Enqueued,
 
     /// Successfully dequeued a value
-    Dequeued(Option<QueueValue>),
+    Dequeued(Option<Value>),
 
     /// Peeked at a value
-    Peeked(Option<QueueValue>),
+    Peeked(Option<Value>),
 
     /// Queue size
     Size(usize),

@@ -2,15 +2,15 @@
 //!
 //! This module defines the queue-specific operations that can be sent in messages.
 
-use crate::types::QueueValue;
 use proven_common::{Operation, OperationType, ProcessorType};
+use proven_value::Value;
 use serde::{Deserialize, Serialize};
 
 /// Queue operation types that can be sent in messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueueOperation {
     /// Enqueue a value to the back of the queue
-    Enqueue { value: QueueValue },
+    Enqueue { value: Value },
 
     /// Dequeue a value from the front of the queue
     Dequeue,
@@ -46,29 +46,29 @@ impl PartialEq for QueueOperation {
 
 impl Eq for QueueOperation {}
 
-// Helper to compare QueueValues treating floats specially
-fn values_equal(v1: &QueueValue, v2: &QueueValue) -> bool {
+// Helper to compare Values treating floats specially
+fn values_equal(v1: &Value, v2: &Value) -> bool {
     match (v1, v2) {
         // Strings
-        (QueueValue::Str(s1), QueueValue::Str(s2)) => s1 == s2,
+        (Value::Str(s1), Value::Str(s2)) => s1 == s2,
         // Integers (check all integer types)
-        (QueueValue::I64(i1), QueueValue::I64(i2)) => i1 == i2,
-        (QueueValue::I32(i1), QueueValue::I32(i2)) => i1 == i2,
-        (QueueValue::I16(i1), QueueValue::I16(i2)) => i1 == i2,
-        (QueueValue::I8(i1), QueueValue::I8(i2)) => i1 == i2,
-        (QueueValue::U64(i1), QueueValue::U64(i2)) => i1 == i2,
-        (QueueValue::U32(i1), QueueValue::U32(i2)) => i1 == i2,
-        (QueueValue::U16(i1), QueueValue::U16(i2)) => i1 == i2,
-        (QueueValue::U8(i1), QueueValue::U8(i2)) => i1 == i2,
+        (Value::I64(i1), Value::I64(i2)) => i1 == i2,
+        (Value::I32(i1), Value::I32(i2)) => i1 == i2,
+        (Value::I16(i1), Value::I16(i2)) => i1 == i2,
+        (Value::I8(i1), Value::I8(i2)) => i1 == i2,
+        (Value::U64(i1), Value::U64(i2)) => i1 == i2,
+        (Value::U32(i1), Value::U32(i2)) => i1 == i2,
+        (Value::U16(i1), Value::U16(i2)) => i1 == i2,
+        (Value::U8(i1), Value::U8(i2)) => i1 == i2,
         // Floats (bitwise comparison)
-        (QueueValue::F64(f1), QueueValue::F64(f2)) => f1.to_bits() == f2.to_bits(),
-        (QueueValue::F32(f1), QueueValue::F32(f2)) => f1.to_bits() == f2.to_bits(),
+        (Value::F64(f1), Value::F64(f2)) => f1.to_bits() == f2.to_bits(),
+        (Value::F32(f1), Value::F32(f2)) => f1.to_bits() == f2.to_bits(),
         // Booleans
-        (QueueValue::Bool(b1), QueueValue::Bool(b2)) => b1 == b2,
+        (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
         // Bytes
-        (QueueValue::Bytea(b1), QueueValue::Bytea(b2)) => b1 == b2,
+        (Value::Bytea(b1), Value::Bytea(b2)) => b1 == b2,
         // JSON
-        (QueueValue::Json(j1), QueueValue::Json(j2)) => j1 == j2,
+        (Value::Json(j1), Value::Json(j2)) => j1 == j2,
         // Default: use structural equality
         _ => v1 == v2,
     }

@@ -2,10 +2,11 @@
 
 use proven_common::TransactionId;
 use proven_queue::engine::QueueTransactionEngine;
-use proven_queue::types::{QueueOperation, QueueResponse, QueueValue};
+use proven_queue::types::{QueueOperation, QueueResponse};
 use proven_stream::AutoBatchEngine;
 use proven_stream::OperationResult;
 use proven_stream::RetryOn;
+use proven_value::Value;
 
 fn create_tx_id() -> TransactionId {
     TransactionId::new()
@@ -24,7 +25,7 @@ fn test_basic_queue_operations() {
 
     // Test enqueue
     let enqueue1 = QueueOperation::Enqueue {
-        value: QueueValue::Str("first".to_string()),
+        value: Value::Str("first".to_string()),
     };
 
     let result = engine.apply_operation(enqueue1, tx);
@@ -34,7 +35,7 @@ fn test_basic_queue_operations() {
     ));
 
     let enqueue2 = QueueOperation::Enqueue {
-        value: QueueValue::Str("second".to_string()),
+        value: Value::Str("second".to_string()),
     };
 
     let result = engine.apply_operation(enqueue2, tx);
@@ -58,13 +59,13 @@ fn test_basic_queue_operations() {
     let result = engine.apply_operation(dequeue_op.clone(), tx);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "first"
+        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) if s == "first"
     ));
 
     let result = engine.apply_operation(dequeue_op.clone(), tx);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "second"
+        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) if s == "second"
     ));
 
     // Queue should be empty now
@@ -146,7 +147,7 @@ fn test_concurrent_access_with_locking() {
 
     // tx1 acquires exclusive lock by enqueuing
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("tx1_data".to_string()),
+        value: Value::Str("tx1_data".to_string()),
     };
 
     let _ = engine.apply_operation(enqueue_op, tx1);
@@ -165,7 +166,7 @@ fn test_concurrent_access_with_locking() {
     let result = engine.apply_operation(dequeue_op, tx2);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Dequeued(Some(QueueValue::Str(s)))) if s == "tx1_data"
+        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) if s == "tx1_data"
     ));
 
     engine.commit(tx2);
@@ -181,7 +182,7 @@ fn test_abort_rollback() {
     // Enqueue some values
     for i in 0..3 {
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::I64(i),
+            value: Value::I64(i),
         };
         engine.apply_operation(enqueue_op, tx1);
     }
@@ -220,7 +221,7 @@ fn test_peek_operation() {
 
     // Enqueue a value
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("peek_me".to_string()),
+        value: Value::Str("peek_me".to_string()),
     };
 
     engine.apply_operation(enqueue_op, tx);
@@ -231,14 +232,14 @@ fn test_peek_operation() {
     let result = engine.apply_operation(peek_op.clone(), tx);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Str(s)))) if s == "peek_me"
+        OperationResult::Complete(QueueResponse::Peeked(Some(Value::Str(s)))) if s == "peek_me"
     ));
 
     // Peek again - should still be there
     let result = engine.apply_operation(peek_op, tx);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Str(s)))) if s == "peek_me"
+        OperationResult::Complete(QueueResponse::Peeked(Some(Value::Str(s)))) if s == "peek_me"
     ));
 
     // Size should still be 1
@@ -263,7 +264,7 @@ fn test_clear_operation() {
     // Enqueue multiple values
     for i in 0..5 {
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::I64(i),
+            value: Value::I64(i),
         };
         engine.apply_operation(enqueue_op, tx);
     }
@@ -315,7 +316,7 @@ fn test_shared_locks_for_reads() {
     engine.begin(tx1);
 
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("shared_data".to_string()),
+        value: Value::Str("shared_data".to_string()),
     };
     engine.apply_operation(enqueue_op, tx1);
 
@@ -370,12 +371,12 @@ fn test_various_value_types() {
 
     // Test different value types
     let values = [
-        QueueValue::Str("text".to_string()),
-        QueueValue::I64(42),
-        QueueValue::F64(std::f64::consts::PI),
-        QueueValue::Bool(true),
-        QueueValue::Bytea(vec![1, 2, 3, 4]),
-        QueueValue::Json(serde_json::json!({"key": "value"})),
+        Value::Str("text".to_string()),
+        Value::I64(42),
+        Value::F64(std::f64::consts::PI),
+        Value::Bool(true),
+        Value::Bytea(vec![1, 2, 3, 4]),
+        Value::Json(serde_json::json!({"key": "value"})),
     ];
 
     // Enqueue all value types
@@ -505,7 +506,7 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
     engine.begin(setup_tx);
 
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("initial".to_string()),
+        value: Value::Str("initial".to_string()),
     };
     engine.apply_operation(enqueue_op, setup_tx);
 
@@ -521,7 +522,7 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
 
     // Write transaction enqueues (gets append lock)
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("new_value".to_string()),
+        value: Value::Str("new_value".to_string()),
     };
     let result = engine.apply_operation(enqueue_op, write_tx);
     assert!(matches!(
@@ -536,7 +537,7 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
     // Should see only committed data (initial value) without blocking
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Str(s)))) if s == "initial"
+        OperationResult::Complete(QueueResponse::Peeked(Some(Value::Str(s)))) if s == "initial"
     ));
 }
 
@@ -550,7 +551,7 @@ fn test_snapshot_size_blocks_on_earlier_write() {
 
     // Write transaction enqueues (but doesn't commit yet)
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("pending".to_string()),
+        value: Value::Str("pending".to_string()),
     };
     engine.apply_operation(enqueue_op, write_tx);
 
@@ -583,7 +584,7 @@ fn test_snapshot_is_empty_sees_committed_state() {
 
     for i in 0..3 {
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::I64(i),
+            value: Value::I64(i),
         };
         engine.apply_operation(enqueue_op, tx1);
     }
@@ -655,7 +656,7 @@ fn test_snapshot_peek_ignores_aborted_operations() {
     engine.begin(tx1);
 
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("committed".to_string()),
+        value: Value::Str("committed".to_string()),
     };
     engine.apply_operation(enqueue_op, tx1);
 
@@ -666,7 +667,7 @@ fn test_snapshot_peek_ignores_aborted_operations() {
     engine.begin(tx2);
 
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::Str("aborted".to_string()),
+        value: Value::Str("aborted".to_string()),
     };
     engine.apply_operation(enqueue_op, tx2);
 
@@ -677,7 +678,7 @@ fn test_snapshot_peek_ignores_aborted_operations() {
     let result = engine.read_at_timestamp(peek_op, create_tx_id());
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::Str(s)))) if s == "committed"
+        OperationResult::Complete(QueueResponse::Peeked(Some(Value::Str(s)))) if s == "committed"
     ));
 }
 
@@ -691,7 +692,7 @@ fn test_snapshot_size_with_concurrent_operations() {
 
     for i in 0..2 {
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::I64(i),
+            value: Value::I64(i),
         };
         engine.apply_operation(enqueue_op, tx1);
     }
@@ -706,7 +707,7 @@ fn test_snapshot_size_with_concurrent_operations() {
     engine.begin(tx2);
 
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::I64(2),
+        value: Value::I64(2),
     };
     engine.apply_operation(enqueue_op, tx2);
 
@@ -718,7 +719,7 @@ fn test_snapshot_size_with_concurrent_operations() {
     engine.begin(tx3);
 
     let enqueue_op = QueueOperation::Enqueue {
-        value: QueueValue::I64(3),
+        value: Value::I64(3),
     };
     engine.apply_operation(enqueue_op, tx3);
 
@@ -762,7 +763,7 @@ fn test_snapshot_fifo_ordering_preserved() {
         let tx = create_tx_id();
         engine.begin(tx);
         let enqueue_op = QueueOperation::Enqueue {
-            value: QueueValue::I64(i as i64),
+            value: Value::I64(i as i64),
         };
         engine.apply_operation(enqueue_op, tx);
 
@@ -786,20 +787,20 @@ fn test_snapshot_fifo_ordering_preserved() {
     let result = engine.read_at_timestamp(peek_op.clone(), snapshots[0]);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(0))))
+        OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(0))))
     ));
 
     // After third enqueue: should still see first item (0)
     let result = engine.read_at_timestamp(peek_op.clone(), snapshots[2]);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(0))))
+        OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(0))))
     ));
 
     // After dequeues: should see third item (2) after two dequeues
     let result = engine.read_at_timestamp(peek_op, snapshot_after_dequeues);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(QueueValue::I64(2))))
+        OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(2))))
     ));
 }

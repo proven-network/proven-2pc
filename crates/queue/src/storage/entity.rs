@@ -3,13 +3,13 @@
 //! This module defines the MvccEntity implementation for queues.
 //! Key design decisions:
 //! - Key = u64 (entry_id for FIFO ordering)
-//! - Value = QueueValue (the actual queue data)
+//! - Value = Value (the actual queue data)
 //! - Deltas track Enqueue/Dequeue/Clear operations
 //! - Head/tail pointers stored in metadata for FIFO semantics
 
-use crate::types::QueueValue;
 use proven_common::TransactionId;
 use proven_mvcc::{Decode, Encode, Error as MvccError, MvccDelta, MvccEntity};
+use proven_value::Value;
 
 type Result<T> = std::result::Result<T, MvccError>;
 
@@ -25,7 +25,7 @@ pub struct QueueEntity;
 
 impl MvccEntity for QueueEntity {
     type Key = u64; // entry_id (for FIFO ordering)
-    type Value = QueueValue; // Queue value
+    type Value = Value; // Queue value
     type Delta = QueueDelta;
 
     fn entity_name() -> &'static str {
@@ -41,18 +41,18 @@ pub enum QueueDelta {
     /// Enqueue a value to the back of the queue
     Enqueue {
         entry_id: u64,
-        value: QueueValue,
+        value: Value,
         enqueued_at: TransactionId,
     },
     /// Dequeue a value from the front of the queue
     Dequeue {
         entry_id: u64,
-        old_value: QueueValue, // For unapply
+        old_value: Value, // For unapply
     },
     /// Clear all values from the queue
     /// Note: This stores all cleared entries for unapply (can be expensive)
     Clear {
-        cleared_entries: Vec<(u64, QueueValue)>, // For unapply
+        cleared_entries: Vec<(u64, Value)>, // For unapply
     },
 }
 
@@ -67,7 +67,7 @@ impl MvccDelta<QueueEntity> for QueueDelta {
         }
     }
 
-    fn apply(&self, _current: Option<QueueValue>) -> Option<QueueValue> {
+    fn apply(&self, _current: Option<Value>) -> Option<Value> {
         match self {
             QueueDelta::Enqueue { value, .. } => Some(value.clone()),
             QueueDelta::Dequeue { .. } => None, // Entry is removed
@@ -75,7 +75,7 @@ impl MvccDelta<QueueEntity> for QueueDelta {
         }
     }
 
-    fn unapply(&self, _current: Option<QueueValue>) -> Option<QueueValue> {
+    fn unapply(&self, _current: Option<Value>) -> Option<Value> {
         match self {
             QueueDelta::Enqueue { .. } => None, // Didn't exist before enqueue
             QueueDelta::Dequeue { old_value, .. } => Some(old_value.clone()), // Restore
@@ -247,7 +247,7 @@ impl Decode for QueueDelta {
     }
 }
 
-// Note: Encode/Decode for QueueValue (proven_value::Value) is implemented in proven-value crate
+// Note: Encode/Decode for Value (proven_value::Value) is implemented in proven-value crate
 // Note: u64 Encode/Decode is already implemented in proven-mvcc
 
 #[cfg(test)]
@@ -262,12 +262,12 @@ mod tests {
     fn test_enqueue_delta() {
         let delta = QueueDelta::Enqueue {
             entry_id: 1,
-            value: QueueValue::Str("test".to_string()),
+            value: Value::Str("test".to_string()),
             enqueued_at: create_timestamp(),
         };
 
         assert_eq!(delta.key(), 1);
-        assert_eq!(delta.apply(None), Some(QueueValue::Str("test".to_string())));
+        assert_eq!(delta.apply(None), Some(Value::Str("test".to_string())));
         assert_eq!(delta.unapply(None), None);
     }
 
@@ -275,25 +275,25 @@ mod tests {
     fn test_dequeue_delta() {
         let delta = QueueDelta::Dequeue {
             entry_id: 1,
-            old_value: QueueValue::I64(42),
+            old_value: Value::I64(42),
         };
 
         assert_eq!(delta.key(), 1);
-        assert_eq!(delta.apply(Some(QueueValue::I64(42))), None);
-        assert_eq!(delta.unapply(None), Some(QueueValue::I64(42)));
+        assert_eq!(delta.apply(Some(Value::I64(42))), None);
+        assert_eq!(delta.unapply(None), Some(Value::I64(42)));
     }
 
     #[test]
     fn test_delta_merge_enqueue_dequeue() {
         let enqueue = QueueDelta::Enqueue {
             entry_id: 1,
-            value: QueueValue::Bool(true),
+            value: Value::Bool(true),
             enqueued_at: create_timestamp(),
         };
 
         let dequeue = QueueDelta::Dequeue {
             entry_id: 1,
-            old_value: QueueValue::Bool(false), // Will be replaced
+            old_value: Value::Bool(false), // Will be replaced
         };
 
         let merged = enqueue.merge(dequeue);
@@ -304,7 +304,7 @@ mod tests {
                 old_value,
             } => {
                 assert_eq!(entry_id, 1);
-                assert_eq!(old_value, QueueValue::Bool(true)); // From enqueue
+                assert_eq!(old_value, Value::Bool(true)); // From enqueue
             }
             _ => panic!("Expected Dequeue delta"),
         }
@@ -314,7 +314,7 @@ mod tests {
     fn test_encode_decode_delta() {
         let delta = QueueDelta::Enqueue {
             entry_id: 123,
-            value: QueueValue::Str("hello".to_string()),
+            value: Value::Str("hello".to_string()),
             enqueued_at: create_timestamp(),
         };
 
@@ -326,10 +326,10 @@ mod tests {
 
     #[test]
     fn test_encode_decode_value() {
-        let value = QueueValue::Str("test value".to_string());
+        let value = Value::Str("test value".to_string());
 
         let encoded = value.encode().unwrap();
-        let decoded = QueueValue::decode(&encoded).unwrap();
+        let decoded = Value::decode(&encoded).unwrap();
 
         assert_eq!(value, decoded);
     }

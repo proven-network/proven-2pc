@@ -1,7 +1,8 @@
 //! Queue client for coordinator-based transactions
 
 use proven_coordinator::Executor;
-use proven_queue::types::{QueueOperation, QueueResponse, QueueValue};
+use proven_queue::types::{QueueOperation, QueueResponse};
+use proven_value::Value;
 use std::sync::Arc;
 
 /// Queue client that works with coordinator executors
@@ -20,7 +21,7 @@ impl<E: Executor> QueueClient<E> {
     pub async fn enqueue(
         &self,
         stream_name: impl Into<String>,
-        value: QueueValue,
+        value: Value,
     ) -> Result<(), QueueError> {
         let stream_name = stream_name.into();
         let operation = QueueOperation::Enqueue { value };
@@ -40,7 +41,7 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
         value: Vec<u8>,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, QueueValue::Bytea(value)).await
+        self.enqueue(stream_name, Value::Bytea(value)).await
     }
 
     /// Enqueue a string
@@ -49,8 +50,7 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
         value: impl Into<String>,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, QueueValue::Str(value.into()))
-            .await
+        self.enqueue(stream_name, Value::Str(value.into())).await
     }
 
     /// Enqueue JSON value
@@ -59,14 +59,14 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
         value: serde_json::Value,
     ) -> Result<(), QueueError> {
-        self.enqueue(stream_name, QueueValue::Json(value)).await
+        self.enqueue(stream_name, Value::Json(value)).await
     }
 
     /// Dequeue a value
     pub async fn dequeue(
         &self,
         stream_name: impl Into<String>,
-    ) -> Result<Option<QueueValue>, QueueError> {
+    ) -> Result<Option<Value>, QueueError> {
         let stream_name = stream_name.into();
         let operation = QueueOperation::Dequeue;
 
@@ -85,7 +85,7 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
     ) -> Result<Option<Vec<u8>>, QueueError> {
         match self.dequeue(stream_name).await? {
-            Some(QueueValue::Bytea(b)) => Ok(Some(b)),
+            Some(Value::Bytea(b)) => Ok(Some(b)),
             Some(_) => Err(QueueError::TypeMismatch),
             None => Ok(None),
         }
@@ -97,17 +97,14 @@ impl<E: Executor> QueueClient<E> {
         stream_name: impl Into<String>,
     ) -> Result<Option<String>, QueueError> {
         match self.dequeue(stream_name).await? {
-            Some(QueueValue::Str(s)) => Ok(Some(s)),
+            Some(Value::Str(s)) => Ok(Some(s)),
             Some(_) => Err(QueueError::TypeMismatch),
             None => Ok(None),
         }
     }
 
     /// Peek at the next value without removing it
-    pub async fn peek(
-        &self,
-        stream_name: impl Into<String>,
-    ) -> Result<Option<QueueValue>, QueueError> {
+    pub async fn peek(&self, stream_name: impl Into<String>) -> Result<Option<Value>, QueueError> {
         let stream_name = stream_name.into();
         let operation = QueueOperation::Peek;
 

@@ -4,8 +4,9 @@
 //! 1 million items directly using the engine.
 
 use proven_common::TransactionId;
-use proven_queue::{QueueOperation, QueueTransactionEngine, QueueValue};
+use proven_queue::{QueueOperation, QueueTransactionEngine};
 use proven_stream::AutoBatchEngine;
+use proven_value::Value;
 use std::io::{self, Write};
 use std::time::Instant;
 
@@ -34,12 +35,12 @@ fn main() {
 
         // Create enqueue operation with various value types to simulate real usage
         let value = match i % 6 {
-            0 => QueueValue::I64(i as i64),
-            1 => QueueValue::Str(format!("message_{}", i)),
-            2 => QueueValue::Bool(i % 2 == 0),
-            3 => QueueValue::F64(i as f64 * 1.5),
-            4 => QueueValue::Bytea(format!("data_{}", i % 1000).into_bytes()),
-            _ => QueueValue::Json(serde_json::json!({
+            0 => Value::I64(i as i64),
+            1 => Value::Str(format!("message_{}", i)),
+            2 => Value::Bool(i % 2 == 0),
+            3 => Value::F64(i as f64 * 1.5),
+            4 => Value::Bytea(format!("data_{}", i % 1000).into_bytes()),
+            _ => Value::Json(serde_json::json!({
                 "id": i,
                 "timestamp": 2000000000 + i,
                 "type": "benchmark"

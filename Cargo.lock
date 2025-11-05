@@ -946,6 +946,7 @@ version = "0.1.0"
 dependencies = [
  "proven-coordinator",
  "proven-queue",
+ "proven-value",
  "serde_json",
  "thiserror",
 ]

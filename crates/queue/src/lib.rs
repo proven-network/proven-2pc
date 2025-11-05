@@ -10,4 +10,4 @@ pub mod types;
 // Re-export types for convenience
 pub use engine::QueueTransactionEngine;
 pub use proven_common::TransactionId;
-pub use types::{QueueOperation, QueueResponse, QueueValue};
+pub use types::{QueueOperation, QueueResponse};

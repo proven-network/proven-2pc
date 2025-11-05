@@ -8,7 +8,6 @@ use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::types::Value;
 use proven_kv_client::KvClient;
-use proven_queue::types::QueueValue;
 use proven_queue_client::QueueClient;
 use proven_resource_client::ResourceClient;
 use proven_runner::Runner;
@@ -566,7 +565,7 @@ where
 
     // 2. Queue Enqueue operation - using message from args
     queue
-        .enqueue("queue_stream", QueueValue::Str(message.to_string()))
+        .enqueue("queue_stream", Value::Str(message.to_string()))
         .await?;
 
     // 3. Resource Transfer operation - using accounts and amount from args

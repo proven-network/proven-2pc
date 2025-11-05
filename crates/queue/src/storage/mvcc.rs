@@ -3,8 +3,8 @@
 //! Provides transaction isolation through operation logging instead of full queue cloning,
 //! enabling quick aborts and consistent reads with minimal memory overhead.
 
-use crate::types::QueueValue;
 use proven_common::TransactionId;
+use proven_value::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueueEntry {
     /// The actual value (wrapped in Arc for cheap clones)
-    pub value: Arc<QueueValue>,
+    pub value: Arc<Value>,
     /// Transaction that created this entry
     pub created_by: TransactionId,
     /// When this entry was created
@@ -186,7 +186,7 @@ impl MvccStorage {
     }
 
     /// Enqueue a value to the back of the queue
-    pub fn enqueue(&mut self, value: QueueValue, tx_id: TransactionId, timestamp: TransactionId) {
+    pub fn enqueue(&mut self, value: Value, tx_id: TransactionId, timestamp: TransactionId) {
         let entry_id = self.get_next_entry_id();
 
         let entry = Arc::new(QueueEntry {
@@ -204,7 +204,7 @@ impl MvccStorage {
     }
 
     /// Dequeue a value from the front of the queue
-    pub fn dequeue(&mut self, tx_id: TransactionId) -> Option<QueueValue> {
+    pub fn dequeue(&mut self, tx_id: TransactionId) -> Option<Value> {
         // Get a view with all operations applied
         let view = self.get_queue_view(tx_id);
 
@@ -223,7 +223,7 @@ impl MvccStorage {
     }
 
     /// Peek at the front value without removing it
-    pub fn peek(&self, tx_id: TransactionId) -> Option<Arc<QueueValue>> {
+    pub fn peek(&self, tx_id: TransactionId) -> Option<Arc<Value>> {
         let view = self.get_queue_view(tx_id);
         view.front().map(|entry| entry.value.clone())
     }
@@ -239,7 +239,7 @@ impl MvccStorage {
     }
 
     /// Peek at the front value at a specific timestamp (snapshot read)
-    pub fn peek_at_timestamp(&self, read_timestamp: TransactionId) -> Option<Arc<QueueValue>> {
+    pub fn peek_at_timestamp(&self, read_timestamp: TransactionId) -> Option<Arc<Value>> {
         let queue = self.get_queue_at_timestamp(read_timestamp);
         queue.front().map(|entry| entry.value.clone())
     }
@@ -338,28 +338,18 @@ mod tests {
         storage.begin_transaction(tx1);
 
         // Enqueue some values
-        storage.enqueue(QueueValue::Str("first".to_string()), tx1, tx1);
-        storage.enqueue(
-            QueueValue::Str("second".to_string()),
-            tx1,
-            create_timestamp(),
-        );
+        storage.enqueue(Value::Str("first".to_string()), tx1, tx1);
+        storage.enqueue(Value::Str("second".to_string()), tx1, create_timestamp());
 
         // Should be able to peek without removing
         assert_eq!(
             storage.peek(tx1).map(|arc| (*arc).clone()),
-            Some(QueueValue::Str("first".to_string()))
+            Some(Value::Str("first".to_string()))
         );
 
         // Dequeue should return FIFO order
-        assert_eq!(
-            storage.dequeue(tx1),
-            Some(QueueValue::Str("first".to_string()))
-        );
-        assert_eq!(
-            storage.dequeue(tx1),
-            Some(QueueValue::Str("second".to_string()))
-        );
+        assert_eq!(storage.dequeue(tx1), Some(Value::Str("first".to_string())));
+        assert_eq!(storage.dequeue(tx1), Some(Value::Str("second".to_string())));
         assert_eq!(storage.dequeue(tx1), None);
     }
 
@@ -373,7 +363,7 @@ mod tests {
         storage.begin_transaction(tx2);
 
         // tx1 enqueues some values
-        storage.enqueue(QueueValue::Str("tx1_value".to_string()), tx1, tx1);
+        storage.enqueue(Value::Str("tx1_value".to_string()), tx1, tx1);
 
         // tx2 shouldn't see uncommitted values
         assert_eq!(storage.size(tx2), 0);
@@ -385,7 +375,7 @@ mod tests {
         assert_eq!(storage.size(tx2), 1);
         assert_eq!(
             storage.peek(tx2).map(|arc| (*arc).clone()),
-            Some(QueueValue::Str("tx1_value".to_string()))
+            Some(Value::Str("tx1_value".to_string()))
         );
     }
 
@@ -397,12 +387,12 @@ mod tests {
 
         // tx1 creates a queue and commits
         storage.begin_transaction(tx1);
-        storage.enqueue(QueueValue::Str("committed".to_string()), tx1, tx1);
+        storage.enqueue(Value::Str("committed".to_string()), tx1, tx1);
         storage.commit_transaction(tx1);
 
         // tx2 modifies the queue but aborts
         storage.begin_transaction(tx2);
-        storage.enqueue(QueueValue::Str("aborted".to_string()), tx2, tx2);
+        storage.enqueue(Value::Str("aborted".to_string()), tx2, tx2);
         assert_eq!(storage.size(tx2), 2);
 
         // Abort tx2
@@ -414,7 +404,7 @@ mod tests {
         assert_eq!(storage.size(tx3), 1);
         assert_eq!(
             storage.peek(tx3).map(|arc| (*arc).clone()),
-            Some(QueueValue::Str("committed".to_string()))
+            Some(Value::Str("committed".to_string()))
         );
     }
 
@@ -427,7 +417,7 @@ mod tests {
 
         // Add some values
         for i in 0..5 {
-            storage.enqueue(QueueValue::I64(i), tx1, create_timestamp());
+            storage.enqueue(Value::I64(i), tx1, create_timestamp());
         }
 
         assert_eq!(storage.size(tx1), 5);
