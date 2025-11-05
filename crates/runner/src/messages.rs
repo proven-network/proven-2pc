@@ -29,6 +29,9 @@ pub struct ProcessorStatus {
     /// Guaranteed to run until this time (ms since epoch)
     pub guaranteed_until_ms: u64,
 
+    /// Last activity time (ms since epoch)
+    pub last_activity_ms: u64,
+
     /// Current state
     pub state: ProcessorState,
 }

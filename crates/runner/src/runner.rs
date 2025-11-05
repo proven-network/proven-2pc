@@ -40,6 +40,9 @@ pub struct Runner {
     // Pending processor requests waiting for ACKs
     pending_requests: PendingRequests,
 
+    // Idle shutdown configuration (None = no idle shutdown)
+    idle_shutdown_timeout: Option<Duration>,
+
     // Background tasks
     tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
@@ -65,8 +68,24 @@ impl Runner {
             processors: Arc::new(Mutex::new(HashMap::new())),
             cluster_view: Arc::new(RwLock::new(ClusterView::new())),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
+            idle_shutdown_timeout: None,
             tasks: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Configure idle shutdown timeout (builder pattern)
+    ///
+    /// When set, processors will automatically shut down after being idle (no messages)
+    /// for this duration, but only after their guaranteed time has expired.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let runner = Runner::new("node1", client, base_dir)
+    ///     .with_idle_shutdown(Duration::from_secs(300)); // 5 min idle timeout
+    /// ```
+    pub fn with_idle_shutdown(mut self, timeout: Duration) -> Self {
+        self.idle_shutdown_timeout = Some(timeout);
+        self
     }
 
     /// Start the runner (call once on node startup)
@@ -95,6 +114,12 @@ impl Runner {
         let ack_listener = self.start_ack_listener();
         self.tasks.lock().push(ack_listener);
 
+        // Start idle checker if configured
+        if let Some(idle_timeout) = self.idle_shutdown_timeout {
+            let idle_checker = self.start_idle_checker(idle_timeout);
+            self.tasks.lock().push(idle_checker);
+        }
+
         Ok(())
     }
 
@@ -106,27 +131,39 @@ impl Runner {
         min_duration: Duration,
     ) -> Result<ProcessorInfo> {
         // First check if we're running this processor locally
-        if let Some(handle) = self.processors.lock().get(stream) {
-            let guaranteed_until_ms = handle.guaranteed_until_ms();
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
+        let is_expired = {
+            if let Some(handle) = self.processors.lock().get(stream) {
+                let guaranteed_until_ms = handle.guaranteed_until_ms();
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
 
-            // If processor is running locally and not expired, use it
-            // We don't require the full min_duration remaining if it's already running
-            if guaranteed_until_ms > now_ms {
-                return Ok(ProcessorInfo {
-                    node_id: self.node_id.clone(),
-                    stream: stream.to_string(),
-                    guaranteed_until_ms,
-                });
+                // If processor is running locally and not expired, use it
+                // We don't require the full min_duration remaining if it's already running
+                if guaranteed_until_ms > now_ms {
+                    return Ok(ProcessorInfo {
+                        node_id: self.node_id.clone(),
+                        stream: stream.to_string(),
+                        guaranteed_until_ms,
+                    });
+                }
+                true // Processor exists but is expired
             } else {
-                println!(
-                    "⏰ Processor for {} has expired (guaranteed_until: {} < now: {})",
-                    stream, guaranteed_until_ms, now_ms
-                );
+                false // No processor exists
             }
+        };
+
+        // If we have an expired processor locally, try to extend it instead of replacing
+        if is_expired {
+            tracing::debug!(
+                "[{}] Processor for stream '{}' has expired, extending instead of replacing",
+                self.node_id,
+                stream
+            );
+            return self
+                .extend_processor(stream, processor_type, min_duration)
+                .await;
         }
 
         // Check if already running somewhere else
@@ -167,15 +204,17 @@ impl Runner {
         let is_local = self.processors.lock().contains_key(stream);
 
         if is_local {
-            // Extend our own processor
+            // Extend our own processor's guarantee
+            if let Some(handle) = self.processors.lock().get(stream) {
+                handle.extend_guarantee(additional_duration);
+            }
+
             let new_guaranteed_until_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64
                 + additional_duration.as_millis() as u64;
 
-            // Update the handle's guaranteed time (would need to add this method)
-            // For now, just return the updated info
             let processor_info = ProcessorInfo {
                 node_id: self.node_id.clone(),
                 stream: stream.to_string(),
@@ -341,6 +380,63 @@ impl Runner {
         })
     }
 
+    /// Start idle checker task
+    fn start_idle_checker(&self, idle_timeout: Duration) -> JoinHandle<()> {
+        let processors = self.processors.clone();
+        let node_id = self.node_id.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+
+                let now = std::time::Instant::now();
+                let mut to_shutdown = Vec::new();
+
+                // Check each processor
+                {
+                    let procs = processors.lock();
+                    for (stream, handle) in procs.iter() {
+                        // Check if guarantee has expired
+                        let guarantee_expired = *handle.guaranteed_until.lock() <= now;
+
+                        if guarantee_expired {
+                            // Check if idle for long enough
+                            let last_activity = handle.last_activity_instant();
+                            let idle_duration = now.saturating_duration_since(last_activity);
+
+                            if idle_duration >= idle_timeout {
+                                tracing::info!(
+                                    "[{}] Processor for stream '{}' is idle (idle: {:.1}s, timeout: {:.1}s) and guarantee expired - scheduling shutdown",
+                                    node_id,
+                                    stream,
+                                    idle_duration.as_secs_f64(),
+                                    idle_timeout.as_secs_f64()
+                                );
+                                to_shutdown.push(stream.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Shutdown idle processors
+                for stream in to_shutdown {
+                    let handle = processors.lock().remove(&stream);
+                    if let Some(handle) = handle {
+                        tracing::info!(
+                            "[{}] Shutting down idle processor for stream '{}'",
+                            node_id,
+                            stream
+                        );
+                        handle.shutdown().await;
+                    }
+                }
+            }
+        })
+    }
+
     /// Listen for processor requests
     async fn listen_for_requests(
         client: Arc<MockClient>,
@@ -479,6 +575,20 @@ impl Runner {
         for handle in handles {
             handle.shutdown().await;
         }
+    }
+
+    /// Check if a processor is currently running for a stream
+    ///
+    /// This is primarily useful for testing and monitoring.
+    pub fn has_processor(&self, stream: &str) -> bool {
+        self.processors.lock().contains_key(stream)
+    }
+
+    /// Get a reference to the underlying client
+    ///
+    /// This is primarily useful for testing.
+    pub fn client(&self) -> &Arc<MockClient> {
+        &self.client
     }
 }
 

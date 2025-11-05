@@ -44,6 +44,7 @@ async fn build_heartbeat(
         .map(|(stream, handle)| ProcessorStatus {
             stream: stream.clone(),
             guaranteed_until_ms: handle.guaranteed_until_ms(),
+            last_activity_ms: handle.last_activity_ms(),
             state: if handle.is_shutting_down() {
                 ProcessorState::ShuttingDown
             } else {

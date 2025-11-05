@@ -1,5 +1,6 @@
 //! Processor lifecycle management
 
+use parking_lot::Mutex;
 use proven_common::ProcessorType;
 use proven_engine::MockClient;
 use std::path::PathBuf;
@@ -10,21 +11,43 @@ use tokio::sync::oneshot;
 /// Handle to a running processor
 #[derive(Clone)]
 pub struct ProcessorHandle {
-    pub(crate) guaranteed_until: Instant,
-    pub(crate) shutdown_tx: Arc<parking_lot::Mutex<Option<oneshot::Sender<()>>>>,
+    pub(crate) guaranteed_until: Arc<Mutex<Instant>>,
+    pub(crate) shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    pub(crate) last_activity: Arc<Mutex<Instant>>,
 }
 
 impl ProcessorHandle {
     /// Get guaranteed until time in milliseconds
     pub fn guaranteed_until_ms(&self) -> u64 {
-        let remaining = self
-            .guaranteed_until
-            .saturating_duration_since(Instant::now());
+        let guaranteed_until = *self.guaranteed_until.lock();
+        let remaining = guaranteed_until.saturating_duration_since(Instant::now());
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
         now_ms + remaining.as_millis() as u64
+    }
+
+    /// Extend the guaranteed time by the given duration
+    pub fn extend_guarantee(&self, additional_duration: Duration) {
+        let mut guaranteed_until = self.guaranteed_until.lock();
+        *guaranteed_until = Instant::now() + additional_duration;
+    }
+
+    /// Get the last activity time instant
+    pub fn last_activity_instant(&self) -> Instant {
+        *self.last_activity.lock()
+    }
+
+    /// Get the last activity time in milliseconds since epoch
+    pub fn last_activity_ms(&self) -> u64 {
+        let last_activity = *self.last_activity.lock();
+        let elapsed_since_last = Instant::now().saturating_duration_since(last_activity);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        now_ms - elapsed_since_last.as_millis() as u64
     }
 
     /// Check if processor is shutting down
@@ -42,6 +65,10 @@ impl ProcessorHandle {
 }
 
 /// Start a processor for a stream
+///
+/// This function spawns the processor in the background and waits for it to complete
+/// replay and transition to live processing before returning. This ensures the processor
+/// is ready to handle operations when ensure_processor() returns.
 pub async fn start_processor(
     stream: String,
     processor_type: ProcessorType,
@@ -52,15 +79,27 @@ pub async fn start_processor(
     // Create shutdown channel
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
+    // Create last activity tracker
+    let last_activity = Arc::new(Mutex::new(Instant::now()));
+
+    // Create readiness channel - processor signals when it's ready to accept operations
+    let (ready_tx, ready_rx) = oneshot::channel();
+
     // Create kernel and spawn orchestration in background
     match processor_type {
         ProcessorType::Kv => {
             let kernel = create_kv_kernel(stream.clone(), client.clone(), base_dir.clone()).await?;
             let client_clone = client.clone();
+            let last_activity_clone = last_activity.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::orchestration::run_stream_processor(kernel, client_clone, shutdown_rx)
-                        .await
+                if let Err(e) = crate::orchestration::run_stream_processor(
+                    kernel,
+                    client_clone,
+                    shutdown_rx,
+                    last_activity_clone,
+                    ready_tx,
+                )
+                .await
                 {
                     tracing::error!("KV processor error: {:?}", e);
                 }
@@ -70,10 +109,16 @@ pub async fn start_processor(
             let kernel =
                 create_sql_kernel(stream.clone(), client.clone(), base_dir.clone()).await?;
             let client_clone = client.clone();
+            let last_activity_clone = last_activity.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::orchestration::run_stream_processor(kernel, client_clone, shutdown_rx)
-                        .await
+                if let Err(e) = crate::orchestration::run_stream_processor(
+                    kernel,
+                    client_clone,
+                    shutdown_rx,
+                    last_activity_clone,
+                    ready_tx,
+                )
+                .await
                 {
                     tracing::error!("SQL processor error: {:?}", e);
                 }
@@ -83,10 +128,16 @@ pub async fn start_processor(
             let kernel =
                 create_queue_kernel(stream.clone(), client.clone(), base_dir.clone()).await?;
             let client_clone = client.clone();
+            let last_activity_clone = last_activity.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::orchestration::run_stream_processor(kernel, client_clone, shutdown_rx)
-                        .await
+                if let Err(e) = crate::orchestration::run_stream_processor(
+                    kernel,
+                    client_clone,
+                    shutdown_rx,
+                    last_activity_clone,
+                    ready_tx,
+                )
+                .await
                 {
                     tracing::error!("Queue processor error: {:?}", e);
                 }
@@ -96,10 +147,16 @@ pub async fn start_processor(
             let kernel =
                 create_resource_kernel(stream.clone(), client.clone(), base_dir.clone()).await?;
             let client_clone = client.clone();
+            let last_activity_clone = last_activity.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::orchestration::run_stream_processor(kernel, client_clone, shutdown_rx)
-                        .await
+                if let Err(e) = crate::orchestration::run_stream_processor(
+                    kernel,
+                    client_clone,
+                    shutdown_rx,
+                    last_activity_clone,
+                    ready_tx,
+                )
+                .await
                 {
                     tracing::error!("Resource processor error: {:?}", e);
                 }
@@ -107,14 +164,16 @@ pub async fn start_processor(
         }
     }
 
-    // Wait for replay to complete
-    // Replay detection uses 1s "caught-up" heuristic, so we wait at least that long
-    // Add buffer to ensure processor transitions to live phase
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Wait for processor to complete replay and become ready to accept operations
+    // This ensures ensure_processor() doesn't return until the processor can handle requests
+    ready_rx
+        .await
+        .map_err(|_| crate::RunnerError::Other("Processor failed during startup".to_string()))?;
 
     Ok(ProcessorHandle {
-        guaranteed_until: Instant::now() + duration,
-        shutdown_tx: Arc::new(parking_lot::Mutex::new(Some(shutdown_tx))),
+        guaranteed_until: Arc::new(Mutex::new(Instant::now() + duration)),
+        shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
+        last_activity,
     })
 }
 
@@ -209,8 +268,9 @@ impl ProcessorHandle {
         let (shutdown_tx, _) = oneshot::channel();
 
         Self {
-            guaranteed_until,
-            shutdown_tx: Arc::new(parking_lot::Mutex::new(Some(shutdown_tx))),
+            guaranteed_until: Arc::new(Mutex::new(guaranteed_until)),
+            shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
+            last_activity: Arc::new(Mutex::new(Instant::now())),
         }
     }
 }

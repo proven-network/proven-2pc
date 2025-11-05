@@ -3,10 +3,11 @@
 //! This module owns the event loop, stream subscriptions, and phase transitions.
 //! It delegates actual message processing to the StreamProcessingKernel.
 
+use parking_lot::Mutex;
 use proven_engine::MockClient;
 use proven_stream::{ResponseMode, StreamProcessingKernel, TransactionEngine};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 /// Run a stream processor with full lifecycle management
@@ -16,10 +17,15 @@ use tokio::sync::oneshot;
 /// 2. Performs replay to catch up with the stream
 /// 3. Transitions to live processing
 /// 4. Handles graceful shutdown with message draining
+///
+/// The `last_activity` parameter tracks when the processor last received a message.
+/// The `ready_tx` signals when the processor has completed replay and is ready to accept operations.
 pub async fn run_stream_processor<E: TransactionEngine + 'static>(
     mut kernel: StreamProcessingKernel<E>,
     client: Arc<MockClient>,
     shutdown_rx: oneshot::Receiver<()>,
+    last_activity: Arc<Mutex<Instant>>,
+    ready_tx: oneshot::Sender<()>,
 ) -> Result<(), crate::RunnerError> {
     // Step 1: Recover persisted transaction state from metadata
     kernel
@@ -27,17 +33,21 @@ pub async fn run_stream_processor<E: TransactionEngine + 'static>(
         .map_err(|e| crate::RunnerError::Other(format!("Recovery failed: {}", e)))?;
 
     // Step 2: Perform replay phase to catch up with stream
-    perform_replay(&mut kernel, &client).await?;
+    perform_replay(&mut kernel, &client, &last_activity).await?;
 
-    // Step 3: Transition to live processing
+    // Step 3: Signal that processor is ready to accept operations
+    let _ = ready_tx.send(());
+
+    // Step 4: Transition to live processing
     kernel.set_response_mode(ResponseMode::Send);
-    run_live_processing(kernel, client, shutdown_rx).await
+    run_live_processing(kernel, client, shutdown_rx, last_activity).await
 }
 
 /// Perform replay from engine's current position to stream head
 async fn perform_replay<E: TransactionEngine>(
     kernel: &mut StreamProcessingKernel<E>,
     client: &Arc<MockClient>,
+    last_activity: &Arc<Mutex<Instant>>,
 ) -> Result<(), crate::RunnerError> {
     let stream_name = kernel.stream_name().to_string();
     let start_offset = kernel.current_offset() + 1;
@@ -51,53 +61,53 @@ async fn perform_replay<E: TransactionEngine>(
     // Ensure we're in replay phase
     kernel.set_response_mode(ResponseMode::Suppress);
 
-    // Subscribe to stream from where engine left off
-    let mut replay_stream = client
-        .stream_messages(stream_name.clone(), Some(start_offset))
-        .await
+    // Use stream_messages_until_deadline to replay up to current time
+    // This gives us precise "caught up" detection without heuristics
+    use tokio_stream::StreamExt;
+
+    let replay_deadline = proven_common::Timestamp::now();
+    let replay_stream = client
+        .stream_messages_until_deadline(&stream_name, Some(start_offset), replay_deadline)
         .map_err(|e| crate::RunnerError::Engine(e.to_string()))?;
+
+    tokio::pin!(replay_stream);
 
     let mut count = 0;
     let start_time = std::time::Instant::now();
 
-    // Process messages until we catch up
-    // Note: This is "caught up" detection, not a timeout
-    // We detect caught-up when stream has no messages for 1 second
-    // TODO: Use stream_messages_until_deadline() when available for cleaner detection
-    loop {
-        tokio::select! {
-            result = replay_stream.recv() => {
-                match result {
-                    Some((message, timestamp, offset)) => {
-                        if let Err(e) = kernel.process_ordered(message, timestamp, offset).await {
-                            tracing::error!(
-                                "[{}] Error during replay at offset {}: {:?}",
-                                stream_name, offset, e
-                            );
-                        }
-                        count += 1;
+    // Process messages until we reach the deadline (caught up)
+    while let Some(result) = replay_stream.next().await {
+        match result {
+            proven_engine::DeadlineStreamItem::Message(message, timestamp, offset) => {
+                // Update last activity time
+                *last_activity.lock() = Instant::now();
 
-                        // Log progress every 10k messages
-                        if count % 10_000 == 0 {
-                            tracing::info!(
-                                "[{}] Replay progress: {} messages, at offset {}",
-                                stream_name, count, offset
-                            );
-                        }
-                    }
-                    None => {
-                        // Stream ended (caught up)
-                        break;
-                    }
+                if let Err(e) = kernel.process_ordered(message, timestamp, offset).await {
+                    tracing::error!(
+                        "[{}] Error during replay at offset {}: {:?}",
+                        stream_name,
+                        offset,
+                        e
+                    );
+                }
+                count += 1;
+
+                // Log progress every 10k messages
+                if count % 10_000 == 0 {
+                    tracing::info!(
+                        "[{}] Replay progress: {} messages, at offset {}",
+                        stream_name,
+                        count,
+                        offset
+                    );
                 }
             }
-
-            // If we haven't received a message in 1 second, assume we're caught up
-            // This is a simple heuristic for detecting stream head
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+            proven_engine::DeadlineStreamItem::DeadlineReached => {
+                // Caught up to the deadline - replay complete
                 tracing::debug!(
-                    "[{}] No messages for 1s during replay, assuming caught up",
-                    stream_name
+                    "[{}] Reached replay deadline, caught up at offset {}",
+                    stream_name,
+                    kernel.current_offset()
                 );
                 break;
             }
@@ -121,6 +131,7 @@ async fn run_live_processing<E: TransactionEngine + 'static>(
     mut kernel: StreamProcessingKernel<E>,
     client: Arc<MockClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
+    last_activity: Arc<Mutex<Instant>>,
 ) -> Result<(), crate::RunnerError> {
     let stream_name = kernel.stream_name().to_string();
 
@@ -205,6 +216,9 @@ async fn run_live_processing<E: TransactionEngine + 'static>(
             result = ordered_stream.recv() => {
                 match result {
                     Some((message, timestamp, offset)) => {
+                        // Update last activity time
+                        *last_activity.lock() = Instant::now();
+
                         if let Err(e) = kernel.process_ordered(message, timestamp, offset).await {
                             tracing::error!(
                                 "[{}] Error processing ordered message at offset {}: {:?}",
@@ -221,6 +235,9 @@ async fn run_live_processing<E: TransactionEngine + 'static>(
 
             // Unordered pubsub messages (ReadOnly + AdHoc reads)
             Some(message) = readonly_stream.recv() => {
+                // Update last activity time
+                *last_activity.lock() = Instant::now();
+
                 if let Err(e) = kernel.process_readonly(message) {
                     tracing::error!(
                         "[{}] Error processing readonly message: {:?}",

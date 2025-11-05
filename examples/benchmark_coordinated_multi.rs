@@ -3,7 +3,6 @@
 //! This benchmark executes transactions with a consistent pattern of 4 operations
 //! across different storage types, using predictable values that can be speculated.
 
-use proven_common::ProcessorType;
 use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv::types::Value;
@@ -46,34 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         temp_dir.path(),
     ));
     runner.start().await.unwrap();
-    println!("✓ Started runner with snapshot support");
-
-    // Pre-start all processors
-    let processor_duration = Duration::from_secs(600);
-    runner
-        .ensure_processor("sql_stream", ProcessorType::Sql, processor_duration)
-        .await
-        .unwrap();
-    runner
-        .ensure_processor("kv_stream", ProcessorType::Kv, processor_duration)
-        .await
-        .unwrap();
-    runner
-        .ensure_processor("queue_stream", ProcessorType::Queue, processor_duration)
-        .await
-        .unwrap();
-    runner
-        .ensure_processor(
-            "resource_stream",
-            ProcessorType::Resource,
-            processor_duration,
-        )
-        .await
-        .unwrap();
-    println!("✓ All processors pre-started");
-
-    // Give processors time to initialize
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!("✓ Started runner");
 
     // Create a single coordinator since we're parallelizing transactions
     let coordinator_client = Arc::new(MockClient::new("coordinator".to_string(), engine.clone()));

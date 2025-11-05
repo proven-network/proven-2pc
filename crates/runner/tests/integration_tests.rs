@@ -188,3 +188,147 @@ async fn test_concurrent_processor_requests() {
 
     runner.shutdown().await;
 }
+
+#[tokio::test]
+async fn test_idle_processor_shutdown() {
+    let engine = Arc::new(MockEngine::new());
+    let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create runner with 2 second idle timeout
+    let runner = Runner::new("node1", client.clone(), temp_dir.path())
+        .with_idle_shutdown(Duration::from_secs(2));
+
+    runner.start().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create a stream and request a processor with short guarantee (3 seconds)
+    engine.create_stream("idle-stream".to_string()).unwrap();
+    let result = runner
+        .ensure_processor("idle-stream", ProcessorType::Kv, Duration::from_secs(3))
+        .await;
+
+    assert!(result.is_ok());
+    println!("Processor started for idle-stream");
+
+    // Verify processor is running
+    assert!(runner.has_processor("idle-stream"));
+
+    // Wait for guarantee to expire (3 seconds) + idle timeout (2 seconds) + checker interval (10 seconds max)
+    // To be safe, we'll wait a bit longer
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    // Processor should still be in map because guarantee just expired
+    assert!(runner.has_processor("idle-stream"));
+
+    // Wait for idle checker to run (runs every 10 seconds, so wait up to 12 seconds total)
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    // Now processor should be shut down and removed
+    assert!(
+        !runner.has_processor("idle-stream"),
+        "Processor should have been shut down due to idle timeout"
+    );
+
+    println!("Processor successfully shut down after idle period");
+
+    runner.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_active_processor_not_shutdown() {
+    let engine = Arc::new(MockEngine::new());
+    let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create runner with 2 second idle timeout
+    let runner = Arc::new(
+        Runner::new("node1", client.clone(), temp_dir.path())
+            .with_idle_shutdown(Duration::from_secs(2)),
+    );
+
+    runner.start().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create a stream and request a processor with short guarantee (3 seconds)
+    engine.create_stream("active-stream".to_string()).unwrap();
+    let result = runner
+        .ensure_processor("active-stream", ProcessorType::Kv, Duration::from_secs(3))
+        .await;
+
+    assert!(result.is_ok());
+    println!("Processor started for active-stream");
+
+    // Spawn a task that continuously sends messages to keep the processor active
+    let client_clone = runner.client().clone();
+    let keep_alive_task = tokio::spawn(async move {
+        use proven_protocol::OrderedMessage;
+        for i in 0..20 {
+            // Send a noop message every 500ms for 10 seconds
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let noop_msg = OrderedMessage::<proven_kv::KvOperation>::Noop;
+            let _ = client_clone
+                .publish_to_stream("active-stream".to_string(), vec![noop_msg.into_message()])
+                .await;
+            println!("Sent keep-alive message {}", i);
+        }
+    });
+
+    // Wait for guarantee to expire + idle timeout + checker cycles
+    tokio::time::sleep(Duration::from_secs(14)).await;
+
+    // Processor should STILL be running because it's been receiving messages
+    assert!(
+        runner.has_processor("active-stream"),
+        "Active processor should NOT be shut down"
+    );
+
+    println!("Active processor correctly stayed alive");
+
+    // Stop sending messages
+    keep_alive_task.abort();
+
+    runner.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_idle_shutdown_respects_guarantee() {
+    let engine = Arc::new(MockEngine::new());
+    let client = Arc::new(MockClient::new("node1".to_string(), engine.clone()));
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    // Create runner with 2 second idle timeout
+    let runner = Runner::new("node1", client.clone(), temp_dir.path())
+        .with_idle_shutdown(Duration::from_secs(2));
+
+    runner.start().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create a stream and request a processor with LONG guarantee (20 seconds)
+    engine
+        .create_stream("guaranteed-stream".to_string())
+        .unwrap();
+    let result = runner
+        .ensure_processor(
+            "guaranteed-stream",
+            ProcessorType::Kv,
+            Duration::from_secs(20),
+        )
+        .await;
+
+    assert!(result.is_ok());
+    println!("Processor started for guaranteed-stream with 20s guarantee");
+
+    // Wait for idle timeout to pass (2 seconds) + checker cycles
+    tokio::time::sleep(Duration::from_secs(14)).await;
+
+    // Processor should STILL be running because guarantee hasn't expired
+    assert!(
+        runner.has_processor("guaranteed-stream"),
+        "Processor should NOT be shut down while guarantee is active, even if idle"
+    );
+
+    println!("Processor correctly stayed alive during guarantee period despite being idle");
+
+    runner.shutdown().await;
+}

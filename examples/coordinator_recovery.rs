@@ -8,7 +8,6 @@
 //! - Start a new coordinator and verify it can access the previously locked resources
 //! - Recovery should automatically release the abandoned locks
 
-use proven_common::ProcessorType;
 use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_kv_client::KvClient;
@@ -51,20 +50,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.start().await?;
     println!("✓ Started runner\n");
 
-    // Pre-start processors with long duration to prevent expiry during test
-    let processor_duration = Duration::from_secs(600);
-    runner
-        .ensure_processor("kv_stream", ProcessorType::Kv, processor_duration)
-        .await?;
-    runner
-        .ensure_processor(
-            "resource_stream",
-            ProcessorType::Resource,
-            processor_duration,
-        )
-        .await?;
-    println!("✓ Processors pre-started with 600s lease\n");
-
     // ===================================================================
     // PHASE 1: Coordinator takes locks and then crashes
     // ===================================================================
@@ -77,17 +62,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Coordinator::new("coordinator-1".to_string(), coord1_client, runner.clone());
         println!("✓ Created coordinator-1\n");
 
-        // Begin a transaction with a 3-second deadline
+        // Begin a transaction with a 10-second deadline
         let executor = Arc::new(
             coordinator1
                 .begin_read_write(
-                    Duration::from_secs(3), // Short deadline for testing
+                    Duration::from_secs(10),
                     vec![],
                     "crash_test_transaction".to_string(),
                 )
                 .await?,
         );
-        println!("✓ Started transaction with 3-second deadline");
+        println!("✓ Started transaction with 10-second deadline");
 
         let kv = KvClient::new(executor.clone());
         let resource = ResourceClient::new(executor.clone());

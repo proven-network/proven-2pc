@@ -3,7 +3,6 @@
 //! This benchmark measures the throughput of SQL inserts using distributed
 //! transactions through the coordinator with parallel execution.
 
-use proven_common::ProcessorType;
 use proven_coordinator::{Coordinator, Executor};
 use proven_engine::{MockClient, MockEngine};
 use proven_runner::Runner;
@@ -36,18 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         temp_dir.path(),
     ));
     runner.start().await.unwrap();
-    println!("✓ Started runner with snapshot support");
-
-    // Pre-start SQL processor
-    let processor_duration = Duration::from_secs(600);
-    runner
-        .ensure_processor("sql_stream", ProcessorType::Sql, processor_duration)
-        .await
-        .unwrap();
-    println!("✓ SQL processor pre-started");
-
-    // Give processor time to initialize
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!("✓ Started runner");
 
     // Create a single coordinator since we're parallelizing transactions
     let coordinator_client = Arc::new(MockClient::new("coordinator".to_string(), engine.clone()));
