@@ -123,7 +123,7 @@ impl SqlStorage {
             "_metadata",
             PartitionCreateOptions::default()
                 .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
+                .compression(config.compression),
         )?;
 
         // Create predicate store with dedicated partition

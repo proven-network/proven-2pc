@@ -62,7 +62,7 @@ impl<E: MvccEntity> MvccStorage<E> {
             &format!("{}_metadata", entity_prefix),
             PartitionCreateOptions::default()
                 .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
+                .compression(config.compression),
         )?;
 
         // Open main data partition (for committed data)
@@ -121,7 +121,7 @@ impl<E: MvccEntity> MvccStorage<E> {
             "_metadata",
             PartitionCreateOptions::default()
                 .block_size(16 * 1024)
-                .compression(fjall::CompressionType::None),
+                .compression(config.compression),
         )?;
 
         // Open main data partition (for committed data)
