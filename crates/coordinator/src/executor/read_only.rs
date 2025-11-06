@@ -4,13 +4,11 @@ use super::{Executor as ExecutorTrait, common::ExecutorInfra};
 use crate::error::{CoordinatorError, Result};
 use crate::speculation::{CheckResult, PredictionContext};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use proven_common::{Operation, OperationType, TransactionId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
-
-/// Type alias for speculation response receivers
-type SpeculationReceivers = Arc<AsyncMutex<HashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>>;
 
 /// Read-only executor using consistent snapshot
 pub struct ReadOnlyExecutor {
@@ -24,7 +22,7 @@ pub struct ReadOnlyExecutor {
     prediction_context: Arc<AsyncMutex<PredictionContext>>,
 
     /// Response receivers for speculated operations
-    speculation_receivers: SpeculationReceivers,
+    speculation_receivers: Arc<DashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>,
 }
 
 impl ReadOnlyExecutor {
@@ -93,10 +91,16 @@ impl ReadOnlyExecutor {
 
         // Store receivers if predictions were executed
         let speculation_receivers = match speculation_result {
-            Ok(receivers) => Arc::new(AsyncMutex::new(receivers)),
+            Ok(receivers) => {
+                let map = DashMap::new();
+                for (k, v) in receivers {
+                    map.insert(k, v);
+                }
+                Arc::new(map)
+            }
             Err(e) => {
                 tracing::debug!("Failed to execute read predictions: {}", e);
-                Arc::new(AsyncMutex::new(HashMap::new()))
+                Arc::new(DashMap::new())
             }
         };
 
@@ -139,8 +143,7 @@ impl ReadOnlyExecutor {
         match check_result {
             CheckResult::Match { index, .. } => {
                 // Get the speculated response from our receivers
-                let mut receivers = self.speculation_receivers.lock().await;
-                if let Some(receiver) = receivers.remove(&index) {
+                if let Some((_, receiver)) = self.speculation_receivers.remove(&index) {
                     // Wait for the speculated response
                     match receiver.await {
                         Ok(Ok(response)) => Ok(response),

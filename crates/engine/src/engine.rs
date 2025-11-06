@@ -8,9 +8,8 @@ use crate::{
     stream::{DeadlineStreamItem, StreamManager},
 };
 use dashmap::DashMap;
-use parking_lot::Mutex;
 use proven_common::Timestamp;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::Stream as TokioStream;
@@ -53,17 +52,17 @@ pub struct MockEngine {
     /// Each pattern has a list of senders (one per subscriber)
     subscriptions: Arc<DashMap<String, Vec<flume::Sender<Message>>>>,
 
-    /// Request/reply handlers
-    request_handlers: Arc<Mutex<HashMap<String, RequestHandler>>>,
+    /// Request/reply handlers - using DashMap for lock-free concurrent access
+    request_handlers: Arc<DashMap<String, RequestHandler>>,
 
-    /// Stream metadata (placement information)
-    stream_info: Arc<Mutex<HashMap<String, StreamInfo>>>,
+    /// Stream metadata (placement information) - using DashMap for lock-free concurrent access
+    stream_info: Arc<DashMap<String, StreamInfo>>,
 
-    /// Group membership - which nodes are in which groups
-    group_membership: Arc<Mutex<HashMap<ConsensusGroupId, HashSet<String>>>>,
+    /// Group membership - which nodes are in which groups - using DashMap for lock-free concurrent access
+    group_membership: Arc<DashMap<ConsensusGroupId, HashSet<String>>>,
 
-    /// Node to groups mapping - which groups each node is part of
-    node_groups: Arc<Mutex<HashMap<String, HashSet<ConsensusGroupId>>>>,
+    /// Node to groups mapping - which groups each node is part of - using DashMap for lock-free concurrent access
+    node_groups: Arc<DashMap<String, HashSet<ConsensusGroupId>>>,
 }
 
 impl MockEngine {
@@ -71,16 +70,16 @@ impl MockEngine {
     pub fn new() -> Self {
         // Initialize with a default group that all nodes belong to
         let default_group = ConsensusGroupId(1);
-        let mut group_membership = HashMap::new();
+        let group_membership = DashMap::new();
         group_membership.insert(default_group, HashSet::new());
 
         Self {
             streams: Arc::new(StreamManager::new()),
             subscriptions: Arc::new(DashMap::new()),
-            request_handlers: Arc::new(Mutex::new(HashMap::new())),
-            stream_info: Arc::new(Mutex::new(HashMap::new())),
-            group_membership: Arc::new(Mutex::new(group_membership)),
-            node_groups: Arc::new(Mutex::new(HashMap::new())),
+            request_handlers: Arc::new(DashMap::new()),
+            stream_info: Arc::new(DashMap::new()),
+            group_membership: Arc::new(group_membership),
+            node_groups: Arc::new(DashMap::new()),
         }
     }
 
@@ -95,8 +94,7 @@ impl MockEngine {
         self.streams.create_stream(name.clone())?;
 
         // Store stream info - all streams go to the default group in mock
-        let mut stream_info = self.stream_info.lock();
-        stream_info.insert(
+        self.stream_info.insert(
             name.clone(),
             StreamInfo {
                 stream_name: name,
@@ -141,8 +139,7 @@ impl MockEngine {
         }
 
         // Also check request handlers
-        let handlers = self.request_handlers.lock();
-        if let Some(handler) = handlers.get(subject) {
+        if let Some(handler) = self.request_handlers.get(subject) {
             // For request handlers, we expect a single message and need a reply
             if messages.len() == 1 {
                 let (reply_tx, _reply_rx) = oneshot::channel();
@@ -180,8 +177,7 @@ impl MockEngine {
     ) -> mpsc::UnboundedReceiver<(Message, oneshot::Sender<Message>)> {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let mut handlers = self.request_handlers.lock();
-        handlers.insert(subject.to_string(), tx);
+        self.request_handlers.insert(subject.to_string(), tx);
 
         rx
     }
@@ -195,8 +191,7 @@ impl MockEngine {
     ) -> Result<Message> {
         // Check if there's a handler for this subject
         let reply_rx = {
-            let handlers = self.request_handlers.lock();
-            if let Some(handler) = handlers.get(subject) {
+            if let Some(handler) = self.request_handlers.get(subject) {
                 let (reply_tx, reply_rx) = oneshot::channel();
 
                 // Send the request to the handler
@@ -245,42 +240,43 @@ impl MockEngine {
         // Remove patterns with no senders
         self.subscriptions.retain(|_, senders| !senders.is_empty());
 
-        let mut handlers = self.request_handlers.lock();
-        handlers.retain(|_, h| !h.is_closed());
+        self.request_handlers.retain(|_, h| !h.is_closed());
     }
 
     /// Get information about a stream
     pub fn get_stream_info(&self, stream_name: &str) -> Result<Option<StreamInfo>> {
-        let stream_info = self.stream_info.lock();
-        Ok(stream_info.get(stream_name).cloned())
+        Ok(self.stream_info.get(stream_name).map(|entry| entry.clone()))
     }
 
     /// Get all consensus groups this node is a member of
     pub fn node_groups(&self, node_id: &str) -> Result<Vec<ConsensusGroupId>> {
-        // Ensure node is registered in the default group
-        let mut node_groups = self.node_groups.lock();
-        let groups = node_groups.entry(node_id.to_string()).or_insert_with(|| {
-            // Add node to default group
-            let default_group = ConsensusGroupId(1);
-            let mut group_membership = self.group_membership.lock();
-            group_membership
-                .entry(default_group)
-                .or_default()
-                .insert(node_id.to_string());
+        // Check if node already has groups registered
+        if let Some(groups) = self.node_groups.get(node_id) {
+            return Ok(groups.iter().copied().collect());
+        }
 
-            let mut groups = HashSet::new();
-            groups.insert(default_group);
-            groups
-        });
+        // First time seeing this node - register it in the default group
+        let default_group = ConsensusGroupId(1);
+
+        // Add node to default group membership
+        self.group_membership
+            .entry(default_group)
+            .or_default()
+            .insert(node_id.to_string());
+
+        // Create groups set for this node
+        let mut groups = HashSet::new();
+        groups.insert(default_group);
+
+        // Store the node's groups
+        self.node_groups.insert(node_id.to_string(), groups.clone());
 
         Ok(groups.iter().copied().collect())
     }
 
     /// Get information about a specific consensus group
     pub fn get_group_info(&self, group_id: ConsensusGroupId) -> Result<Option<GroupInfo>> {
-        let group_membership = self.group_membership.lock();
-
-        if let Some(members) = group_membership.get(&group_id) {
+        if let Some(members) = self.group_membership.get(&group_id) {
             let members_vec: Vec<String> = members.iter().cloned().collect();
             // Pick first member as leader for simplicity
             let leader = members_vec.first().cloned();

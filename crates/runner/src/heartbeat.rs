@@ -2,7 +2,7 @@
 
 use crate::messages::{Heartbeat, ProcessorState, ProcessorStatus};
 use crate::processor::ProcessorHandle;
-use parking_lot::Mutex;
+use dashmap::DashMap;
 use proven_engine::MockClient;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 pub fn start(
     node_id: String,
     client: Arc<MockClient>,
-    processors: Arc<Mutex<HashMap<String, ProcessorHandle>>>,
+    processors: Arc<DashMap<String, ProcessorHandle>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -36,20 +36,23 @@ pub fn start(
 async fn build_heartbeat(
     node_id: &str,
     client: &Arc<MockClient>,
-    processors: &Arc<Mutex<HashMap<String, ProcessorHandle>>>,
+    processors: &Arc<DashMap<String, ProcessorHandle>>,
 ) -> Heartbeat {
     let processor_statuses: Vec<ProcessorStatus> = processors
-        .lock()
         .iter()
-        .map(|(stream, handle)| ProcessorStatus {
-            stream: stream.clone(),
-            guaranteed_until_ms: handle.guaranteed_until_ms(),
-            last_activity_ms: handle.last_activity_ms(),
-            state: if handle.is_shutting_down() {
-                ProcessorState::ShuttingDown
-            } else {
-                ProcessorState::Active
-            },
+        .map(|entry| {
+            let stream = entry.key();
+            let handle = entry.value();
+            ProcessorStatus {
+                stream: stream.clone(),
+                guaranteed_until_ms: handle.guaranteed_until_ms(),
+                last_activity_ms: handle.last_activity_ms(),
+                state: if handle.is_shutting_down() {
+                    ProcessorState::ShuttingDown
+                } else {
+                    ProcessorState::Active
+                },
+            }
         })
         .collect();
 

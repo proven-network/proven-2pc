@@ -55,8 +55,12 @@ impl ExecutorInfra {
         processor_type: ProcessorType,
         timeout: Duration,
     ) -> Result<()> {
+        // Use a minimum guarantee of 5 minutes to reduce the need for frequent extend calls
+        // But use the longer of the timeout or 5 minutes to respect user-specified guarantees
+        let min_guarantee = timeout.max(Duration::from_secs(300));
+
         self.runner
-            .ensure_processor(stream, processor_type, timeout)
+            .ensure_processor(stream, processor_type, min_guarantee)
             .await
             .map_err(|e| {
                 CoordinatorError::EngineError(format!("Failed to ensure processor: {}", e))

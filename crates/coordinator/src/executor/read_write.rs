@@ -8,15 +8,13 @@ use crate::error::{CoordinatorError, Result};
 use crate::responses::ResponseMessage;
 use crate::speculation::{CheckResult, PredictionContext};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use proven_common::Operation;
 use proven_common::{Timestamp, TransactionId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
-
-/// Type alias for speculation response receivers
-type SpeculationReceivers = Arc<AsyncMutex<HashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>>;
 
 /// Transaction state
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +52,7 @@ pub struct ReadWriteExecutor {
 
     /// Participant offsets (stream name -> log offset where first operation was sent)
     /// This serves as both the participant list (keys) and recovery metadata (offsets)
-    participant_offsets: Arc<Mutex<HashMap<String, u64>>>,
+    participant_offsets: Arc<DashMap<String, u64>>,
 
     /// Streams that have received the deadline
     streams_with_deadline: Arc<Mutex<HashSet<String>>>,
@@ -66,7 +64,7 @@ pub struct ReadWriteExecutor {
     prediction_context: Arc<AsyncMutex<PredictionContext>>,
 
     /// Response receivers for speculated operations
-    speculation_receivers: SpeculationReceivers,
+    speculation_receivers: Arc<DashMap<usize, oneshot::Receiver<Result<Vec<u8>>>>>,
 }
 
 impl ReadWriteExecutor {
@@ -78,7 +76,7 @@ impl ReadWriteExecutor {
         prediction_context: PredictionContext,
     ) -> Self {
         // Create participant_offsets early so speculation can populate it
-        let participant_offsets = Arc::new(Mutex::new(HashMap::new()));
+        let participant_offsets = Arc::new(DashMap::new());
 
         // Execute predictions with transaction headers
         let speculation_result = if !prediction_context.predictions().is_empty() {
@@ -133,7 +131,7 @@ impl ReadWriteExecutor {
                             while let Some(result) = tasks.join_next().await {
                                 match result {
                                     Ok(Ok((stream, offset))) => {
-                                        offsets.lock().insert(stream, offset);
+                                        offsets.insert(stream, offset);
                                     }
                                     Ok(Err(e)) => return Err(e),
                                     Err(_join_err) => {
@@ -155,10 +153,16 @@ impl ReadWriteExecutor {
 
         // Store receivers if predictions were executed
         let speculation_receivers = match speculation_result {
-            Ok(receivers) => Arc::new(AsyncMutex::new(receivers)),
+            Ok(receivers) => {
+                let map = DashMap::new();
+                for (k, v) in receivers {
+                    map.insert(k, v);
+                }
+                Arc::new(map)
+            }
             Err(e) => {
                 tracing::debug!("Failed to execute predictions: {}", e);
-                Arc::new(AsyncMutex::new(HashMap::new()))
+                Arc::new(DashMap::new())
             }
         };
 
@@ -221,8 +225,7 @@ impl ReadWriteExecutor {
         match check_result {
             CheckResult::Match { index, .. } => {
                 // Get the speculated response from our receivers
-                let mut receivers = self.speculation_receivers.lock().await;
-                if let Some(receiver) = receivers.remove(&index) {
+                if let Some((_, receiver)) = self.speculation_receivers.remove(&index) {
                     // Wait for the speculated response
                     match receiver.await {
                         Ok(Ok(response)) => Ok(response),
@@ -285,10 +288,9 @@ impl ReadWriteExecutor {
             .await?;
 
         // Store the offset for this participant (if not already stored)
-        {
-            let mut offsets = self.participant_offsets.lock();
-            offsets.entry(stream.to_string()).or_insert(offset);
-        }
+        self.participant_offsets
+            .entry(stream.to_string())
+            .or_insert(offset);
 
         // Handle response
         ExecutorInfra::handle_response(response)
@@ -296,7 +298,11 @@ impl ReadWriteExecutor {
 
     /// Prepare phase of 2PC
     async fn prepare(&self) -> Result<()> {
-        let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
+        let participants: Vec<String> = self
+            .participant_offsets
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
 
         match participants.len() {
             0 => Ok(()), // No participants to prepare
@@ -358,7 +364,11 @@ impl ReadWriteExecutor {
         let request_id = self.infra.generate_request_id();
 
         // Get all participant offsets to send with PREPARE messages
-        let all_participants = self.participant_offsets.lock().clone();
+        let all_participants: HashMap<String, u64> = self
+            .participant_offsets
+            .iter()
+            .map(|entry| (entry.key().clone(), *entry.value()))
+            .collect();
 
         // Send prepare messages and collect votes
         use proven_protocol::TransactionPhase;
@@ -435,7 +445,11 @@ impl ReadWriteExecutor {
             self.prepare().await?;
         }
 
-        let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
+        let participants: Vec<String> = self
+            .participant_offsets
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
         if participants.is_empty() {
             *self.state.lock() = TransactionState::Committed;
             return Ok(());
@@ -493,7 +507,11 @@ impl ReadWriteExecutor {
             *state = TransactionState::Aborting;
         }
 
-        let participants: Vec<String> = self.participant_offsets.lock().keys().cloned().collect();
+        let participants: Vec<String> = self
+            .participant_offsets
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
 
         // Send abort messages in parallel (fire-and-forget)
         use proven_protocol::TransactionPhase;

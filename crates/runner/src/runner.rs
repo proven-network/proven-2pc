@@ -6,6 +6,7 @@ use crate::error::{Result, RunnerError};
 use crate::heartbeat;
 use crate::messages::{ProcessorAck, ProcessorExtension, ProcessorRequest};
 use crate::processor::{self, ProcessorHandle};
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use proven_engine::MockClient;
 use std::collections::HashMap;
@@ -24,9 +25,6 @@ pub struct ProcessorInfo {
     pub guaranteed_until_ms: u64,
 }
 
-/// Type for pending processor requests
-type PendingRequests = Arc<Mutex<HashMap<Uuid, oneshot::Sender<ProcessorInfo>>>>;
-
 /// Main runner that manages processors and cluster coordination
 pub struct Runner {
     node_id: String,
@@ -34,11 +32,11 @@ pub struct Runner {
     base_dir: PathBuf,
 
     // Core components
-    pub(crate) processors: Arc<Mutex<HashMap<String, ProcessorHandle>>>,
+    pub(crate) processors: Arc<DashMap<String, ProcessorHandle>>,
     pub(crate) cluster_view: Arc<RwLock<ClusterView>>,
 
     // Pending processor requests waiting for ACKs
-    pending_requests: PendingRequests,
+    pending_requests: Arc<DashMap<Uuid, oneshot::Sender<ProcessorInfo>>>,
 
     // Idle shutdown configuration (None = no idle shutdown)
     idle_shutdown_timeout: Option<Duration>,
@@ -65,9 +63,9 @@ impl Runner {
             node_id: node_id.into(),
             client,
             base_dir,
-            processors: Arc::new(Mutex::new(HashMap::new())),
+            processors: Arc::new(DashMap::new()),
             cluster_view: Arc::new(RwLock::new(ClusterView::new())),
-            pending_requests: Arc::new(Mutex::new(HashMap::new())),
+            pending_requests: Arc::new(DashMap::new()),
             idle_shutdown_timeout: None,
             tasks: Arc::new(Mutex::new(Vec::new())),
         }
@@ -132,7 +130,7 @@ impl Runner {
     ) -> Result<ProcessorInfo> {
         // First check if we're running this processor locally
         let is_expired = {
-            if let Some(handle) = self.processors.lock().get(stream) {
+            if let Some(handle) = self.processors.get(stream) {
                 let guaranteed_until_ms = handle.guaranteed_until_ms();
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -223,7 +221,7 @@ impl Runner {
         additional_duration: Duration,
     ) -> Result<ProcessorInfo> {
         // Check if we're running this processor locally
-        let is_local = self.processors.lock().contains_key(stream);
+        let is_local = self.processors.contains_key(stream);
 
         tracing::debug!(
             "[{}] extend_processor called for stream '{}', is_local={}",
@@ -234,7 +232,7 @@ impl Runner {
 
         if is_local {
             // Extend our own processor's guarantee
-            if let Some(handle) = self.processors.lock().get(stream) {
+            if let Some(handle) = self.processors.get(stream) {
                 handle.extend_guarantee(additional_duration);
             }
 
@@ -332,7 +330,7 @@ impl Runner {
         let (tx, rx) = oneshot::channel();
 
         // Store the pending request
-        self.pending_requests.lock().insert(request_id, tx);
+        self.pending_requests.insert(request_id, tx);
 
         // Send request with specific target node
         let request = ProcessorRequest {
@@ -358,12 +356,12 @@ impl Runner {
         tokio::select! {
             result = rx => {
                 // Clean up the pending request
-                self.pending_requests.lock().remove(&request_id);
+                self.pending_requests.remove(&request_id);
                 result.map_err(|_| RunnerError::RequestTimeout)
             }
             _ = tokio::time::sleep(Duration::from_secs(5)) => {
                 // Clean up the pending request on timeout
-                self.pending_requests.lock().remove(&request_id);
+                self.pending_requests.remove(&request_id);
                 // TODO: Could retry with a different node
                 Err(RunnerError::RequestTimeout)
             }
@@ -425,35 +423,34 @@ impl Runner {
                 let mut to_shutdown = Vec::new();
 
                 // Check each processor
-                {
-                    let procs = processors.lock();
-                    for (stream, handle) in procs.iter() {
-                        // Check if guarantee has expired
-                        let guarantee_expired = *handle.guaranteed_until.lock() <= now;
+                for entry in processors.iter() {
+                    let stream = entry.key();
+                    let handle = entry.value();
 
-                        if guarantee_expired {
-                            // Check if idle for long enough
-                            let last_activity = handle.last_activity_instant();
-                            let idle_duration = now.saturating_duration_since(last_activity);
+                    // Check if guarantee has expired
+                    let guarantee_expired = *handle.guaranteed_until.lock() <= now;
 
-                            if idle_duration >= idle_timeout {
-                                tracing::info!(
-                                    "[{}] Processor for stream '{}' is idle (idle: {:.1}s, timeout: {:.1}s) and guarantee expired - scheduling shutdown",
-                                    node_id,
-                                    stream,
-                                    idle_duration.as_secs_f64(),
-                                    idle_timeout.as_secs_f64()
-                                );
-                                to_shutdown.push(stream.clone());
-                            }
+                    if guarantee_expired {
+                        // Check if idle for long enough
+                        let last_activity = handle.last_activity_instant();
+                        let idle_duration = now.saturating_duration_since(last_activity);
+
+                        if idle_duration >= idle_timeout {
+                            tracing::info!(
+                                "[{}] Processor for stream '{}' is idle (idle: {:.1}s, timeout: {:.1}s) and guarantee expired - scheduling shutdown",
+                                node_id,
+                                stream,
+                                idle_duration.as_secs_f64(),
+                                idle_timeout.as_secs_f64()
+                            );
+                            to_shutdown.push(stream.clone());
                         }
                     }
                 }
 
                 // Shutdown idle processors
                 for stream in to_shutdown {
-                    let handle = processors.lock().remove(&stream);
-                    if let Some(handle) = handle {
+                    if let Some((_, handle)) = processors.remove(&stream) {
                         tracing::info!(
                             "[{}] Shutting down idle processor for stream '{}'",
                             node_id,
@@ -470,7 +467,7 @@ impl Runner {
     async fn listen_for_requests(
         client: Arc<MockClient>,
         node_id: String,
-        processors: Arc<Mutex<HashMap<String, ProcessorHandle>>>,
+        processors: Arc<DashMap<String, ProcessorHandle>>,
         base_dir: PathBuf,
     ) -> Result<()> {
         // Subscribe to processor requests
@@ -503,8 +500,7 @@ impl Runner {
 
                 // Check if there's already a processor for this stream
                 // If so, just extend it instead of starting a new one (handles race conditions)
-                let existing_handle = processors.lock().get(&request.stream).cloned();
-                if let Some(handle) = existing_handle {
+                if let Some(handle) = processors.get(&request.stream) {
                     tracing::debug!(
                         "[{}] Processor already exists for stream '{}', extending instead of creating new one",
                         node_id,
@@ -546,9 +542,7 @@ impl Runner {
                 {
                     Ok(handle) => {
                         // Store handle
-                        processors
-                            .lock()
-                            .insert(request.stream.clone(), handle.clone());
+                        processors.insert(request.stream.clone(), handle.clone());
 
                         // Send ACK
                         let ack = ProcessorAck {
@@ -601,7 +595,7 @@ impl Runner {
     /// Listen for processor ACKs and complete pending requests
     async fn listen_for_acks(
         client: Arc<MockClient>,
-        pending_requests: PendingRequests,
+        pending_requests: Arc<DashMap<Uuid, oneshot::Sender<ProcessorInfo>>>,
         cluster_view: Arc<RwLock<ClusterView>>,
     ) -> Result<()> {
         let mut subscription = client
@@ -619,7 +613,7 @@ impl Runner {
                 };
 
                 // Complete the pending request if we have it
-                if let Some(tx) = pending_requests.lock().remove(&ack.request_id) {
+                if let Some((_, tx)) = pending_requests.remove(&ack.request_id) {
                     let _ = tx.send(processor_info.clone());
                 }
 
@@ -640,7 +634,12 @@ impl Runner {
         }
 
         // Shutdown all processors
-        let handles: Vec<_> = self.processors.lock().drain().map(|(_, h)| h).collect();
+        let handles: Vec<_> = self
+            .processors
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        self.processors.clear();
         for handle in handles {
             handle.shutdown().await;
         }
@@ -650,7 +649,7 @@ impl Runner {
     ///
     /// This is primarily useful for testing and monitoring.
     pub fn has_processor(&self, stream: &str) -> bool {
-        self.processors.lock().contains_key(stream)
+        self.processors.contains_key(stream)
     }
 
     /// Get a reference to the underlying client
@@ -685,7 +684,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Manually add a processor to simulate it running
-        runner.processors.lock().insert(
+        runner.processors.insert(
             "ext-stream".to_string(),
             crate::processor::ProcessorHandle::new_for_test(
                 std::time::Instant::now() + Duration::from_secs(30),
