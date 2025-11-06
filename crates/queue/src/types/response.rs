@@ -4,28 +4,22 @@ use proven_common::Response;
 use proven_value::Value;
 use serde::{Deserialize, Serialize};
 
-/// Response types for queue operations
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Queue operation responses
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum QueueResponse {
-    /// Successfully enqueued
+    /// Enqueue completed
     Enqueued,
-
-    /// Successfully dequeued a value
+    /// Dequeue result (None if queue was empty)
     Dequeued(Option<Value>),
-
-    /// Peeked at a value
+    /// Peek result (None if queue is empty)
     Peeked(Option<Value>),
-
-    /// Queue size
+    /// Current queue size
     Size(usize),
-
-    /// Queue empty status
+    /// Whether the queue is empty
     IsEmpty(bool),
-
-    /// Queue cleared
+    /// Clear completed
     Cleared,
-
-    /// Operation failed
+    /// Error
     Error(String),
 }
 

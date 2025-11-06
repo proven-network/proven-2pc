@@ -37,6 +37,7 @@ impl<E: Executor> ResourceClient<E> {
 
         match response {
             ResourceResponse::Initialized { .. } => Ok(()),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -55,6 +56,7 @@ impl<E: Executor> ResourceClient<E> {
 
         match response {
             ResourceResponse::MetadataUpdated { .. } => Ok(()),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -88,6 +90,7 @@ impl<E: Executor> ResourceClient<E> {
                 total_supply,
                 ..
             } => Ok((new_balance, total_supply)),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -133,6 +136,7 @@ impl<E: Executor> ResourceClient<E> {
                 total_supply,
                 ..
             } => Ok((new_balance, total_supply)),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -174,6 +178,7 @@ impl<E: Executor> ResourceClient<E> {
                 to_balance,
                 ..
             } => Ok((from_balance, to_balance)),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -204,6 +209,7 @@ impl<E: Executor> ResourceClient<E> {
 
         match response {
             ResourceResponse::Balance { amount, .. } => Ok(amount),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -240,6 +246,7 @@ impl<E: Executor> ResourceClient<E> {
                 symbol,
                 decimals,
             }),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -256,6 +263,7 @@ impl<E: Executor> ResourceClient<E> {
 
         match response {
             ResourceResponse::TotalSupply { amount } => Ok(amount),
+            ResourceResponse::Error(e) => Err(ResourceError::OperationError(e)),
             _ => Err(ResourceError::UnexpectedResponse),
         }
     }
@@ -300,6 +308,9 @@ pub enum ResourceError {
 
     #[error("Deserialization error: {0}")]
     DeserializationError(String),
+
+    #[error("Operation error: {0}")]
+    OperationError(String),
 
     #[error("Unexpected response type")]
     UnexpectedResponse,

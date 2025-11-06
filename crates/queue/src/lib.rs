@@ -1,13 +1,15 @@
-//! Queue storage engine
+//! Simplified queue implementation using MVCC with embedded pointers
 //!
-//! This crate provides a distributed queue using the same
-//! HLC timestamps and stream processing patterns as the KV and SQL engines.
+//! Key design differences from the original queue crate:
+//! - Single MvccStorage instead of separate data + metadata storages
+//! - Head/Tail pointers stored as special keys in the same storage
+//! - No separate metadata entity needed
+//! - Simpler batch handling - no cross-storage coordination issues
 
 pub mod engine;
-pub mod storage;
+pub mod entity;
 pub mod types;
 
-// Re-export types for convenience
-pub use engine::QueueTransactionEngine;
-pub use proven_common::TransactionId;
+pub use engine::{QueueBatch, QueueTransactionEngine};
+pub use entity::{QueueDelta, QueueEntity, QueueKey, QueueValue};
 pub use types::{QueueOperation, QueueResponse};

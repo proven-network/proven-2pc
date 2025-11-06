@@ -142,34 +142,56 @@ fn test_concurrent_access_with_locking() {
     let tx2 = create_tx_id();
 
     engine.begin(tx1);
-
     engine.begin(tx2);
 
-    // tx1 acquires exclusive lock by enqueuing
-    let enqueue_op = QueueOperation::Enqueue {
+    // tx1 enqueues (LOCK-FREE - no longer blocks other enqueues!)
+    let enqueue_op1 = QueueOperation::Enqueue {
         value: Value::Str("tx1_data".to_string()),
     };
-
-    let _ = engine.apply_operation(enqueue_op, tx1);
-
-    // tx2 tries to dequeue - should be blocked
-    let dequeue_op = QueueOperation::Dequeue;
-
-    let result = engine.apply_operation(dequeue_op.clone(), tx2);
-    assert!(matches!(result, OperationResult::WouldBlock { blockers } if !blockers.is_empty()));
-    // Don't commit this batch since it was blocked
-
-    // After tx1 commits, tx2 should be able to proceed
-    engine.commit(tx1);
-
-    // Now tx2 can dequeue
-    let result = engine.apply_operation(dequeue_op, tx2);
+    let result = engine.apply_operation(enqueue_op1, tx1);
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) if s == "tx1_data"
+        OperationResult::Complete(QueueResponse::Enqueued)
     ));
 
+    // tx2 enqueues - should succeed immediately (concurrent append!)
+    let enqueue_op2 = QueueOperation::Enqueue {
+        value: Value::Str("tx2_data".to_string()),
+    };
+    let result = engine.apply_operation(enqueue_op2, tx2);
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Enqueued)
+    ));
+
+    // Commit both transactions
+    engine.commit(tx1);
     engine.commit(tx2);
+
+    // Verify both values were enqueued in order
+    let tx3 = create_tx_id();
+    engine.begin(tx3);
+
+    let dequeue_op = QueueOperation::Dequeue;
+    let result = engine.apply_operation(dequeue_op.clone(), tx3);
+    match &result {
+        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) => {
+            assert_eq!(
+                s, "tx1_data",
+                "First dequeue should return tx1_data (seq=1), got: {}",
+                s
+            );
+        }
+        _ => panic!("Expected Dequeued(Some(tx1_data)), got {:?}", result),
+    }
+
+    let result = engine.apply_operation(dequeue_op, tx3);
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) if s == "tx2_data"
+    ));
+
+    engine.commit(tx3);
 }
 
 #[test]
@@ -542,10 +564,10 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
 }
 
 #[test]
-fn test_snapshot_size_blocks_on_earlier_write() {
+fn test_snapshot_size_with_uncommitted_write() {
     let mut engine = create_engine();
 
-    // Start a write transaction at timestamp 100
+    // Start a write transaction
     let write_tx = create_tx_id();
     engine.begin(write_tx);
 
@@ -555,19 +577,29 @@ fn test_snapshot_size_blocks_on_earlier_write() {
     };
     engine.apply_operation(enqueue_op, write_tx);
 
-    // Snapshot read at timestamp 200 (after write tx started) should block
+    // Snapshot read at timestamp after write tx started
+    // With lock-free enqueues, this NO LONGER blocks because enqueues don't hold locks
+    // MVCC handles visibility - the snapshot won't see uncommitted data
     let read_ts = create_tx_id();
     let size_op = QueueOperation::Size;
 
-    let result = engine.read_at_timestamp(size_op, read_ts);
-    match result {
-        OperationResult::WouldBlock { blockers } => {
-            assert_eq!(blockers.len(), 1);
-            assert_eq!(blockers[0].txn, write_tx);
-            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
-        }
-        _ => panic!("Expected WouldBlock for snapshot read after pending write"),
-    }
+    let result = engine.read_at_timestamp(size_op.clone(), read_ts);
+    // Should succeed (not block) and see size=0 because the enqueue hasn't committed
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Size(0))
+    ));
+
+    // Now commit the write transaction
+    engine.commit(write_tx);
+
+    // A new snapshot read should now see the committed item
+    let read_ts2 = create_tx_id();
+    let result = engine.read_at_timestamp(size_op.clone(), read_ts2);
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Size(1))
+    ));
 }
 
 #[test]
@@ -577,9 +609,11 @@ fn test_snapshot_is_empty_sees_committed_state() {
 
     // Capture snapshot BEFORE any operations
     let snapshot_before = create_tx_id();
+    println!("snapshot_before: {:?}", snapshot_before);
 
     // Transaction: enqueue 3 items and commit
     let tx1 = create_tx_id();
+    println!("tx1: {:?}", tx1);
     engine.begin(tx1);
 
     for i in 0..3 {
@@ -591,8 +625,12 @@ fn test_snapshot_is_empty_sees_committed_state() {
 
     engine.commit(tx1);
 
+    // Small delay to ensure timestamp ordering (UUIDv7 sub-millisecond randomness)
+    std::thread::sleep(std::time::Duration::from_millis(2));
+
     // Capture snapshot AFTER tx1
     let snapshot_after_enqueue = create_tx_id();
+    println!("snapshot_after_enqueue: {:?}", snapshot_after_enqueue);
 
     // Transaction: dequeue one and commit
     let tx2 = create_tx_id();
@@ -602,6 +640,9 @@ fn test_snapshot_is_empty_sees_committed_state() {
     engine.apply_operation(dequeue_op, tx2);
 
     engine.commit(tx2);
+
+    // Small delay to ensure timestamp ordering
+    std::thread::sleep(std::time::Duration::from_millis(2));
 
     // Capture snapshot AFTER tx2
     let snapshot_after_dequeue = create_tx_id();
@@ -626,7 +667,10 @@ fn test_snapshot_is_empty_sees_committed_state() {
     ));
 
     // Read at snapshot after enqueue: should not be empty (has 3 items)
+    println!("snapshot_after_enqueue: {:?}", snapshot_after_enqueue);
+    println!("About to read at snapshot...");
     let result = engine.read_at_timestamp(is_empty_op.clone(), snapshot_after_enqueue);
+    println!("Result: {:?}", result);
     assert!(matches!(
         result,
         OperationResult::Complete(QueueResponse::IsEmpty(false))
@@ -711,10 +755,10 @@ fn test_snapshot_size_with_concurrent_operations() {
     };
     engine.apply_operation(enqueue_op, tx2);
 
-    // Capture snapshot AFTER tx2 starts (should block reading at this snapshot)
+    // Capture snapshot AFTER tx2 starts
     let snapshot_during_tx2 = create_tx_id();
 
-    // Start another transaction that also enqueues (not committed)
+    // Start another transaction that also enqueues (both succeed concurrently!)
     let tx3 = create_tx_id();
     engine.begin(tx3);
 
@@ -723,7 +767,7 @@ fn test_snapshot_size_with_concurrent_operations() {
     };
     engine.apply_operation(enqueue_op, tx3);
 
-    // Capture snapshot AFTER tx3 starts (should block on both)
+    // Capture snapshot AFTER tx3 starts
     let snapshot_during_both = create_tx_id();
 
     // Snapshot read AFTER tx1 should see 2 items
@@ -734,22 +778,20 @@ fn test_snapshot_size_with_concurrent_operations() {
         OperationResult::Complete(QueueResponse::Size(2))
     ));
 
-    // Snapshot read after tx2 started should block on tx2
+    // Snapshot read after tx2 started should NOT block (enqueues are lock-free)
+    // MVCC ensures snapshot isolation - uncommitted data is not visible
     let result = engine.read_at_timestamp(size_op.clone(), snapshot_during_tx2);
-    assert!(matches!(result, OperationResult::WouldBlock { .. }));
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Size(2))
+    ));
 
-    // Snapshot read after both started should block on both tx2 and tx3
+    // Snapshot read after tx3 should also see only committed data
     let result = engine.read_at_timestamp(size_op, snapshot_during_both);
-    match result {
-        OperationResult::WouldBlock { blockers } => {
-            assert_eq!(blockers.len(), 2);
-            // Should contain both tx2 and tx3
-            let blocking_txs: Vec<_> = blockers.iter().map(|b| b.txn).collect();
-            assert!(blocking_txs.contains(&tx2));
-            assert!(blocking_txs.contains(&tx3));
-        }
-        _ => panic!("Expected WouldBlock with 2 blockers"),
-    }
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Size(2))
+    ));
 }
 
 #[test]
@@ -803,4 +845,156 @@ fn test_snapshot_fifo_ordering_preserved() {
         result,
         OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(2))))
     ));
+}
+
+#[test]
+fn test_out_of_order_commits_maintain_sequence_order() {
+    // This test verifies the critical scenario from LINKED_LIST_LINKING_ANALYSIS.md
+    // Two transactions enqueue concurrently, but commit in reverse order.
+    // The dequeue order MUST follow sequence numbers (1, 2), not commit order (2, 1).
+
+    let mut engine = create_engine();
+
+    // Create two transactions with controlled ordering
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
+
+    engine.begin(tx1);
+    engine.begin(tx2);
+
+    // tx1 enqueues "A" (will get seq=1)
+    let enqueue1 = QueueOperation::Enqueue {
+        value: Value::Str("A".to_string()),
+    };
+    let result = engine.apply_operation(enqueue1, tx1);
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Enqueued)
+    ));
+
+    // tx2 enqueues "B" (will get seq=2)
+    let enqueue2 = QueueOperation::Enqueue {
+        value: Value::Str("B".to_string()),
+    };
+    let result = engine.apply_operation(enqueue2, tx2);
+    assert!(matches!(
+        result,
+        OperationResult::Complete(QueueResponse::Enqueued)
+    ));
+
+    // CRITICAL: tx2 commits FIRST (out of order!)
+    engine.commit(tx2);
+
+    // tx1 commits SECOND
+    engine.commit(tx1);
+
+    // Now dequeue - should get items in SEQUENCE order (A, B), not commit order (B, A)
+    let tx3 = create_tx_id();
+    engine.begin(tx3);
+
+    let dequeue_op = QueueOperation::Dequeue;
+
+    // First dequeue should return "A" (seq=1), not "B" (seq=2)
+    let result = engine.apply_operation(dequeue_op.clone(), tx3);
+    match result {
+        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) => {
+            assert_eq!(
+                s, "A",
+                "First dequeue should return seq=1 (A), not seq=2 (B)"
+            );
+        }
+        _ => panic!("Expected successful dequeue of 'A', got {:?}", result),
+    }
+
+    // Second dequeue should return "B" (seq=2)
+    let result = engine.apply_operation(dequeue_op, tx3);
+    match result {
+        OperationResult::Complete(QueueResponse::Dequeued(Some(Value::Str(s)))) => {
+            assert_eq!(s, "B", "Second dequeue should return seq=2 (B)");
+        }
+        _ => panic!("Expected successful dequeue of 'B', got {:?}", result),
+    }
+
+    engine.commit(tx3);
+}
+
+#[test]
+fn test_out_of_order_commits_with_gaps() {
+    // More complex scenario: tx1, tx3 commit; tx2 commits last
+    // Should maintain order: seq1 -> seq2 -> seq3
+
+    let mut engine = create_engine();
+
+    let tx1 = create_tx_id();
+    let tx2 = create_tx_id();
+    let tx3 = create_tx_id();
+
+    engine.begin(tx1);
+    engine.begin(tx2);
+    engine.begin(tx3);
+
+    // Enqueue three items
+    let result = engine.apply_operation(
+        QueueOperation::Enqueue {
+            value: Value::I64(1),
+        },
+        tx1,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    let result = engine.apply_operation(
+        QueueOperation::Enqueue {
+            value: Value::I64(2),
+        },
+        tx2,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    let result = engine.apply_operation(
+        QueueOperation::Enqueue {
+            value: Value::I64(3),
+        },
+        tx3,
+    );
+    assert!(matches!(result, OperationResult::Complete(_)));
+
+    // Commit out of order: tx1, tx3, then tx2
+    engine.commit(tx1);
+    engine.commit(tx3);
+
+    // At this point: seq=1 committed, seq=2 uncommitted (gap), seq=3 committed
+    // Dequeue should block waiting for seq=2
+    let tx_dequeue = create_tx_id();
+    engine.begin(tx_dequeue);
+
+    let result = engine.apply_operation(QueueOperation::Dequeue, tx_dequeue);
+    // Should be blocked by uncommitted seq=2
+    match result {
+        OperationResult::WouldBlock { blockers } => {
+            assert_eq!(blockers.len(), 1);
+            assert_eq!(blockers[0].txn, tx2);
+        }
+        _ => panic!("Expected WouldBlock due to gap at seq=2, got {:?}", result),
+    }
+
+    engine.abort(tx_dequeue);
+
+    // Now commit tx2 to fill the gap
+    engine.commit(tx2);
+
+    // Dequeue should now succeed and return items in order: 1, 2, 3
+    let tx_verify = create_tx_id();
+    engine.begin(tx_verify);
+
+    for expected in [1, 2, 3] {
+        let result = engine.apply_operation(QueueOperation::Dequeue, tx_verify);
+        match result {
+            OperationResult::Complete(QueueResponse::Dequeued(Some(Value::I64(v)))) => {
+                assert_eq!(v, expected, "Dequeue should return seq={}", expected);
+            }
+            _ => panic!("Expected dequeue of {}, got {:?}", expected, result),
+        }
+    }
+
+    engine.commit(tx_verify);
 }

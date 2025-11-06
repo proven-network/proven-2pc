@@ -38,12 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Create and start the runner
     let runner_client = Arc::new(MockClient::new("runner-node".to_string(), engine.clone()));
-    let temp_dir = tempfile::tempdir()?;
-    let runner = Arc::new(Runner::new(
-        "runner-node",
-        runner_client.clone(),
-        temp_dir.path(),
-    ));
+    let temp_dir = tempfile::tempdir()?.keep();
+    let runner = Arc::new(Runner::new("runner-node", runner_client.clone(), temp_dir));
     runner.start().await.unwrap();
     println!("✓ Started runner");
 
@@ -109,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("\n=== Benchmark Configuration ===");
     const WARMUP_TRANSACTIONS: usize = 100;
     const NUM_TRANSACTIONS: usize = 100_000;
-    const MAX_CONCURRENT: Option<usize> = Some(1_000);
+    const MAX_CONCURRENT: Option<usize> = Some(500);
 
     println!("Warmup transactions:    {}", WARMUP_TRANSACTIONS);
     println!("Benchmark transactions: {}", NUM_TRANSACTIONS);
@@ -166,8 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             };
 
             if let Err(e) = execute_simple_transaction(i, &args[0], executor.clone()).await {
-                eprintln!("Failed to execute warmup transaction {}: {:?}", i, e);
-                let _ = executor.cancel().await;
+                println!("Failed to execute warmup transaction {}: {:?}", i, e);
+                if let Err(cancel_err) = executor.cancel().await {
+                    println!(
+                        "Warmup transaction {} also failed to cancel: {:?}",
+                        i, cancel_err
+                    );
+                }
                 failed.fetch_add(1, Ordering::Relaxed);
             } else {
                 successful.fetch_add(1, Ordering::Relaxed);
@@ -267,23 +268,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // Retry loop with exponential backoff
             let mut retry_count = 0;
-            let mut disable_speculation = false;
+            let mut speculation_failure_count = 0;
             const MAX_RETRIES: u32 = 10;
+            const MAX_SPECULATION_FAILURES: u32 = 2;
 
             loop {
-                // Begin with speculation enabled unless we had a speculation failure
-                let executor = match if disable_speculation {
+                // Decide whether to use speculation (disable after repeated failures)
+                let use_speculation = speculation_failure_count < MAX_SPECULATION_FAILURES;
+
+                // Calculate timeout (increase slightly on retries to reduce deadline thrashing)
+                let timeout = Duration::from_secs(10 + (retry_count as u64 / 3));
+
+                // Begin with speculation enabled unless we've had too many speculation failures
+                let executor = match if use_speculation {
                     coordinator
-                        .begin_read_write_without_speculation(
-                            Duration::from_secs(5),
+                        .begin_read_write(
+                            timeout,
                             args.clone(),
                             "simple_transaction".to_string(),
                         )
                         .await
                 } else {
                     coordinator
-                        .begin_read_write(
-                            Duration::from_secs(5),
+                        .begin_read_write_without_speculation(
+                            timeout,
                             args.clone(),
                             "simple_transaction".to_string(),
                         )
@@ -291,9 +299,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 } {
                     Ok(t) => Arc::new(t),
                     Err(e) => {
-                        eprintln!("Failed to begin transaction {}: {:?}", i, e);
-                        failed.fetch_add(1, Ordering::Relaxed);
-                        return;
+                        let error_str = e.to_string();
+
+                        // Check if begin failure is retryable
+                        let should_retry = error_str.contains("Response timeout")
+                            || error_str.contains("Transaction deadline exceeded")
+                            || error_str.contains("Engine error")
+                            || error_str.contains("Prepare phase timed out");
+
+                        if should_retry && retry_count < MAX_RETRIES {
+                            retry_count += 1;
+                            retries.fetch_add(1, Ordering::Relaxed);
+
+                            let backoff_ms = calculate_backoff(&error_str, retry_count);
+                            eprintln!(
+                                "Transaction {} failed to begin (attempt {}): {}, retrying in {}ms",
+                                i, retry_count + 1, error_str, backoff_ms
+                            );
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        } else {
+                            eprintln!("Transaction {} failed to begin after {} attempts: {}", i, retry_count + 1, error_str);
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
                     }
                 };
 
@@ -315,34 +344,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         let error_str = e.to_string();
 
                         // Always abort the failed transaction
-                        let _ = executor.cancel().await;
-
-                        // Don't retry unique constraint violations - they indicate the data was already inserted
-                        if error_str.contains("Unique constraint violation") {
-                            // This likely means a previous attempt succeeded but we didn't get confirmation
-                            // Count it as successful since the data is there
-                            successful.fetch_add(1, Ordering::Relaxed);
-                            return;
+                        if let Err(cancel_err) = executor.cancel().await {
+                            eprintln!(
+                                "Transaction {} failed AND cancel failed: original error: {}, cancel error: {:?}",
+                                i, error_str, cancel_err
+                            );
+                            // Continue to handle the original error below
                         }
 
-                        // Check if it's a wound/abort that we should retry
+                        // Check if it's an error we should retry
                         let should_retry = error_str.contains("Transaction was aborted")
                             || error_str.contains("Transaction was wounded")
                             || error_str.contains("Speculation failed")
                             || error_str.contains("Response timeout")
-                            || error_str.contains("Prepare phase timed out");
+                            || error_str.contains("Prepare phase timed out")
+                            || error_str.contains("PrepareTimeout")
+                            || error_str.contains("Transaction deadline exceeded")
+                            || error_str.contains("Engine error");
 
                         if should_retry && retry_count < MAX_RETRIES {
                             retry_count += 1;
                             retries.fetch_add(1, Ordering::Relaxed);
 
-                            // Only disable speculation if it was a speculation failure
+                            // Track speculation failures separately
                             if error_str.contains("Speculation failed") {
-                                disable_speculation = true;
+                                speculation_failure_count += 1;
                             }
 
-                            // Exponential backoff: 1ms, 2ms, 4ms, 8ms, 16ms
-                            let backoff_ms = 1u64 << retry_count;
+                            // Differentiated backoff based on error type
+                            let backoff_ms = calculate_backoff(&error_str, retry_count);
                             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                             continue;
                         }
@@ -377,7 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
 
             if total > last_count + 1000 {
-                eprintln!(
+                println!(
                     "[{:5}/{:5}] Success: {} Failed: {} ({:.1}%)",
                     total,
                     NUM_TRANSACTIONS,
@@ -448,16 +478,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
-    // Wait a bit for any pending operations to complete
-    println!("\nWaiting 5 seconds for commits to propagate...");
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("Done waiting.");
-
     // Verification phase - use the same coordinator
     println!("\n=== Verification Phase ===");
+
     let verify_executor = Arc::new(
         coordinator
-            .begin_read_only(vec![], "verification".to_string())
+            .begin_read_write_without_speculation(
+                Duration::from_secs(10),
+                vec![],
+                "verification_final".to_string(),
+            )
             .await?,
     );
     let kv_verify = KvClient::new(verify_executor.clone());
@@ -485,16 +515,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Check queue size
-    if let Ok(size) = queue_verify.size("queue_stream").await {
+    let queue_size = if let Ok(size) = queue_verify.size("queue_stream").await {
         println!("✓ Queue contains {} items", size);
+        size
+    } else {
+        0
+    };
+
+    // Check for holes: expected is warmup + benchmark = 100,100 items
+    let expected_items = WARMUP_TRANSACTIONS + NUM_TRANSACTIONS;
+    if queue_size < expected_items {
+        let missing = expected_items - queue_size;
+        println!("  ⚠ Missing {} items", missing);
     }
 
-    // Check SQL count
+    // Check for missing rows in the SQL table
     let count_result = sql_verify
         .select("sql_stream", "items", &["COUNT(*) as cnt"], None)
         .await?;
-    if let Some(count) = count_result.column_values("cnt").first() {
-        println!("✓ SQL table contains {} rows", count);
+    let expected_items = (WARMUP_TRANSACTIONS + NUM_TRANSACTIONS) as u64;
+    if let Some(count_str) = count_result.column_values("cnt").first() {
+        println!("✓ SQL table contains {} rows", count_str);
+        let count = count_str.parse::<u64>().unwrap_or(0);
+        if count < expected_items {
+            let missing = expected_items - count;
+            println!("  ⚠ Missing {} rows", missing);
+        }
     }
 
     verify_executor.finish().await?;
@@ -505,7 +551,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /// Execute a simple transaction with 4 predictable operations
 async fn execute_simple_transaction<E>(
-    _index: usize,
+    index: usize,
     args: &serde_json::Value,
     executor: Arc<E>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -538,7 +584,7 @@ where
         .put("kv_stream", key, Value::Str(value.to_string()))
         .await
     {
-        eprintln!("[{}] KV put failed for key '{}': {:?}", _index, key, e);
+        eprintln!("[{}] KV put failed for key '{}': {:?}", index, key, e);
         return Err(e.into());
     }
 
@@ -549,7 +595,7 @@ where
     {
         eprintln!(
             "[{}] Queue enqueue failed for message '{}': {:?}",
-            _index, message, e
+            index, message, e
         );
         return Err(e.into());
     }
@@ -566,7 +612,7 @@ where
     {
         eprintln!(
             "[{}] Resource transfer failed from {:?} to {:?} amount {}: {:?}",
-            _index, from_vault, to_vault, amount, e
+            index, from_vault, to_vault, amount, e
         );
         return Err(e.into());
     }
@@ -584,10 +630,40 @@ where
         )
         .await
     {
-        eprintln!("[{}] SQL insert failed for key '{}': {:?}", _index, key, e);
+        eprintln!("[{}] SQL insert failed for key '{}': {:?}", index, key, e);
         return Err(e.into());
     }
 
-    executor.finish().await?;
+    if let Err(e) = executor.finish().await {
+        eprintln!("[{}] Transaction finish failed: {:?}", index, e);
+        return Err(e.into());
+    }
+
     Ok(())
+}
+
+/// Calculate backoff duration based on error type and retry count
+/// Different error types use different backoff strategies
+fn calculate_backoff(error_str: &str, retry_count: u32) -> u64 {
+    if error_str.contains("Transaction was wounded") {
+        // Short backoff for wound-wait - other transaction should finish soon
+        // 5ms, 10ms, 20ms, 40ms, then cap at 40ms
+        5u64 << retry_count.min(3)
+    } else if error_str.contains("Transaction deadline exceeded") {
+        // Minimal backoff for deadline exceeded - we need a fresh start ASAP
+        5
+    } else if error_str.contains("Speculation failed") {
+        // No backoff for speculation - try immediately without speculation
+        1
+    } else if error_str.contains("Response timeout")
+        || error_str.contains("Prepare phase timed out")
+    {
+        // Medium backoff for timeouts
+        // 10ms, 20ms, 40ms, 80ms, cap at 100ms
+        (10u64 << retry_count.min(3)).min(100)
+    } else {
+        // Default exponential backoff with reasonable cap
+        // 2ms, 4ms, 8ms, 16ms, 32ms, 64ms, cap at 100ms
+        (2u64 << retry_count).min(100)
+    }
 }

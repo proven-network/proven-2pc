@@ -926,7 +926,6 @@ name = "proven-queue"
 version = "0.1.0"
 dependencies = [
  "fjall",
- "parking_lot",
  "proven-common",
  "proven-engine",
  "proven-mvcc",

@@ -448,7 +448,7 @@ impl ReadWriteExecutor {
             let infra = self.infra.clone();
             let txn_id = self.txn_id;
             tasks.spawn(async move {
-                let _ = infra
+                if let Err(e) = infra
                     .send_control_message(
                         &participant,
                         txn_id,
@@ -456,7 +456,15 @@ impl ReadWriteExecutor {
                         None,
                         None,
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to send commit message to {} for txn {}: {:?}",
+                        participant,
+                        txn_id,
+                        e
+                    );
+                }
             });
         }
 
@@ -490,9 +498,17 @@ impl ReadWriteExecutor {
             let infra = self.infra.clone();
             let txn_id = self.txn_id;
             tasks.spawn(async move {
-                let _ = infra
+                if let Err(e) = infra
                     .send_control_message(&participant, txn_id, TransactionPhase::Abort, None, None)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to send abort message to {} for txn {}: {:?}",
+                        participant,
+                        txn_id,
+                        e
+                    );
+                }
             });
         }
 

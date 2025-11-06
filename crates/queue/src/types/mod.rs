@@ -1,3 +1,5 @@
+//! Type system for Queue storage
+
 pub mod operation;
 pub mod response;
 
