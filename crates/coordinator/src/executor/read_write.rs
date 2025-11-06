@@ -610,12 +610,10 @@ impl ExecutorTrait for ReadWriteExecutor {
         // Try with speculation first
         match self.execute_with_speculation(&stream, operation).await {
             Ok(result) => Ok(result),
-            Err(CoordinatorError::SpeculationFailed(_)) => {
+            Err(CoordinatorError::SpeculationFailed(reason)) => {
                 // Speculation failed - abort and let caller retry
                 self.abort().await?;
-                Err(CoordinatorError::SpeculationFailed(
-                    "Speculation failed, transaction aborted".to_string(),
-                ))
+                Err(CoordinatorError::SpeculationFailed(reason))
             }
             Err(e) => {
                 // On any error, abort the transaction to avoid leaving it in an inconsistent state
