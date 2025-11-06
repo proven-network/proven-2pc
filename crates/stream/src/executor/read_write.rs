@@ -199,6 +199,32 @@ impl ReadWriteExecution {
         ctx.commit_transaction(batch, txn_id, coordinator_id, request_id, phase)
     }
 
+    /// Single-phase commit optimization: prepare and commit atomically
+    ///
+    /// This is used when there's only one participant, so we can prepare and commit
+    /// in a single operation with a single response.
+    pub fn prepare_and_commit<E: TransactionEngine>(
+        ctx: &mut ExecutionContext<E>,
+        batch: &mut E::Batch,
+        txn_id: TransactionId,
+        coordinator_id: String,
+        request_id: String,
+        phase: ResponseMode,
+    ) -> Result<()> {
+        // Prepare in engine (adds to batch)
+        ctx.engine.prepare(batch, txn_id);
+
+        // Transition to prepared state (no participants needed for single-phase)
+        ctx.tx_manager
+            .transition_to_prepared_with_participants(txn_id, HashMap::new())?;
+
+        // Mark dirty for lazy persistence
+        ctx.mark_dirty(txn_id);
+
+        // Immediately commit (no separate commit message needed)
+        ctx.commit_transaction(batch, txn_id, coordinator_id, request_id, phase)
+    }
+
     /// Abort a transaction
     pub fn abort<E: TransactionEngine>(
         ctx: &mut ExecutionContext<E>,

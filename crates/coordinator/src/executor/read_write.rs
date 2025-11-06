@@ -296,26 +296,10 @@ impl ReadWriteExecutor {
         ExecutorInfra::handle_response(response)
     }
 
-    /// Prepare phase of 2PC
-    async fn prepare(&self) -> Result<()> {
-        let participants: Vec<String> = self
-            .participant_offsets
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
+    /// One-phase commit for single participant optimization
+    async fn one_phase_commit(&self, participant: &str) -> Result<()> {
+        *self.state.lock() = TransactionState::Committing;
 
-        match participants.len() {
-            0 => Ok(()), // No participants to prepare
-            1 => self.prepare_single(&participants[0]).await,
-            _ => self.prepare_multiple(&participants).await,
-        }
-    }
-
-    /// Prepare with single participant optimization
-    async fn prepare_single(&self, participant: &str) -> Result<()> {
-        *self.state.lock() = TransactionState::Preparing;
-
-        // Use PrepareAndCommit for single participant optimization
         use proven_protocol::TransactionPhase;
         let request_id = self.infra.generate_request_id();
         let timeout = common::calculate_timeout(self.deadline)?;
@@ -332,36 +316,60 @@ impl ReadWriteExecutor {
             )
             .await
         {
-            Ok(Some(response)) => {
-                let vote = self.parse_prepare_vote(&response);
-                if matches!(vote, PrepareVote::Prepared) {
-                    *self.state.lock() = TransactionState::Committed;
-                    Ok(())
-                } else {
-                    let _ = self.abort().await;
-                    Err(CoordinatorError::TransactionAborted)
-                }
+            Ok(Some(response))
+                if matches!(self.parse_prepare_vote(&response), PrepareVote::Prepared) =>
+            {
+                *self.state.lock() = TransactionState::Committed;
+                self.report_outcome(true).await;
+                Ok(())
             }
-            Ok(None) => {
-                // Shouldn't happen since we provided request_id
-                let _ = self.abort().await;
-                Err(CoordinatorError::Other(
-                    "No response from prepare".to_string(),
-                ))
-            }
-            Err(e) => {
-                // On error, abort the transaction
-                let _ = self.abort().await;
-                Err(e)
+            _ => {
+                self.abort().await?;
+                self.report_outcome(false).await;
+                Err(CoordinatorError::TransactionAborted)
             }
         }
     }
 
-    /// Standard 2PC prepare
-    async fn prepare_multiple(&self, participants: &[String]) -> Result<()> {
-        *self.state.lock() = TransactionState::Preparing;
-
+    /// Two-phase commit for multiple participants
+    async fn two_phase_commit(&self, participants: &[String]) -> Result<()> {
+        // Phase 1: Prepare
         let request_id = self.infra.generate_request_id();
+        if let Err(e) = self.send_prepare_messages(participants, &request_id).await {
+            self.abort().await?;
+            self.report_outcome(false).await;
+            return Err(e);
+        }
+
+        // Collect votes
+        let all_prepared = match self.collect_prepare_votes(participants, &request_id).await {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                self.abort().await?;
+                self.report_outcome(false).await;
+                return Err(e);
+            }
+        };
+
+        if !all_prepared {
+            self.abort().await?;
+            self.report_outcome(false).await;
+            return Err(CoordinatorError::TransactionAborted);
+        }
+
+        *self.state.lock() = TransactionState::Prepared;
+
+        // Phase 2: Commit (fire-and-forget, don't wait)
+        self.send_commit_messages(participants);
+
+        *self.state.lock() = TransactionState::Committed;
+        self.report_outcome(true).await;
+        Ok(())
+    }
+
+    /// Send prepare messages to all participants
+    async fn send_prepare_messages(&self, participants: &[String], request_id: &str) -> Result<()> {
+        *self.state.lock() = TransactionState::Preparing;
 
         // Get all participant offsets to send with PREPARE messages
         let all_participants: HashMap<String, u64> = self
@@ -370,18 +378,15 @@ impl ReadWriteExecutor {
             .map(|entry| (entry.key().clone(), *entry.value()))
             .collect();
 
-        // Send prepare messages and collect votes
         use proven_protocol::TransactionPhase;
-
-        // Send all prepare messages in parallel (without waiting for responses)
         let mut tasks = tokio::task::JoinSet::new();
 
         for participant in participants {
             let infra = self.infra.clone();
             let txn_id = self.txn_id;
             let participants_clone = all_participants.clone();
-            let req_id = request_id.clone();
-            let participant = participant.clone(); // Clone the string to move into task
+            let req_id = request_id.to_string();
+            let participant = participant.clone();
             let deadline = self.deadline;
 
             tasks.spawn(async move {
@@ -391,7 +396,7 @@ impl ReadWriteExecutor {
                         txn_id,
                         TransactionPhase::Prepare(participants_clone),
                         Some(req_id),
-                        None, // Don't wait - we'll collect all responses in parallel
+                        None, // Don't wait - we'll collect all responses separately
                         deadline,
                     )
                     .await
@@ -401,15 +406,9 @@ impl ReadWriteExecutor {
         // Wait for all sends to complete and check for errors
         while let Some(result) = tasks.join_next().await {
             match result {
-                Ok(Ok(_)) => continue, // Successfully sent (ignore response option)
-                Ok(Err(e)) => {
-                    // Failed to send prepare message - abort the transaction
-                    let _ = self.abort().await;
-                    return Err(e);
-                }
+                Ok(Ok(_)) => continue, // Successfully sent
+                Ok(Err(e)) => return Err(e),
                 Err(_join_err) => {
-                    // Task panic - abort the transaction
-                    let _ = self.abort().await;
                     return Err(CoordinatorError::EngineError(
                         "Task failed during prepare send".to_string(),
                     ));
@@ -417,55 +416,22 @@ impl ReadWriteExecutor {
             }
         }
 
-        // Now collect all votes in parallel
-        let all_prepared = match self.collect_prepare_votes(participants, &request_id).await {
-            Ok(prepared) => prepared,
-            Err(e) => {
-                // On error (e.g., timeout), abort the transaction
-                let _ = self.abort().await;
-                return Err(e);
-            }
-        };
-
-        if all_prepared {
-            *self.state.lock() = TransactionState::Prepared;
-            Ok(())
-        } else {
-            self.abort().await?;
-            Err(CoordinatorError::TransactionAborted)
-        }
+        Ok(())
     }
 
-    /// Commit phase
-    async fn commit(&self) -> Result<()> {
-        // Check if we need to prepare first
-        let state = self.state.lock().clone();
-        if state == TransactionState::Active {
-            // If prepare fails, the transaction is already aborted
-            self.prepare().await?;
-        }
-
-        let participants: Vec<String> = self
-            .participant_offsets
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
-        if participants.is_empty() {
-            *self.state.lock() = TransactionState::Committed;
-            return Ok(());
-        }
-
+    /// Send commit messages to all participants (fire-and-forget)
+    fn send_commit_messages(&self, participants: &[String]) {
         *self.state.lock() = TransactionState::Committing;
 
-        // Send commit messages in parallel (fire-and-forget)
         use proven_protocol::TransactionPhase;
-        let mut tasks = tokio::task::JoinSet::new();
-
         for participant in participants {
             let infra = self.infra.clone();
             let txn_id = self.txn_id;
             let deadline = self.deadline;
-            tasks.spawn(async move {
+            let participant = participant.clone();
+
+            // Fire and forget - spawn without waiting
+            tokio::spawn(async move {
                 if let Err(e) = infra
                     .send_control_message(
                         &participant,
@@ -486,12 +452,6 @@ impl ReadWriteExecutor {
                 }
             });
         }
-
-        // Wait for all sends to complete (ignore individual results since fire-and-forget)
-        while (tasks.join_next().await).is_some() {}
-
-        *self.state.lock() = TransactionState::Committed;
-        Ok(())
     }
 
     /// Abort transaction
@@ -513,15 +473,15 @@ impl ReadWriteExecutor {
             .map(|entry| entry.key().clone())
             .collect();
 
-        // Send abort messages in parallel (fire-and-forget)
+        // Send abort messages (fire-and-forget, don't wait)
         use proven_protocol::TransactionPhase;
-        let mut tasks = tokio::task::JoinSet::new();
-
         for participant in participants {
             let infra = self.infra.clone();
             let txn_id = self.txn_id;
             let deadline = self.deadline;
-            tasks.spawn(async move {
+
+            // Fire and forget - spawn without waiting
+            tokio::spawn(async move {
                 if let Err(e) = infra
                     .send_control_message(
                         &participant,
@@ -542,9 +502,6 @@ impl ReadWriteExecutor {
                 }
             });
         }
-
-        // Wait for all sends to complete (ignore individual results since fire-and-forget)
-        while (tasks.join_next().await).is_some() {}
 
         *self.state.lock() = TransactionState::Aborted;
         Ok(())
@@ -668,19 +625,28 @@ impl ExecutorTrait for ReadWriteExecutor {
             ));
         }
 
-        // Commit transaction
-        match self.commit().await {
-            Ok(()) => {
-                // Report success to prediction context
+        // Collect participants once
+        let participants: Vec<String> = self
+            .participant_offsets
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        // Choose commit strategy based on participant count
+        match participants.len() {
+            0 => {
+                // No participants - just mark committed
+                *self.state.lock() = TransactionState::Committed;
                 self.report_outcome(true).await;
                 Ok(())
             }
-            Err(e) => {
-                // If commit fails, abort to clean up
-                let _ = self.abort().await;
-                // Report failure to prediction context
-                self.report_outcome(false).await;
-                Err(e)
+            1 => {
+                // Single participant - one-phase commit optimization
+                self.one_phase_commit(&participants[0]).await
+            }
+            _ => {
+                // Multiple participants - standard two-phase commit
+                self.two_phase_commit(&participants).await
             }
         }
     }

@@ -308,16 +308,7 @@ impl OrderedFlow {
                         )
                     }
                     proven_protocol::TransactionPhase::PrepareAndCommit => {
-                        ReadWriteExecution::prepare(
-                            ctx,
-                            batch,
-                            txn_id,
-                            coordinator_id.clone().unwrap_or_default(),
-                            request_id.clone().unwrap_or_default(),
-                            HashMap::new(),
-                            phase,
-                        )?;
-                        ReadWriteExecution::commit(
+                        ReadWriteExecution::prepare_and_commit(
                             ctx,
                             batch,
                             txn_id,
