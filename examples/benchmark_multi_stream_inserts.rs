@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Configuration
     const WARMUP_TRANSACTIONS: usize = 100;
     const NUM_TRANSACTIONS: usize = 100_000;
-    const MAX_CONCURRENT: Option<usize> = Some(1_000);
+    const MAX_CONCURRENT: Option<usize> = Some(10_000);
 
     println!("Configuration:");
     println!("  Streams:                {}", num_streams);
@@ -422,10 +422,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!(
         "Avg latency:             {:.3} ms/transaction (actual)",
         avg_latency_ms
-    );
-    println!(
-        "Amortized time:          {:.3} ms/transaction",
-        (total_seconds * 1000.0) / final_successful as f64
     );
 
     println!("\n=== Per-Stream Statistics ===");

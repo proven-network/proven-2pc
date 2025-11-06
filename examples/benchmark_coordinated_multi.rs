@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("\n=== Benchmark Configuration ===");
     const WARMUP_TRANSACTIONS: usize = 100;
     const NUM_TRANSACTIONS: usize = 100_000;
-    const MAX_CONCURRENT: Option<usize> = Some(500);
+    const MAX_CONCURRENT: Option<usize> = Some(1_000);
 
     println!("Warmup transactions:    {}", WARMUP_TRANSACTIONS);
     println!("Benchmark transactions: {}", NUM_TRANSACTIONS);
@@ -475,10 +475,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Avg latency:             {:.3} ms/transaction (actual)",
         avg_latency_ms
     );
-    println!(
-        "Amortized time:          {:.3} ms/transaction",
-        (total_seconds * 1000.0) / final_successful as f64
-    );
     if final_retries > 0 {
         println!(
             "Avg retries per txn:     {:.2}",
@@ -642,10 +638,7 @@ where
         return Err(e.into());
     }
 
-    if let Err(e) = executor.finish().await {
-        eprintln!("[{}] Transaction finish failed: {:?}", index, e);
-        return Err(e.into());
-    }
+    executor.finish().await?;
 
     Ok(())
 }
