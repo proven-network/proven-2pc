@@ -292,12 +292,14 @@ impl ExecutorInfra {
         phase: TransactionPhase,
         request_id: Option<String>,
         timeout: Option<Duration>,
+        txn_deadline: Timestamp,
     ) -> Result<Option<ResponseMessage>> {
         // Build control message manually (no operation needed)
         let mut headers = HashMap::new();
         headers.insert("txn_id".to_string(), txn_id.to_string());
         headers.insert("txn_phase".to_string(), phase.phase_name().to_string());
         headers.insert("coordinator_id".to_string(), self.coordinator_id.clone());
+        headers.insert("txn_deadline".to_string(), txn_deadline.to_string());
 
         // Add request_id if provided (for prepare votes)
         if let Some(ref req_id) = request_id {

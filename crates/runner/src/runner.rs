@@ -142,14 +142,31 @@ impl Runner {
                 // If processor is running locally and not expired, use it
                 // We don't require the full min_duration remaining if it's already running
                 if guaranteed_until_ms > now_ms {
+                    tracing::trace!(
+                        "[{}] Processor for stream '{}' is already running and not expired (expires in {}ms)",
+                        self.node_id,
+                        stream,
+                        guaranteed_until_ms.saturating_sub(now_ms)
+                    );
                     return Ok(ProcessorInfo {
                         node_id: self.node_id.clone(),
                         stream: stream.to_string(),
                         guaranteed_until_ms,
                     });
                 }
+                tracing::debug!(
+                    "[{}] Processor for stream '{}' is EXPIRED (expired {}ms ago)",
+                    self.node_id,
+                    stream,
+                    now_ms.saturating_sub(guaranteed_until_ms)
+                );
                 true // Processor exists but is expired
             } else {
+                tracing::debug!(
+                    "[{}] No processor running locally for stream '{}'",
+                    self.node_id,
+                    stream
+                );
                 false // No processor exists
             }
         };
@@ -189,6 +206,11 @@ impl Runner {
         }
 
         // Request one to start
+        tracing::debug!(
+            "[{}] Requesting NEW processor for stream '{}' - no existing processor found locally or in cluster",
+            self.node_id,
+            stream
+        );
         self.request_processor(stream, processor_type, min_duration)
             .await
     }
@@ -202,6 +224,13 @@ impl Runner {
     ) -> Result<ProcessorInfo> {
         // Check if we're running this processor locally
         let is_local = self.processors.lock().contains_key(stream);
+
+        tracing::debug!(
+            "[{}] extend_processor called for stream '{}', is_local={}",
+            self.node_id,
+            stream,
+            is_local
+        );
 
         if is_local {
             // Extend our own processor's guarantee
@@ -465,6 +494,46 @@ impl Runner {
             };
 
             if should_handle {
+                tracing::debug!(
+                    "[{}] Received processor request for stream '{}' with min_duration {}ms",
+                    node_id,
+                    request.stream,
+                    request.min_duration_ms
+                );
+
+                // Check if there's already a processor for this stream
+                // If so, just extend it instead of starting a new one (handles race conditions)
+                let existing_handle = processors.lock().get(&request.stream).cloned();
+                if let Some(handle) = existing_handle {
+                    tracing::debug!(
+                        "[{}] Processor already exists for stream '{}', extending instead of creating new one",
+                        node_id,
+                        request.stream
+                    );
+
+                    // Extend the existing processor's guarantee
+                    handle.extend_guarantee(Duration::from_millis(request.min_duration_ms));
+
+                    // Send ACK with the extended guarantee
+                    let ack = ProcessorAck {
+                        request_id: request.request_id,
+                        node_id: node_id.clone(),
+                        stream: request.stream.clone(),
+                        guaranteed_until_ms: handle.guaranteed_until_ms(),
+                    };
+
+                    let ack_message = proven_engine::Message::new(
+                        serde_json::to_vec(&ack).unwrap(),
+                        HashMap::new(),
+                    );
+
+                    let _ = client
+                        .publish("runner.processor.ack", vec![ack_message])
+                        .await;
+
+                    continue; // Skip starting a new processor
+                }
+
                 // Start processor
                 match processor::start_processor(
                     request.stream.clone(),

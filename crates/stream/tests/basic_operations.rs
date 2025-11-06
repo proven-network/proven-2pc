@@ -74,6 +74,7 @@ async fn test_full_2pc_commit() {
         phase: TransactionPhase::Prepare(std::collections::HashMap::new()),
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("req2".to_string()),
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
     };
 
     client
@@ -97,6 +98,7 @@ async fn test_full_2pc_commit() {
         phase: TransactionPhase::Commit,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("req3".to_string()),
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
     };
 
     client
@@ -165,6 +167,7 @@ async fn test_2pc_abort() {
         phase: TransactionPhase::Abort,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("req2".to_string()),
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
     };
 
     client
@@ -289,6 +292,7 @@ async fn test_multiple_operations_in_transaction() {
         phase: TransactionPhase::PrepareAndCommit,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("prepare".to_string()),
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
     };
 
     client
@@ -363,6 +367,7 @@ async fn test_prepare_and_commit_optimization() {
         phase: TransactionPhase::PrepareAndCommit,
         coordinator_id: Some("coord1".to_string()),
         request_id: Some("prepare_commit".to_string()),
+        txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
     };
 
     client

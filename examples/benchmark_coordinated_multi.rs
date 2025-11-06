@@ -24,6 +24,14 @@ use uuid::Uuid;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize tracing (only show errors by default, use RUST_LOG env var to see more)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("proven_runner=error".parse().unwrap()),
+        )
+        .init();
+
     println!("=== Simple Speculation Benchmark ===\n");
 
     // Initialize the mock engine

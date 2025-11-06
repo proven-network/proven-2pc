@@ -103,21 +103,48 @@ impl OrderedFlow {
         // ═══════════════════════════════════════════════════════════
         // STEP 6: VALIDATE & PROCESS ORIGINAL MESSAGE
         // ═══════════════════════════════════════════════════════════
+        let mut did_process = false;
+
         if !matches!(message, OrderedMessage::Noop) {
-            Self::dispatch_message(&mut ctx, &mut batch, message, response_mode)?;
+            // Check if message is past its deadline
+            let is_expired = match &message {
+                OrderedMessage::AutoCommitOperation { txn_deadline, .. } => {
+                    *txn_deadline < timestamp
+                }
+                OrderedMessage::TransactionOperation { txn_deadline, .. } => {
+                    *txn_deadline < timestamp
+                }
+                OrderedMessage::TransactionControl { txn_deadline, .. } => {
+                    *txn_deadline < timestamp
+                }
+                OrderedMessage::Noop => false,
+            };
+
+            if is_expired {
+                // Silently skip messages that arrive after their deadline
+                tracing::debug!(
+                    "Skipping expired message for transaction {:?} (deadline passed)",
+                    message.txn_id()
+                );
+            } else {
+                did_process = true;
+                Self::dispatch_message(&mut ctx, &mut batch, message, response_mode)?;
+            }
         }
 
         // ═══════════════════════════════════════════════════════════
         // STEP 7: LOOP - PROCESS NEWLY UNBLOCKED DEFERRALS (AGE ORDER)
         // ═══════════════════════════════════════════════════════════
-        loop {
-            let ready_ops = ctx.tx_manager.take_all_ready_deferrals_sorted();
-            if ready_ops.is_empty() {
-                break;
-            }
+        if did_process {
+            loop {
+                let ready_ops = ctx.tx_manager.take_all_ready_deferrals_sorted();
+                if ready_ops.is_empty() {
+                    break;
+                }
 
-            for deferred in ready_ops {
-                ctx.execute_deferred(&mut batch, deferred, response_mode)?;
+                for deferred in ready_ops {
+                    ctx.execute_deferred(&mut batch, deferred, response_mode)?;
+                }
             }
         }
 
@@ -147,7 +174,7 @@ impl OrderedFlow {
 
         if participants.is_empty() {
             // No participants - just abort (shouldn't happen for prepared, but handle it)
-            tracing::warn!(
+            println!(
                 "Prepared transaction {} has no participants, aborting",
                 txn_id
             );
@@ -168,7 +195,7 @@ impl OrderedFlow {
         match decision {
             TransactionDecision::Commit => {
                 // Commit the prepared transaction
-                tracing::info!("Recovery decision: COMMIT for transaction {}", txn_id);
+                println!("Recovery decision: COMMIT for transaction {}", txn_id);
 
                 ctx.commit_transaction(
                     batch,
@@ -180,7 +207,7 @@ impl OrderedFlow {
             }
             TransactionDecision::Abort | TransactionDecision::Unknown => {
                 // Abort the prepared transaction
-                tracing::info!(
+                tracing::debug!(
                     "Recovery decision: {:?} for transaction {}, aborting",
                     decision,
                     txn_id
@@ -265,6 +292,7 @@ impl OrderedFlow {
                 phase: tx_phase,
                 coordinator_id,
                 request_id,
+                txn_deadline: _,
             } => {
                 // All control messages go to ReadWriteExecutor
                 match tx_phase {

@@ -69,6 +69,7 @@ pub enum OrderedMessage<O: Operation> {
         phase: TransactionPhase,
         coordinator_id: Option<String>,
         request_id: Option<String>,
+        txn_deadline: Timestamp,
     },
 
     /// No-op message for triggering recovery/GC without real work
@@ -112,6 +113,12 @@ impl<O: Operation> OrderedMessage<O> {
             let coordinator_id = msg.get_header("coordinator_id").map(String::from);
             let request_id = msg.get_header("request_id").map(String::from);
 
+            let txn_deadline_str = msg
+                .get_header("txn_deadline")
+                .ok_or(ParseError::MissingHeader("txn_deadline"))?;
+            let txn_deadline = Timestamp::parse(txn_deadline_str)
+                .map_err(|_| ParseError::InvalidTimestamp(txn_deadline_str.to_string()))?;
+
             // Parse phase and participants together
             let phase = match phase_str {
                 "prepare" => {
@@ -133,6 +140,7 @@ impl<O: Operation> OrderedMessage<O> {
                 phase,
                 coordinator_id,
                 request_id,
+                txn_deadline,
             });
         }
 
@@ -226,10 +234,12 @@ impl<O: Operation> OrderedMessage<O> {
                 phase,
                 coordinator_id,
                 request_id,
+                txn_deadline,
             } => {
                 let mut headers = HashMap::new();
                 headers.insert("txn_id".to_string(), txn_id.to_string());
                 headers.insert("txn_phase".to_string(), phase.phase_name().to_string());
+                headers.insert("txn_deadline".to_string(), txn_deadline.to_string());
 
                 if let Some(coordinator_id) = coordinator_id {
                     headers.insert("coordinator_id".to_string(), coordinator_id);

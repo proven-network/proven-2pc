@@ -493,7 +493,7 @@ mod tests {
             txn_id,
             coordinator_id: "coord-1".to_string(),
             request_id: "req-1".to_string(),
-            txn_deadline: Timestamp::from_micros(10000),
+            txn_deadline: Timestamp::now().add_micros(10_000_000),
             operation: TestOp("write1".to_string()),
         };
 
@@ -557,6 +557,7 @@ mod tests {
             phase: TransactionPhase::Prepare(std::collections::HashMap::new()),
             coordinator_id: Some("coord-1".to_string()),
             request_id: Some("req-1".to_string()),
+            txn_deadline: proven_common::Timestamp::now().add_micros(10_000_000),
         };
 
         kernel

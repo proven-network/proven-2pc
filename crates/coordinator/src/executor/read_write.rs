@@ -322,6 +322,7 @@ impl ReadWriteExecutor {
                 TransactionPhase::PrepareAndCommit,
                 Some(request_id),
                 Some(timeout),
+                self.deadline,
             )
             .await
         {
@@ -371,6 +372,7 @@ impl ReadWriteExecutor {
             let participants_clone = all_participants.clone();
             let req_id = request_id.clone();
             let participant = participant.clone(); // Clone the string to move into task
+            let deadline = self.deadline;
 
             tasks.spawn(async move {
                 infra
@@ -380,6 +382,7 @@ impl ReadWriteExecutor {
                         TransactionPhase::Prepare(participants_clone),
                         Some(req_id),
                         None, // Don't wait - we'll collect all responses in parallel
+                        deadline,
                     )
                     .await
             });
@@ -447,6 +450,7 @@ impl ReadWriteExecutor {
         for participant in participants {
             let infra = self.infra.clone();
             let txn_id = self.txn_id;
+            let deadline = self.deadline;
             tasks.spawn(async move {
                 if let Err(e) = infra
                     .send_control_message(
@@ -455,6 +459,7 @@ impl ReadWriteExecutor {
                         TransactionPhase::Commit,
                         None,
                         None,
+                        deadline,
                     )
                     .await
                 {
@@ -497,9 +502,17 @@ impl ReadWriteExecutor {
         for participant in participants {
             let infra = self.infra.clone();
             let txn_id = self.txn_id;
+            let deadline = self.deadline;
             tasks.spawn(async move {
                 if let Err(e) = infra
-                    .send_control_message(&participant, txn_id, TransactionPhase::Abort, None, None)
+                    .send_control_message(
+                        &participant,
+                        txn_id,
+                        TransactionPhase::Abort,
+                        None,
+                        None,
+                        deadline,
+                    )
                     .await
                 {
                     tracing::warn!(
