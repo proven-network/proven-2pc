@@ -436,17 +436,21 @@ impl ExecutorInfra {
             return Ok(receivers);
         }
 
-        // Wait for all responses
+        // Spawn background tasks to wait for responses asynchronously
+        // This allows the transaction to proceed while predictions are being processed
         for (idx, request_id) in request_ids {
-            let result = self
-                .response_collector
-                .wait_for_response(request_id, timeout)
-                .await
-                .and_then(Self::handle_response);
+            let response_collector = self.response_collector.clone();
+            let sender = senders.remove(&idx).expect("sender should exist");
 
-            if let Some(sender) = senders.remove(&idx) {
+            tokio::spawn(async move {
+                let result = response_collector
+                    .wait_for_response(request_id, timeout)
+                    .await
+                    .and_then(Self::handle_response);
+
+                // Send result through the channel (ignore if receiver dropped)
                 let _ = sender.send(result);
-            }
+            });
         }
 
         Ok(receivers)
