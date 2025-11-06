@@ -646,6 +646,23 @@ impl QueueTransactionEngine {
         _batch: &mut QueueBatch,
         txn_id: TransactionId,
     ) -> OperationResult<QueueResponse> {
+        // CHECK FOR GAPS: Block if there are uncommitted appends from OTHER transactions
+        // We need to wait for other transactions' uncommitted appends to commit or abort
+        // to ensure we get a consistent count.
+        let uncommitted = &self.uncommitted_appends;
+        let blockers: Vec<BlockingInfo> = uncommitted
+            .values()
+            .filter(|blocker_txn| **blocker_txn != txn_id) // Exclude our own transaction
+            .map(|blocker_txn| BlockingInfo {
+                txn: *blocker_txn,
+                retry_on: RetryOn::CommitOrAbort,
+            })
+            .collect();
+
+        if !blockers.is_empty() {
+            return OperationResult::WouldBlock { blockers };
+        }
+
         // Count all items by iterating
         match self.data_storage.iter(txn_id) {
             Ok(iter) => {
