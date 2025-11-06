@@ -1134,17 +1134,17 @@ impl SqlStorage {
     // DDL Persistence (for crash recovery)
     // ========================================================================
 
-    /// Persist pending DDL immediately (for crash recovery)
-    pub fn persist_pending_ddl(
+    /// Persist pending DDL to batch (for crash recovery)
+    ///
+    /// This adds the DDL metadata to the provided batch instead of committing immediately.
+    /// The batch will be committed atomically by the transaction engine.
+    pub fn persist_pending_ddl_to_batch(
         &self,
+        batch: &mut fjall::Batch,
         txn_id: TransactionId,
         ddl: &crate::types::context::PendingDdl,
     ) -> Result<()> {
-        let mut batch = self.batch();
-        self.ddl_store.add_to_batch(&mut batch, txn_id, ddl)?;
-        batch
-            .commit()
-            .map_err(|e| Error::Other(format!("Failed to persist DDL: {}", e)))?;
+        self.ddl_store.add_to_batch(batch, txn_id, ddl)?;
         Ok(())
     }
 

@@ -523,8 +523,11 @@ impl SqlTransactionEngine {
 
             if let Some(ddl) = pending_ddl {
                 tx_ctx.add_pending_ddl(ddl.clone());
-                // Persist to storage immediately for crash recovery
-                if let Err(e) = self.storage.persist_pending_ddl(txn_id, &ddl) {
+                // Persist to batch for crash recovery (will be committed atomically)
+                if let Err(e) =
+                    self.storage
+                        .persist_pending_ddl_to_batch(batch.inner(), txn_id, &ddl)
+                {
                     eprintln!("Warning: Failed to persist pending DDL: {:?}", e);
                 }
             }

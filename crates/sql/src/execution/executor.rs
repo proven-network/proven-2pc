@@ -156,7 +156,8 @@ pub fn execute_with_params(
                 .scan_table(&table, tx_ctx.txn_id)?
                 .collect::<Result<Vec<_>>>()?;
 
-            let mut batch = storage.batch();
+            // Use the passed-in batch instead of creating a new one
+            // This ensures all writes go through the transaction engine's batch mechanism
             for (row_id, values) in rows {
                 let index_values = helpers::extract_index_values(
                     &values,
@@ -170,15 +171,8 @@ pub fn execute_with_params(
                     &schema,
                     tx_ctx,
                 )?;
-                storage.insert_index_entry(
-                    &mut batch,
-                    &name,
-                    index_values,
-                    row_id,
-                    tx_ctx.txn_id,
-                )?;
+                storage.insert_index_entry(batch, &name, index_values, row_id, tx_ctx.txn_id)?;
             }
-            batch.commit()?;
 
             Ok(ExecutionResult::Ddl(format!("Created index {}", name)))
         }
