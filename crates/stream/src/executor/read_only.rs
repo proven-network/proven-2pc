@@ -6,10 +6,9 @@
 //! - Bypass the ordered stream (use pubsub)
 //! - Don't participate in 2PC
 
-use crate::engine::{OperationResult, TransactionEngine};
+use crate::engine::TransactionEngine;
 use crate::error::Result;
 use crate::support::ResponseSender;
-use crate::transaction::TransactionManager;
 use proven_common::TransactionId;
 
 /// Read-only execution - stateless functions
@@ -22,40 +21,21 @@ impl ReadOnlyExecution {
     /// If blocked by a write lock, they defer until the blocker completes.
     pub fn execute<E: TransactionEngine>(
         engine: &mut E,
-        tx_manager: &mut TransactionManager<E>,
         response: &ResponseSender,
         operation: E::Operation,
         read_timestamp: TransactionId,
         coordinator_id: String,
         request_id: String,
     ) -> Result<()> {
-        match engine.read_at_timestamp(operation.clone(), read_timestamp) {
-            OperationResult::Complete(resp) => {
-                // Success - send response immediately
-                response.send_success(&coordinator_id, None, request_id, resp);
-                Ok(())
-            }
-            OperationResult::WouldBlock { blockers } => {
-                // Blocked by write lock - defer until blocker completes
-                // Note: Read-only doesn't use wound-wait (no transaction to wound)
-                tx_manager.defer_operation(
-                    read_timestamp, // Use read timestamp as "transaction ID" for tracking
-                    operation,
-                    blockers,
-                    coordinator_id,
-                    request_id,
-                    false, // ReadOnly operations are not atomic
-                );
-                Ok(())
-            }
-        }
+        let resp = engine.read_at_timestamp(operation.clone(), read_timestamp);
+        response.send_success(&coordinator_id, None, request_id, resp);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{BlockingInfo, RetryOn};
     use proven_common::{ChangeData, Operation, OperationType, ProcessorType, Response};
     use proven_engine::MockClient;
     use serde::{Deserialize, Serialize};
@@ -111,17 +91,8 @@ mod tests {
             &self,
             operation: Self::Operation,
             _read_txn_id: TransactionId,
-        ) -> OperationResult<Self::Response> {
-            if self.should_block {
-                OperationResult::WouldBlock {
-                    blockers: vec![BlockingInfo {
-                        txn: TransactionId::new(),
-                        retry_on: RetryOn::CommitOrAbort,
-                    }],
-                }
-            } else {
-                OperationResult::Complete(TestResponse(format!("result: {}", operation.0)))
-            }
+        ) -> Self::Response {
+            TestResponse(format!("result: {}", operation.0))
         }
 
         fn apply_operation(
@@ -171,7 +142,6 @@ mod tests {
 
         let result = ReadOnlyExecution::execute(
             &mut engine,
-            &mut tx_manager,
             &response,
             TestOp("key1".to_string()),
             TransactionId::new(),
@@ -185,13 +155,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_blocked_read() {
-        let (mut engine, mut tx_manager, response) = setup();
+        let (mut engine, tx_manager, response) = setup();
         engine.should_block = true;
 
         let read_timestamp = TransactionId::new();
         let result = ReadOnlyExecution::execute(
             &mut engine,
-            &mut tx_manager,
             &response,
             TestOp("key1".to_string()),
             read_timestamp,

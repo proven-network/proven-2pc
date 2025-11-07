@@ -108,7 +108,7 @@ pub trait TransactionEngine: Send + Sync {
         &self,
         operation: Self::Operation,
         read_txn_id: TransactionId,
-    ) -> OperationResult<Self::Response>;
+    ) -> Self::Response;
 
     // ═══════════════════════════════════════════════════════════
     // WRITE OPERATIONS (batch is passed in, operations add to it)
@@ -295,7 +295,7 @@ impl<E: TransactionEngine> AutoBatchEngine<E> {
         &self,
         operation: E::Operation,
         read_txn_id: TransactionId,
-    ) -> OperationResult<E::Response> {
+    ) -> E::Response {
         self.engine.read_at_timestamp(operation, read_txn_id)
     }
 

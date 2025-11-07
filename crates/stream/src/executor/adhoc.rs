@@ -144,7 +144,7 @@ mod tests {
             &self,
             _operation: Self::Operation,
             _read_txn_id: TransactionId,
-        ) -> OperationResult<Self::Response> {
+        ) -> Self::Response {
             unimplemented!()
         }
 

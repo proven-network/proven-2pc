@@ -559,7 +559,7 @@ fn test_snapshot_peek_doesnt_block_on_later_write() {
     // Should see only committed data (initial value) without blocking
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(Value::Str(s)))) if s == "initial"
+        QueueResponse::Peeked(Some(Value::Str(s))) if s == "initial"
     ));
 }
 
@@ -585,10 +585,7 @@ fn test_snapshot_size_with_uncommitted_write() {
 
     let result = engine.read_at_timestamp(size_op.clone(), read_ts);
     // Should succeed (not block) and see size=0 because the enqueue hasn't committed
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Size(0))
-    ));
+    assert!(matches!(result, QueueResponse::Size(0)));
 
     // Now commit the write transaction
     engine.commit(write_tx);
@@ -596,10 +593,7 @@ fn test_snapshot_size_with_uncommitted_write() {
     // A new snapshot read should now see the committed item
     let read_ts2 = create_tx_id();
     let result = engine.read_at_timestamp(size_op.clone(), read_ts2);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Size(1))
-    ));
+    assert!(matches!(result, QueueResponse::Size(1)));
 }
 
 #[test]
@@ -661,34 +655,22 @@ fn test_snapshot_is_empty_sees_committed_state() {
 
     // Read at snapshot before any data: should be empty
     let result = engine.read_at_timestamp(is_empty_op.clone(), snapshot_before);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::IsEmpty(true))
-    ));
+    assert!(matches!(result, QueueResponse::IsEmpty(true)));
 
     // Read at snapshot after enqueue: should not be empty (has 3 items)
     println!("snapshot_after_enqueue: {:?}", snapshot_after_enqueue);
     println!("About to read at snapshot...");
     let result = engine.read_at_timestamp(is_empty_op.clone(), snapshot_after_enqueue);
     println!("Result: {:?}", result);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::IsEmpty(false))
-    ));
+    assert!(matches!(result, QueueResponse::IsEmpty(false)));
 
     // Read at snapshot after dequeue: still not empty (2 items left)
     let result = engine.read_at_timestamp(is_empty_op.clone(), snapshot_after_dequeue);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::IsEmpty(false))
-    ));
+    assert!(matches!(result, QueueResponse::IsEmpty(false)));
 
     // Read at snapshot after clear: should be empty
     let result = engine.read_at_timestamp(is_empty_op, snapshot_after_clear);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::IsEmpty(true))
-    ));
+    assert!(matches!(result, QueueResponse::IsEmpty(true)));
 }
 
 #[test]
@@ -722,7 +704,7 @@ fn test_snapshot_peek_ignores_aborted_operations() {
     let result = engine.read_at_timestamp(peek_op, create_tx_id());
     assert!(matches!(
         result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(Value::Str(s)))) if s == "committed"
+        QueueResponse::Peeked(Some(Value::Str(s))) if s == "committed"
     ));
 }
 
@@ -773,25 +755,16 @@ fn test_snapshot_size_with_concurrent_operations() {
     // Snapshot read AFTER tx1 should see 2 items
     let size_op = QueueOperation::Size;
     let result = engine.read_at_timestamp(size_op.clone(), snapshot_after_tx1);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Size(2))
-    ));
+    assert!(matches!(result, QueueResponse::Size(2)));
 
     // Snapshot read after tx2 started should NOT block (enqueues are lock-free)
     // MVCC ensures snapshot isolation - uncommitted data is not visible
     let result = engine.read_at_timestamp(size_op.clone(), snapshot_during_tx2);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Size(2))
-    ));
+    assert!(matches!(result, QueueResponse::Size(2)));
 
     // Snapshot read after tx3 should also see only committed data
     let result = engine.read_at_timestamp(size_op, snapshot_during_both);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Size(2))
-    ));
+    assert!(matches!(result, QueueResponse::Size(2)));
 }
 
 #[test]
@@ -827,24 +800,15 @@ fn test_snapshot_fifo_ordering_preserved() {
     // Snapshot peek at different times should show proper FIFO order
     // After first enqueue: should see first item (0)
     let result = engine.read_at_timestamp(peek_op.clone(), snapshots[0]);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(0))))
-    ));
+    assert!(matches!(result, QueueResponse::Peeked(Some(Value::I64(0)))));
 
     // After third enqueue: should still see first item (0)
     let result = engine.read_at_timestamp(peek_op.clone(), snapshots[2]);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(0))))
-    ));
+    assert!(matches!(result, QueueResponse::Peeked(Some(Value::I64(0)))));
 
     // After dequeues: should see third item (2) after two dequeues
     let result = engine.read_at_timestamp(peek_op, snapshot_after_dequeues);
-    assert!(matches!(
-        result,
-        OperationResult::Complete(QueueResponse::Peeked(Some(Value::I64(2))))
-    ));
+    assert!(matches!(result, QueueResponse::Peeked(Some(Value::I64(2)))));
 }
 
 #[test]

@@ -158,12 +158,7 @@ impl<E: TransactionEngine> StreamProcessingKernel<E> {
             .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
         // Use read-only flow
-        UnorderedFlow::process(
-            &mut self.engine,
-            &mut self.tx_manager,
-            &self.response,
-            coord_msg,
-        )
+        UnorderedFlow::process(&mut self.engine, &self.response, coord_msg)
     }
 
     /// Recover transaction state from persisted metadata (called on startup)
@@ -418,8 +413,8 @@ mod tests {
             &self,
             _operation: Self::Operation,
             _read_txn_id: TransactionId,
-        ) -> OperationResult<Self::Response> {
-            OperationResult::Complete(TestResponse("read".to_string()))
+        ) -> Self::Response {
+            TestResponse("read".to_string())
         }
 
         fn apply_operation(
@@ -617,8 +612,8 @@ mod tests {
                 &self,
                 _operation: Self::Operation,
                 _read_txn_id: TransactionId,
-            ) -> OperationResult<Self::Response> {
-                OperationResult::Complete(TestResponse("read".to_string()))
+            ) -> Self::Response {
+                TestResponse("read".to_string())
             }
 
             fn apply_operation(
@@ -727,8 +722,8 @@ mod tests {
                 &self,
                 _operation: Self::Operation,
                 _read_txn_id: TransactionId,
-            ) -> OperationResult<Self::Response> {
-                OperationResult::Complete(TestResponse("read".to_string()))
+            ) -> Self::Response {
+                TestResponse("read".to_string())
             }
 
             fn apply_operation(
@@ -846,8 +841,8 @@ mod tests {
                 &self,
                 _operation: Self::Operation,
                 _read_txn_id: TransactionId,
-            ) -> OperationResult<Self::Response> {
-                OperationResult::Complete(TestResponse("read".to_string()))
+            ) -> Self::Response {
+                TestResponse("read".to_string())
             }
 
             fn apply_operation(
@@ -967,8 +962,8 @@ mod tests {
                 &self,
                 _operation: Self::Operation,
                 _read_txn_id: TransactionId,
-            ) -> OperationResult<Self::Response> {
-                OperationResult::Complete(TestResponse("read".to_string()))
+            ) -> Self::Response {
+                TestResponse("read".to_string())
             }
             fn apply_operation(
                 &mut self,

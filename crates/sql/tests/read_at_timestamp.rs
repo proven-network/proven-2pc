@@ -2,7 +2,7 @@
 
 use proven_common::TransactionId;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
-use proven_stream::{AutoBatchEngine, OperationResult};
+use proven_stream::AutoBatchEngine;
 use uuid::Uuid;
 
 fn make_timestamp(n: u64) -> TransactionId {
@@ -39,8 +39,7 @@ fn test_snapshot_read_doesnt_block_later_write() {
         sql: "UPDATE users SET age = 31 WHERE id = 1".to_string(),
         params: None,
     };
-    let result = engine.apply_operation(update, tx_write);
-    assert!(matches!(result, OperationResult::Complete(_)));
+    engine.apply_operation(update, tx_write);
 
     // Snapshot read at timestamp 250 should NOT block
     // (read is BEFORE the write transaction)
@@ -53,9 +52,7 @@ fn test_snapshot_read_doesnt_block_later_write() {
     let result = engine.read_at_timestamp(select, read_ts);
 
     // Should complete successfully
-    assert!(matches!(result, OperationResult::Complete(_)));
-
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
+    if let SqlResponse::QueryResult { rows, .. } = result {
         assert_eq!(rows.len(), 1);
         // Should see the old value (30)
         assert_eq!(rows[0][0].to_string(), "30");
@@ -64,70 +61,6 @@ fn test_snapshot_read_doesnt_block_later_write() {
     }
 
     engine.commit(tx_write);
-}
-
-#[test]
-fn test_snapshot_read_blocks_on_earlier_write() {
-    let mut engine = AutoBatchEngine::new(SqlTransactionEngine::new(SqlStorageConfig::default()));
-
-    // Create table and insert data
-    let tx1 = make_timestamp(100);
-    engine.begin(tx1);
-
-    let create_table = SqlOperation::Execute {
-        sql: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)".to_string(),
-        params: None,
-    };
-    engine.apply_operation(create_table, tx1);
-
-    let insert = SqlOperation::Execute {
-        sql: "INSERT INTO users (id, name, age) VALUES (1, 'Bob', 25)".to_string(),
-        params: None,
-    };
-    engine.apply_operation(insert, tx1);
-
-    engine.commit(tx1);
-
-    // Start a write transaction at timestamp 200 (but don't commit)
-    let tx_write = make_timestamp(200);
-    engine.begin(tx_write);
-
-    let update = SqlOperation::Execute {
-        sql: "UPDATE users SET age = 26 WHERE id = 1".to_string(),
-        params: None,
-    };
-    engine.apply_operation(update, tx_write);
-
-    // Snapshot read at timestamp 250 SHOULD block
-    // (there's a pending write from timestamp 200)
-    let read_ts = make_timestamp(250);
-    let select = SqlOperation::Query {
-        sql: "SELECT age FROM users WHERE id = 1".to_string(),
-        params: None,
-    };
-
-    let result = engine.read_at_timestamp(select.clone(), read_ts);
-
-    // Should block
-    assert!(matches!(result, OperationResult::WouldBlock { .. }));
-
-    if let OperationResult::WouldBlock { blockers } = result {
-        assert_eq!(blockers.len(), 1);
-        assert_eq!(blockers[0].txn, tx_write);
-    }
-
-    // Commit the write
-    engine.commit(tx_write);
-
-    // Now the same read should succeed
-    let result = engine.read_at_timestamp(select, read_ts);
-    assert!(matches!(result, OperationResult::Complete(_)));
-
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
-        assert_eq!(rows.len(), 1);
-        // Should see the new value after commit (26)
-        assert_eq!(rows[0][0].to_string(), "26");
-    }
 }
 
 #[test]
@@ -187,9 +120,7 @@ fn test_snapshot_read_ignores_uncommitted_changes() {
     let result = engine.read_at_timestamp(select, read_ts);
 
     // Should NOT block (transaction was aborted)
-    assert!(matches!(result, OperationResult::Complete(_)));
-
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
+    if let SqlResponse::QueryResult { rows, .. } = result {
         // Should only see the two original products
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][0].to_string(), "1");
@@ -276,7 +207,7 @@ fn test_snapshot_read_consistency_across_tables() {
 
     let result = engine.read_at_timestamp(select_accounts.clone(), read_ts1);
 
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
+    if let SqlResponse::QueryResult { rows, .. } = result {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][1].to_string(), "1000"); // Original balance
         assert_eq!(rows[1][1].to_string(), "500");
@@ -291,7 +222,7 @@ fn test_snapshot_read_consistency_across_tables() {
 
     let result = engine.read_at_timestamp(select_txns.clone(), read_ts1);
 
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
+    if let SqlResponse::QueryResult { rows, .. } = result {
         assert_eq!(rows[0][0].to_string(), "0"); // No transactions yet
     } else {
         panic!("Expected query result");
@@ -302,7 +233,7 @@ fn test_snapshot_read_consistency_across_tables() {
 
     let result = engine.read_at_timestamp(select_accounts, read_ts2);
 
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
+    if let SqlResponse::QueryResult { rows, .. } = result {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][1].to_string(), "900"); // After transfer
         assert_eq!(rows[1][1].to_string(), "600");
@@ -312,7 +243,7 @@ fn test_snapshot_read_consistency_across_tables() {
 
     let result = engine.read_at_timestamp(select_txns, read_ts2);
 
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
+    if let SqlResponse::QueryResult { rows, .. } = result {
         assert_eq!(rows[0][0].to_string(), "1"); // One transaction
     } else {
         panic!("Expected query result");
@@ -377,7 +308,7 @@ fn test_snapshot_read_with_index_scan() {
 
     let result = engine.read_at_timestamp(select, read_ts);
 
-    if let OperationResult::Complete(SqlResponse::QueryResult { rows, .. }) = result {
+    if let SqlResponse::QueryResult { rows, .. } = result {
         // Should only see items 1 and 3, not 4 (added later)
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][0].to_string(), "1");

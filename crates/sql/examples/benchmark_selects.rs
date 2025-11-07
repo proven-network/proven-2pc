@@ -1,17 +1,18 @@
-//! Benchmark for sequential SELECT queries using read_at_timestamp
+//! Benchmark for concurrent SELECT queries using read_at_timestamp
 //!
-//! This benchmark measures the throughput of the SQL engine by performing
-//! snapshot reads on a populated table.
+//! This benchmark measures the concurrent read throughput of the SQL engine
+//! by spawning multiple threads that perform snapshot reads in parallel.
 
 use fjall::{CompressionType, PersistMode};
 use proven_common::TransactionId;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine, Value};
 use proven_stream::AutoBatchEngine;
-use std::io::{self, Write};
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::Instant;
 
 fn main() {
-    println!("=== Sequential SELECT Benchmark ===\n");
+    println!("=== Concurrent SELECT Benchmark ===\n");
 
     let temp_dir_obj = tempfile::tempdir().expect("Failed to create temporary directory");
     let temp_dir = temp_dir_obj.path().to_path_buf();
@@ -84,7 +85,6 @@ fn main() {
 
         if (i + 1) % 10_000 == 0 {
             eprint!(".");
-            io::stderr().flush().unwrap();
         }
     }
 
@@ -97,107 +97,128 @@ fn main() {
     // Get a read timestamp for snapshot reads
     let read_timestamp = TransactionId::new();
 
-    // First, run an EXPLAIN query to see the execution plan
-    println!("Checking execution plan...");
-    let explain_query = SqlOperation::Query {
-        sql: "EXPLAIN SELECT id, value, data, timestamp FROM bench WHERE id = ?".to_string(),
-        params: Some(vec![Value::integer(42)]),
-    };
-
-    match sql_engine.read_at_timestamp(explain_query, read_timestamp) {
-        proven_stream::OperationResult::Complete(SqlResponse::ExplainPlan { plan }) => {
-            println!("Execution Plan:\n{}\n", plan);
-        }
-        other => println!("EXPLAIN failed: {:?}\n", other),
-    }
+    // Wrap engine in Arc for shared access across threads
+    let engine = Arc::new(sql_engine);
 
     // Benchmark configuration
-    const NUM_QUERIES: usize = 100_000;
-    const PROGRESS_INTERVAL: usize = 10_000;
-    const STATUS_INTERVAL: usize = 20_000;
+    const NUM_READERS: usize = 8;
+    const QUERIES_PER_READER: usize = 50_000;
+
+    // Barrier to synchronize thread starts
+    let barrier = Arc::new(Barrier::new(NUM_READERS));
 
     println!(
-        "Step 3: Running {} sequential SELECT queries using read_at_timestamp...",
-        NUM_QUERIES
+        "Step 3: Starting {} concurrent readers ({} queries each)...",
+        NUM_READERS, QUERIES_PER_READER
     );
+    println!("Total queries: {}\n", NUM_READERS * QUERIES_PER_READER);
 
-    let start_time = Instant::now();
-    let mut last_status_time = start_time;
-    let mut last_status_count = 0;
-    let mut successful_queries = 0;
+    // Spawn reader threads
+    let mut handles = vec![];
 
-    // Process queries
-    for i in 0..NUM_QUERIES {
-        // Query different rows to simulate realistic access patterns
-        let row_id = i % NUM_ROWS;
+    for thread_id in 0..NUM_READERS {
+        let engine_clone = Arc::clone(&engine);
+        let barrier_clone = Arc::clone(&barrier);
 
-        let query = SqlOperation::Query {
-            sql: "SELECT id, value, data, timestamp FROM bench WHERE id = ?".to_string(),
-            params: Some(vec![Value::I32(row_id as i32)]),
-        };
+        let handle = thread::spawn(move || {
+            // Wait for all threads to be ready
+            barrier_clone.wait();
 
-        // Execute query using read_at_timestamp (snapshot read)
-        match sql_engine.read_at_timestamp(query, read_timestamp) {
-            proven_stream::OperationResult::Complete(SqlResponse::QueryResult {
-                columns: _,
-                rows,
-            }) => {
-                if rows.len() == 1 {
-                    successful_queries += 1;
+            let start = Instant::now();
+            let mut successful_queries = 0;
+            let mut failed_queries = 0;
+
+            // Perform queries
+            for i in 0..QUERIES_PER_READER {
+                // Query different rows to simulate realistic access patterns
+                // Use thread_id to ensure some overlap between threads
+                let row_id = (thread_id * 1000 + i) % NUM_ROWS;
+
+                let query = SqlOperation::Query {
+                    sql: "SELECT id, value, data, timestamp FROM bench WHERE id = ?".to_string(),
+                    params: Some(vec![Value::I32(row_id as i32)]),
+                };
+
+                match engine_clone.read_at_timestamp(query, read_timestamp) {
+                    SqlResponse::QueryResult { columns: _, rows } if rows.len() == 1 => {
+                        successful_queries += 1;
+                    }
+                    _ => {
+                        failed_queries += 1;
+                    }
                 }
             }
-            _ => {
-                eprintln!("\nError at query {}", i);
-            }
-        }
 
-        // Progress indicator
-        if (i + 1) % PROGRESS_INTERVAL == 0 {
-            eprint!(".");
-            io::stderr().flush().unwrap();
-        }
+            let duration = start.elapsed();
 
-        // Status update
-        if (i + 1) % STATUS_INTERVAL == 0 {
-            let current_time = Instant::now();
-            let interval_duration = current_time.duration_since(last_status_time);
-            let interval_count = (i + 1) - last_status_count;
-            let interval_throughput = interval_count as f64 / interval_duration.as_secs_f64();
+            (thread_id, successful_queries, failed_queries, duration)
+        });
 
-            eprintln!(
-                "\n[{:7}/{:7}] {:3}% | Interval: {:.0} queries/sec",
-                i + 1,
-                NUM_QUERIES,
-                ((i + 1) * 100) / NUM_QUERIES,
-                interval_throughput
-            );
-
-            last_status_time = current_time;
-            last_status_count = i + 1;
-        }
+        handles.push(handle);
     }
 
-    eprintln!(); // New line after progress dots
+    // Wait for all threads and collect results
+    let mut total_successful = 0;
+    let mut total_failed = 0;
+    let mut max_duration = std::time::Duration::default();
+    let mut min_duration = std::time::Duration::from_secs(u64::MAX);
+    let benchmark_start = Instant::now();
 
-    // Calculate final statistics
-    let total_duration = start_time.elapsed();
-    let total_seconds = total_duration.as_secs_f64();
-    let throughput = successful_queries as f64 / total_seconds;
+    println!("Thread results:");
+    for handle in handles {
+        let (thread_id, successful, failed, duration) = handle.join().unwrap();
+        total_successful += successful;
+        total_failed += failed;
+        max_duration = max_duration.max(duration);
+        min_duration = min_duration.min(duration);
+
+        let throughput = successful as f64 / duration.as_secs_f64();
+        println!(
+            "  Thread {}: {} queries in {:.2}s ({:.0} queries/sec)",
+            thread_id,
+            successful,
+            duration.as_secs_f64(),
+            throughput
+        );
+    }
+
+    let total_duration = benchmark_start.elapsed();
+
+    // Calculate statistics
+    let total_queries = total_successful + total_failed;
+    let overall_throughput = total_successful as f64 / total_duration.as_secs_f64();
+    let avg_latency_ms = (total_duration.as_secs_f64() * 1000.0) / total_queries as f64;
 
     // Print final statistics
     println!("\n=== Benchmark Results ===");
-    println!("Total queries:     {}", NUM_QUERIES);
-    println!("Successful:        {}", successful_queries);
-    println!("Total time:        {:.2} seconds", total_seconds);
-    println!("Throughput:        {:.0} queries/second", throughput);
+    println!("Concurrent readers:    {}", NUM_READERS);
+    println!("Queries per reader:    {}", QUERIES_PER_READER);
+    println!("Total queries:         {}", total_queries);
+    println!("Successful queries:    {}", total_successful);
+    println!("Failed queries:       {}", total_failed);
+    println!("\nTiming:");
     println!(
-        "Avg latency:       {:.3} ms/query",
-        (total_seconds * 1000.0) / NUM_QUERIES as f64
+        "  Total time:          {:.2} seconds",
+        total_duration.as_secs_f64()
     );
+    println!(
+        "  Min thread time:     {:.2} seconds",
+        min_duration.as_secs_f64()
+    );
+    println!(
+        "  Max thread time:     {:.2} seconds",
+        max_duration.as_secs_f64()
+    );
+    println!("\nThroughput:");
+    println!(
+        "  Overall:             {:.0} queries/second",
+        overall_throughput
+    );
+    println!("  Avg latency:         {:.3} ms/query", avg_latency_ms);
 
     println!("\nBenchmark details:");
     println!("- Query type: SELECT with WHERE clause (point lookups)");
-    println!("- Read method: read_at_timestamp (snapshot reads)");
+    println!("- Read method: read_at_timestamp (concurrent snapshot reads)");
     println!("- Read timestamp: {:?}", read_timestamp);
     println!("- Rows in table: {}", NUM_ROWS);
 

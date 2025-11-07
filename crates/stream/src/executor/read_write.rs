@@ -325,10 +325,10 @@ mod tests {
 
         fn read_at_timestamp(
             &self,
-            _operation: Self::Operation,
+            operation: Self::Operation,
             _read_txn_id: TransactionId,
-        ) -> OperationResult<Self::Response> {
-            unimplemented!()
+        ) -> Self::Response {
+            TestResponse(format!("result: {}", operation.0))
         }
 
         fn apply_operation(

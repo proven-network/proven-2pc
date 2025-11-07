@@ -661,66 +661,9 @@ fn test_snapshot_read_doesnt_block_write() {
     );
 
     match result {
-        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+        KvResponse::GetResult { value, .. } => {
             // Should see no value since write hasn't committed and is from a later timestamp
             assert_eq!(value, None);
-        }
-        _ => panic!("Expected Complete, got {:?}", result),
-    }
-}
-
-#[test]
-fn test_snapshot_read_blocks_on_earlier_write() {
-    let mut engine = create_engine();
-    let write_tx = create_tx_id();
-    let read_ts = create_tx_id();
-
-    // Begin write transaction at earlier timestamp
-    engine.begin(write_tx);
-
-    // Write to key1
-    let result = engine.apply_operation(
-        KvOperation::Put {
-            key: "key1".to_string(),
-            value: Value::Str("write_value".to_string()),
-        },
-        write_tx,
-    );
-    assert!(matches!(result, OperationResult::Complete(_)));
-
-    // Snapshot read at later timestamp - SHOULD be blocked
-    // (write is from timestamp 1, read is at timestamp 2)
-    // The read needs to wait to see if the write commits
-    let result = engine.read_at_timestamp(
-        KvOperation::Get {
-            key: "key1".to_string(),
-        },
-        read_ts,
-    );
-
-    match result {
-        OperationResult::WouldBlock { blockers } => {
-            assert_eq!(blockers.len(), 1);
-            assert_eq!(blockers[0].txn, write_tx);
-            assert_eq!(blockers[0].retry_on, RetryOn::CommitOrAbort);
-        }
-        _ => panic!("Expected WouldBlock, got {:?}", result),
-    }
-
-    // Commit the write
-    engine.commit(write_tx);
-
-    // Retry the snapshot read - should now succeed and see the written value
-    let result = engine.read_at_timestamp(
-        KvOperation::Get {
-            key: "key1".to_string(),
-        },
-        read_ts,
-    );
-
-    match result {
-        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
-            assert_eq!(value, Some(Value::Str("write_value".to_string())));
         }
         _ => panic!("Expected Complete, got {:?}", result),
     }
@@ -739,7 +682,7 @@ fn test_snapshot_read_doesnt_take_locks() {
         },
         read_ts,
     );
-    assert!(matches!(result, OperationResult::Complete(_)));
+    assert!(matches!(result, KvResponse::GetResult { .. }));
 
     // Begin write transaction
     engine.begin(write_tx);
@@ -797,9 +740,9 @@ fn test_multiple_snapshot_reads_concurrent() {
     );
 
     // All should complete successfully
-    assert!(matches!(result1, OperationResult::Complete(_)));
-    assert!(matches!(result2, OperationResult::Complete(_)));
-    assert!(matches!(result3, OperationResult::Complete(_)));
+    assert!(matches!(result1, KvResponse::GetResult { .. }));
+    assert!(matches!(result2, KvResponse::GetResult { .. }));
+    assert!(matches!(result3, KvResponse::GetResult { .. }));
 }
 
 #[test]
@@ -846,7 +789,7 @@ fn test_snapshot_read_sees_committed_writes() {
     );
 
     match result {
-        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+        KvResponse::GetResult { value, .. } => {
             assert_eq!(value, Some(Value::Str("value1".to_string())));
         }
         _ => panic!("Expected Complete, got {:?}", result),
@@ -862,7 +805,7 @@ fn test_snapshot_read_sees_committed_writes() {
     );
 
     match result {
-        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+        KvResponse::GetResult { value, .. } => {
             assert_eq!(value, Some(Value::Str("value2".to_string())));
         }
         _ => panic!("Expected Complete, got {:?}", result),
@@ -895,7 +838,7 @@ fn test_snapshot_read_ignores_aborted_writes() {
     );
 
     match result {
-        OperationResult::Complete(KvResponse::GetResult { value, .. }) => {
+        KvResponse::GetResult { value, .. } => {
             assert_eq!(value, None);
         }
         _ => panic!("Expected Complete, got {:?}", result),

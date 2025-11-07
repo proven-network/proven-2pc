@@ -779,51 +779,25 @@ impl TransactionEngine for QueueTransactionEngine {
         &self,
         operation: Self::Operation,
         read_timestamp: TransactionId,
-    ) -> OperationResult<Self::Response> {
-        // Snapshot reads don't acquire locks, but they must check for conflicts
-        // with locks held by earlier transactions (txn_id < read_timestamp)
-
-        // Check if any earlier transaction holds a write lock
-        let mut blockers = Vec::new();
-        for (holder_txn, holder_mode) in &self.lock_manager.locks {
-            // If the lock holder started before our snapshot time and holds a write lock
-            if *holder_txn < read_timestamp && *holder_mode != LockMode::Shared {
-                blockers.push(BlockingInfo {
-                    txn: *holder_txn,
-                    retry_on: RetryOn::CommitOrAbort,
-                });
-            }
-        }
-
-        if !blockers.is_empty() {
-            blockers.sort_by_key(|b| b.txn);
-            blockers.dedup_by_key(|b| b.txn);
-            return OperationResult::WouldBlock { blockers };
-        }
-
+    ) -> Self::Response {
         // No conflicts - proceed with snapshot read
         match operation {
             QueueOperation::Peek => match self.get_head_item(read_timestamp) {
-                Ok(Some((_, value))) => {
-                    OperationResult::Complete(QueueResponse::Peeked(Some(value.value)))
-                }
-                Ok(None) => OperationResult::Complete(QueueResponse::Peeked(None)),
-                Err(_) => OperationResult::Complete(QueueResponse::Peeked(None)),
+                Ok(Some((_, value))) => QueueResponse::Peeked(Some(value.value)),
+                Ok(None) => QueueResponse::Peeked(None),
+                Err(_) => QueueResponse::Peeked(None),
             },
             QueueOperation::Size => match self.data_storage.iter(read_timestamp) {
-                Ok(iter) => {
-                    let count = iter.count();
-                    OperationResult::Complete(QueueResponse::Size(count))
-                }
-                Err(_) => OperationResult::Complete(QueueResponse::Size(0)),
+                Ok(iter) => QueueResponse::Size(iter.count()),
+                Err(_) => QueueResponse::Size(0),
             },
             QueueOperation::IsEmpty => match self.get_head(read_timestamp) {
-                Ok(Some(_)) => OperationResult::Complete(QueueResponse::IsEmpty(false)),
-                Ok(None) => OperationResult::Complete(QueueResponse::IsEmpty(true)),
-                Err(_) => OperationResult::Complete(QueueResponse::IsEmpty(true)),
+                Ok(Some(_)) => QueueResponse::IsEmpty(false),
+                Ok(None) => QueueResponse::IsEmpty(true),
+                Err(_) => QueueResponse::IsEmpty(true),
             },
             // Other operations are not valid for snapshot reads
-            _ => OperationResult::Complete(QueueResponse::IsEmpty(true)), // Or error
+            _ => unreachable!(),
         }
     }
 

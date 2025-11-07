@@ -505,7 +505,7 @@ mod tests {
             &self,
             _operation: Self::Operation,
             _read_txn_id: TransactionId,
-        ) -> crate::engine::OperationResult<Self::Response> {
+        ) -> Self::Response {
             unimplemented!()
         }
 

@@ -205,15 +205,12 @@ impl SqlTransactionEngine {
         sql: &str,
         params: Option<Vec<crate::types::Value>>,
         read_timestamp: TransactionId,
-    ) -> OperationResult<SqlResponse> {
+    ) -> SqlResponse {
         // Parse SQL with caching
         let statement = match self.parser.parse(sql) {
             Ok(stmt) => stmt,
             Err(e) => {
-                return OperationResult::Complete(SqlResponse::Error(format!(
-                    "Parse error: {:?}",
-                    e
-                )));
+                return SqlResponse::Error(format!("Parse error: {:?}", e));
             }
         };
 
@@ -227,10 +224,7 @@ impl SqlTransactionEngine {
         let analyzed = match self.analyzer.analyze(statement, param_types) {
             Ok(a) => a,
             Err(e) => {
-                return OperationResult::Complete(SqlResponse::Error(format!(
-                    "Semantic error: {:?}",
-                    e
-                )));
+                return SqlResponse::Error(format!("Semantic error: {:?}", e));
             }
         };
 
@@ -238,66 +232,27 @@ impl SqlTransactionEngine {
         if let Some(ref param_values) = params {
             let expected_count = analyzed.parameter_count();
             if param_values.len() != expected_count {
-                return OperationResult::Complete(SqlResponse::Error(format!(
+                return SqlResponse::Error(format!(
                     "Expected {} parameters, got {}",
                     expected_count,
                     param_values.len()
-                )));
+                ));
             }
-        }
-
-        // Extract predicates
-        let query_predicates = if let Some(ref param_values) = params {
-            analyzed.extract_predicates(param_values)
-        } else {
-            analyzed.extract_predicates(&[])
-        };
-
-        // Check for conflicts with earlier transactions only
-        let mut blockers = Vec::new();
-        let potential_conflicts = self
-            .predicate_index
-            .find_potential_conflicts(read_timestamp, &query_predicates);
-
-        for candidate_tx_id in potential_conflicts {
-            // Only consider EARLIER transactions as blockers
-            if candidate_tx_id >= read_timestamp {
-                continue;
-            }
-
-            if let Some(other_tx) = self.active_transactions.get(&candidate_tx_id)
-                && query_predicates
-                    .conflicts_with(&other_tx.predicates)
-                    .is_some()
-            {
-                blockers.push(BlockingInfo {
-                    txn: candidate_tx_id,
-                    retry_on: RetryOn::CommitOrAbort,
-                });
-            }
-        }
-
-        if !blockers.is_empty() {
-            blockers.sort_by_key(|b| b.txn);
-            return OperationResult::WouldBlock { blockers };
         }
 
         // Plan the statement
         let plan = match self.planner.plan(analyzed.clone()) {
             Ok(p) => p,
             Err(e) => {
-                return OperationResult::Complete(SqlResponse::Error(format!(
-                    "Planning error: {:?}",
-                    e
-                )));
+                return SqlResponse::Error(format!("Planning error: {:?}", e));
             }
         };
 
         // Check if this is an EXPLAIN statement - if so, return the plan as text
         if matches!(&*analyzed.ast, crate::parsing::ast::Statement::Explain(_)) {
-            return OperationResult::Complete(SqlResponse::ExplainPlan {
+            return SqlResponse::ExplainPlan {
                 plan: plan.to_string(),
-            });
+            };
         }
 
         // Execute with a temporary context (snapshot reads are stateless)
@@ -313,10 +268,8 @@ impl SqlTransactionEngine {
         );
 
         match result {
-            Ok(result) => OperationResult::Complete(convert_execution_result(result)),
-            Err(e) => {
-                OperationResult::Complete(SqlResponse::Error(format!("Execution error: {:?}", e)))
-            }
+            Ok(result) => convert_execution_result(result),
+            Err(e) => SqlResponse::Error(format!("Execution error: {:?}", e)),
         }
     }
 
@@ -612,7 +565,7 @@ impl TransactionEngine for SqlTransactionEngine {
         &self,
         operation: Self::Operation,
         read_timestamp: TransactionId,
-    ) -> OperationResult<Self::Response> {
+    ) -> Self::Response {
         match operation {
             SqlOperation::Query { sql, params } => {
                 // Execute as a snapshot read using the read_timestamp as txn_id

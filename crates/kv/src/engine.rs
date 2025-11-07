@@ -154,44 +154,8 @@ impl KvTransactionEngine {
         Ok(())
     }
 
-    /// Check for lock conflicts (used by both regular and snapshot reads)
-    fn check_read_conflicts(
-        &self,
-        key: &str,
-        read_timestamp: TransactionId,
-    ) -> Option<Vec<BlockingInfo>> {
-        // Check lock manager for earlier transactions holding exclusive locks on this key
-        let lock_holders = self.lock_manager.get_holders(key);
-        let mut blockers = Vec::new();
-
-        for (holder_txn, lock_mode) in lock_holders {
-            // Only block on EARLIER transactions with EXCLUSIVE locks
-            if holder_txn < read_timestamp && lock_mode == LockMode::Exclusive {
-                blockers.push(BlockingInfo {
-                    txn: holder_txn,
-                    retry_on: RetryOn::CommitOrAbort,
-                });
-            }
-        }
-
-        if blockers.is_empty() {
-            None
-        } else {
-            Some(blockers)
-        }
-    }
-
     /// Execute a get operation without locking (snapshot reads)
-    fn execute_get_without_locking(
-        &self,
-        key: &str,
-        read_timestamp: TransactionId,
-    ) -> OperationResult<KvResponse> {
-        // Check for conflicts with earlier exclusive locks
-        if let Some(blockers) = self.check_read_conflicts(key, read_timestamp) {
-            return OperationResult::WouldBlock { blockers };
-        }
-
+    fn execute_get_without_locking(&self, key: &str, read_timestamp: TransactionId) -> KvResponse {
         // No blocking - safe to read
         let kv_key = KvKey::from(key);
         let value = self
@@ -199,10 +163,10 @@ impl KvTransactionEngine {
             .read(&kv_key, read_timestamp)
             .expect("Read failed");
 
-        OperationResult::Complete(KvResponse::GetResult {
+        KvResponse::GetResult {
             key: key.to_string(),
             value,
-        })
+        }
     }
 }
 
@@ -232,7 +196,7 @@ impl TransactionEngine for KvTransactionEngine {
         &self,
         operation: Self::Operation,
         read_timestamp: TransactionId,
-    ) -> OperationResult<Self::Response> {
+    ) -> Self::Response {
         match operation {
             KvOperation::Get { ref key } => self.execute_get_without_locking(key, read_timestamp),
             _ => panic!("Must be read-only operation"),

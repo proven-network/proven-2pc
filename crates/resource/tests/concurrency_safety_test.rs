@@ -88,7 +88,7 @@ fn test_supply_delta_merging_within_transaction() {
     let result = engine.read_at_timestamp(ResourceOperation::GetTotalSupply, tx2);
 
     match result {
-        OperationResult::Complete(ResourceResponse::TotalSupply { amount }) => {
+        ResourceResponse::TotalSupply { amount } => {
             assert_eq!(
                 amount,
                 Amount::from_integer(600, 0),
@@ -400,12 +400,12 @@ fn test_multi_key_atomicity() {
 
     match (alice_final, bob_final) {
         (
-            OperationResult::Complete(ResourceResponse::Balance {
+            ResourceResponse::Balance {
                 amount: alice_amt, ..
-            }),
-            OperationResult::Complete(ResourceResponse::Balance {
+            },
+            ResourceResponse::Balance {
                 amount: bob_amt, ..
-            }),
+            },
         ) => {
             assert_eq!(alice_amt, Amount::from_integer(600, 0));
             assert_eq!(bob_amt, Amount::from_integer(400, 0));
@@ -498,17 +498,17 @@ fn test_mint_burn_supply_consistency() {
 
     match (supply, alice, bob, charlie) {
         (
-            OperationResult::Complete(ResourceResponse::TotalSupply { amount: supply_amt }),
-            OperationResult::Complete(ResourceResponse::Balance {
+            ResourceResponse::TotalSupply { amount: supply_amt },
+            ResourceResponse::Balance {
                 amount: alice_amt, ..
-            }),
-            OperationResult::Complete(ResourceResponse::Balance {
+            },
+            ResourceResponse::Balance {
                 amount: bob_amt, ..
-            }),
-            OperationResult::Complete(ResourceResponse::Balance {
+            },
+            ResourceResponse::Balance {
                 amount: charlie_amt,
                 ..
-            }),
+            },
         ) => {
             let total_balances = alice_amt + bob_amt + charlie_amt;
             assert_eq!(
@@ -546,10 +546,10 @@ fn test_mint_burn_supply_consistency() {
 
     match (supply2, alice2) {
         (
-            OperationResult::Complete(ResourceResponse::TotalSupply { amount: supply_amt }),
-            OperationResult::Complete(ResourceResponse::Balance {
+            ResourceResponse::TotalSupply { amount: supply_amt },
+            ResourceResponse::Balance {
                 amount: alice_amt, ..
-            }),
+            },
         ) => {
             assert_eq!(supply_amt, Amount::from_integer(550, 0));
             assert_eq!(alice_amt, Amount::from_integer(50, 0));
@@ -627,12 +627,12 @@ fn test_abort_rollback_consistency() {
 
     match (alice_balance, bob_balance) {
         (
-            OperationResult::Complete(ResourceResponse::Balance {
+            ResourceResponse::Balance {
                 amount: alice_amt, ..
-            }),
-            OperationResult::Complete(ResourceResponse::Balance {
+            },
+            ResourceResponse::Balance {
                 amount: bob_amt, ..
-            }),
+            },
         ) => {
             assert_eq!(
                 alice_amt,

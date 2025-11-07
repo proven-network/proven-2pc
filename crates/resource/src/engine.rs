@@ -224,50 +224,35 @@ impl ResourceTransactionEngine {
         &self,
         operation: &ResourceOperation,
         read_timestamp: TransactionId,
-    ) -> OperationResult<ResourceResponse> {
+    ) -> ResourceResponse {
         match operation {
             ResourceOperation::GetBalance { account } => {
-                // Check for conflicting reservations from earlier transactions
-                let pending = self.reservations.get_blocking_transactions(account);
-                let blockers: Vec<_> = pending
-                    .iter()
-                    .filter(|&&tx_id| tx_id < read_timestamp)
-                    .map(|&txn| BlockingInfo {
-                        txn,
-                        retry_on: RetryOn::CommitOrAbort,
-                    })
-                    .collect();
-
-                if !blockers.is_empty() {
-                    return OperationResult::WouldBlock { blockers };
-                }
-
                 // Safe to read
                 let balance = self.get_balance(account, read_timestamp);
-                OperationResult::Complete(ResourceResponse::Balance {
+                ResourceResponse::Balance {
                     account: account.clone(),
                     amount: balance,
-                })
+                }
             }
 
             ResourceOperation::GetMetadata => {
                 let metadata = self.get_metadata(read_timestamp);
                 let supply = self.get_supply(read_timestamp);
 
-                OperationResult::Complete(ResourceResponse::Metadata {
+                ResourceResponse::Metadata {
                     name: metadata.name,
                     symbol: metadata.symbol,
                     decimals: metadata.decimals,
                     total_supply: supply,
-                })
+                }
             }
 
             ResourceOperation::GetTotalSupply => {
                 let supply = self.get_supply(read_timestamp);
-                OperationResult::Complete(ResourceResponse::TotalSupply { amount: supply })
+                ResourceResponse::TotalSupply { amount: supply }
             }
 
-            _ => panic!("Must be read-only operation for snapshot reads"),
+            _ => unreachable!("Must be read-only operation for snapshot reads"),
         }
     }
 
@@ -621,7 +606,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         &self,
         operation: Self::Operation,
         read_timestamp: TransactionId,
-    ) -> OperationResult<Self::Response> {
+    ) -> Self::Response {
         self.execute_read_at_timestamp(&operation, read_timestamp)
     }
 
