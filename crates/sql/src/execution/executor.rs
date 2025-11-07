@@ -772,14 +772,26 @@ pub fn execute_node_read_with_outer<'a>(
 
             // Try to use index lookup first
             if storage.get_index_metadata().contains_key(&index_name) {
-                // Type-coerce filter values based on column schema
+                // Type-coerce filter values based on index column schema
                 let schemas = storage.get_schemas();
                 let mut coerced_values = filter_values.clone();
-                if let Some(schema) = schemas.get(&table)
-                    && let Some(column) = schema.columns.iter().find(|c| c.name == *index_name)
+
+                // Get index metadata to find the actual column names
+                if let Some(index_meta) = storage.get_index_metadata().get(&index_name)
+                    && let Some(schema) = schemas.get(&table)
                 {
-                    for (i, value) in filter_values.iter().enumerate() {
-                        if i < coerced_values.len() {
+                    // Get column names from the index
+                    let column_names: Vec<&str> = index_meta
+                        .columns
+                        .iter()
+                        .filter_map(|col| col.as_column())
+                        .collect();
+
+                    // Coerce each value to its corresponding column's data type
+                    for (i, (value, col_name)) in
+                        filter_values.iter().zip(column_names.iter()).enumerate()
+                    {
+                        if let Some(column) = schema.columns.iter().find(|c| &c.name == col_name) {
                             coerced_values[i] =
                                 crate::coercion::coerce_value(value.clone(), &column.data_type)?;
                         }
@@ -918,12 +930,57 @@ pub fn execute_node_read_with_outer<'a>(
 
             // Try to use index range scan
             if storage.get_index_metadata().contains_key(&index_name) {
-                // Use streaming index range scan
+                // Type-coerce range values based on index column schema
+                let schemas = storage.get_schemas();
+                let mut coerced_start = start_values.clone();
+                let mut coerced_end = end_values.clone();
+
+                // Get index metadata to find the actual column names
+                if let Some(index_meta) = storage.get_index_metadata().get(&index_name)
+                    && let Some(schema) = schemas.get(&table)
+                {
+                    // Get column names from the index
+                    let column_names: Vec<&str> = index_meta
+                        .columns
+                        .iter()
+                        .filter_map(|col| col.as_column())
+                        .collect();
+
+                    // Coerce start values
+                    if let Some(ref mut start_vals) = coerced_start {
+                        for (value, col_name) in start_vals.iter_mut().zip(column_names.iter()) {
+                            if let Some(column) =
+                                schema.columns.iter().find(|c| &c.name == col_name)
+                            {
+                                *value = crate::coercion::coerce_value(
+                                    value.clone(),
+                                    &column.data_type,
+                                )?;
+                            }
+                        }
+                    }
+
+                    // Coerce end values
+                    if let Some(ref mut end_vals) = coerced_end {
+                        for (value, col_name) in end_vals.iter_mut().zip(column_names.iter()) {
+                            if let Some(column) =
+                                schema.columns.iter().find(|c| &c.name == col_name)
+                            {
+                                *value = crate::coercion::coerce_value(
+                                    value.clone(),
+                                    &column.data_type,
+                                )?;
+                            }
+                        }
+                    }
+                }
+
+                // Use streaming index range scan with coerced values
                 let rows = storage.index_range_scan(
                     &index_name,
-                    start_values,
+                    coerced_start,
                     start_inclusive,
-                    end_values,
+                    coerced_end,
                     end_inclusive,
                     tx_ctx.txn_id,
                 )?;
