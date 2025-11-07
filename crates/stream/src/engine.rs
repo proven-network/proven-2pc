@@ -3,7 +3,7 @@
 //! This trait defines the interface that SQL, KV, and other storage
 //! systems must implement to work with the generic stream processor.
 
-use proven_common::{Operation, Response, TransactionId};
+use proven_common::{ChangeData, Operation, Response, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -68,6 +68,9 @@ pub trait TransactionEngine: Send + Sync {
 
     /// The type of responses this engine produces
     type Response: Response;
+
+    /// The type of change data this engine produces
+    type ChangeData: ChangeData;
 
     /// The batch type for atomic writes
     type Batch: BatchOperations;
@@ -158,7 +161,7 @@ pub trait TransactionEngine: Send + Sync {
     /// - Any engine-specific commit logic
     ///
     /// The stream processor will remove transaction metadata before committing the batch.
-    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId);
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) -> Self::ChangeData;
 
     /// Abort a transaction
     ///

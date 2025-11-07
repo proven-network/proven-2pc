@@ -15,9 +15,10 @@ use crate::entity::{
 };
 use crate::types::{QueueOperation, QueueResponse};
 use fjall::Keyspace;
-use proven_common::TransactionId;
+use proven_common::{ChangeData, TransactionId};
 use proven_mvcc::{MvccStorage, StorageConfig};
 use proven_stream::{BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -752,9 +753,18 @@ impl Default for QueueTransactionEngine {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QueueChangeData;
+impl ChangeData for QueueChangeData {
+    fn merge(self, _other: Self) -> Self {
+        self
+    }
+}
+
 impl TransactionEngine for QueueTransactionEngine {
     type Operation = QueueOperation;
     type Response = QueueResponse;
+    type ChangeData = QueueChangeData;
     type Batch = QueueBatch;
 
     fn start_batch(&mut self) -> Self::Batch {
@@ -870,7 +880,7 @@ impl TransactionEngine for QueueTransactionEngine {
         self.lock_manager.release_shared(txn_id);
     }
 
-    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) -> Self::ChangeData {
         let inner_batch = batch.inner();
 
         // STEP 1: Remove this transaction's sequences from uncommitted_appends
@@ -896,6 +906,8 @@ impl TransactionEngine for QueueTransactionEngine {
 
         // Release locks (only used by dequeue now)
         self.lock_manager.release(txn_id);
+
+        QueueChangeData
     }
 
     fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {

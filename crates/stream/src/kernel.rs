@@ -358,7 +358,9 @@ impl<E: TransactionEngine> StreamProcessingKernel<E> {
 mod tests {
     use super::*;
     use crate::engine::{OperationResult, TransactionEngine};
-    use proven_common::{Operation, OperationType, ProcessorType, Response, TransactionId};
+    use proven_common::{
+        ChangeData, Operation, OperationType, ProcessorType, Response, TransactionId,
+    };
     use proven_engine::MockClient;
     use proven_protocol::TransactionPhase;
     use serde::{Deserialize, Serialize};
@@ -392,9 +394,18 @@ mod tests {
         fn remove_transaction_metadata(&mut self, _txn_id: TransactionId) {}
     }
 
+    #[derive(Debug, Serialize, Deserialize)]
+    struct TestChangeData;
+    impl ChangeData for TestChangeData {
+        fn merge(self, _other: Self) -> Self {
+            self
+        }
+    }
+
     impl TransactionEngine for TestEngine {
         type Operation = TestOp;
         type Response = TestResponse;
+        type ChangeData = TestChangeData;
         type Batch = TestBatch;
 
         fn start_batch(&mut self) -> Self::Batch {
@@ -426,8 +437,10 @@ mod tests {
         }
 
         fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
-        fn commit(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
+        fn commit(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) -> Self::ChangeData {
             self.committed.push(txn_id);
+
+            TestChangeData
         }
         fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
         fn get_log_index(&self) -> Option<u64> {
@@ -580,9 +593,18 @@ mod tests {
             metadata: Vec<(TransactionId, Vec<u8>)>,
         }
 
+        #[derive(Debug, Serialize, Deserialize)]
+        struct RecoveryTestChangeData;
+        impl ChangeData for RecoveryTestChangeData {
+            fn merge(self, _other: Self) -> Self {
+                self
+            }
+        }
+
         impl TransactionEngine for RecoveryTestEngine {
             type Operation = TestOp;
             type Response = TestResponse;
+            type ChangeData = RecoveryTestChangeData;
             type Batch = TestBatch;
 
             fn start_batch(&mut self) -> Self::Batch {
@@ -611,7 +633,13 @@ mod tests {
 
             fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
-            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(
+                &mut self,
+                _batch: &mut Self::Batch,
+                _txn_id: TransactionId,
+            ) -> Self::ChangeData {
+                RecoveryTestChangeData
+            }
             fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn get_log_index(&self) -> Option<u64> {
                 Some(42)
@@ -675,9 +703,18 @@ mod tests {
             metadata: Vec<(TransactionId, Vec<u8>)>,
         }
 
+        #[derive(Debug, Serialize, Deserialize)]
+        struct RecoveryTestChangeData;
+        impl ChangeData for RecoveryTestChangeData {
+            fn merge(self, _other: Self) -> Self {
+                self
+            }
+        }
+
         impl TransactionEngine for RecoveryTestEngine {
             type Operation = TestOp;
             type Response = TestResponse;
+            type ChangeData = RecoveryTestChangeData;
             type Batch = TestBatch;
 
             fn start_batch(&mut self) -> Self::Batch {
@@ -705,7 +742,13 @@ mod tests {
 
             fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
-            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(
+                &mut self,
+                _batch: &mut Self::Batch,
+                _txn_id: TransactionId,
+            ) -> Self::ChangeData {
+                RecoveryTestChangeData
+            }
             fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn get_log_index(&self) -> Option<u64> {
                 Some(42)
@@ -777,9 +820,18 @@ mod tests {
             metadata: Vec<(TransactionId, Vec<u8>)>,
         }
 
+        #[derive(Debug, Serialize, Deserialize)]
+        struct RecoveryTestChangeData;
+        impl ChangeData for RecoveryTestChangeData {
+            fn merge(self, _other: Self) -> Self {
+                self
+            }
+        }
+
         impl TransactionEngine for RecoveryTestEngine {
             type Operation = TestOp;
             type Response = TestResponse;
+            type ChangeData = RecoveryTestChangeData;
             type Batch = TestBatch;
 
             fn start_batch(&mut self) -> Self::Batch {
@@ -809,7 +861,13 @@ mod tests {
 
             fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
-            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(
+                &mut self,
+                _batch: &mut Self::Batch,
+                _txn_id: TransactionId,
+            ) -> Self::ChangeData {
+                RecoveryTestChangeData
+            }
             fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn get_log_index(&self) -> Option<u64> {
                 Some(42)
@@ -887,9 +945,18 @@ mod tests {
             metadata: Vec<(TransactionId, Vec<u8>)>,
         }
 
+        #[derive(Debug, Serialize, Deserialize)]
+        struct RecoveryTestChangeData;
+        impl ChangeData for RecoveryTestChangeData {
+            fn merge(self, _other: Self) -> Self {
+                self
+            }
+        }
+
         impl TransactionEngine for RecoveryTestEngine {
             type Operation = TestOp;
             type Response = TestResponse;
+            type ChangeData = RecoveryTestChangeData;
             type Batch = TestBatch;
 
             fn start_batch(&mut self) -> Self::Batch {
@@ -913,7 +980,13 @@ mod tests {
             }
             fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
-            fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+            fn commit(
+                &mut self,
+                _batch: &mut Self::Batch,
+                _txn_id: TransactionId,
+            ) -> Self::ChangeData {
+                RecoveryTestChangeData
+            }
             fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
             fn get_log_index(&self) -> Option<u64> {
                 Some(42)

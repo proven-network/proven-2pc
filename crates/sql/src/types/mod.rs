@@ -1,5 +1,6 @@
 //! The SQL data model, including data types, expressions, and schema objects.
 
+pub mod change_data;
 pub mod context;
 pub mod data_type;
 pub mod expression;

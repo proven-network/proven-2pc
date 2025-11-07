@@ -5,7 +5,7 @@ use crate::storage::lock_persistence::{
     TransactionReservations, decode_transaction_reservations, encode_transaction_reservations,
 };
 use crate::storage::{ReservationManager, ReservationType, ResourceMetadata};
-use crate::types::{Amount, ResourceOperation, ResourceResponse};
+use crate::types::{Amount, ResourceChangeData, ResourceOperation, ResourceResponse};
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
 use proven_stream::{BatchOperations, BlockingInfo};
@@ -606,6 +606,7 @@ impl ResourceTransactionEngine {
 impl TransactionEngine for ResourceTransactionEngine {
     type Operation = ResourceOperation;
     type Response = ResourceResponse;
+    type ChangeData = ResourceChangeData;
     type Batch = ResourceBatch;
 
     fn start_batch(&mut self) -> Self::Batch {
@@ -663,7 +664,7 @@ impl TransactionEngine for ResourceTransactionEngine {
         }
     }
 
-    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) -> Self::ChangeData {
         let inner_batch = batch.inner();
 
         // Commit the transaction via storage
@@ -679,6 +680,8 @@ impl TransactionEngine for ResourceTransactionEngine {
 
         // Release all reservations held by this transaction
         self.reservations.release_transaction(txn_id);
+
+        ResourceChangeData
     }
 
     fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {

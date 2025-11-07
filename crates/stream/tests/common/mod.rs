@@ -1,6 +1,6 @@
 //! Common test utilities for integration tests
 
-use proven_common::{Operation, OperationType, ProcessorType, Response, TransactionId};
+use proven_common::{ChangeData, Operation, OperationType, ProcessorType, Response, TransactionId};
 use proven_engine::MockClient;
 use proven_stream::{
     BatchOperations, OperationResult, ResponseMode, RetryOn, StreamProcessingKernel,
@@ -118,10 +118,19 @@ pub enum BasicResponse {
 
 impl Response for BasicResponse {}
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestChangeData;
+impl ChangeData for TestChangeData {
+    fn merge(self, _other: Self) -> Self {
+        self
+    }
+}
+
 // TransactionEngine implementation for LockOp tests
 impl TransactionEngine for TestEngine<LockOp, LockResponse> {
     type Operation = LockOp;
     type Response = LockResponse;
+    type ChangeData = TestChangeData;
     type Batch = TestBatch;
 
     fn start_batch(&mut self) -> Self::Batch {
@@ -184,9 +193,10 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
 
     fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
 
-    fn commit(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
+    fn commit(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) -> Self::ChangeData {
         // Release all locks held by this transaction
         self.locks.retain(|_, &mut holder| holder != txn_id);
+        TestChangeData
     }
 
     fn abort(&mut self, _batch: &mut Self::Batch, txn_id: TransactionId) {
@@ -211,6 +221,7 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
 impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
     type Operation = BasicOp;
     type Response = BasicResponse;
+    type ChangeData = TestChangeData;
     type Batch = TestBatch;
 
     fn start_batch(&mut self) -> Self::Batch {
@@ -259,7 +270,9 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
 
     fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
 
-    fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+    fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) -> Self::ChangeData {
+        TestChangeData
+    }
 
     fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
 

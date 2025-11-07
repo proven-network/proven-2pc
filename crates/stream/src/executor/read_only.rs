@@ -56,7 +56,7 @@ impl ReadOnlyExecution {
 mod tests {
     use super::*;
     use crate::engine::{BlockingInfo, RetryOn};
-    use proven_common::{Operation, OperationType, ProcessorType, Response};
+    use proven_common::{ChangeData, Operation, OperationType, ProcessorType, Response};
     use proven_engine::MockClient;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -87,9 +87,18 @@ mod tests {
         fn remove_transaction_metadata(&mut self, _txn_id: TransactionId) {}
     }
 
+    #[derive(Debug, Serialize, Deserialize)]
+    struct TestChangeData;
+    impl ChangeData for TestChangeData {
+        fn merge(self, _other: Self) -> Self {
+            self
+        }
+    }
+
     impl TransactionEngine for TestEngine {
         type Operation = TestOp;
         type Response = TestResponse;
+        type ChangeData = TestChangeData;
         type Batch = TestBatch;
 
         fn start_batch(&mut self) -> Self::Batch {
@@ -126,7 +135,9 @@ mod tests {
 
         fn begin(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
         fn prepare(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
-        fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
+        fn commit(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) -> Self::ChangeData {
+            TestChangeData
+        }
         fn abort(&mut self, _batch: &mut Self::Batch, _txn_id: TransactionId) {}
         fn get_log_index(&self) -> Option<u64> {
             None

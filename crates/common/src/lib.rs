@@ -6,12 +6,14 @@
 //! - Physical timestamps (microseconds since Unix epoch)
 //! - Processor types for stream processing
 
+mod change_data;
 mod operation;
 mod processor_type;
 mod response;
 mod timestamp;
 mod transaction_id;
 
+pub use change_data::ChangeData;
 pub use operation::Operation;
 pub use operation::OperationType;
 pub use processor_type::ProcessorType;

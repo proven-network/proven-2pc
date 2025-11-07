@@ -11,7 +11,7 @@ use proven_stream::{OperationResult, RetryOn, TransactionEngine};
 use crate::storage::entity::{KvDelta, KvEntity, KvKey};
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};
 use crate::storage::lock_persistence::{TransactionLocks, encode_transaction_locks};
-use crate::types::{KvOperation, KvResponse};
+use crate::types::{KvChangeData, KvOperation, KvResponse};
 
 /// Wrapper around MVCC Batch that implements BatchOperations
 ///
@@ -209,6 +209,7 @@ impl KvTransactionEngine {
 impl TransactionEngine for KvTransactionEngine {
     type Operation = KvOperation;
     type Response = KvResponse;
+    type ChangeData = KvChangeData;
     type Batch = KvBatch;
 
     // ═══════════════════════════════════════════════════════════
@@ -412,7 +413,7 @@ impl TransactionEngine for KvTransactionEngine {
             .expect("Failed to persist locks");
     }
 
-    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) -> Self::ChangeData {
         // Commit transaction data (moves from uncommitted to committed)
         self.storage
             .commit_transaction_to_batch(batch.inner(), txn_id)
@@ -426,6 +427,8 @@ impl TransactionEngine for KvTransactionEngine {
 
         // Release in-memory locks
         self.lock_manager.release_all(txn_id);
+
+        KvChangeData
     }
 
     fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {

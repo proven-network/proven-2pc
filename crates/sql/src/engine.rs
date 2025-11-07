@@ -16,6 +16,7 @@ use crate::planning::caching_planner::CachingPlanner;
 use crate::semantic::CachingSemanticAnalyzer;
 use crate::storage::{SqlStorage, SqlStorageConfig};
 use crate::types::ValueExt;
+use crate::types::change_data::SqlChangeData;
 use crate::types::context::{ExecutionContext, TransactionContext, TransactionState};
 use crate::types::operation::SqlOperation;
 use crate::types::response::{SqlResponse, convert_execution_result};
@@ -591,6 +592,7 @@ impl SqlTransactionEngine {
 impl TransactionEngine for SqlTransactionEngine {
     type Operation = SqlOperation;
     type Response = SqlResponse;
+    type ChangeData = SqlChangeData;
     type Batch = SqlBatch;
 
     // ═══════════════════════════════════════════════════════════
@@ -694,7 +696,7 @@ impl TransactionEngine for SqlTransactionEngine {
         }
     }
 
-    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
+    fn commit(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) -> Self::ChangeData {
         // Remove transaction if it exists
         if self.active_transactions.remove(&txn_id).is_some() {
             self.transaction_states.remove(&txn_id);
@@ -707,7 +709,8 @@ impl TransactionEngine for SqlTransactionEngine {
                 .commit_transaction_to_batch(batch.inner(), txn_id)
                 .expect("Failed to commit transaction");
         }
-        // If transaction doesn't exist, that's fine - may have been committed already
+
+        SqlChangeData
     }
 
     fn abort(&mut self, batch: &mut Self::Batch, txn_id: TransactionId) {
