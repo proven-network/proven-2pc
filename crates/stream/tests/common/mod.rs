@@ -142,7 +142,7 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
     }
 
     fn read_at_timestamp(
-        &mut self,
+        &self,
         operation: Self::Operation,
         _read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
@@ -233,7 +233,7 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
     }
 
     fn read_at_timestamp(
-        &mut self,
+        &self,
         operation: Self::Operation,
         _read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {

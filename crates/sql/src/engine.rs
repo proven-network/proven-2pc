@@ -201,7 +201,7 @@ impl SqlTransactionEngine {
 
     /// Execute SQL snapshot read (read-only, no mutations)
     fn execute_sql_snapshot(
-        &mut self,
+        &self,
         sql: &str,
         params: Option<Vec<crate::types::Value>>,
         read_timestamp: TransactionId,
@@ -304,13 +304,10 @@ impl SqlTransactionEngine {
         // Use log_index=0 since snapshot reads don't have a position in the ordered stream
         let mut exec_ctx = ExecutionContext::new(read_timestamp, 0);
 
-        // Create batch (even for reads, for consistency - will be empty for SELECT)
-        let mut batch = self.storage.batch();
-
-        let result = execution::execute_with_params(
+        // Use query_with_params for read-only snapshot reads (no batch or &mut storage needed)
+        let result = execution::query_with_params(
             (*plan).clone(),
-            &mut self.storage,
-            &mut batch,
+            &self.storage,
             &mut exec_ctx,
             params.as_ref(),
         );
@@ -612,7 +609,7 @@ impl TransactionEngine for SqlTransactionEngine {
     // ═══════════════════════════════════════════════════════════
 
     fn read_at_timestamp(
-        &mut self,
+        &self,
         operation: Self::Operation,
         read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {

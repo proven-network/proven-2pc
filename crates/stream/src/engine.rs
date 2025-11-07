@@ -105,7 +105,7 @@ pub trait TransactionEngine: Send + Sync {
     /// Read-only operations bypass the ordered stream and don't modify state.
     /// Therefore, no batch is needed.
     fn read_at_timestamp(
-        &mut self,
+        &self,
         operation: Self::Operation,
         read_txn_id: TransactionId,
     ) -> OperationResult<Self::Response>;
@@ -292,7 +292,7 @@ impl<E: TransactionEngine> AutoBatchEngine<E> {
 
     /// Read at timestamp (pass-through, doesn't need batching)
     pub fn read_at_timestamp(
-        &mut self,
+        &self,
         operation: E::Operation,
         read_txn_id: TransactionId,
     ) -> OperationResult<E::Response> {

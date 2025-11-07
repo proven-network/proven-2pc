@@ -8,17 +8,17 @@ use crate::error::Result;
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Default capacity for the parse cache
 const DEFAULT_CACHE_CAPACITY: usize = 1000;
 
 /// A caching wrapper around the SQL parser
 pub struct CachingParser {
-    /// LRU cache for parsed statements
-    cache: LruCache<String, Arc<Statement>>,
-    /// Track parameter counts for validation
-    param_counts: HashMap<String, usize>,
+    /// LRU cache for parsed statements (wrapped in Mutex for interior mutability)
+    cache: Mutex<LruCache<String, Arc<Statement>>>,
+    /// Track parameter counts for validation (wrapped in Mutex for interior mutability)
+    param_counts: Mutex<HashMap<String, usize>>,
 }
 
 impl CachingParser {
@@ -30,21 +30,24 @@ impl CachingParser {
     /// Create a new caching parser with specified capacity
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            cache: LruCache::new(
+            cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(100).unwrap()),
-            ),
-            param_counts: HashMap::new(),
+            )),
+            param_counts: Mutex::new(HashMap::new()),
         }
     }
 
     /// Parse SQL with caching
-    pub fn parse(&mut self, sql: &str) -> Result<Arc<Statement>> {
+    pub fn parse(&self, sql: &str) -> Result<Arc<Statement>> {
         // Normalize SQL for better cache hits (trim whitespace)
         let normalized = normalize_sql(sql);
 
         // Check cache
-        if let Some(statement) = self.cache.get(&normalized) {
-            return Ok(statement.clone());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(statement) = cache.get(&normalized) {
+                return Ok(statement.clone());
+            }
         }
 
         // Parse the statement
@@ -53,16 +56,20 @@ impl CachingParser {
         let arc_statement = Arc::new(statement);
 
         // Cache the result
-        self.cache.put(normalized.clone(), arc_statement.clone());
-        self.param_counts.insert(normalized, param_count);
+        {
+            let mut cache = self.cache.lock().unwrap();
+            let mut param_counts = self.param_counts.lock().unwrap();
+            cache.put(normalized.clone(), arc_statement.clone());
+            param_counts.insert(normalized, param_count);
+        }
 
         Ok(arc_statement)
     }
 
     /// Clear the cache
     pub fn clear(&mut self) {
-        self.cache.clear();
-        self.param_counts.clear();
+        self.cache.lock().unwrap().clear();
+        self.param_counts.lock().unwrap().clear();
     }
 }
 

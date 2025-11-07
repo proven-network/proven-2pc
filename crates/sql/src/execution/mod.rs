@@ -16,4 +16,4 @@ mod select;
 mod update;
 
 // Re-export main types and functions
-pub use executor::{ExecutionResult, execute_with_params};
+pub use executor::{ExecutionResult, execute_with_params, query_with_params};

@@ -12,7 +12,7 @@ use crate::types::schema::Table;
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Default capacity for the plan cache
 const DEFAULT_CACHE_CAPACITY: usize = 500;
@@ -22,9 +22,9 @@ pub struct CachingPlanner {
     /// The underlying planner
     planner: Planner,
 
-    /// LRU cache for query plans
+    /// LRU cache for query plans (wrapped in Mutex for interior mutability)
     /// Key is the Arc pointer address of the analyzed statement
-    cache: LruCache<usize, Arc<Plan>>,
+    cache: Mutex<LruCache<usize, Arc<Plan>>>,
 }
 
 impl CachingPlanner {
@@ -41,21 +41,24 @@ impl CachingPlanner {
     ) -> Self {
         Self {
             planner: Planner::new(schemas, indexes),
-            cache: LruCache::new(
+            cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(100).unwrap()),
-            ),
+            )),
         }
     }
 
     /// Plan a statement with caching
     /// Takes an Arc<AnalyzedStatement> from the CachingSemanticAnalyzer
-    pub fn plan(&mut self, analyzed: Arc<AnalyzedStatement>) -> Result<Arc<Plan>> {
+    pub fn plan(&self, analyzed: Arc<AnalyzedStatement>) -> Result<Arc<Plan>> {
         // Use the Arc pointer as cache key
         let cache_key = Arc::as_ptr(&analyzed) as usize;
 
         // Check cache
-        if let Some(plan) = self.cache.get(&cache_key) {
-            return Ok(plan.clone());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(plan) = cache.get(&cache_key) {
+                return Ok(plan.clone());
+            }
         }
 
         // Plan the statement
@@ -64,7 +67,10 @@ impl CachingPlanner {
         let arc_plan = Arc::new(plan);
 
         // Cache the result
-        self.cache.put(cache_key, arc_plan.clone());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(cache_key, arc_plan.clone());
+        }
 
         Ok(arc_plan)
     }
@@ -72,12 +78,12 @@ impl CachingPlanner {
     /// Update schemas and invalidate cache
     pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
         self.planner.update_schemas(schemas);
-        self.cache.clear();
+        self.cache.lock().unwrap().clear();
     }
 
     /// Update indexes and invalidate cache
     pub fn update_indexes(&mut self, indexes: HashMap<String, IndexMetadata>) {
         self.planner.update_indexes(indexes);
-        self.cache.clear();
+        self.cache.lock().unwrap().clear();
     }
 }

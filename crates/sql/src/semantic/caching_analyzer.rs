@@ -15,7 +15,7 @@ use lru::LruCache;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Default capacity for the semantic cache
 const DEFAULT_CACHE_CAPACITY: usize = 500;
@@ -34,9 +34,9 @@ pub struct CachingSemanticAnalyzer {
     /// The underlying semantic analyzer
     analyzer: SemanticAnalyzer,
 
-    /// LRU cache for analyzed statements
+    /// LRU cache for analyzed statements (wrapped in Mutex for interior mutability)
     /// Key includes both statement pointer and parameter types
-    cache: LruCache<CacheKey, Arc<AnalyzedStatement>>,
+    cache: Mutex<LruCache<CacheKey, Arc<AnalyzedStatement>>>,
 }
 
 impl CachingSemanticAnalyzer {
@@ -56,16 +56,16 @@ impl CachingSemanticAnalyzer {
     ) -> Self {
         Self {
             analyzer: SemanticAnalyzer::new(schemas, index_metadata),
-            cache: LruCache::new(
+            cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(100).unwrap()),
-            ),
+            )),
         }
     }
 
     /// Analyze a statement with caching, using parameter types for complete validation
     /// Takes an Arc<Statement> from the CachingParser and parameter types
     pub fn analyze(
-        &mut self,
+        &self,
         statement: Arc<Statement>,
         param_types: Vec<DataType>,
     ) -> Result<Arc<AnalyzedStatement>> {
@@ -76,8 +76,11 @@ impl CachingSemanticAnalyzer {
         };
 
         // Check cache
-        if let Some(analyzed) = self.cache.get(&cache_key) {
-            return Ok(analyzed.clone());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            if let Some(analyzed) = cache.get(&cache_key) {
+                return Ok(analyzed.clone());
+            }
         }
 
         // Analyze the statement with parameter types
@@ -86,7 +89,10 @@ impl CachingSemanticAnalyzer {
         let arc_analyzed = Arc::new(analyzed);
 
         // Cache the result
-        self.cache.put(cache_key, arc_analyzed.clone());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(cache_key, arc_analyzed.clone());
+        }
 
         Ok(arc_analyzed)
     }
@@ -94,7 +100,7 @@ impl CachingSemanticAnalyzer {
     /// Update schemas and invalidate cache
     pub fn update_schemas(&mut self, schemas: HashMap<String, Table>) {
         self.analyzer.update_schemas(schemas);
-        self.cache.clear();
+        self.cache.lock().unwrap().clear();
     }
 
     /// Update index metadata and invalidate cache
@@ -103,6 +109,6 @@ impl CachingSemanticAnalyzer {
         index_metadata: HashMap<String, crate::types::index::IndexMetadata>,
     ) {
         self.analyzer.update_index_metadata(index_metadata);
-        self.cache.clear();
+        self.cache.lock().unwrap().clear();
     }
 }

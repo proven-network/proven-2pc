@@ -13,7 +13,7 @@ use crate::types::plan::Node;
 /// Execute a SELECT query using immutable storage reference
 pub fn execute_select(
     node: Node,
-    storage: &mut SqlStorage,
+    storage: &SqlStorage,
     tx_ctx: &mut ExecutionContext,
     params: Option<&Vec<Value>>,
     column_names_override: Option<Vec<String>>,

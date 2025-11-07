@@ -108,7 +108,7 @@ mod tests {
         fn commit_batch(&mut self, _batch: Self::Batch, _log_index: u64) {}
 
         fn read_at_timestamp(
-            &mut self,
+            &self,
             operation: Self::Operation,
             _read_txn_id: TransactionId,
         ) -> OperationResult<Self::Response> {

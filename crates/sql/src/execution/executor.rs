@@ -28,6 +28,28 @@ pub enum ExecutionResult {
     Ddl(String),
 }
 
+/// Execute a read-only query plan (no batch needed)
+pub fn query_with_params(
+    plan: Plan,
+    storage: &SqlStorage,
+    tx_ctx: &mut ExecutionContext,
+    params: Option<&Vec<Value>>,
+) -> Result<ExecutionResult> {
+    match plan {
+        Plan::Query {
+            root,
+            params: _,
+            column_names,
+        } => {
+            // Query uses immutable storage reference (handles SELECT and VALUES)
+            super::select::execute_select(*root, storage, tx_ctx, params, column_names.clone())
+        }
+        _ => Err(crate::error::Error::Internal(
+            "query_with_params can only execute Query plans".to_string(),
+        )),
+    }
+}
+
 /// Execute a query plan with parameters and batch
 pub fn execute_with_params(
     plan: Plan,

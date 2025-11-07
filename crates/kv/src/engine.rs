@@ -229,7 +229,7 @@ impl TransactionEngine for KvTransactionEngine {
     // ═══════════════════════════════════════════════════════════
 
     fn read_at_timestamp(
-        &mut self,
+        &self,
         operation: Self::Operation,
         read_timestamp: TransactionId,
     ) -> OperationResult<Self::Response> {
