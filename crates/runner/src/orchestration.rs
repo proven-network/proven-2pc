@@ -20,7 +20,7 @@ use tokio::sync::oneshot;
 ///
 /// The `last_activity` parameter tracks when the processor last received a message.
 /// The `ready_tx` signals when the processor has completed replay and is ready to accept operations.
-pub async fn run_stream_processor<E: TransactionEngine + 'static>(
+pub async fn run_stream_processor<E: TransactionEngine>(
     mut kernel: StreamProcessingKernel<E>,
     client: Arc<MockClient>,
     shutdown_rx: oneshot::Receiver<()>,
@@ -127,7 +127,7 @@ async fn perform_replay<E: TransactionEngine>(
 }
 
 /// Run live processing with event loop and graceful shutdown
-async fn run_live_processing<E: TransactionEngine + 'static>(
+async fn run_live_processing<E: TransactionEngine>(
     mut kernel: StreamProcessingKernel<E>,
     client: Arc<MockClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -238,9 +238,10 @@ async fn run_live_processing<E: TransactionEngine + 'static>(
                 // Update last activity time
                 *last_activity.lock() = Instant::now();
 
-                if let Err(e) = kernel.process_readonly(message) {
+                // Process in parallel - spawn concurrent task without blocking
+                if let Err(e) = kernel.process_read_only(message) {
                     tracing::error!(
-                        "[{}] Error processing readonly message: {:?}",
+                        "[{}] Error spawning readonly task: {:?}",
                         stream_name, e
                     );
                 }

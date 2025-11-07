@@ -3,6 +3,7 @@
 use proven_common::{Response, TransactionId};
 use proven_engine::{Message, MockClient};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Helper for building and sending responses to coordinators
@@ -14,7 +15,8 @@ pub struct ResponseSender {
     /// Name of the engine
     engine_name: String,
     /// Whether to suppress responses (used during replay)
-    suppress: bool,
+    /// Uses AtomicBool for interior mutability to allow sharing in Arc
+    suppress: AtomicBool,
 }
 
 impl ResponseSender {
@@ -24,13 +26,13 @@ impl ResponseSender {
             client,
             stream_name,
             engine_name,
-            suppress: false,
+            suppress: AtomicBool::new(false),
         }
     }
 
     /// Set whether to suppress responses (for replay phase)
-    pub fn set_suppress(&mut self, suppress: bool) {
-        self.suppress = suppress;
+    pub fn set_suppress(&self, suppress: bool) {
+        self.suppress.store(suppress, Ordering::Relaxed);
     }
 
     /// Send a successful operation response
@@ -42,7 +44,7 @@ impl ResponseSender {
         response: R,
     ) {
         // Suppress responses during replay
-        if self.suppress {
+        if self.suppress.load(Ordering::Relaxed) {
             return;
         }
 
@@ -86,7 +88,7 @@ impl ResponseSender {
     /// Send a prepared response (2PC phase 1)
     pub fn send_prepared(&self, coordinator_id: &str, txn_id: &str, request_id: Option<String>) {
         // Suppress responses during replay
-        if self.suppress {
+        if self.suppress.load(Ordering::Relaxed) {
             return;
         }
 
@@ -118,7 +120,7 @@ impl ResponseSender {
         request_id: Option<String>,
     ) {
         // Suppress responses during replay
-        if self.suppress {
+        if self.suppress.load(Ordering::Relaxed) {
             return;
         }
 
@@ -151,7 +153,7 @@ impl ResponseSender {
         request_id: String,
     ) {
         // Suppress responses during replay
-        if self.suppress {
+        if self.suppress.load(Ordering::Relaxed) {
             return;
         }
 

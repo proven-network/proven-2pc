@@ -15,7 +15,7 @@ pub struct UnorderedFlow;
 impl UnorderedFlow {
     /// Process a unordered message (no batching, immediate response)
     pub fn process<E: TransactionEngine>(
-        engine: &mut E,
+        engine: &E,
         response: &ResponseSender,
         message: ReadOnlyMessage<E::Operation>,
     ) -> Result<()> {

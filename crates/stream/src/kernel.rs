@@ -36,8 +36,8 @@ pub enum ResponseMode {
 /// - Event loop orchestration (runner's responsibility)
 /// - Shutdown signaling (runner's responsibility)
 pub struct StreamProcessingKernel<E: TransactionEngine> {
-    /// Transaction engine
-    engine: E,
+    /// Transaction engine (shared immutable for readonly operations)
+    engine: Arc<E>,
 
     /// Transaction manager
     tx_manager: TransactionManager<E>,
@@ -45,8 +45,8 @@ pub struct StreamProcessingKernel<E: TransactionEngine> {
     /// Recovery manager for handling coordinator failures
     recovery_manager: crate::transaction::RecoveryManager,
 
-    /// Response sender
-    response: ResponseSender,
+    /// Response sender (shared for concurrent use)
+    response: Arc<ResponseSender>,
 
     /// Current response mode
     response_mode: ResponseMode,
@@ -61,12 +61,12 @@ pub struct StreamProcessingKernel<E: TransactionEngine> {
 impl<E: TransactionEngine> StreamProcessingKernel<E> {
     /// Create a new stream processing kernel
     pub fn new(engine: E, client: Arc<MockClient>, stream_name: String) -> Self {
-        // Create response sender internally
-        let response = ResponseSender::new(
+        // Create response sender internally (wrapped in Arc for sharing)
+        let response = Arc::new(ResponseSender::new(
             client.clone(),
             stream_name.clone(),
             engine.engine_name().to_string(),
-        );
+        ));
 
         // Get starting offset from engine's persisted log index
         let engine_offset = engine.get_log_index().unwrap_or(0);
@@ -79,7 +79,7 @@ impl<E: TransactionEngine> StreamProcessingKernel<E> {
         );
 
         Self {
-            engine,
+            engine: Arc::new(engine), // Wrap engine in Arc for sharing
             recovery_manager: crate::transaction::RecoveryManager::new(client, stream_name.clone()),
             tx_manager: TransactionManager::new(),
             response,
@@ -137,9 +137,17 @@ impl<E: TransactionEngine> StreamProcessingKernel<E> {
         let coord_msg = OrderedMessage::from_message(message)
             .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
+        // Get mutable reference to engine for ordered processing
+        // This is safe because:
+        // 1. Ordered processing is serial (&mut self ensures exclusivity)
+        // 2. Readonly tasks use Arc::clone, not the original Arc
+        // 3. We have exclusive kernel access, so no concurrent readonly tasks can be spawned
+        let engine = Arc::get_mut(&mut self.engine)
+            .expect("Ordered flow should have exclusive engine access");
+
         // Use ordered flow (8-step deterministic processing)
         OrderedFlow::process(
-            &mut self.engine,
+            engine,
             &mut self.tx_manager,
             &self.recovery_manager,
             &self.response,
@@ -151,14 +159,34 @@ impl<E: TransactionEngine> StreamProcessingKernel<E> {
         .await
     }
 
-    /// Process a read-only message from pubsub
-    pub fn process_readonly(&mut self, message: Message) -> Result<()> {
+    /// Process a read-only message in parallel (spawn concurrent task)
+    ///
+    /// This method spawns a tokio task for readonly operations, enabling
+    /// concurrent execution without blocking the event loop. Safe to call
+    /// without &mut self since readonly operations only need immutable engine access.
+    pub fn process_read_only(&self, message: Message) -> Result<()> {
         // Parse message
         let coord_msg = ReadOnlyMessage::from_message(message)
             .map_err(|e| Error::InvalidOperation(e.to_string()))?;
 
-        // Use read-only flow
-        UnorderedFlow::process(&mut self.engine, &self.response, coord_msg)
+        // Clone Arc references for the spawned task
+        let engine = Arc::clone(&self.engine);
+        let response = Arc::clone(&self.response);
+        let stream_name = self.stream_name.clone();
+
+        // Spawn concurrent task - doesn't block event loop
+        tokio::spawn(async move {
+            // Dereference Arc to get &E
+            if let Err(e) = UnorderedFlow::process(engine.as_ref(), response.as_ref(), coord_msg) {
+                tracing::error!(
+                    "[{}] Error processing readonly message: {:?}",
+                    stream_name,
+                    e
+                );
+            }
+        });
+
+        Ok(())
     }
 
     /// Recover transaction state from persisted metadata (called on startup)

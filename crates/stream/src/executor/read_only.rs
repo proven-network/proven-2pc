@@ -18,16 +18,16 @@ impl ReadOnlyExecution {
     /// Execute a read-only operation using snapshot isolation
     ///
     /// Read-only operations bypass batching and execute immediately.
-    /// If blocked by a write lock, they defer until the blocker completes.
+    /// They never block - MVCC handles isolation via snapshot reads.
     pub fn execute<E: TransactionEngine>(
-        engine: &mut E,
+        engine: &E,
         response: &ResponseSender,
         operation: E::Operation,
         read_timestamp: TransactionId,
         coordinator_id: String,
         request_id: String,
     ) -> Result<()> {
-        let resp = engine.read_at_timestamp(operation.clone(), read_timestamp);
+        let resp = engine.read_at_timestamp(operation, read_timestamp);
         response.send_success(&coordinator_id, None, request_id, resp);
         Ok(())
     }
@@ -35,6 +35,8 @@ impl ReadOnlyExecution {
 
 #[cfg(test)]
 mod tests {
+    use crate::OperationResult;
+
     use super::*;
     use proven_common::{ChangeData, Operation, OperationType, ProcessorType, Response};
     use proven_engine::MockClient;
@@ -57,9 +59,7 @@ mod tests {
     struct TestResponse(String);
     impl Response for TestResponse {}
 
-    struct TestEngine {
-        should_block: bool,
-    }
+    struct TestEngine;
 
     struct TestBatch;
     impl crate::engine::BatchOperations for TestBatch {
@@ -121,27 +121,24 @@ mod tests {
         }
     }
 
-    fn setup() -> (TestEngine, TransactionManager<TestEngine>, ResponseSender) {
+    fn setup() -> (TestEngine, ResponseSender) {
         let mock_engine_for_client = Arc::new(proven_engine::MockEngine::new());
         let client = Arc::new(MockClient::new(
             "test-node".to_string(),
             mock_engine_for_client,
         ));
-        let engine = TestEngine {
-            should_block: false,
-        };
-        let tx_manager = TransactionManager::new();
+        let engine = TestEngine;
         let response = ResponseSender::new(client, "test-stream".to_string(), "test".to_string());
 
-        (engine, tx_manager, response)
+        (engine, response)
     }
 
     #[tokio::test]
     async fn test_execute_successful_read() {
-        let (mut engine, mut tx_manager, response) = setup();
+        let (engine, response) = setup();
 
         let result = ReadOnlyExecution::execute(
-            &mut engine,
+            &engine,
             &response,
             TestOp("key1".to_string()),
             TransactionId::new(),
@@ -150,28 +147,6 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        tokio::task::yield_now().await;
-    }
-
-    #[tokio::test]
-    async fn test_execute_blocked_read() {
-        let (mut engine, tx_manager, response) = setup();
-        engine.should_block = true;
-
-        let read_timestamp = TransactionId::new();
-        let result = ReadOnlyExecution::execute(
-            &mut engine,
-            &response,
-            TestOp("key1".to_string()),
-            read_timestamp,
-            "coord-1".to_string(),
-            "req-1".to_string(),
-        );
-
-        assert!(result.is_ok());
-
-        // Should have deferred the operation
-        assert_eq!(tx_manager.deferred_count(read_timestamp), 1);
         tokio::task::yield_now().await;
     }
 }

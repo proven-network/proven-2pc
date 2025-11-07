@@ -61,7 +61,7 @@ pub enum OperationResult<R> {
 /// Note: All methods are synchronous since stream processing must be
 /// ordered and sequential. Each message must be fully processed before
 /// moving to the next one.
-pub trait TransactionEngine: Send + Sync {
+pub trait TransactionEngine: Send + Sync + 'static {
     /// The type of operations this engine processes
     /// MUST be serializable for crash recovery
     type Operation: Operation + Clone + Serialize + for<'de> Deserialize<'de>;

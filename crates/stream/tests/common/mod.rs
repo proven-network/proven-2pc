@@ -145,14 +145,14 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
         &self,
         operation: Self::Operation,
         _read_timestamp: TransactionId,
-    ) -> OperationResult<Self::Response> {
+    ) -> Self::Response {
         match operation {
             LockOp::Lock { .. } => {
                 panic!("Lock operations not supported for read-only")
             }
-            LockOp::Read { resource } => OperationResult::Complete(LockResponse::Value {
+            LockOp::Read { resource } => LockResponse::Value {
                 data: format!("Data from {}", resource),
-            }),
+            },
         }
     }
 
@@ -236,11 +236,11 @@ impl TransactionEngine for TestEngine<BasicOp, BasicResponse> {
         &self,
         operation: Self::Operation,
         _read_timestamp: TransactionId,
-    ) -> OperationResult<Self::Response> {
+    ) -> Self::Response {
         match operation {
             BasicOp::Read { key } => {
                 let value = self.data.get(&key).cloned();
-                OperationResult::Complete(BasicResponse::Value(value))
+                BasicResponse::Value(value)
             }
             BasicOp::Write { .. } => {
                 panic!("Write operations not supported for read-only")
@@ -320,7 +320,7 @@ pub fn run_test_processor<E: TransactionEngine + Send + 'static>(
 }
 
 /// Simple orchestration for tests (mimics runner/orchestration.rs but simplified)
-async fn run_stream_processor_simple<E: TransactionEngine + 'static>(
+async fn run_stream_processor_simple<E: TransactionEngine>(
     mut kernel: StreamProcessingKernel<E>,
     client: Arc<MockClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -398,7 +398,7 @@ async fn run_stream_processor_simple<E: TransactionEngine + 'static>(
             }
 
             Some(message) = readonly_stream.recv() => {
-                let _ = kernel.process_readonly(message);
+                let _ = kernel.process_read_only(message);
             }
 
             _ = idle_check.tick() => {
