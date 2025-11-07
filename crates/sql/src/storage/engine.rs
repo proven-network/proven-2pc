@@ -546,10 +546,17 @@ impl SqlStorage {
         self.next_row_ids
             .insert(table_name.clone(), AtomicU64::new(1));
 
-        // Create unique indexes for columns marked with unique constraint
+        // Create indexes for columns marked with index=true (including unique and primary key)
         for column in &schema.columns {
-            if column.unique {
-                let index_name = format!("{}_{}_unique", table_name, column.name);
+            if column.index {
+                let index_name = if column.primary_key {
+                    format!("{}_{}_pk", table_name, column.name)
+                } else if column.unique {
+                    format!("{}_{}_unique", table_name, column.name)
+                } else {
+                    format!("{}_{}_idx", table_name, column.name)
+                };
+
                 // Create the index using the existing create_index method
                 self.create_index(
                     index_name,
@@ -557,7 +564,7 @@ impl SqlStorage {
                     vec![crate::types::index::IndexColumn::Column(
                         column.name.clone(),
                     )],
-                    true, // unique
+                    column.unique || column.primary_key, // unique if UNIQUE or PRIMARY KEY
                 )?;
             }
         }

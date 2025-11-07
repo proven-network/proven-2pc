@@ -400,20 +400,7 @@ impl MetadataBuilder {
                         let table_name = self.resolve_table_name(table.as_deref(), col, input);
                         let value = self.expression_to_predicate_value(right);
 
-                        // Check for primary key equality
-                        if let Some(schema) =
-                            self.get_schema_for_column(table.as_deref(), col, input)
-                            && let Some(pk_idx) = schema.primary_key
-                            && schema.columns[pk_idx].name == *col
-                        {
-                            templates.push(PredicateTemplate::PrimaryKey {
-                                table: table_name,
-                                value,
-                            });
-                            return;
-                        }
-
-                        // Check for indexed column
+                        // Check for indexed column (includes PRIMARY KEY, UNIQUE, and explicit INDEX)
                         let is_indexed = self.is_indexed_new(table.as_deref(), col, input);
 
                         if is_indexed {

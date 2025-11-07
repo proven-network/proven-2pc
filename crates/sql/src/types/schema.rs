@@ -176,7 +176,7 @@ impl Column {
         self.primary_key = true;
         self.nullable = false;
         self.unique = true;
-        self.index = false; // Primary key is inherently indexed
+        self.index = true; // Primary key needs an index for efficient lookups
         self
     }
 
