@@ -7,8 +7,8 @@ pub mod predicate_index;
 // pub mod stats_cache;
 
 use proven_common::TransactionId;
-use proven_stream::{BatchOperations, BlockingInfo};
-use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use proven_processor::{BatchOperations, BlockingInfo};
+use proven_processor::{OperationResult, RetryOn, TransactionEngine};
 
 use crate::execution;
 use crate::parsing::CachingParser;

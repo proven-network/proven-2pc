@@ -7,9 +7,9 @@
 //! 4. No race conditions exist in multi-key operations
 
 use proven_common::TransactionId;
+use proven_processor::{AutoBatchEngine, OperationResult};
 use proven_resource::engine::ResourceTransactionEngine;
 use proven_resource::types::{Amount, ResourceOperation, ResourceResponse};
-use proven_stream::{AutoBatchEngine, OperationResult};
 use proven_value::Vault;
 use uuid::Uuid;
 

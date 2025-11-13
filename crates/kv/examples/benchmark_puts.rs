@@ -5,7 +5,7 @@
 
 use proven_common::TransactionId;
 use proven_kv::{KvOperation, KvTransactionEngine, Value};
-use proven_stream::AutoBatchEngine;
+use proven_processor::AutoBatchEngine;
 use std::io::{self, Write};
 use std::time::Instant;
 
@@ -50,7 +50,7 @@ fn main() {
 
         // Execute put directly on engine
         match kv_engine.apply_operation(put, txn_id) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 // Commit the transaction
                 kv_engine.commit(txn_id);
             }
@@ -108,7 +108,7 @@ fn main() {
         };
 
         match kv_engine.apply_operation(get, verify_txn) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 verified += 1;
             }
             _ => {

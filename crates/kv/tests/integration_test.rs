@@ -2,7 +2,7 @@
 
 use proven_common::TransactionId;
 use proven_kv::{KvOperation, KvResponse, KvTransactionEngine, Value};
-use proven_stream::{AutoBatchEngine, OperationResult, RetryOn};
+use proven_processor::{AutoBatchEngine, OperationResult, RetryOn};
 
 fn create_tx_id() -> TransactionId {
     TransactionId::new()

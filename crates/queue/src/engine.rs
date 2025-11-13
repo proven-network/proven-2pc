@@ -17,7 +17,9 @@ use crate::types::{QueueOperation, QueueResponse};
 use fjall::Keyspace;
 use proven_common::{ChangeData, TransactionId};
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::{BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine};
+use proven_processor::{
+    BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};

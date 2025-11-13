@@ -5,7 +5,7 @@
 
 use parking_lot::Mutex;
 use proven_engine::MockClient;
-use proven_stream::{ResponseMode, StreamProcessingKernel, TransactionEngine};
+use proven_processor::{ResponseMode, StreamProcessingKernel, TransactionEngine};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;

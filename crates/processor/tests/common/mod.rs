@@ -2,7 +2,7 @@
 
 use proven_common::{ChangeData, Operation, OperationType, ProcessorType, Response, TransactionId};
 use proven_engine::MockClient;
-use proven_stream::{
+use proven_processor::{
     BatchOperations, OperationResult, ResponseMode, RetryOn, StreamProcessingKernel,
     TransactionEngine,
 };
@@ -170,7 +170,7 @@ impl TransactionEngine for TestEngine<LockOp, LockResponse> {
                 {
                     // Resource is locked - report conflict
                     return OperationResult::WouldBlock {
-                        blockers: vec![proven_stream::BlockingInfo {
+                        blockers: vec![proven_processor::BlockingInfo {
                             txn: holder,
                             retry_on: RetryOn::CommitOrAbort,
                         }],

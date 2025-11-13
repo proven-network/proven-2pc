@@ -1,8 +1,8 @@
 //! Tests for SQL snapshot read functionality
 
 use proven_common::TransactionId;
+use proven_processor::AutoBatchEngine;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
-use proven_stream::AutoBatchEngine;
 use uuid::Uuid;
 
 fn make_timestamp(n: u64) -> TransactionId {

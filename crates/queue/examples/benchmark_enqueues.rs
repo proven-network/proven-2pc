@@ -4,8 +4,8 @@
 //! 1 million items directly using the engine.
 
 use proven_common::TransactionId;
+use proven_processor::AutoBatchEngine;
 use proven_queue::{QueueOperation, QueueTransactionEngine};
-use proven_stream::AutoBatchEngine;
 use proven_value::Value;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -51,7 +51,7 @@ fn main() {
 
         // Execute enqueue directly on engine
         match queue_engine.apply_operation(enqueue, txn_id) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 queue_engine.commit(txn_id);
             }
             _ => {
@@ -101,7 +101,7 @@ fn main() {
     let size_op = QueueOperation::Size;
 
     match queue_engine.apply_operation(size_op, verify_txn) {
-        proven_stream::OperationResult::Complete(_response) => {
+        proven_processor::OperationResult::Complete(_response) => {
             println!("✓ Queue size query executed successfully");
             queue_engine.commit(verify_txn);
         }
@@ -120,7 +120,7 @@ fn main() {
         let dequeue = QueueOperation::Dequeue;
 
         match queue_engine.apply_operation(dequeue, dequeue_txn) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 queue_engine.commit(dequeue_txn);
                 verified += 1;
             }

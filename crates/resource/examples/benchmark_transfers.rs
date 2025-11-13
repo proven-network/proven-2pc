@@ -4,9 +4,9 @@
 //! 1 million transfers between accounts directly using the engine.
 
 use proven_common::TransactionId;
+use proven_processor::AutoBatchEngine;
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceTransactionEngine};
-use proven_stream::AutoBatchEngine;
 use proven_value::Vault;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ fn main() {
     };
 
     match resource_engine.apply_operation(init_op, init_txn) {
-        proven_stream::OperationResult::Complete(_) => {
+        proven_processor::OperationResult::Complete(_) => {
             resource_engine.commit(init_txn);
             println!("✓ Resource initialized");
         }
@@ -56,7 +56,7 @@ fn main() {
     };
 
     match resource_engine.apply_operation(mint_op, mint_txn) {
-        proven_stream::OperationResult::Complete(_) => {
+        proven_processor::OperationResult::Complete(_) => {
             resource_engine.commit(mint_txn);
             println!("✓ Initial supply minted");
         }
@@ -87,7 +87,7 @@ fn main() {
         };
 
         match resource_engine.apply_operation(transfer_op, setup_txn) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 resource_engine.commit(setup_txn);
             }
             _ => panic!("Failed to setup account {}", i),
@@ -150,10 +150,10 @@ fn main() {
 
         // Execute transfer directly on engine
         match resource_engine.apply_operation(transfer, txn_id) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 resource_engine.commit(txn_id);
             }
-            proven_stream::OperationResult::WouldBlock { .. } => {
+            proven_processor::OperationResult::WouldBlock { .. } => {
                 // In a real system, we'd retry after the blocking transaction
                 // For benchmark, just skip and continue
                 resource_engine.abort(txn_id);
@@ -205,7 +205,7 @@ fn main() {
     };
 
     match resource_engine.apply_operation(balance_op, verify_txn) {
-        proven_stream::OperationResult::Complete(_response) => {
+        proven_processor::OperationResult::Complete(_response) => {
             println!("✓ Source account balance query successful");
         }
         _ => println!("⚠ Balance query failed"),
@@ -221,7 +221,7 @@ fn main() {
         };
 
         match resource_engine.apply_operation(balance_op, verify_txn) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 verified += 1;
             }
             _ => {
@@ -244,7 +244,7 @@ fn main() {
 
     let supply_op = ResourceOperation::GetTotalSupply;
     match resource_engine.apply_operation(supply_op, supply_txn) {
-        proven_stream::OperationResult::Complete(_) => {
+        proven_processor::OperationResult::Complete(_) => {
             println!("✓ Total supply query successful");
             resource_engine.commit(supply_txn);
         }

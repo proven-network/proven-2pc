@@ -8,8 +8,8 @@ use crate::storage::{ReservationManager, ReservationType, ResourceMetadata};
 use crate::types::{Amount, ResourceChangeData, ResourceOperation, ResourceResponse};
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::{BatchOperations, BlockingInfo};
-use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use proven_processor::{BatchOperations, BlockingInfo};
+use proven_processor::{OperationResult, RetryOn, TransactionEngine};
 use proven_value::Vault;
 
 /// Wrapper around Fjall Batch that implements BatchOperations
@@ -737,7 +737,7 @@ impl Default for ResourceTransactionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proven_stream::AutoBatchEngine;
+    use proven_processor::AutoBatchEngine;
     use uuid::Uuid;
 
     fn make_timestamp(n: u64) -> TransactionId {

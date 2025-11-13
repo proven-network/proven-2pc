@@ -1,11 +1,11 @@
 //! Integration tests for the queue crate
 
 use proven_common::TransactionId;
+use proven_processor::AutoBatchEngine;
+use proven_processor::OperationResult;
+use proven_processor::RetryOn;
 use proven_queue::engine::QueueTransactionEngine;
 use proven_queue::types::{QueueOperation, QueueResponse};
-use proven_stream::AutoBatchEngine;
-use proven_stream::OperationResult;
-use proven_stream::RetryOn;
 use proven_value::Value;
 
 fn create_tx_id() -> TransactionId {

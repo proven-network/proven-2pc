@@ -5,8 +5,8 @@
 //! non-conflicting transactions to proceed.
 
 use proven_common::TransactionId;
+use proven_processor::{AutoBatchEngine, OperationResult};
 use proven_sql::{SqlOperation, SqlStorageConfig, SqlTransactionEngine};
-use proven_stream::{AutoBatchEngine, OperationResult};
 use uuid::Uuid;
 
 /// Helper to create a test engine

@@ -1,9 +1,9 @@
 //! Integration tests for resource engine
 
 use proven_common::TransactionId;
+use proven_processor::{AutoBatchEngine, OperationResult};
 use proven_resource::types::Amount;
 use proven_resource::{ResourceOperation, ResourceResponse, ResourceTransactionEngine};
-use proven_stream::{AutoBatchEngine, OperationResult};
 use proven_value::Vault;
 use uuid::Uuid;
 

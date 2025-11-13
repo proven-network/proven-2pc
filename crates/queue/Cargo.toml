@@ -8,7 +8,7 @@ fjall.workspace = true
 proven-common.workspace = true
 proven-engine.workspace = true
 proven-mvcc.workspace = true
-proven-stream.workspace = true
+proven-processor.workspace = true
 proven-value = { workspace = true, features = ["mvcc"] }
 serde.workspace = true
 serde_json.workspace = true

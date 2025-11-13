@@ -5,8 +5,8 @@
 
 use fjall::{CompressionType, PersistMode};
 use proven_common::TransactionId;
+use proven_processor::AutoBatchEngine;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine, Value};
-use proven_stream::AutoBatchEngine;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Instant;
@@ -46,7 +46,7 @@ fn main() {
     };
 
     match sql_engine.apply_operation(create_table, txn_id) {
-        proven_stream::OperationResult::Complete(_) => {
+        proven_processor::OperationResult::Complete(_) => {
             sql_engine.commit(txn_id);
             println!("✓ Table created\n");
         }
@@ -74,7 +74,7 @@ fn main() {
         };
 
         match sql_engine.apply_operation(insert, txn_id) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 sql_engine.commit(txn_id);
             }
             _ => {

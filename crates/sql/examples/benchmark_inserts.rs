@@ -5,8 +5,8 @@
 
 use fjall::{CompressionType, PersistMode};
 use proven_common::TransactionId;
+use proven_processor::AutoBatchEngine;
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine, Value};
-use proven_stream::AutoBatchEngine;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -46,7 +46,7 @@ fn main() {
     };
 
     match sql_engine.apply_operation(create_table, txn_id) {
-        proven_stream::OperationResult::Complete(_) => {
+        proven_processor::OperationResult::Complete(_) => {
             sql_engine.commit(txn_id);
             println!("✓ Table created");
         }
@@ -83,7 +83,7 @@ fn main() {
 
         // Execute insert directly on engine
         match sql_engine.apply_operation(insert, txn_id) {
-            proven_stream::OperationResult::Complete(_) => {
+            proven_processor::OperationResult::Complete(_) => {
                 sql_engine.commit(txn_id);
             }
             _ => {
@@ -137,7 +137,7 @@ fn main() {
 
     let elapsed = Instant::now();
     match sql_engine.apply_operation(count_query, verify_txn) {
-        proven_stream::OperationResult::Complete(response) => {
+        proven_processor::OperationResult::Complete(response) => {
             match response {
                 SqlResponse::QueryResult { columns: _, rows } => {
                     match rows.first().unwrap().first().unwrap() {
@@ -196,7 +196,7 @@ fn main() {
     };
 
     match sql_engine.apply_operation(count_query, verify_txn) {
-        proven_stream::OperationResult::Complete(response) => match response {
+        proven_processor::OperationResult::Complete(response) => match response {
             SqlResponse::QueryResult { columns: _, rows } => {
                 match rows.first().unwrap().first().unwrap() {
                     Value::I64(count) => {

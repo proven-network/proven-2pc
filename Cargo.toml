@@ -10,6 +10,7 @@ members = [
     "crates/kv",
     "crates/kv-client",
     "crates/mvcc",
+    "crates/processor",
     "crates/protocol",
     "crates/queue",
     "crates/queue-client",
@@ -18,7 +19,6 @@ members = [
     "crates/runner",
     "crates/sql",
     "crates/sql-client",
-    "crates/stream",
     "crates/value",
 ]
 default-members = [
@@ -29,6 +29,7 @@ default-members = [
     "crates/kv",
     "crates/kv-client",
     "crates/mvcc",
+    "crates/processor",
     "crates/protocol",
     "crates/queue",
     "crates/queue-client",
@@ -37,7 +38,6 @@ default-members = [
     "crates/runner",
     "crates/sql",
     "crates/sql-client",
-    "crates/stream",
     "crates/value",
 ]
 resolver = "2"
@@ -79,6 +79,7 @@ proven-engine = { path = "crates/engine" }
 proven-kv = { path = "crates/kv" }
 proven-kv-client = { path = "crates/kv-client" }
 proven-mvcc = { path = "crates/mvcc" }
+proven-processor = { path = "crates/processor" }
 proven-protocol = { path = "crates/protocol" }
 proven-queue = { path = "crates/queue" }
 proven-queue-client = { path = "crates/queue-client" }
@@ -87,7 +88,6 @@ proven-resource-client = { path = "crates/resource-client" }
 proven-runner = { path = "crates/runner" }
 proven-sql = { path = "crates/sql" }
 proven-sql-client = { path = "crates/sql-client" }
-proven-stream = { path = "crates/stream" }
 proven-value = { path = "crates/value" }
 
 [package]
@@ -102,6 +102,7 @@ proven-coordinator.workspace = true
 proven-engine.workspace = true
 proven-kv.workspace = true
 proven-kv-client.workspace = true
+proven-processor.workspace = true
 proven-queue.workspace = true
 proven-queue-client.workspace = true
 proven-resource.workspace = true
@@ -109,7 +110,6 @@ proven-resource-client.workspace = true
 proven-runner.workspace = true
 proven-sql.workspace = true
 proven-sql-client.workspace = true
-proven-stream.workspace = true
 proven-value.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

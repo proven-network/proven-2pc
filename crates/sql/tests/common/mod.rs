@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 
 use proven_common::TransactionId;
+use proven_processor::{AutoBatchEngine, OperationResult};
 use proven_sql::{SqlOperation, SqlResponse, SqlStorageConfig, SqlTransactionEngine};
-use proven_stream::{AutoBatchEngine, OperationResult};
 use proven_value::Value;
 use std::collections::HashMap;
 

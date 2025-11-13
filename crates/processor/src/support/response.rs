@@ -3,8 +3,8 @@
 use proven_common::{Response, TransactionId};
 use proven_engine::{Message, MockClient};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Helper for building and sending responses to coordinators
 pub struct ResponseSender {

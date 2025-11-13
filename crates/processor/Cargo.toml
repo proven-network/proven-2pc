@@ -1,5 +1,5 @@
 [package]
-name = "proven-stream"
+name = "proven-processor"
 version.workspace = true
 edition.workspace = true
 

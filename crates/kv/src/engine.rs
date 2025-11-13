@@ -5,8 +5,9 @@
 
 use proven_common::TransactionId;
 use proven_mvcc::{MvccStorage, StorageConfig};
-use proven_stream::{BatchOperations, BlockingInfo};
-use proven_stream::{OperationResult, RetryOn, TransactionEngine};
+use proven_processor::{
+    BatchOperations, BlockingInfo, OperationResult, RetryOn, TransactionEngine,
+};
 
 use crate::storage::entity::{KvDelta, KvEntity, KvKey};
 use crate::storage::lock::{LockAttemptResult, LockManager, LockMode};

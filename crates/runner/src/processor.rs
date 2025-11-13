@@ -182,8 +182,10 @@ async fn create_kv_kernel(
     stream: String,
     client: Arc<MockClient>,
     base_dir: PathBuf,
-) -> Result<proven_stream::StreamProcessingKernel<proven_kv::KvTransactionEngine>, crate::RunnerError>
-{
+) -> Result<
+    proven_processor::StreamProcessingKernel<proven_kv::KvTransactionEngine>,
+    crate::RunnerError,
+> {
     // Create directory structure: {base_dir}/kv/{stream_name}
     let storage_path = base_dir.join("kv").join(&stream);
     std::fs::create_dir_all(&storage_path)
@@ -191,7 +193,7 @@ async fn create_kv_kernel(
 
     let config = proven_mvcc::StorageConfig::new(storage_path);
     let engine = proven_kv::KvTransactionEngine::with_config(config);
-    Ok(proven_stream::StreamProcessingKernel::new(
+    Ok(proven_processor::StreamProcessingKernel::new(
         engine, client, stream,
     ))
 }
@@ -202,7 +204,7 @@ async fn create_sql_kernel(
     client: Arc<MockClient>,
     base_dir: PathBuf,
 ) -> Result<
-    proven_stream::StreamProcessingKernel<proven_sql::SqlTransactionEngine>,
+    proven_processor::StreamProcessingKernel<proven_sql::SqlTransactionEngine>,
     crate::RunnerError,
 > {
     // Create directory structure: {base_dir}/sql/{stream_name}
@@ -212,7 +214,7 @@ async fn create_sql_kernel(
 
     let config = proven_sql::SqlStorageConfig::with_data_dir(storage_path);
     let engine = proven_sql::SqlTransactionEngine::new(config);
-    Ok(proven_stream::StreamProcessingKernel::new(
+    Ok(proven_processor::StreamProcessingKernel::new(
         engine, client, stream,
     ))
 }
@@ -223,7 +225,7 @@ async fn create_queue_kernel(
     client: Arc<MockClient>,
     base_dir: PathBuf,
 ) -> Result<
-    proven_stream::StreamProcessingKernel<proven_queue::QueueTransactionEngine>,
+    proven_processor::StreamProcessingKernel<proven_queue::QueueTransactionEngine>,
     crate::RunnerError,
 > {
     // Create directory structure: {base_dir}/queue/{stream_name}
@@ -234,7 +236,7 @@ async fn create_queue_kernel(
 
     let config = proven_mvcc::StorageConfig::new(storage_path);
     let engine = proven_queue::QueueTransactionEngine::with_config(config);
-    Ok(proven_stream::StreamProcessingKernel::new(
+    Ok(proven_processor::StreamProcessingKernel::new(
         engine, client, stream,
     ))
 }
@@ -245,7 +247,7 @@ async fn create_resource_kernel(
     client: Arc<MockClient>,
     base_dir: PathBuf,
 ) -> Result<
-    proven_stream::StreamProcessingKernel<proven_resource::ResourceTransactionEngine>,
+    proven_processor::StreamProcessingKernel<proven_resource::ResourceTransactionEngine>,
     crate::RunnerError,
 > {
     // Create directory structure: {base_dir}/resource/{stream_name}
@@ -256,7 +258,7 @@ async fn create_resource_kernel(
 
     let config = proven_mvcc::StorageConfig::new(storage_path);
     let engine = proven_resource::ResourceTransactionEngine::with_config(config);
-    Ok(proven_stream::StreamProcessingKernel::new(
+    Ok(proven_processor::StreamProcessingKernel::new(
         engine, client, stream,
     ))
 }

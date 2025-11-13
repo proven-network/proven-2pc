@@ -22,7 +22,7 @@ Orchestrates distributed transactions across multiple storage engines using two-
 #### `proven-runner` - Stream Processor Manager
 Manages the lifecycle, placement, and health of stream processors across the cluster.
 
-#### `proven-stream` - Stream Processing Framework
+#### `proven-processor` - Stream Processing Framework
 Generic transaction engine trait and stream processing infrastructure used by all storage engines.
 
 #### `proven-engine` - Mock Consensus Engine

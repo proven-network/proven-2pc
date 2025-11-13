@@ -5,7 +5,7 @@
 
 use proven_common::TransactionId;
 use proven_kv::{KvOperation, KvResponse, KvTransactionEngine, Value};
-use proven_stream::{AutoBatchEngine, OperationResult};
+use proven_processor::{AutoBatchEngine, OperationResult};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Instant;
