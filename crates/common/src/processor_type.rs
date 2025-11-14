@@ -13,4 +13,6 @@ pub enum ProcessorType {
     Queue,
     /// Resource (balance/inventory) processor
     Resource,
+    /// Stream processor
+    Stream,
 }

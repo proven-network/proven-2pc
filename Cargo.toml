@@ -19,6 +19,7 @@ members = [
     "crates/runner",
     "crates/sql",
     "crates/sql-client",
+    "crates/stream",
     "crates/value",
 ]
 default-members = [
@@ -38,6 +39,7 @@ default-members = [
     "crates/runner",
     "crates/sql",
     "crates/sql-client",
+    "crates/stream",
     "crates/value",
 ]
 resolver = "2"
@@ -88,6 +90,7 @@ proven-resource-client = { path = "crates/resource-client" }
 proven-runner = { path = "crates/runner" }
 proven-sql = { path = "crates/sql" }
 proven-sql-client = { path = "crates/sql-client" }
+proven-stream = { path = "crates/stream" }
 proven-value = { path = "crates/value" }
 
 [package]

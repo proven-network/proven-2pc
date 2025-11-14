@@ -15,6 +15,7 @@ proven-protocol.workspace = true
 proven-queue.workspace = true
 proven-resource.workspace = true
 proven-sql.workspace = true
+proven-stream.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true

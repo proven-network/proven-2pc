@@ -1,0 +1,22 @@
+[package]
+name = "proven-stream"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fjall.workspace = true
+proven-common.workspace = true
+proven-engine.workspace = true
+proven-mvcc.workspace = true
+proven-processor.workspace = true
+proven-value = { workspace = true, features = ["mvcc"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zstd.workspace = true
+
+[[example]]
+name = "benchmark_appends"
+path = "examples/benchmark_appends.rs"

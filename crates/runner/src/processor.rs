@@ -162,6 +162,25 @@ pub async fn start_processor(
                 }
             });
         }
+        ProcessorType::Stream => {
+            let kernel =
+                create_stream_kernel(stream.clone(), client.clone(), base_dir.clone()).await?;
+            let client_clone = client.clone();
+            let last_activity_clone = last_activity.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::orchestration::run_stream_processor(
+                    kernel,
+                    client_clone,
+                    shutdown_rx,
+                    last_activity_clone,
+                    ready_tx,
+                )
+                .await
+                {
+                    tracing::error!("Stream processor error: {:?}", e);
+                }
+            });
+        }
     }
 
     // Wait for processor to complete replay and become ready to accept operations
@@ -258,6 +277,27 @@ async fn create_resource_kernel(
 
     let config = proven_mvcc::StorageConfig::new(storage_path);
     let engine = proven_resource::ResourceTransactionEngine::with_config(config);
+    Ok(proven_processor::StreamProcessingKernel::new(
+        engine, client, stream,
+    ))
+}
+
+/// Create a Stream processing kernel
+async fn create_stream_kernel(
+    stream: String,
+    client: Arc<MockClient>,
+    base_dir: PathBuf,
+) -> Result<
+    proven_processor::StreamProcessingKernel<proven_stream::StreamTransactionEngine>,
+    crate::RunnerError,
+> {
+    let storage_path = base_dir.join("stream").join(&stream);
+    std::fs::create_dir_all(&storage_path).map_err(|e| {
+        crate::RunnerError::Other(format!("Failed to create Stream directory: {}", e))
+    })?;
+
+    let config = proven_mvcc::StorageConfig::new(storage_path);
+    let engine = proven_stream::StreamTransactionEngine::with_config(config);
     Ok(proven_processor::StreamProcessingKernel::new(
         engine, client, stream,
     ))

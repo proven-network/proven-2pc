@@ -1042,6 +1042,7 @@ dependencies = [
  "proven-queue",
  "proven-resource",
  "proven-sql",
+ "proven-stream",
  "rand",
  "serde",
  "serde_json",
@@ -1089,6 +1090,24 @@ dependencies = [
  "proven-sql",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "proven-stream"
+version = "0.1.0"
+dependencies = [
+ "fjall",
+ "proven-common",
+ "proven-engine",
+ "proven-mvcc",
+ "proven-processor",
+ "proven-value",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "zstd",
 ]
 
 [[package]]
